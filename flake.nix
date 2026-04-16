@@ -1,0 +1,207 @@
+# New to Nix? Start here:
+#   Language basics:  https://nix.dev/tutorials/nix-language
+#   Flakes intro:     https://zero-to-nix.com/concepts/flakes
+{
+  description = "Crossplane CLI";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+
+    # TODO(negz): Unpin once https://github.com/nix-community/gomod2nix/pull/231 is released.
+    gomod2nix = {
+      url = "github:nix-community/gomod2nix/75c2866d585a75a1b30c634dbd7c2dcce5a6c3a7";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs =
+    {
+      self,
+      nixpkgs,
+      nixpkgs-unstable,
+      gomod2nix,
+    }:
+    let
+      # Set by CI to override the auto-generated dev version.
+      buildVersion = null;
+
+      # Platforms we build Go binaries for.
+      goPlatforms = [
+        {
+          os = "linux";
+          arch = "amd64";
+        }
+        {
+          os = "linux";
+          arch = "arm64";
+        }
+        {
+          os = "linux";
+          arch = "arm";
+        }
+        {
+          os = "linux";
+          arch = "ppc64le";
+        }
+        {
+          os = "darwin";
+          arch = "arm64";
+        }
+        {
+          os = "darwin";
+          arch = "amd64";
+        }
+        {
+          os = "windows";
+          arch = "amd64";
+        }
+      ];
+
+      # Systems where Nix runs (dev machines, CI).
+      supportedSystems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+
+      # Semantic version for binaries. Uses buildVersion if set by CI, otherwise
+      # generates a dev version from git metadata.  (self ? shortRev tests if
+      # the attribute exists - clean commits have shortRev, uncommitted changes
+      # have dirtyShortRev.)
+      version =
+        if buildVersion != null then
+          buildVersion
+        else if self ? shortRev then
+          "v0.0.0-${builtins.toString self.lastModified}-${self.shortRev}"
+        else
+          "v0.0.0-${builtins.toString self.lastModified}-${self.dirtyShortRev}";
+
+      # Helpers for per-system outputs.
+      forAllSystems = f: nixpkgs.lib.genAttrs supportedSystems (system: forSystem system f);
+      forSystem =
+        system: f:
+        f {
+          inherit system;
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [
+              gomod2nix.overlays.default
+              (_final: _prev: {
+                # We use the go toolchain from unstable because it's been
+                # updated to fix some CVEs. However, we explicitly use this only
+                # in our build targets rather than replace Go in the global
+                # overlay so that we can still use pre-built binaries for
+                # Go-based tools from nixpkgs.
+                go-unstable = nixpkgs-unstable.legacyPackages.${system}.go_1_25;
+              })
+            ];
+          };
+        };
+
+    in
+    {
+      # Build outputs (nix build).
+      packages = forAllSystems (
+        { pkgs, ... }:
+        let
+          build = import ./nix/build.nix { inherit pkgs self; };
+        in
+        {
+          default = build.release {
+            inherit
+              version
+              goPlatforms
+              ;
+          };
+        }
+      );
+
+      # CI checks (nix flake check).
+      checks = forAllSystems (
+        { pkgs, ... }:
+        let
+          checks = import ./nix/checks.nix { inherit pkgs self; };
+        in
+        {
+          test = checks.test { inherit version; };
+          generate = checks.generate { inherit version; };
+          go-lint = checks.goLint { inherit version; };
+          shell-lint = checks.shellLint { };
+          nix-lint = checks.nixLint { };
+        }
+      );
+
+      # Development commands (nix run .#<app>).
+      apps = forAllSystems (
+        { pkgs, ... }:
+        let
+          build = import ./nix/build.nix { inherit pkgs self; };
+          apps = import ./nix/apps.nix { inherit pkgs; };
+        in
+        {
+          test = apps.test { };
+          lint = apps.lint { };
+          generate = apps.generate { };
+          tidy = apps.tidy { };
+          push-artifacts = apps.pushArtifacts {
+            inherit version;
+            release = build.release {
+              inherit version goPlatforms;
+            };
+          };
+          promote-artifacts = apps.promoteArtifacts { };
+        }
+      );
+
+      # Development shell (nix develop).
+      devShells = forAllSystems (
+        { pkgs, ... }:
+        {
+          default = pkgs.mkShell {
+            buildInputs = [
+              pkgs.coreutils
+              pkgs.gnused
+              pkgs.ncurses
+              pkgs.go-unstable
+              pkgs.golangci-lint
+              pkgs.kubectl
+              pkgs.kind
+              pkgs.docker-client
+              pkgs.gotestsum
+              pkgs.awscli2
+              pkgs.gomod2nix
+
+              # Code generation
+              pkgs.buf
+              pkgs.goverter
+              pkgs.protoc-gen-go
+              pkgs.protoc-gen-go-grpc
+              pkgs.kubernetes-controller-tools
+
+              # Nix
+              pkgs.nixfmt-rfc-style
+            ];
+
+            shellHook = ''
+              export PS1='\[\033[38;2;243;128;123m\][cros\[\033[38;2;255;205;60m\]spla\[\033[38;2;53;208;186m\]ne]\[\033[0m\] \w \$ '
+
+              source <(kubectl completion bash 2>/dev/null)
+              source <(kind completion bash 2>/dev/null)
+
+              alias k=kubectl
+
+              echo "Crossplane development shell ($(go version | cut -d' ' -f3))"
+              echo ""
+              echo "  nix run .#test          nix run .#generate"
+              echo "  nix run .#lint          nix run .#tidy"
+              echo ""
+              echo "  nix build               nix flake check"
+              echo ""
+            '';
+          };
+        }
+      );
+    };
+}

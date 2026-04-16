@@ -1,0 +1,47 @@
+/.cache
+/.work
+/.hack
+/_output
+/config/
+/config
+cover.out
+/vendor
+/.vendor-new
+.DS_Store
+Zone.Identifier
+.tmp-earthly-out/
+build/
+
+# Nix build output symlinks
+result
+result-*
+
+# Exclude the ko data dir
+kodata/
+
+# gitlab example
+# exclude files generate by running the example
+external-dns-*.tgz
+gitlab-*.tgz
+gitlab-gcp.yaml
+gitlab/
+
+# ignore vscode files (debug config etc...)
+/.vscode
+/.idea
+/.devcontainer
+
+# Crossplane packages
+*.xpkg
+
+# go build output (from go build ./cmd/crossplane etc)
+/crossplane
+
+# ignore AI tools settings/config
+/.claude
+/.kiro
+CLAUDE.md
+AGENTS.md
+
+# Ignore local dev environment variables
+.env

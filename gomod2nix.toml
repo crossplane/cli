@@ -1,3 +1,7 @@
 schema = 3
+cachePackages = ["google.golang.org/protobuf/encoding/protojson", "google.golang.org/protobuf/encoding/prototext", "google.golang.org/protobuf/encoding/protowire", "google.golang.org/protobuf/proto", "google.golang.org/protobuf/reflect/protoreflect", "google.golang.org/protobuf/reflect/protoregistry", "google.golang.org/protobuf/runtime/protoiface", "google.golang.org/protobuf/runtime/protoimpl", "google.golang.org/protobuf/types/known/structpb", "google.golang.org/protobuf/types/known/timestamppb"]
 
 [mod]
+  [mod."google.golang.org/protobuf"]
+    version = "v1.36.11"
+    hash = "sha256-7W+6jntfI/awWL3JP6yQedxqP5S9o3XvPgJ2XxxsIeE="

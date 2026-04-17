@@ -100,12 +100,11 @@
         echo "Running go generate..."
         go generate -tags generate .
 
-        # TODO(adamwg): Uncomment this once we have generated code.
-        # echo "Comparing against committed source..."
-        # if ! diff -rq proto ${self}/proto > /dev/null 2>&1; then
-        #   echo "ERROR: Generated code is out of date. Run 'nix run .#generate' and commit."
-        #   exit 1
-        # fi
+        echo "Comparing against committed source..."
+        if ! diff -rq proto ${self}/proto > /dev/null 2>&1; then
+          echo "ERROR: Generated code is out of date. Run 'nix run .#generate' and commit."
+          exit 1
+        fi
 
         runHook postCheck
       '';

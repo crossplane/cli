@@ -21,4 +21,9 @@ limitations under the License.
 // $PATH. Use './nix.sh develop' or './nix.sh run .#generate' to ensure they
 // are.
 
+// Generate gRPC types and stubs. See buf.gen.yaml for buf's configuration.
+// The protoc-gen-go and protoc-gen-go-grpc plugins must be in $PATH.
+// Note that the vendor dir does temporarily exist during a Nix build.
+//go:generate buf generate --exclude-path vendor
+
 package generate

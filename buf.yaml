@@ -1,0 +1,14 @@
+version: v2
+name: buf.build/crossplane/cli
+lint:
+  use:
+    - STANDARD
+  except:
+    - FIELD_NOT_REQUIRED
+    - PACKAGE_NO_IMPORT_CYCLE
+breaking:
+  use:
+    - WIRE_JSON  # Includes JSON breaking changes, same as crossplane-runtime
+  except:
+    - EXTENSION_NO_DELETE
+    - FIELD_SAME_DEFAULT

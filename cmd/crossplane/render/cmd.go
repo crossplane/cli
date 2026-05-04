@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"dario.cat/mergo"
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 	corev1 "k8s.io/api/core/v1"
@@ -31,7 +32,6 @@ import (
 	"k8s.io/kube-openapi/pkg/spec3"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composed"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
@@ -385,23 +385,14 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 	s := json.NewSerializerWithOptions(json.DefaultMetaFactory, nil, nil, json.SerializerOptions{Yaml: true})
 
 	if c.IncludeFullXR {
-		xrSpec, err := fieldpath.Pave(xr.Object).GetValue("spec")
-		if err != nil {
-			return errors.Wrapf(err, "cannot get composite resource spec")
+		// Make our best effort to merge the composition pipeline's changes into
+		// the original XR. Note that this may not be 100% accurate, since we
+		// don't know how the apiserver would merge lists.
+		updatedXR := xr.DeepCopy()
+		if err := mergo.Merge(&updatedXR.Object, out.CompositeResource.Object, mergo.WithOverride); err != nil {
+			return errors.Wrap(err, "cannot merge updated XR")
 		}
-
-		if err := fieldpath.Pave(out.CompositeResource.Object).SetValue("spec", xrSpec); err != nil {
-			return errors.Wrapf(err, "cannot set composite resource spec")
-		}
-
-		xrMeta, err := fieldpath.Pave(xr.Object).GetValue("metadata")
-		if err != nil {
-			return errors.Wrapf(err, "cannot get composite resource metadata")
-		}
-
-		if err := fieldpath.Pave(out.CompositeResource.Object).SetValue("metadata", xrMeta); err != nil {
-			return errors.Wrapf(err, "cannot set composite resource metadata")
-		}
+		out.CompositeResource = updatedXR
 	}
 
 	_, _ = fmt.Fprintln(k.Stdout, "---")

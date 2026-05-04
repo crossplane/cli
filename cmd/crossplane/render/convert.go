@@ -35,9 +35,9 @@ import (
 	renderv1alpha1 "github.com/crossplane/crossplane/v2/proto/render/v1alpha1"
 )
 
-// buildCompositeRequest builds a RenderRequest for a composite resource from
+// BuildCompositeRequest builds a RenderRequest for a composite resource from
 // the supplied inputs and function addresses.
-func buildCompositeRequest(in CompositionInputs) (*renderv1alpha1.RenderRequest, error) {
+func BuildCompositeRequest(in CompositionInputs) (*renderv1alpha1.RenderRequest, error) {
 	xrStruct, err := resource.AsStruct(in.CompositeResource)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot convert composite resource to protobuf")
@@ -92,8 +92,8 @@ func buildCompositeRequest(in CompositionInputs) (*renderv1alpha1.RenderRequest,
 	}, nil
 }
 
-// parseCompositeResponse converts a CompositeOutput into Outputs for the CLI.
-func parseCompositeResponse(out *renderv1alpha1.CompositeOutput) (CompositionOutputs, error) {
+// ParseCompositeResponse converts a CompositeOutput into Outputs for the CLI.
+func ParseCompositeResponse(out *renderv1alpha1.CompositeOutput) (CompositionOutputs, error) {
 	xr := ucomposite.New()
 	if s := out.GetCompositeResource(); s != nil {
 		if err := resource.AsObject(s, xr); err != nil {

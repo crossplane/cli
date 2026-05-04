@@ -352,7 +352,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 		RequiredSchemas:     rsc,
 		FunctionCredentials: fcreds,
 	}
-	req, err := buildCompositeRequest(in)
+	req, err := BuildCompositeRequest(in)
 	if err != nil {
 		return errors.Wrap(err, "cannot build render request")
 	}
@@ -367,7 +367,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 		return errors.New("render response does not contain a composite output")
 	}
 
-	out, err := parseCompositeResponse(compositeOut)
+	out, err := ParseCompositeResponse(compositeOut)
 	if err != nil {
 		return errors.Wrap(err, "cannot parse render response")
 	}

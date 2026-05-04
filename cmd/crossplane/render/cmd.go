@@ -67,6 +67,9 @@ type Cmd struct {
 	XRD     string        `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that defines the XR's schema and properties." optional:""                               placeholder:"PATH" type:"existingfile"`
 
 	fs afero.Fs
+
+	// newEngine constructs the render Engine.
+	newEngine func(*EngineFlags, logging.Logger) Engine
 }
 
 // Help prints out the help for the render command.
@@ -168,6 +171,8 @@ Examples:
 // AfterApply implements kong.AfterApply.
 func (c *Cmd) AfterApply() error {
 	c.fs = afero.NewOsFs()
+	c.newEngine = NewEngineFromFlags
+
 	return nil
 }
 
@@ -288,7 +293,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
-	engine := c.NewEngine(log)
+	engine := c.newEngine(&c.EngineFlags, log)
 
 	seedCtx := len(c.ContextValues) > 0 || len(c.ContextFiles) > 0
 	captureCtx := c.IncludeContext

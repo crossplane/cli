@@ -1,0 +1,8 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-dummy
+  annotations:
+    render.crossplane.io/runtime: InProcess
+spec:
+  package: xpkg.crossplane.io/example/function-dummy:v0.0.0

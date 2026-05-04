@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: watched-one
+  namespace: default
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: watched-two
+  namespace: default

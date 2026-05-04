@@ -1,0 +1,10 @@
+apiVersion: ops.crossplane.io/v1alpha1
+kind: Operation
+metadata:
+  name: test-op
+spec:
+  mode: Pipeline
+  pipeline:
+  - step: be-a-dummy
+    functionRef:
+      name: function-dummy

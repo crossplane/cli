@@ -1,0 +1,19 @@
+---
+apiVersion: ops.crossplane.io/v1alpha1
+kind: Operation
+metadata:
+  name: test-op
+spec:
+  mode: Pipeline
+  pipeline:
+  - functionRef:
+      name: function-dummy
+    step: be-a-dummy
+status: {}
+---
+apiVersion: example.org/v1alpha1
+kind: AppliedResource
+metadata:
+  name: applied-foo
+spec:
+  coolField: applied!

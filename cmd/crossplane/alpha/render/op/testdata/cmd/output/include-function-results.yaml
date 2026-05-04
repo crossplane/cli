@@ -1,0 +1,18 @@
+---
+apiVersion: ops.crossplane.io/v1alpha1
+kind: Operation
+metadata:
+  name: test-op
+spec:
+  mode: Pipeline
+  pipeline:
+  - functionRef:
+      name: function-dummy
+    step: be-a-dummy
+status: {}
+---
+apiVersion: render.crossplane.io/v1beta1
+kind: Result
+message: function says hi
+reason: Hello
+severity: Normal

@@ -55,25 +55,23 @@ type EngineFlags struct {
 	CrossplaneBinary  string `help:"Path to a local crossplane binary to use instead of Docker."                                              placeholder:"PATH"    type:"existingfile"       xor:"crossplane-selector"`
 }
 
-// NewEngine creates an Engine from the flag configuration. If a binary path
-// is set, it returns a local engine. Otherwise it returns a Docker engine
+// NewEngineFromFlags creates an Engine from the flag configuration. If a binary
+// path is set, it returns a local engine. Otherwise it returns a Docker engine
 // using the resolved image reference.
-func (f *EngineFlags) NewEngine(log logging.Logger) Engine {
+func NewEngineFromFlags(f *EngineFlags, log logging.Logger) Engine {
 	if f.CrossplaneBinary != "" {
 		return &localRenderEngine{BinaryPath: f.CrossplaneBinary}
 	}
 
-	img := f.resolveImage()
-	return &dockerRenderEngine{image: img, log: log}
-}
+	img := f.CrossplaneImage
 
-func (f *EngineFlags) resolveImage() string {
-	if f.CrossplaneImage != "" {
-		return f.CrossplaneImage
+	if img == "" {
+		tag := f.CrossplaneVersion
+		if tag == "" {
+			tag = version.New().GetVersionString()
+		}
+		img = fmt.Sprintf("%s:%s", DefaultCrossplaneImage, tag)
 	}
-	tag := f.CrossplaneVersion
-	if tag == "" {
-		tag = version.New().GetVersionString()
-	}
-	return fmt.Sprintf("%s:%s", DefaultCrossplaneImage, tag)
+
+	return &dockerRenderEngine{image: img, log: log}
 }

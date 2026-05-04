@@ -60,6 +60,9 @@ type Cmd struct {
 	Timeout time.Duration `default:"1m" help:"How long to run before timing out."`
 
 	fs afero.Fs
+
+	// newEngine constructs the render Engine.
+	newEngine func(*render.EngineFlags, logging.Logger) render.Engine
 }
 
 // Help prints out the help for the alpha render op command.
@@ -157,6 +160,8 @@ Examples:
 // AfterApply implements kong.AfterApply.
 func (c *Cmd) AfterApply() error {
 	c.fs = afero.NewOsFs()
+	c.newEngine = render.NewEngineFromFlags
+
 	return nil
 }
 
@@ -227,7 +232,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 		}
 	}
 
-	engine := c.NewEngine(log)
+	engine := c.newEngine(&c.EngineFlags, log)
 
 	seedCtx := len(c.ContextValues) > 0 || len(c.ContextFiles) > 0
 	captureCtx := c.IncludeContext

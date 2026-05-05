@@ -1,0 +1,17 @@
+---
+apiVersion: nop.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: test-render
+spec:
+  crossplane:
+    resourceRefs: these are the resource refs
+---
+apiVersion: example.org/v1alpha1
+kind: ComposedResource
+metadata:
+  annotations:
+    crossplane.io/composition-resource-name: composed-foo
+  name: composed-foo
+spec:
+  coolField: composed!

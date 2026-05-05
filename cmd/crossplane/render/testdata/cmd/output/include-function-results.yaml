@@ -1,0 +1,14 @@
+---
+apiVersion: nop.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: test-render
+spec:
+  crossplane:
+    resourceRefs: these are the resource refs
+---
+apiVersion: render.crossplane.io/v1beta1
+kind: Result
+message: function says hi
+reason: Hello
+severity: Normal

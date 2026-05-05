@@ -1,0 +1,10 @@
+apiVersion: nop.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: test-render
+spec:
+  crossplane:
+    compositionSelector:
+      matchLabels:
+        env: prod
+  coolField: "I'm cool!"

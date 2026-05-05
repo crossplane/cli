@@ -1,0 +1,22 @@
+name: PR
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  checklist-completed:
+    permissions:
+      pull-requests: read  # for reading PR checklist
+    if: github.actor != 'crossplane-renovate[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: mheap/require-checklist-action@46d2ca1a0f90144bd081fd13a80b1dc581759365 # v2
+        with:
+          # The checklist must _exist_ and be filled out.
+          requireChecklist: true
+          # Only check the PR description, ignore checklists in comments.
+          skipComments: true

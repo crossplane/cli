@@ -1,0 +1,22 @@
+# This file controls automatic PR reviewer assignment. See the following docs:
+#
+# * https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+# * https://docs.github.com/en/organizations/organizing-members-into-teams/managing-code-review-settings-for-your-team
+#
+# The goal of this file is for most PRs to automatically and fairly have 1 to 2
+# maintainers set as PR reviewers. All maintainers have permission to approve
+# and merge PRs. PRs only need
+#
+# Most lines in this file will assign one subject matter expert and one random
+# maintainer. PRs only need to be approved by one of these people to be merged.
+#
+# Where possible, prefer explicitly specifying a maintainer who is a subject
+# matter expert for a particular part of the codebase rather than using the
+# @crossplane/crossplane-maintainers group.
+#
+# See also OWNERS.md for governance details
+
+# Fallback owners
+*                                   @crossplane/crossplane-maintainers
+
+# Specific owners may be added here as we determine areas of expertise/ownership.

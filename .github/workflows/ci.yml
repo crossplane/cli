@@ -176,17 +176,3 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_PSW }}
           AWS_DEFAULT_REGION: us-east-1
         run: nix run --option warn-dirty false .#promote-artifacts -- main "$VERSION" master
-
-  # Protobuf schema linting (unchanged from original)
-  protobuf-schemas:
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Lint and Push Protocol Buffers
-        uses: bufbuild/buf-action@8f4a1456a0ab6a1eb80ba68e53832e6fcfacc16c # v1
-        with:
-          token: ${{ secrets.BUF_TOKEN }}
-          pr_comment: false

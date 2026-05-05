@@ -21,7 +21,6 @@ import (
 	"fmt"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
-	"github.com/crossplane/crossplane-runtime/v2/pkg/version"
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
@@ -51,9 +50,9 @@ type Engine interface {
 // EngineFlags contains flags for configuring the render engine. It is embedded
 // by render command structs to provide shared engine configuration.
 type EngineFlags struct {
-	CrossplaneVersion string `help:"Version of the Crossplane image to use for rendering (e.g. v2.2.1). Defaults to the current CLI version." placeholder:"VERSION" xor:"crossplane-selector"`
-	CrossplaneImage   string `help:"Override the full Crossplane Docker image reference for rendering."                                       placeholder:"IMAGE"   xor:"crossplane-selector"`
-	CrossplaneBinary  string `help:"Path to a local crossplane binary to use instead of Docker."                                              placeholder:"PATH"    type:"existingfile"       xor:"crossplane-selector"`
+	CrossplaneVersion string `help:"Version of the Crossplane image to use for rendering (e.g. v2.3.0). Defaults to the latest stable version." placeholder:"VERSION" xor:"crossplane-selector"`
+	CrossplaneImage   string `help:"Override the full Crossplane Docker image reference for rendering."                                         placeholder:"IMAGE"   xor:"crossplane-selector"`
+	CrossplaneBinary  string `help:"Path to a local crossplane binary to use instead of Docker."                                                placeholder:"PATH"    type:"existingfile"       xor:"crossplane-selector"`
 }
 
 // NewEngineFromFlags creates an Engine from the flag configuration. If a binary
@@ -64,15 +63,17 @@ func NewEngineFromFlags(f *EngineFlags, log logging.Logger) Engine {
 		return &localRenderEngine{BinaryPath: f.CrossplaneBinary}
 	}
 
-	img := f.CrossplaneImage
+	return &dockerRenderEngine{image: crossplaneImageFromFlags(f), log: log}
+}
 
-	if img == "" {
-		tag := f.CrossplaneVersion
-		if tag == "" {
-			tag = version.New().GetVersionString()
-		}
-		img = fmt.Sprintf("%s:%s", DefaultCrossplaneImage, tag)
+func crossplaneImageFromFlags(f *EngineFlags) string {
+	if f.CrossplaneImage != "" {
+		return f.CrossplaneImage
 	}
 
-	return &dockerRenderEngine{image: img, log: log}
+	if f.CrossplaneVersion != "" {
+		return fmt.Sprintf("%s:%s", DefaultCrossplaneImage, f.CrossplaneVersion)
+	}
+
+	return DefaultCrossplaneImage + ":stable"
 }

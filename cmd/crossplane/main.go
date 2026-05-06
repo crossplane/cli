@@ -18,20 +18,29 @@ limitations under the License.
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"strings"
 
 	"github.com/alecthomas/kong"
+	"github.com/spf13/afero"
 	"github.com/willabides/kongplete"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/alpha"
-	"github.com/crossplane/cli/v2/cmd/crossplane/beta"
 	"github.com/crossplane/cli/v2/cmd/crossplane/completion"
-	"github.com/crossplane/cli/v2/cmd/crossplane/render"
+	"github.com/crossplane/cli/v2/cmd/crossplane/convert"
+	"github.com/crossplane/cli/v2/cmd/crossplane/render/op"
+	"github.com/crossplane/cli/v2/cmd/crossplane/render/xr"
+	"github.com/crossplane/cli/v2/cmd/crossplane/top"
+	"github.com/crossplane/cli/v2/cmd/crossplane/trace"
+	"github.com/crossplane/cli/v2/cmd/crossplane/validate"
 	"github.com/crossplane/cli/v2/cmd/crossplane/version"
 	"github.com/crossplane/cli/v2/cmd/crossplane/xpkg"
+	"github.com/crossplane/cli/v2/internal/config"
+	"github.com/crossplane/cli/v2/internal/maturity"
 )
 
 var _ = kong.Must(&cli{})
@@ -47,22 +56,32 @@ func (v verboseFlag) BeforeApply(ctx *kong.Context) error { //nolint:unparam // 
 	return nil
 }
 
+// renderCmd groups the render subcommands.
+//
+// TODO(adamwg): This should be cmd/crossplane/render.Cmd, but we need to move
+// the shared parts of render into internal/ and pkg/ first so that the xr and
+// op subcommand packages don't import cmd/crossplane/render.
+type renderCmd struct {
+	XR xr.Cmd `cmd:"" default:"withargs"          help:"Render a composite resource (XR)."`
+	Op op.Cmd `cmd:"" help:"Render an operation." maturity:"alpha"`
+}
+
 // The top-level crossplane CLI.
 type cli struct {
 	// Subcommands and flags will appear in the CLI help output in the same
 	// order they're specified here. Keep them in alphabetical order.
 
 	// Subcommands.
-	XPKG   xpkg.Cmd   `cmd:"" help:"Manage Crossplane packages."`
-	Render render.Cmd `cmd:"" help:"Render a composite resource (XR)."`
-
-	// The alpha and beta subcommands are intentionally in a separate block. We
-	// want them to appear after all other subcommands.
-	Alpha   alpha.Cmd   `cmd:"" help:"Alpha commands."`
-	Beta    beta.Cmd    `cmd:"" help:"Beta commands."`
-	Version version.Cmd `cmd:"" help:"Print the client and server version information for the current context."`
+	Convert  convert.Cmd  `cmd:"" help:"Convert a Crossplane resource to a newer version or kind."                maturity:"beta"`
+	Render   renderCmd    `cmd:"" help:"Render Crossplane resources locally using functions."`
+	Top      top.Cmd      `cmd:"" help:"Display resource (CPU/memory) usage by Crossplane related pods."          maturity:"beta"`
+	Trace    trace.Cmd    `cmd:"" help:"Trace a Crossplane resource for troubleshooting."                         maturity:"beta"`
+	Validate validate.Cmd `cmd:"" help:"Validate Crossplane resources."                                           maturity:"beta"`
+	Version  version.Cmd  `cmd:"" help:"Print the client and server version information for the current context."`
+	XPKG     xpkg.Cmd     `cmd:"" help:"Manage Crossplane packages."`
 
 	// Flags.
+	Config  string      `env:"CROSSPLANE_CONFIG"                  help:"Path to the crossplane CLI config file." placeholder:"PATH"`
 	Verbose verboseFlag `help:"Print verbose logging statements." name:"verbose"`
 
 	// Completion
@@ -71,6 +90,23 @@ type cli struct {
 
 func main() {
 	logger := logging.NewNopLogger()
+
+	// Apply maturity gating before Parse so --help reflects the user's config.
+	// We need the config path before Parse runs, so look for --config in argv
+	// ourselves rather than parsing twice.
+	flagVal, err := configFlag(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "crossplane: %v\n", err)
+		os.Exit(1)
+	}
+	cfgPath := config.ResolvePath(flagVal)
+
+	cfg, err := config.Load(afero.NewOsFs(), cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "crossplane: %v\n", err)
+		os.Exit(1)
+	}
+
 	parser := kong.Must(&cli{},
 		kong.Name("crossplane"),
 		kong.Description("A command line tool for interacting with Crossplane."),
@@ -88,9 +124,36 @@ func main() {
 		kongplete.WithPredictors(completion.Predictors()),
 	)
 
+	maturity.Apply(parser.Model, map[maturity.Level]bool{
+		maturity.LevelBeta:  cfg.Features.EnableBeta,
+		maturity.LevelAlpha: cfg.Features.EnableAlpha,
+	})
+
 	ctx, err := parser.Parse(os.Args[1:])
 	parser.FatalIfErrorf(err)
 
 	err = ctx.Run()
 	ctx.FatalIfErrorf(err)
+}
+
+// configFlag scans argv for the --config flag and returns its value or "" if
+// the config flag is not present.
+func configFlag(args []string) (string, error) {
+	for i, a := range args {
+		if !strings.HasPrefix(a, "--config") {
+			continue
+		}
+
+		if v := strings.TrimPrefix(a, "--config="); v != "" {
+			return v, nil
+		}
+
+		if i+1 < len(args) {
+			return args[i+1], nil
+		}
+
+		return "", errors.New("flag --config requires a value")
+	}
+
+	return "", nil
 }

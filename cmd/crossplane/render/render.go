@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package render implements helpers shared by the render subcommands
+// (xr and op).
 package render
 
 import (
@@ -214,4 +216,23 @@ func StopFunctionRuntimes(log logging.Logger, fa *FunctionAddresses) {
 	if err := fa.Stop(stopCtx); err != nil {
 		log.Info("Error stopping function runtimes", "error", err)
 	}
+}
+
+// OverrideFunctionAnnotations applies annotation overrides from flags to
+// functions.
+func OverrideFunctionAnnotations(fns []pkgv1.Function, annotations []string) error {
+	for i := range fns {
+		if fns[i].Annotations == nil {
+			fns[i].Annotations = make(map[string]string)
+		}
+		for _, annotation := range annotations {
+			parts := strings.SplitN(annotation, "=", 2)
+			if len(parts) != 2 {
+				return errors.Errorf("invalid function annotation format %q, expected key=value", annotation)
+			}
+			key, value := parts[0], parts[1]
+			fns[i].Annotations[key] = value // Flags override existing annotations
+		}
+	}
+	return nil
 }

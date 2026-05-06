@@ -14,13 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package render implements composition rendering using composition functions.
-package render
+// Package xr implements composite resource (XR) rendering.
+package xr
 
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"dario.cat/mergo"
@@ -37,14 +36,14 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
-	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
 )
 
-// Cmd arguments and flags for render subcommand.
+// Cmd arguments and flags for the `render xr` subcommand.
 type Cmd struct {
-	EngineFlags `prefix:""`
+	render.EngineFlags `prefix:""`
 
 	// Arguments.
 	CompositeResource string `arg:"" help:"A YAML file specifying the composite resource (XR) to render."                                        predictor:"yaml_file"              type:"existingfile"`
@@ -70,7 +69,7 @@ type Cmd struct {
 	fs afero.Fs
 
 	// newEngine constructs the render Engine.
-	newEngine func(*EngineFlags, logging.Logger) Engine
+	newEngine func(*render.EngineFlags, logging.Logger) render.Engine
 }
 
 // Help prints out the help for the render command.
@@ -172,19 +171,19 @@ Examples:
 // AfterApply implements kong.AfterApply.
 func (c *Cmd) AfterApply() error {
 	c.fs = afero.NewOsFs()
-	c.newEngine = NewEngineFromFlags
+	c.newEngine = render.NewEngineFromFlags
 
 	return nil
 }
 
 // Run render.
 func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit // Orchestration is inherently complex.
-	xr, err := LoadCompositeResource(c.fs, c.CompositeResource)
+	xr, err := render.LoadCompositeResource(c.fs, c.CompositeResource)
 	if err != nil {
 		return errors.Wrapf(err, "cannot load composite resource from %q", c.CompositeResource)
 	}
 
-	comp, err := LoadComposition(c.fs, c.Composition)
+	comp, err := render.LoadComposition(c.fs, c.Composition)
 	if err != nil {
 		return errors.Wrapf(err, "cannot load Composition from %q", c.Composition)
 	}
@@ -221,18 +220,18 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 		return errors.Errorf("render only supports Composition Function pipelines: Composition %q must use spec.mode: Pipeline", comp.GetName())
 	}
 
-	fns, err := LoadFunctions(c.fs, c.Functions)
+	fns, err := render.LoadFunctions(c.fs, c.Functions)
 	if err != nil {
 		return errors.Wrapf(err, "cannot load functions from %q", c.Functions)
 	}
 
 	// Apply global annotation overrides to each function
-	if err := OverrideFunctionAnnotations(fns, c.FunctionAnnotations); err != nil {
+	if err := render.OverrideFunctionAnnotations(fns, c.FunctionAnnotations); err != nil {
 		return errors.Wrap(err, "cannot apply function annotation overrides")
 	}
 
 	if c.XRD != "" {
-		xrd, err := LoadXRD(c.fs, c.XRD)
+		xrd, err := render.LoadXRD(c.fs, c.XRD)
 		if err != nil {
 			return errors.Wrapf(err, "cannot load XRD from %q", c.XRD)
 		}
@@ -242,14 +241,14 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 			return errors.Wrapf(err, "cannot derive composite CRD from XRD %q", xrd.GetName())
 		}
 
-		if err := DefaultValues(xr.UnstructuredContent(), xr.GetAPIVersion(), *crd); err != nil {
+		if err := render.DefaultValues(xr.UnstructuredContent(), xr.GetAPIVersion(), *crd); err != nil {
 			return errors.Wrapf(err, "cannot default values for XR %q", xr.GetName())
 		}
 	}
 
 	fcreds := []corev1.Secret{}
 	if c.FunctionCredentials != "" {
-		fcreds, err = LoadCredentials(c.fs, c.FunctionCredentials)
+		fcreds, err = render.LoadCredentials(c.fs, c.FunctionCredentials)
 		if err != nil {
 			return errors.Wrapf(err, "cannot load secrets from %q", c.FunctionCredentials)
 		}
@@ -257,7 +256,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 
 	ors := []composed.Unstructured{}
 	if c.ObservedResources != "" {
-		ors, err = LoadObservedResources(c.fs, c.ObservedResources)
+		ors, err = render.LoadObservedResources(c.fs, c.ObservedResources)
 		if err != nil {
 			return errors.Wrapf(err, "cannot load observed composed resources from %q", c.ObservedResources)
 		}
@@ -265,7 +264,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 
 	ers := []unstructured.Unstructured{}
 	if c.ExtraResources != "" {
-		ers, err = LoadRequiredResources(c.fs, c.ExtraResources)
+		ers, err = render.LoadRequiredResources(c.fs, c.ExtraResources)
 		if err != nil {
 			return errors.Wrapf(err, "cannot load extra resources from %q", c.ExtraResources)
 		}
@@ -273,7 +272,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 
 	rrs := []unstructured.Unstructured{}
 	if c.RequiredResources != "" {
-		rrs, err = LoadRequiredResources(c.fs, c.RequiredResources)
+		rrs, err = render.LoadRequiredResources(c.fs, c.RequiredResources)
 		if err != nil {
 			return errors.Wrapf(err, "cannot load required resources from %q", c.RequiredResources)
 		}
@@ -285,7 +284,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 	// Load required schemas
 	rsc := []spec3.OpenAPI{}
 	if c.RequiredSchemas != "" {
-		rsc, err = LoadRequiredSchemas(c.fs, c.RequiredSchemas)
+		rsc, err = render.LoadRequiredSchemas(c.fs, c.RequiredSchemas)
 		if err != nil {
 			return errors.Wrapf(err, "cannot load required schemas from %q", c.RequiredSchemas)
 		}
@@ -305,12 +304,12 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 			return err
 		}
 
-		raw, err := BuildContextData(c.fs, c.ContextFiles, c.ContextValues)
+		raw, err := render.BuildContextData(c.fs, c.ContextFiles, c.ContextValues)
 		if err != nil {
 			return errors.Wrap(err, "cannot build context data")
 		}
 
-		parsed, err := ParseContextData(raw)
+		parsed, err := render.ParseContextData(raw)
 		if err != nil {
 			return errors.Wrap(err, "cannot parse context data")
 		}
@@ -337,11 +336,11 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 	defer cleanup()
 
 	// Start function runtimes to get their addresses.
-	fnAddrs, err := StartFunctionRuntimes(ctx, log, fns)
+	fnAddrs, err := render.StartFunctionRuntimes(ctx, log, fns)
 	if err != nil {
 		return errors.Wrap(err, "cannot start function runtimes")
 	}
-	defer StopFunctionRuntimes(log, fnAddrs)
+	defer render.StopFunctionRuntimes(log, fnAddrs)
 
 	addrs := fnAddrs.Addresses()
 	if ctxHandle != nil {
@@ -349,7 +348,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 	}
 
 	// Build and execute the render request.
-	in := CompositionInputs{
+	in := render.CompositionInputs{
 		CompositeResource:   xr,
 		Composition:         comp,
 		FunctionAddrs:       addrs,
@@ -358,7 +357,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 		RequiredSchemas:     rsc,
 		FunctionCredentials: fcreds,
 	}
-	req, err := BuildCompositeRequest(in)
+	req, err := render.BuildCompositeRequest(in)
 	if err != nil {
 		return errors.Wrap(err, "cannot build render request")
 	}
@@ -373,7 +372,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 		return errors.New("render response does not contain a composite output")
 	}
 
-	out, err := ParseCompositeResponse(compositeOut)
+	out, err := render.ParseCompositeResponse(compositeOut)
 	if err != nil {
 		return errors.Wrap(err, "cannot parse render response")
 	}
@@ -409,7 +408,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 	for i := range out.ComposedResources {
 		_, _ = fmt.Fprintln(k.Stdout, "---")
 		if err := s.Encode(&out.ComposedResources[i], k.Stdout); err != nil {
-			return errors.Wrapf(err, "cannot marshal composed resource %q to YAML", out.ComposedResources[i].GetAnnotations()[AnnotationKeyCompositionResourceName])
+			return errors.Wrapf(err, "cannot marshal composed resource %q to YAML", out.ComposedResources[i].GetAnnotations()[render.AnnotationKeyCompositionResourceName])
 		}
 	}
 
@@ -429,24 +428,5 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 		}
 	}
 
-	return nil
-}
-
-// OverrideFunctionAnnotations applies annotation overrides from flags to
-// functions.
-func OverrideFunctionAnnotations(fns []pkgv1.Function, annotations []string) error {
-	for i := range fns {
-		if fns[i].Annotations == nil {
-			fns[i].Annotations = make(map[string]string)
-		}
-		for _, annotation := range annotations {
-			parts := strings.SplitN(annotation, "=", 2)
-			if len(parts) != 2 {
-				return errors.Errorf("invalid function annotation format %q, expected key=value", annotation)
-			}
-			key, value := parts[0], parts[1]
-			fns[i].Annotations[key] = value // Flags override existing annotations
-		}
-	}
 	return nil
 }

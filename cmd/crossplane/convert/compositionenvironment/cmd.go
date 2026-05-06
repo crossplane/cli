@@ -30,7 +30,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
-	commonIO "github.com/crossplane/cli/v2/cmd/crossplane/beta/convert/io"
+	commonIO "github.com/crossplane/cli/v2/cmd/crossplane/convert/io"
 )
 
 // Cmd arguments and flags for converting a Composition to use function-environment-configs.
@@ -59,13 +59,13 @@ Examples:
 
   # Convert an existing Composition (Pipeline mode) leveraging native
   # Composition Environment to use function-environment-configs.
-  crossplane beta convert composition-environment composition.yaml -o composition-environment.yaml
+  crossplane convert composition-environment composition.yaml -o composition-environment.yaml
 
   # Use a different functionRef and output to stdout.
-  crossplane beta convert composition-environment composition.yaml --function-environment-configs-ref local-function-environment-configs
+  crossplane convert composition-environment composition.yaml --function-environment-configs-ref local-function-environment-configs
 
   # Stdin to stdout.
-  cat composition.yaml | ./crossplane beta convert composition-environment
+  cat composition.yaml | ./crossplane convert composition-environment
 
 `
 }

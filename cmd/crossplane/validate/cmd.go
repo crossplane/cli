@@ -68,24 +68,24 @@ any Crossplane instance or control plane to be running or configured.
 Examples:
 
   # Validate all resources in the resources.yaml file against the extensions in the extensions.yaml file
-  crossplane beta validate extensions.yaml resources.yaml
+  crossplane validate extensions.yaml resources.yaml
 
   # Validate all resources in the resourceDir folder against the extensions in the crossplane.yaml file and extensionsDir folder
-  crossplane beta validate crossplane.yaml,extensionsDir/ resourceDir/
+  crossplane validate crossplane.yaml,extensionsDir/ resourceDir/
 
   # Validate all resources in the resources.yaml file against the extensions in the extensions.yaml file using a specific Crossplane image version
-  crossplane beta validate extensions.yaml resources.yaml --crossplane-image=xpkg.crossplane.io/crossplane/crossplane:v1.20.0
+  crossplane validate extensions.yaml resources.yaml --crossplane-image=xpkg.crossplane.io/crossplane/crossplane:v1.20.0
 
   # Validate all resources in the resourceDir folder against the extensions in the extensionsDir folder and skip
   # success logs
-  crossplane beta validate extensionsDir/ resourceDir/ --skip-success-results
+  crossplane validate extensionsDir/ resourceDir/ --skip-success-results
 
   # Validate the output of the render command against the extensions in the extensionsDir folder
-  crossplane render xr.yaml composition.yaml func.yaml --include-full-xr | crossplane beta validate extensionsDir/ -
+  crossplane render xr.yaml composition.yaml func.yaml --include-full-xr | crossplane validate extensionsDir/ -
 
   # Validate all resources in the resourceDir folder against the extensions in the extensionsDir folder using provided
   # cache directory and clean the cache directory before downloading schemas
-  crossplane beta validate extensionsDir/ resourceDir/ --cache-dir .cache --clean-cache
+  crossplane validate extensionsDir/ resourceDir/ --cache-dir .cache --clean-cache
 `
 }
 

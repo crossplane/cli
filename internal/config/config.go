@@ -101,3 +101,27 @@ func defaultPath() string {
 	}
 	return filepath.Join(home, ".config", "crossplane", "config.yaml")
 }
+
+// Save writes cfg as YAML to path. It creates parent directories with mode
+// 0o755 and writes the file with mode 0o600. An empty path is an error.
+func Save(fs afero.Fs, path string, cfg *Config) error {
+	if path == "" {
+		return errors.New("cannot save config: empty path")
+	}
+	if cfg.Version == 0 {
+		cfg.Version = version1
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return errors.Wrap(err, "cannot marshal config")
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := fs.MkdirAll(dir, 0o755); err != nil {
+			return errors.Wrapf(err, "cannot create config directory %s", dir)
+		}
+	}
+	if err := afero.WriteFile(fs, path, data, 0o600); err != nil {
+		return errors.Wrapf(err, "cannot write config file %s", path)
+	}
+	return nil
+}

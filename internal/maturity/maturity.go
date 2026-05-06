@@ -68,6 +68,21 @@ func Apply(app *kong.Application, enabled map[Level]bool) {
 		}
 		return next(nil)
 	})
+
+	var detailStr string
+
+	switch {
+	case enabled[LevelBeta] && enabled[LevelAlpha]:
+		detailStr = "Alpha and beta features are enabled."
+	case enabled[LevelBeta]:
+		detailStr = "Beta features are enabled. To enable alpha features run \"crossplane config set features.enableAlpha true\"."
+	case enabled[LevelAlpha]:
+		detailStr = "Alpha features are enabled. To enable beta features run \"crossplane config set features.enableBeta true\"."
+	default:
+		detailStr = "Alpha and beta features are disabled. To enable them use \"crossplane config set\"."
+	}
+
+	app.Detail += "\n\n" + detailStr
 }
 
 // effectiveLevel returns the level configured for the node or its nearest

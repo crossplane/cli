@@ -30,14 +30,13 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/cluster"
 	"github.com/crossplane/cli/v2/cmd/crossplane/completion"
+	"github.com/crossplane/cli/v2/cmd/crossplane/composition"
 	configcmd "github.com/crossplane/cli/v2/cmd/crossplane/config"
-	"github.com/crossplane/cli/v2/cmd/crossplane/convert"
-	"github.com/crossplane/cli/v2/cmd/crossplane/render/op"
-	"github.com/crossplane/cli/v2/cmd/crossplane/render/xr"
-	"github.com/crossplane/cli/v2/cmd/crossplane/top"
-	"github.com/crossplane/cli/v2/cmd/crossplane/trace"
-	"github.com/crossplane/cli/v2/cmd/crossplane/validate"
+	"github.com/crossplane/cli/v2/cmd/crossplane/operation"
+	renderxr "github.com/crossplane/cli/v2/cmd/crossplane/render/xr"
+	"github.com/crossplane/cli/v2/cmd/crossplane/resource"
 	"github.com/crossplane/cli/v2/cmd/crossplane/version"
 	"github.com/crossplane/cli/v2/cmd/crossplane/xpkg"
 	"github.com/crossplane/cli/v2/internal/config"
@@ -57,30 +56,22 @@ func (v verboseFlag) BeforeApply(ctx *kong.Context) error { //nolint:unparam // 
 	return nil
 }
 
-// renderCmd groups the render subcommands.
-//
-// TODO(adamwg): This should be cmd/crossplane/render.Cmd, but we need to move
-// the shared parts of render into internal/ and pkg/ first so that the xr and
-// op subcommand packages don't import cmd/crossplane/render.
-type renderCmd struct {
-	XR xr.Cmd `cmd:"" default:"withargs"          help:"Render a composite resource (XR)."`
-	Op op.Cmd `cmd:"" help:"Render an operation." maturity:"alpha"`
-}
-
 // The top-level crossplane CLI.
 type cli struct {
 	// Subcommands and flags will appear in the CLI help output in the same
 	// order they're specified here. Keep them in alphabetical order.
 
 	// Subcommands.
-	Config   configcmd.Cmd `cmd:"" help:"View and modify the crossplane CLI config file."`
-	Convert  convert.Cmd   `cmd:"" help:"Convert a Crossplane resource to a newer version or kind."                maturity:"beta"`
-	Render   renderCmd     `cmd:"" help:"Render Crossplane resources locally using functions."`
-	Top      top.Cmd       `cmd:"" help:"Display resource (CPU/memory) usage by Crossplane related pods."          maturity:"beta"`
-	Trace    trace.Cmd     `cmd:"" help:"Trace a Crossplane resource for troubleshooting."                         maturity:"beta"`
-	Validate validate.Cmd  `cmd:"" help:"Validate Crossplane resources."                                           maturity:"beta"`
-	Version  version.Cmd   `cmd:"" help:"Print the client and server version information for the current context."`
-	XPKG     xpkg.Cmd      `cmd:"" help:"Manage Crossplane packages."`
+	Cluster     cluster.Cmd     `cmd:"" help:"Inspect a Crossplane cluster."                                            maturity:"beta"`
+	Composition composition.Cmd `cmd:"" help:"Work with Crossplane Compositions."`
+	Config      configcmd.Cmd   `cmd:"" help:"View and modify the crossplane CLI config file."`
+	Operation   operation.Cmd   `cmd:"" help:"Work with Crossplane Operations."                                         maturity:"alpha"`
+	Resource    resource.Cmd    `cmd:"" help:"Work with Crossplane resources."                                          maturity:"beta"`
+	Version     version.Cmd     `cmd:"" help:"Print the client and server version information for the current context."`
+	XPKG        xpkg.Cmd        `cmd:"" help:"Manage Crossplane packages."`
+
+	// Hidden top-level alias for render, since it's GA but has moved.
+	Render renderxr.Cmd `cmd:"" help:"Render Crossplane compositions locally using functions." hidden:""`
 
 	// Flags.
 	ConfigPath string      `env:"CROSSPLANE_CONFIG"                  help:"Path to the crossplane CLI config file." name:"config" placeholder:"PATH"`

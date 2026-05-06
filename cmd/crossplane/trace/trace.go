@@ -88,29 +88,29 @@ mykind.v1alpha1.example.org.
 
 Examples:
   # Trace a MyKind resource (mykinds.example.org/v1alpha1) named 'my-res' in the namespace 'my-ns'
-  crossplane trace mykind my-res -n my-ns
+  crossplane resource trace mykind my-res -n my-ns
 
   # Trace all MyKind resources (mykinds.example.org/v1alpha1) in the namespace 'my-ns'
-  crossplane trace mykind -n my-ns
+  crossplane resource trace mykind -n my-ns
 
   # Output wide format, showing full errors and condition messages, and other useful info
   # depending on the target type, e.g. composed resources names for composite resources or image used for packages
-  crossplane trace mykind my-res -n my-ns -o wide
+  crossplane resource trace mykind my-res -n my-ns -o wide
 
   # Show connection secrets in the output
-  crossplane trace mykind my-res -n my-ns --show-connection-secrets
+  crossplane resource trace mykind my-res -n my-ns --show-connection-secrets
 
   # Output a graph in dot format and pipe to dot to generate a png
-  crossplane trace mykind my-res -n my-ns -o dot | dot -Tpng -o output.png
+  crossplane resource trace mykind my-res -n my-ns -o dot | dot -Tpng -o output.png
 
   # Output all retrieved resources to json and pipe to jq to have it coloured
-  crossplane trace mykind my-res -n my-ns -o json | jq
+  crossplane resource trace mykind my-res -n my-ns -o json | jq
 
   # Output debug logs to stderr while redirecting a dot formatted graph to dot
-  crossplane trace mykind my-res -n my-ns -o dot --verbose | dot -Tpng -o output.png
+  crossplane resource trace mykind my-res -n my-ns -o dot --verbose | dot -Tpng -o output.png
 
   # Watch a resource continuously until it is deleted
-  crossplane trace mykind my-res -n my-ns --watch
+  crossplane resource trace mykind my-res -n my-ns --watch
 `
 }
 

@@ -31,6 +31,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/completion"
+	configcmd "github.com/crossplane/cli/v2/cmd/crossplane/config"
 	"github.com/crossplane/cli/v2/cmd/crossplane/convert"
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/op"
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/xr"
@@ -72,17 +73,18 @@ type cli struct {
 	// order they're specified here. Keep them in alphabetical order.
 
 	// Subcommands.
-	Convert  convert.Cmd  `cmd:"" help:"Convert a Crossplane resource to a newer version or kind."                maturity:"beta"`
-	Render   renderCmd    `cmd:"" help:"Render Crossplane resources locally using functions."`
-	Top      top.Cmd      `cmd:"" help:"Display resource (CPU/memory) usage by Crossplane related pods."          maturity:"beta"`
-	Trace    trace.Cmd    `cmd:"" help:"Trace a Crossplane resource for troubleshooting."                         maturity:"beta"`
-	Validate validate.Cmd `cmd:"" help:"Validate Crossplane resources."                                           maturity:"beta"`
-	Version  version.Cmd  `cmd:"" help:"Print the client and server version information for the current context."`
-	XPKG     xpkg.Cmd     `cmd:"" help:"Manage Crossplane packages."`
+	Config   configcmd.Cmd `cmd:"" help:"View and modify the crossplane CLI config file."`
+	Convert  convert.Cmd   `cmd:"" help:"Convert a Crossplane resource to a newer version or kind."                maturity:"beta"`
+	Render   renderCmd     `cmd:"" help:"Render Crossplane resources locally using functions."`
+	Top      top.Cmd       `cmd:"" help:"Display resource (CPU/memory) usage by Crossplane related pods."          maturity:"beta"`
+	Trace    trace.Cmd     `cmd:"" help:"Trace a Crossplane resource for troubleshooting."                         maturity:"beta"`
+	Validate validate.Cmd  `cmd:"" help:"Validate Crossplane resources."                                           maturity:"beta"`
+	Version  version.Cmd   `cmd:"" help:"Print the client and server version information for the current context."`
+	XPKG     xpkg.Cmd      `cmd:"" help:"Manage Crossplane packages."`
 
 	// Flags.
-	Config  string      `env:"CROSSPLANE_CONFIG"                  help:"Path to the crossplane CLI config file." placeholder:"PATH"`
-	Verbose verboseFlag `help:"Print verbose logging statements." name:"verbose"`
+	ConfigPath string      `env:"CROSSPLANE_CONFIG"                  help:"Path to the crossplane CLI config file." name:"config" placeholder:"PATH"`
+	Verbose    verboseFlag `help:"Print verbose logging statements." name:"verbose"`
 
 	// Completion
 	Completions kongplete.InstallCompletions `cmd:"" help:"Get shell (bash/zsh/fish) completions. You can source this command to get completions for the login shell. Example: 'source <(crossplane completions)'"`
@@ -113,6 +115,7 @@ func main() {
 		// Binding a variable to kong context makes it available to all commands
 		// at runtime.
 		kong.BindTo(logger, (*logging.Logger)(nil)),
+		kong.BindTo(configcmd.ConfigPath(cfgPath), (*configcmd.ConfigPath)(nil)),
 		kong.ConfigureHelp(kong.HelpOptions{
 			FlagsLast:      true,
 			Compact:        true,

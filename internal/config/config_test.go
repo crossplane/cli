@@ -17,6 +17,7 @@ limitations under the License.
 package config
 
 import (
+	"os"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -129,6 +130,123 @@ func TestLoad(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.want.cfg, got); diff != "" {
 				t.Errorf("\n%s\nLoad(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestSave(t *testing.T) {
+	type args struct {
+		fs   afero.Fs
+		path string
+		cfg  *Config
+	}
+
+	type want struct {
+		// loaded is the Config that should be returned when Load reads the file
+		// back. nil means we don't check (e.g. error cases).
+		loaded *Config
+		// mode is the expected file mode after the save. 0 means we don't check.
+		mode os.FileMode
+		err  error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"RoundTrip": {
+			reason: "Saving a valid Config should produce a file that Load reads back as the same Config.",
+			args: args{
+				fs:   afero.NewMemMapFs(),
+				path: "/c.yaml",
+				cfg:  &Config{Version: 1, Features: Features{EnableBeta: true}},
+			},
+			want: want{
+				loaded: &Config{Version: 1, Features: Features{EnableBeta: true}},
+				mode:   0o600,
+			},
+		},
+		"CreatesParentDir": {
+			reason: "Save should create missing parent directories.",
+			args: args{
+				fs:   afero.NewMemMapFs(),
+				path: "/a/b/c/config.yaml",
+				cfg:  &Config{Version: 1},
+			},
+			want: want{
+				loaded: &Config{Version: 1},
+				mode:   0o600,
+			},
+		},
+		"OverwritesExisting": {
+			reason: "Save should overwrite an existing file.",
+			args: args{
+				fs: func() afero.Fs {
+					fs := afero.NewMemMapFs()
+					_ = afero.WriteFile(fs, "/c.yaml", []byte("version: 1\nfeatures:\n  enableAlpha: true\n"), 0o600)
+					return fs
+				}(),
+				path: "/c.yaml",
+				cfg:  &Config{Version: 1, Features: Features{EnableBeta: true}},
+			},
+			want: want{
+				loaded: &Config{Version: 1, Features: Features{EnableBeta: true}},
+				mode:   0o600,
+			},
+		},
+		"DefaultsVersion": {
+			reason: "Saving a Config with Version 0 should default the on-disk version to 1.",
+			args: args{
+				fs:   afero.NewMemMapFs(),
+				path: "/c.yaml",
+				cfg:  &Config{},
+			},
+			want: want{
+				loaded: &Config{Version: 1},
+				mode:   0o600,
+			},
+		},
+		"EmptyPath": {
+			reason: "Saving to an empty path should return an error.",
+			args: args{
+				fs:   afero.NewMemMapFs(),
+				path: "",
+				cfg:  &Config{Version: 1},
+			},
+			want: want{
+				err: cmpopts.AnyError,
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := Save(tc.args.fs, tc.args.path, tc.args.cfg)
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nSave(...): -want err, +got err:\n%s", tc.reason, diff)
+			}
+			if tc.want.err != nil {
+				return
+			}
+
+			got, err := Load(tc.args.fs, tc.args.path)
+			if err != nil {
+				t.Fatalf("Load after Save returned error: %v", err)
+			}
+			if diff := cmp.Diff(tc.want.loaded, got); diff != "" {
+				t.Errorf("\n%s\nLoad after Save: -want, +got:\n%s", tc.reason, diff)
+			}
+
+			if tc.want.mode != 0 {
+				info, err := tc.args.fs.Stat(tc.args.path)
+				if err != nil {
+					t.Fatalf("Stat after Save returned error: %v", err)
+				}
+				if info.Mode().Perm() != tc.want.mode {
+					t.Errorf("file mode: want %o, got %o", tc.want.mode, info.Mode().Perm())
+				}
 			}
 		})
 	}

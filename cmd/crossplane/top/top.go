@@ -64,13 +64,13 @@ Similar to kubectl top pods, it requires Metrics Server to be correctly configur
 
 Examples:
   # Show resources utilization for all Crossplane pods in the default 'crossplane-system' namespace in a tabular format.
-  crossplane top
+  crossplane cluster top
 
   # Show resources utilization for all Crossplane pods in a specified namespace in a tabular format.
-  crossplane top -n <namespace>
+  crossplane cluster top -n <namespace>
 
   # Add summary of resources utilization for all Crossplane pods in the default 'crossplane-system' on top of the results.
-  crossplane top -s
+  crossplane cluster top -s
 `
 }
 

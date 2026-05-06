@@ -59,13 +59,13 @@ Examples:
 
   # Convert an existing Composition (Pipeline mode) leveraging native
   # Composition Environment to use function-environment-configs.
-  crossplane convert composition-environment composition.yaml -o composition-environment.yaml
+  crossplane composition convert composition-environment composition.yaml -o composition-environment.yaml
 
   # Use a different functionRef and output to stdout.
-  crossplane convert composition-environment composition.yaml --function-environment-configs-ref local-function-environment-configs
+  crossplane composition convert composition-environment composition.yaml --function-environment-configs-ref local-function-environment-configs
 
   # Stdin to stdout.
-  cat composition.yaml | ./crossplane convert composition-environment
+  cat composition.yaml | ./crossplane composition convert composition-environment
 
 `
 }

@@ -126,43 +126,43 @@ to the Docker daemon.
 Examples:
 
   # Simulate creating a new XR.
-  crossplane render xr.yaml composition.yaml functions.yaml
+  crossplane composition render xr.yaml composition.yaml functions.yaml
 
   # Simulate updating an XR that already exists.
-  crossplane render xr.yaml composition.yaml functions.yaml \
+  crossplane composition render xr.yaml composition.yaml functions.yaml \
     --observed-resources=existing-observed-resources.yaml
 
   # Pin the Crossplane version used for rendering.
-  crossplane render xr.yaml composition.yaml functions.yaml \
+  crossplane composition render xr.yaml composition.yaml functions.yaml \
     --crossplane-version=v2.3.0
 
   # Use a local crossplane binary instead of Docker.
-  crossplane render xr.yaml composition.yaml functions.yaml \
+  crossplane composition render xr.yaml composition.yaml functions.yaml \
     --crossplane-binary=/usr/local/bin/crossplane
 
   # Pass context values to the Function pipeline.
-  crossplane render xr.yaml composition.yaml functions.yaml \
+  crossplane composition render xr.yaml composition.yaml functions.yaml \
     --context-values=apiextensions.crossplane.io/environment='{"key": "value"}'
 
   # Pass required resources Functions in the pipeline can request.
-  crossplane render xr.yaml composition.yaml functions.yaml \
+  crossplane composition render xr.yaml composition.yaml functions.yaml \
 	--required-resources=required-resources.yaml
 
   # Pass OpenAPI schemas for Functions that need them.
-  crossplane render xr.yaml composition.yaml functions.yaml \
+  crossplane composition render xr.yaml composition.yaml functions.yaml \
 	--required-schemas=schemas/
 
   # Pass credentials to Functions in the pipeline that need them.
-  crossplane render xr.yaml composition.yaml functions.yaml \
+  crossplane composition render xr.yaml composition.yaml functions.yaml \
 	--function-credentials=credentials.yaml
 
   # Override function annotations for a remote Docker daemon.
-  DOCKER_HOST=tcp://192.168.1.100:2376 crossplane render xr.yaml composition.yaml functions.yaml \
+  DOCKER_HOST=tcp://192.168.1.100:2376 crossplane composition render xr.yaml composition.yaml functions.yaml \
 	-a render.crossplane.io/runtime-docker-publish-address=0.0.0.0 \
 	-a render.crossplane.io/runtime-docker-target=192.168.1.100
 
   # Force all functions to use development runtime.
-  crossplane render xr.yaml composition.yaml functions.yaml \
+  crossplane composition render xr.yaml composition.yaml functions.yaml \
 	-a render.crossplane.io/runtime=Development \
 	-a render.crossplane.io/runtime-development-target=localhost:9444
 `

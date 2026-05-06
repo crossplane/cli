@@ -38,6 +38,6 @@ Currently supported conversions:
 Examples:
   # Convert an existing Composition to use function-environment-configs instead of native Composition Environment,
   # requires the composition to be in Pipeline mode already.
-  crossplane convert composition-environment composition.yaml -o composition-environment.yaml
+  crossplane composition convert composition-environment composition.yaml -o composition-environment.yaml
 `
 }

@@ -110,49 +110,49 @@ to the Docker daemon.
 Examples:
 
   # Render an Operation.
-  crossplane render op operation.yaml functions.yaml
+  crossplane operation render operation.yaml functions.yaml
 
   # Pin the Crossplane version used for rendering.
-  crossplane render op operation.yaml functions.yaml \
+  crossplane operation render operation.yaml functions.yaml \
     --crossplane-version=v2.2.1
 
   # Use a local crossplane binary instead of Docker.
-  crossplane render op operation.yaml functions.yaml \
+  crossplane operation render operation.yaml functions.yaml \
     --crossplane-binary=/usr/local/bin/crossplane
 
   # Pass context values to the function pipeline.
-  crossplane render op operation.yaml functions.yaml \
+  crossplane operation render operation.yaml functions.yaml \
     --context-values=apiextensions.crossplane.io/environment='{"key": "value"}'
 
   # Pass required resources functions can request.
-  crossplane render op operation.yaml functions.yaml \
+  crossplane operation render operation.yaml functions.yaml \
 	--required-resources=required-resources.yaml
 
   # Pass OpenAPI schemas for functions that need them.
-  crossplane render op operation.yaml functions.yaml \
+  crossplane operation render operation.yaml functions.yaml \
 	--required-schemas=schemas/
 
   # Render a WatchOperation with a watched resource.
-  crossplane render op watchoperation.yaml functions.yaml \
+  crossplane operation render watchoperation.yaml functions.yaml \
 	--watched-resource=watched-configmap.yaml
 
   # Pass credentials to functions that need them.
-  crossplane render op operation.yaml functions.yaml \
+  crossplane operation render operation.yaml functions.yaml \
 	--function-credentials=credentials.yaml
 
   # Include function results and context in output.
-  crossplane render op operation.yaml functions.yaml -r -c
+  crossplane operation render operation.yaml functions.yaml -r -c
 
   # Include the full Operation with original spec and metadata.
-  crossplane render op operation.yaml functions.yaml -o
+  crossplane operation render operation.yaml functions.yaml -o
 
   # Override function annotations for remote Docker daemon.
-  crossplane render op operation.yaml functions.yaml \
+  crossplane operation render operation.yaml functions.yaml \
 	-a render.crossplane.io/runtime-docker-publish-address=0.0.0.0 \
 	-a render.crossplane.io/runtime-docker-target=192.168.1.100
 
   # Use development runtime with custom target.
-  crossplane render op operation.yaml functions.yaml \
+  crossplane operation render operation.yaml functions.yaml \
 	-a render.crossplane.io/runtime=Development \
 	-a render.crossplane.io/runtime-development-target=localhost:9444
 `

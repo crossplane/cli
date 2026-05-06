@@ -68,7 +68,7 @@ type cli struct {
 	Operation   operation.Cmd   `cmd:"" help:"Work with Crossplane Operations."                                         maturity:"alpha"`
 	Resource    resource.Cmd    `cmd:"" help:"Work with Crossplane resources."                                          maturity:"beta"`
 	Version     version.Cmd     `cmd:"" help:"Print the client and server version information for the current context."`
-	XPKG        xpkg.Cmd        `cmd:"" help:"Manage Crossplane packages."`
+	XPKG        xpkg.Cmd        `cmd:"" help:"Work with Crossplane packages."`
 
 	// Hidden top-level alias for render, since it's GA but has moved.
 	Render renderxr.Cmd `cmd:"" help:"Render Crossplane compositions locally using functions." hidden:""`
@@ -108,9 +108,10 @@ func main() {
 		kong.BindTo(logger, (*logging.Logger)(nil)),
 		kong.BindTo(configcmd.ConfigPath(cfgPath), (*configcmd.ConfigPath)(nil)),
 		kong.ConfigureHelp(kong.HelpOptions{
-			FlagsLast:      true,
-			Compact:        true,
-			WrapUpperBound: 80,
+			FlagsLast:           true,
+			Compact:             true,
+			WrapUpperBound:      80,
+			NoExpandSubcommands: true,
 		}),
 		kong.UsageOnError())
 

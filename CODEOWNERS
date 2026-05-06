@@ -17,6 +17,6 @@
 # See also OWNERS.md for governance details
 
 # Fallback owners
-*                                   @crossplane/crossplane-maintainers
+*                                   @crossplane/crossplane-maintainers @jcogilvie @tampakrap
 
 # Specific owners may be added here as we determine areas of expertise/ownership.

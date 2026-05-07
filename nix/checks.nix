@@ -20,7 +20,7 @@
       src = self;
       pwd = self;
       modules = ../gomod2nix.toml;
-      go = pkgs.go-unstable;
+      go = pkgs.unstable.go_1_26;
 
       CGO_ENABLED = "0";
 
@@ -48,11 +48,11 @@
       src = self;
       pwd = self;
       modules = ../gomod2nix.toml;
-      go = pkgs.go-unstable;
+      go = pkgs.unstable.go_1_26;
 
       CGO_ENABLED = "0";
 
-      nativeBuildInputs = [ pkgs.golangci-lint ];
+      nativeBuildInputs = [ pkgs.unstable.golangci-lint ];
 
       dontBuild = true;
 
@@ -79,7 +79,7 @@
       src = self;
       pwd = self;
       modules = ../gomod2nix.toml;
-      go = pkgs.go-unstable;
+      go = pkgs.unstable.go_1_26;
 
       CGO_ENABLED = "0";
 

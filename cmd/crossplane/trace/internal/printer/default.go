@@ -238,11 +238,11 @@ func (p *DefaultPrinter) printResourceTree(tw *tabwriter.Writer, root *resource.
 			childPrefix += "│  "
 		}
 
-		name.WriteString(fmt.Sprintf("%s/%s", item.resource.Unstructured.GetKind(), item.resource.Unstructured.GetName()))
+		fmt.Fprintf(&name, "%s/%s", item.resource.Unstructured.GetKind(), item.resource.Unstructured.GetName())
 
 		// Append the namespace if it's not empty
 		if item.resource.Unstructured.GetNamespace() != "" {
-			name.WriteString(fmt.Sprintf(" (%s)", item.resource.Unstructured.GetNamespace()))
+			fmt.Fprintf(&name, " (%s)", item.resource.Unstructured.GetNamespace())
 		}
 
 		var row fmt.Stringer

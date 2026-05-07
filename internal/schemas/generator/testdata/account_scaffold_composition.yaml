@@ -1,0 +1,58 @@
+
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xaccountscaffolds.platform.acme.co
+spec:
+  compositeTypeRef:
+    apiVersion: platform.acme.co/v1alpha1
+    kind: XAccountScaffold
+  mode: Pipeline
+  pipeline:
+    - step: compose
+      functionRef:
+        name: crossplane-contrib-function-kcl
+      input:
+        apiVersion: krm.kcl.dev/v1alpha1
+        kind: KCLRun
+        metadata:
+          name: compose-account-scaffold
+        spec:
+          target: Resources
+          params:
+            name: "input-instance"
+          source: |
+            oxr = option("params").oxr
+            items = [{
+              apiVersion: "platform.acme.co/v1alpha1"
+              kind: "XServiceAccount"
+              metadata.name = "{}-sa".format(oxr.metadata.name)
+              spec.parameters = {
+                displayName: oxr.spec.parameters.name
+              }
+            }, {
+              apiVersion: "platform.acme.co/v1alpha1"
+              kind: "XNetwork"
+              metadata.name = "{}-net".format(oxr.metadata.name)
+              spec.parameters = {
+                autoCreateSubnetworks: True
+                routingMode: "GLOBAL"
+              }
+            }, {
+              apiVersion: "platform.acme.co/v1alpha1"
+              kind: "XSubnetwork"
+              metadata.name = "{}-subnet".format(oxr.metadata.name)
+              spec.parameters = {
+                ipCidrRange: "10.2.0.0/16"
+                networkRef.name: "{}-net".format(oxr.metadata.name)
+                region: "us-central1"
+                secondaryIpRange = [{
+                  ipCidrRange: "192.168.10.0/24"
+                  rangeName: "test-secondary-range-update1"
+                }]
+              }
+            }]
+
+    - step: automatically-detect-ready-composed-resources
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

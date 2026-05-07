@@ -1,0 +1,26 @@
+{{ $xr := getCompositeResource . }}
+
+apiVersion: nop.crossplane.io/v1alpha1
+kind: NopResource
+metadata:
+  annotations:
+    {{ setResourceNameAnnotation "resource1" }}
+  spec:
+    forProvider:
+      conditionAfter:
+        {{ if $xr.spec.parameters.networkRef.name }}
+        conditionStatus: "True"
+        conditionType: "Ready"
+        time: "5s"
+        {{ else }}
+        conditionStatus: "False"
+        conditionType: "Ready"
+        conditionReason: "Network reference is missing"
+        time: "0s"
+        {{ end }}
+      fields:
+        initialNodeCount: {{ $xr.spec.parameters.initialNodeCount }}
+        networkRef: {{ $xr.spec.parameters.networkRef }}
+        subnetworkRef: {{ $xr.spec.parameters.subnetworkRef }}
+        project: {{ $xr.spec.parameters.project }}
+        location: {{ $xr.spec.parameters.location }}

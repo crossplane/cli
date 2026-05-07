@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/kong"
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/afero"
 	"github.com/willabides/kongplete"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -34,13 +35,18 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/completion"
 	"github.com/crossplane/cli/v2/cmd/crossplane/composition"
 	configcmd "github.com/crossplane/cli/v2/cmd/crossplane/config"
+	"github.com/crossplane/cli/v2/cmd/crossplane/dependency"
+	"github.com/crossplane/cli/v2/cmd/crossplane/function"
 	"github.com/crossplane/cli/v2/cmd/crossplane/operation"
+	"github.com/crossplane/cli/v2/cmd/crossplane/project"
 	renderxr "github.com/crossplane/cli/v2/cmd/crossplane/render/xr"
 	"github.com/crossplane/cli/v2/cmd/crossplane/resource"
 	"github.com/crossplane/cli/v2/cmd/crossplane/version"
 	"github.com/crossplane/cli/v2/cmd/crossplane/xpkg"
+	"github.com/crossplane/cli/v2/cmd/crossplane/xrd"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/maturity"
+	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
 var _ = kong.Must(&cli{})
@@ -65,10 +71,14 @@ type cli struct {
 	Cluster     cluster.Cmd     `cmd:"" help:"Inspect a Crossplane cluster."                                            maturity:"beta"`
 	Composition composition.Cmd `cmd:"" help:"Work with Crossplane Compositions."`
 	Config      configcmd.Cmd   `cmd:"" help:"View and modify the crossplane CLI config file."`
+	Dependency  dependency.Cmd  `cmd:"" help:"Manage dependencies of control plane Projects."                           maturity:"beta"`
+	Function    function.Cmd    `cmd:"" help:"Work with functions in control plane Projects."                           maturity:"beta"`
 	Operation   operation.Cmd   `cmd:"" help:"Work with Crossplane Operations."                                         maturity:"alpha"`
+	Project     project.Cmd     `cmd:"" help:"Work with control plane Projects."                                        maturity:"beta"`
 	Resource    resource.Cmd    `cmd:"" help:"Work with Crossplane resources."                                          maturity:"beta"`
 	Version     version.Cmd     `cmd:"" help:"Print the client and server version information for the current context."`
 	XPKG        xpkg.Cmd        `cmd:"" help:"Work with Crossplane packages."`
+	XRD         xrd.Cmd         `cmd:"" help:"Work with Crossplane Composite Resource Definitions (XRDs)."              maturity:"beta"`
 
 	// Hidden top-level alias for render, since it's GA but has moved.
 	Render renderxr.Cmd `cmd:"" help:"Render Crossplane compositions locally using functions." hidden:""`
@@ -128,6 +138,11 @@ func main() {
 
 	ctx, err := parser.Parse(os.Args[1:])
 	parser.FatalIfErrorf(err)
+
+	// Set up a spinner printer for commands to use. This helps ensure output
+	// consistency across commands.
+	sp := terminal.NewSpinnerPrinter(os.Stderr, term.IsTerminal(os.Stderr.Fd()))
+	ctx.BindTo(sp, (*terminal.SpinnerPrinter)(nil))
 
 	err = ctx.Run()
 	ctx.FatalIfErrorf(err)

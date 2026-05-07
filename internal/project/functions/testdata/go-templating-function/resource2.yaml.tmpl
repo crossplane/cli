@@ -1,0 +1,12 @@
+{{ $xr := getCompositeResource . }}
+
+apiVersion: nop.crossplane.io/v1alpha1
+kind: NopResource
+metadata:
+  annotations:
+    {{ setResourceNameAnnotation "resource2" }}
+  spec:
+    forProvider:
+        fields:
+          project: {{ $xr.spec.parameters.project }}
+          location: {{ $xr.spec.parameters.location }}

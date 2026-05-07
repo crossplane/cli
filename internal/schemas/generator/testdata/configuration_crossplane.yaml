@@ -1,0 +1,21 @@
+apiVersion: meta.pkg.crossplane.io/v1alpha1
+kind: Configuration
+metadata:
+  name: configuration-aws-network
+  annotations:
+    meta.crossplane.io/maintainer: Upbound <support@upbound.io>
+    meta.crossplane.io/source: github.com/upbound/configuration-aws-network
+    meta.crossplane.io/license: Apache-2.0
+spec:
+  crossplane:
+    version: ">=v1.14.1-0"
+  dependsOn:
+    - provider: xpkg.upbound.io/upbound/provider-aws-ec2
+      # renovate: datasource=github-releases depName=upbound/provider-aws
+      version: "v1.11.0"
+    - function: xpkg.upbound.io/crossplane-contrib/function-auto-ready
+      # renovate: datasource=github-releases depName=crossplane-contrib/function-auto-ready
+      version: "v0.2.1"
+    - function: xpkg.upbound.io/crossplane-contrib/function-go-templating
+      # renovate: datasource=github-releases depName=crossplane-contrib/function-go-templating
+      version: "v0.5.0"

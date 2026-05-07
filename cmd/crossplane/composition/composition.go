@@ -24,6 +24,6 @@ import (
 
 // Cmd contains commands for working with Crossplane Compositions.
 type Cmd struct {
-	Convert convert.Cmd `cmd:"" help:"Convert a Composition to a newer version or kind." maturity:"beta"`
+	Convert convert.Cmd `cmd:"" help:"Convert a Composition to a newer version." maturity:"beta"`
 	Render  xr.Cmd      `cmd:"" help:"Render a composite resource (XR)."`
 }

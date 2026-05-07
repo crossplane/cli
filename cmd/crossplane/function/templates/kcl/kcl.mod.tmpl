@@ -1,0 +1,8 @@
+[package]
+name = "{{.ModName}}"
+version = "0.0.1"
+{{- if .Imports }}
+
+[dependencies]
+models = { path = "./model" }
+{{- end }}

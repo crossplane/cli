@@ -19,6 +19,7 @@ limitations under the License.
 package docker
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -36,6 +37,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/spf13/afero"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
@@ -149,9 +151,9 @@ func StartContainer(ctx context.Context, name, img string, opts ...StartContaine
 		return "", errors.Wrap(err, "failed to create container")
 	}
 
-	for path, tarball := range cfg.copyFiles {
-		if err := cli.CopyToContainer(ctx, resp.ID, filepath.Clean(path), bytes.NewReader(tarball), container.CopyToContainerOptions{}); err != nil {
-			return "", errors.Wrapf(err, "failed to copy files to container path %s", path)
+	for _, cpy := range cfg.copyFiles {
+		if err := cli.CopyToContainer(ctx, resp.ID, filepath.Clean(cpy.to), bytes.NewReader(cpy.tarball), container.CopyToContainerOptions{}); err != nil {
+			return "", errors.Wrapf(err, "failed to copy files to container path %s", cpy.to)
 		}
 	}
 
@@ -214,7 +216,12 @@ type startContainerConfig struct {
 	containerConfig *container.Config
 	hostConfig      *container.HostConfig
 	networks        []string
-	copyFiles       map[string][]byte
+	copyFiles       []copyFilesConfig
+}
+
+type copyFilesConfig struct {
+	to      string
+	tarball []byte
 }
 
 // StartContainerOption provides optional options for StartContainer.
@@ -251,10 +258,10 @@ func StartWithNetworkID(nid string) StartContainerOption {
 // starting the container.
 func StartWithCopyFiles(tarball []byte, path string) StartContainerOption {
 	return func(cfg *startContainerConfig) {
-		if cfg.copyFiles == nil {
-			cfg.copyFiles = make(map[string][]byte)
-		}
-		cfg.copyFiles[path] = tarball
+		cfg.copyFiles = append(cfg.copyFiles, copyFilesConfig{
+			to:      path,
+			tarball: tarball,
+		})
 	}
 }
 
@@ -465,6 +472,77 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 	}
 
 	return stdout.Bytes(), stderr.Bytes(), nil
+}
+
+// CopyFromContainer copies files from a container to an afero filesystem.
+func CopyFromContainer(ctx context.Context, cid, path string, fs afero.Fs) error {
+	cli, err := NewClient()
+	if err != nil {
+		return err
+	}
+
+	reader, _, err := cli.CopyFromContainer(ctx, cid, path)
+	if err != nil {
+		return errors.Wrap(err, "failed to copy files from container")
+	}
+
+	tarReader := tar.NewReader(reader)
+
+	// Limit files to 1GiB to avoid excessive memory usage.
+	const maxFileSize = 1024 * 1024 * 1024
+
+	for {
+		header, err := tarReader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return errors.Wrap(err, "failed while reading tarball")
+		}
+
+		cleanedPath := filepath.Clean(strings.TrimPrefix(header.Name, filepath.Base(path)+"/"))
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := fs.MkdirAll(cleanedPath, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			outFile, err := fs.Create(cleanedPath)
+			if err != nil {
+				return err
+			}
+
+			limitedReader := io.LimitReader(tarReader, maxFileSize)
+			if _, err := io.Copy(outFile, limitedReader); err != nil {
+				if cerr := outFile.Close(); cerr != nil {
+					err = errors.Wrap(cerr, "error while closing file")
+				}
+				return err
+			}
+			if cerr := outFile.Close(); cerr != nil {
+				return errors.Wrapf(cerr, "error closing file %s", header.Name)
+			}
+		}
+	}
+
+	return nil
+}
+
+// TarFromContainer retrieves files from a container in a tarball (Docker's
+// native file transfer format).
+func TarFromContainer(ctx context.Context, cid, path string) ([]byte, error) {
+	cli, err := NewClient()
+	if err != nil {
+		return nil, err
+	}
+
+	reader, _, err := cli.CopyFromContainer(ctx, cid, path)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to copy files from container")
+	}
+
+	return io.ReadAll(reader)
 }
 
 // NewClient creates a new Docker client configured from environment variables.

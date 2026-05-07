@@ -1,0 +1,24 @@
+{{- if .ModelIndexPath -}}
+# code: language=yaml
+# yaml-language-server: $schema={{- .ModelIndexPath }}
+{{ end -}}
+{{ print `
+# Write your composed resources here. You can use any of the features described
+# in this documentation:
+# https://github.com/crossplane-contrib/function-go-templating?tab=readme-ov-file#using-this-function
+#
+# Example:
+#
+# ---
+# apiVersion: nop.crossplane.io/v1alpha1
+# kind: NopResource
+# metadata:
+#   annotations:
+#     {{ setResourceNameAnnotation "example" }}
+# spec:
+#   forProvider:
+#     conditionAfter:
+#       - conditionType: Ready
+#         conditionStatus: "True"
+#         time: 5s
+` }}

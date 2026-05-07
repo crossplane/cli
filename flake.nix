@@ -163,8 +163,8 @@
               pkgs.coreutils
               pkgs.gnused
               pkgs.ncurses
-              pkgs.unstable.go_1_25
-              pkgs.golangci-lint
+              pkgs.unstable.go_1_26
+              pkgs.unstable.golangci-lint
               pkgs.kubectl
               pkgs.kind
               pkgs.docker-client

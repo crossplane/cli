@@ -47,6 +47,7 @@ func dict(pairs ...any) (map[string]any, error) {
 		if !ok {
 			return nil, errors.Errorf("dict: argument %d must be a string key", i)
 		}
+		//nolint:gosec // Guaranteed safe by len(pairs)%2 check above.
 		out[ks] = pairs[i+1]
 	}
 	return out, nil

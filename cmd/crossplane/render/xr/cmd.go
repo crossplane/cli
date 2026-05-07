@@ -262,14 +262,6 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 		}
 	}
 
-	ers := []unstructured.Unstructured{}
-	if c.ExtraResources != "" {
-		ers, err = render.LoadRequiredResources(c.fs, c.ExtraResources)
-		if err != nil {
-			return errors.Wrapf(err, "cannot load extra resources from %q", c.ExtraResources)
-		}
-	}
-
 	rrs := []unstructured.Unstructured{}
 	if c.RequiredResources != "" {
 		rrs, err = render.LoadRequiredResources(c.fs, c.RequiredResources)
@@ -278,8 +270,15 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 		}
 	}
 
-	// Merge extra resources into required resources.
-	rrs = append(rrs, ers...)
+	if c.ExtraResources != "" {
+		ers, err := render.LoadRequiredResources(c.fs, c.ExtraResources)
+		if err != nil {
+			return errors.Wrapf(err, "cannot load extra resources from %q", c.ExtraResources)
+		}
+
+		// Merge extra resources into required resources.
+		rrs = append(rrs, ers...)
+	}
 
 	// Load required schemas
 	rsc := []spec3.OpenAPI{}

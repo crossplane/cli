@@ -184,7 +184,7 @@ func defaultRegistryAuth(imageName string) (string, error) {
 		return "", errors.Wrapf(err, "cannot get auth config for registry %q", hostname)
 	}
 
-	data, err := json.Marshal(auth)
+	data, err := json.Marshal(auth) //nolint:gosec // Password is already in plaintext docker config.
 	if err != nil {
 		return "", errors.Wrap(err, "cannot marshal Docker auth config")
 	}

@@ -66,7 +66,7 @@ func TestLoad(t *testing.T) {
 			args: args{
 				fs: func() afero.Fs {
 					fs := afero.NewMemMapFs()
-					_ = afero.WriteFile(fs, "/config.yaml", []byte("version: 1\nfeatures:\n  enableBeta: true\n  enableAlpha: false\n"), 0o600)
+					_ = afero.WriteFile(fs, "/config.yaml", []byte("version: 1\nfeatures:\n  disableBeta: true\n  enableAlpha: false\n"), 0o600)
 					return fs
 				}(),
 				path: "/config.yaml",
@@ -74,7 +74,7 @@ func TestLoad(t *testing.T) {
 			want: want{
 				cfg: &Config{
 					Version:  1,
-					Features: Features{EnableBeta: true},
+					Features: Features{DisableBeta: true},
 				},
 			},
 		},
@@ -97,7 +97,7 @@ func TestLoad(t *testing.T) {
 			args: args{
 				fs: func() afero.Fs {
 					fs := afero.NewMemMapFs()
-					_ = afero.WriteFile(fs, "/config.yaml", []byte("features:\n  enableBeta: true\n"), 0o600)
+					_ = afero.WriteFile(fs, "/config.yaml", []byte("features:\n  enableAlpha: true\n"), 0o600)
 					return fs
 				}(),
 				path: "/config.yaml",
@@ -161,10 +161,10 @@ func TestSave(t *testing.T) {
 			args: args{
 				fs:   afero.NewMemMapFs(),
 				path: "/c.yaml",
-				cfg:  &Config{Version: 1, Features: Features{EnableBeta: true}},
+				cfg:  &Config{Version: 1, Features: Features{DisableBeta: true}},
 			},
 			want: want{
-				loaded: &Config{Version: 1, Features: Features{EnableBeta: true}},
+				loaded: &Config{Version: 1, Features: Features{DisableBeta: true}},
 				mode:   0o600,
 			},
 		},
@@ -189,10 +189,10 @@ func TestSave(t *testing.T) {
 					return fs
 				}(),
 				path: "/c.yaml",
-				cfg:  &Config{Version: 1, Features: Features{EnableBeta: true}},
+				cfg:  &Config{Version: 1, Features: Features{DisableBeta: true}},
 			},
 			want: want{
-				loaded: &Config{Version: 1, Features: Features{EnableBeta: true}},
+				loaded: &Config{Version: 1, Features: Features{DisableBeta: true}},
 				mode:   0o600,
 			},
 		},

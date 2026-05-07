@@ -51,11 +51,11 @@ func TestSetRun(t *testing.T) {
 			reason: "Setting a key when the file is missing should create it with version 1.",
 			args: args{
 				path:  "/c.yaml",
-				key:   "features.enableBeta",
+				key:   "features.disableBeta",
 				value: "true",
 			},
 			want: want{
-				loaded: &cfgpkg.Config{Version: 1, Features: cfgpkg.Features{EnableBeta: true}},
+				loaded: &cfgpkg.Config{Version: 1, Features: cfgpkg.Features{DisableBeta: true}},
 			},
 		},
 		"UpdatesExisting": {
@@ -63,19 +63,19 @@ func TestSetRun(t *testing.T) {
 			args: args{
 				preExisting: "version: 1\nfeatures:\n  enableAlpha: true\n",
 				path:        "/c.yaml",
-				key:         "features.enableBeta",
+				key:         "features.disableBeta",
 				value:       "true",
 			},
 			want: want{
-				loaded: &cfgpkg.Config{Version: 1, Features: cfgpkg.Features{EnableAlpha: true, EnableBeta: true}},
+				loaded: &cfgpkg.Config{Version: 1, Features: cfgpkg.Features{EnableAlpha: true, DisableBeta: true}},
 			},
 		},
 		"UnsetExisting": {
 			reason: "Setting a key to false should clear it without affecting other keys.",
 			args: args{
-				preExisting: "version: 1\nfeatures:\n  enableAlpha: true\n  enableBeta: true\n",
+				preExisting: "version: 1\nfeatures:\n  enableAlpha: true\n  disableBeta: true\n",
 				path:        "/c.yaml",
-				key:         "features.enableBeta",
+				key:         "features.disableBeta",
 				value:       "false",
 			},
 			want: want{

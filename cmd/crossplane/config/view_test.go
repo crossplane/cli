@@ -50,10 +50,10 @@ func TestViewRun(t *testing.T) {
 		"Existing": {
 			reason: "View on an existing file should print its parsed contents.",
 			args: args{
-				preExisting: "version: 1\nfeatures:\n  enableBeta: true\n",
+				preExisting: "version: 1\nfeatures:\n  enableAlpha: true\n",
 				path:        "/c.yaml",
 			},
-			want: "features:\n  enableBeta: true\nversion: 1\n",
+			want: "features:\n  enableAlpha: true\nversion: 1\n",
 		},
 	}
 

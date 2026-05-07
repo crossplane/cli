@@ -120,7 +120,9 @@ func main() {
 	)
 
 	maturity.Apply(parser.Model, map[maturity.Level]bool{
-		maturity.LevelBeta:  cfg.Features.EnableBeta,
+		// Beta features are enabled by default.
+		maturity.LevelBeta: !cfg.Features.DisableBeta,
+		// Alpha features must be explicitly enabled.
 		maturity.LevelAlpha: cfg.Features.EnableAlpha,
 	})
 

@@ -17,6 +17,7 @@ limitations under the License.
 package render
 
 import (
+	fnv1 "github.com/crossplane/function-sdk-go/proto/v1"
 	"github.com/crossplane/function-sdk-go/resource"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -31,7 +32,6 @@ import (
 	ucomposite "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
 	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
-	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )

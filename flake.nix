@@ -88,13 +88,12 @@
             inherit system;
             overlays = [
               gomod2nix.overlays.default
-              (_final: _prev: {
-                # We use the go toolchain from unstable because it's been
-                # updated to fix some CVEs. However, we explicitly use this only
-                # in our build targets rather than replace Go in the global
-                # overlay so that we can still use pre-built binaries for
-                # Go-based tools from nixpkgs.
-                go-unstable = nixpkgs-unstable.legacyPackages.${system}.go_1_25;
+              (_final: prev: {
+                # Allow use of pkgs.unstable.<package-name> to pull individual
+                # packages from nixpkgs-unstable.
+                unstable = import nixpkgs-unstable {
+                  inherit (prev.stdenv.hostPlatform) system;
+                };
               })
             ];
           };
@@ -164,7 +163,7 @@
               pkgs.coreutils
               pkgs.gnused
               pkgs.ncurses
-              pkgs.go-unstable
+              pkgs.unstable.go_1_25
               pkgs.golangci-lint
               pkgs.kubectl
               pkgs.kind

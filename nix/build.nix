@@ -28,7 +28,7 @@ let
       subPackages = [ subPackage ];
 
       # Cross-compile by merging GOOS/GOARCH into Go's attrset (// merges attrsets).
-      go = pkgs.go-unstable // {
+      go = pkgs.unstable.go_1_25 // {
         GOOS = platform.os;
         GOARCH = platform.arch;
       };

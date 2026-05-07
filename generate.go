@@ -26,4 +26,7 @@ limitations under the License.
 // Note that the vendor dir does temporarily exist during a Nix build.
 //go:generate buf generate --exclude-path vendor
 
+// Generate deepcopy methods for the dev API group.
+//go:generate controller-gen object:headerFile=./hack/boilerplate.go.txt paths=./apis/dev/v1alpha1
+
 package generate

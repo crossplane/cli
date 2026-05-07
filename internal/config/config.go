@@ -41,7 +41,7 @@ type Config struct {
 // Features configures feature visibility.
 type Features struct {
 	EnableAlpha bool `json:"enableAlpha,omitempty"`
-	EnableBeta  bool `json:"enableBeta,omitempty"`
+	DisableBeta bool `json:"disableBeta,omitempty"`
 }
 
 // Load reads a Config from path. A missing file is not an error; the zero

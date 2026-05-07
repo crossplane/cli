@@ -43,7 +43,7 @@ Examples:
   # Show the current effective config.
   crossplane config view
 
-  # Enable beta commands.
-  crossplane config set features.enableBeta true
+  # Enable alpha commands.
+  crossplane config set features.enableAlpha true
 `
 }

@@ -73,11 +73,11 @@ func Apply(app *kong.Application, enabled map[Level]bool) {
 
 	switch {
 	case enabled[LevelBeta] && enabled[LevelAlpha]:
-		detailStr = "Alpha and beta features are enabled."
+		detailStr = "Alpha and beta features are enabled. Manage enabled features with \"crossplane config set\"."
 	case enabled[LevelBeta]:
-		detailStr = "Beta features are enabled. To enable alpha features run \"crossplane config set features.enableAlpha true\"."
+		detailStr = "Beta features are enabled. Manage enabled features with \"crossplane config set\"."
 	case enabled[LevelAlpha]:
-		detailStr = "Alpha features are enabled. To enable beta features run \"crossplane config set features.enableBeta true\"."
+		detailStr = "Alpha features are enabled. Manage enabled features with \"crossplane config set\"."
 	default:
 		detailStr = "Alpha and beta features are disabled. To enable them use \"crossplane config set\"."
 	}

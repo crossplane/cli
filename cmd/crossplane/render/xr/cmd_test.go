@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package render
+package xr
 
 import (
 	"bytes"
@@ -35,6 +35,7 @@ import (
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 
 	_ "embed"
@@ -76,8 +77,8 @@ var includeFunctionResultsOutput string
 //go:embed testdata/cmd/output/include-full-xr.yaml
 var includeFullXROutput string
 
-func newEngineFunc(engine Engine) func(*EngineFlags, logging.Logger) Engine {
-	return func(*EngineFlags, logging.Logger) Engine {
+func newEngineFunc(engine render.Engine) func(*render.EngineFlags, logging.Logger) render.Engine {
+	return func(*render.EngineFlags, logging.Logger) render.Engine {
 		return engine
 	}
 }
@@ -144,7 +145,7 @@ func TestCmdRun(t *testing.T) {
 					Functions:         "functions.yaml",
 					Timeout:           time.Minute,
 					fs:                newTestFS(nil),
-					newEngine: newEngineFunc(&MockEngine{
+					newEngine: newEngineFunc(&render.MockEngine{
 						MockRender: func(_ context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
 							return &renderv1alpha1.RenderResponse{
 								Output: &renderv1alpha1.RenderResponse_Composite{
@@ -376,7 +377,7 @@ func TestCmdRun(t *testing.T) {
 					Functions:         "functions.yaml",
 					Timeout:           time.Minute,
 					fs:                newTestFS(nil),
-					newEngine: newEngineFunc(&MockEngine{
+					newEngine: newEngineFunc(&render.MockEngine{
 						MockSetup: func(_ context.Context, _ []pkgv1.Function) (func(), error) {
 							return func() {}, errors.New("setup blew up")
 						},
@@ -394,7 +395,7 @@ func TestCmdRun(t *testing.T) {
 					Functions:         "functions.yaml",
 					Timeout:           time.Minute,
 					fs:                newTestFS(nil),
-					newEngine: newEngineFunc(&MockEngine{
+					newEngine: newEngineFunc(&render.MockEngine{
 						MockRender: func(_ context.Context, _ *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
 							return nil, errors.New("render blew up")
 						},
@@ -412,7 +413,7 @@ func TestCmdRun(t *testing.T) {
 					Functions:         "functions.yaml",
 					Timeout:           time.Minute,
 					fs:                newTestFS(nil),
-					newEngine: newEngineFunc(&MockEngine{
+					newEngine: newEngineFunc(&render.MockEngine{
 						MockRender: func(_ context.Context, _ *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
 							return &renderv1alpha1.RenderResponse{}, nil
 						},
@@ -431,7 +432,7 @@ func TestCmdRun(t *testing.T) {
 					IncludeFunctionResults: true,
 					Timeout:                time.Minute,
 					fs:                     newTestFS(nil),
-					newEngine: newEngineFunc(&MockEngine{
+					newEngine: newEngineFunc(&render.MockEngine{
 						MockRender: func(_ context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
 							return &renderv1alpha1.RenderResponse{
 								Output: &renderv1alpha1.RenderResponse_Composite{
@@ -463,7 +464,7 @@ func TestCmdRun(t *testing.T) {
 					IncludeFullXR:     true,
 					Timeout:           time.Minute,
 					fs:                newTestFS(map[string]string{"xr.yaml": xrWithExtraSpecYAML}),
-					newEngine: newEngineFunc(&MockEngine{
+					newEngine: newEngineFunc(&render.MockEngine{
 						MockRender: func(_ context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
 							return &renderv1alpha1.RenderResponse{
 								Output: &renderv1alpha1.RenderResponse_Composite{

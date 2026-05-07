@@ -55,7 +55,7 @@ type Cmd struct {
 func (c *Cmd) Help() string {
 	return `
 This command validates the provided Crossplane resources against the schemas of the provided extensions like XRDs,
-CRDs, providers, functions and configurations. The output of the "crossplane render" command can be
+CRDs, providers, functions and configurations. The output of the "crossplane composition render" command can be
 piped to this validate command in order to rapidly validate on the outputs of the composition development experience.
 
 If providers or configurations are provided as extensions, they will be downloaded and loaded as CRDs before performing
@@ -68,24 +68,24 @@ any Crossplane instance or control plane to be running or configured.
 Examples:
 
   # Validate all resources in the resources.yaml file against the extensions in the extensions.yaml file
-  crossplane beta validate extensions.yaml resources.yaml
+  crossplane resource validate extensions.yaml resources.yaml
 
   # Validate all resources in the resourceDir folder against the extensions in the crossplane.yaml file and extensionsDir folder
-  crossplane beta validate crossplane.yaml,extensionsDir/ resourceDir/
+  crossplane resource validate crossplane.yaml,extensionsDir/ resourceDir/
 
   # Validate all resources in the resources.yaml file against the extensions in the extensions.yaml file using a specific Crossplane image version
-  crossplane beta validate extensions.yaml resources.yaml --crossplane-image=xpkg.crossplane.io/crossplane/crossplane:v1.20.0
+  crossplane resource validate extensions.yaml resources.yaml --crossplane-image=xpkg.crossplane.io/crossplane/crossplane:v1.20.0
 
   # Validate all resources in the resourceDir folder against the extensions in the extensionsDir folder and skip
   # success logs
-  crossplane beta validate extensionsDir/ resourceDir/ --skip-success-results
+  crossplane resource validate extensionsDir/ resourceDir/ --skip-success-results
 
   # Validate the output of the render command against the extensions in the extensionsDir folder
-  crossplane render xr.yaml composition.yaml func.yaml --include-full-xr | crossplane beta validate extensionsDir/ -
+  crossplane composition render xr.yaml composition.yaml func.yaml --include-full-xr | crossplane resource validate extensionsDir/ -
 
   # Validate all resources in the resourceDir folder against the extensions in the extensionsDir folder using provided
   # cache directory and clean the cache directory before downloading schemas
-  crossplane beta validate extensionsDir/ resourceDir/ --cache-dir .cache --clean-cache
+  crossplane resource validate extensionsDir/ resourceDir/ --cache-dir .cache --clean-cache
 `
 }
 

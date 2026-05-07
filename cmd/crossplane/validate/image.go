@@ -272,6 +272,7 @@ func extractPackageCRDs(layers []conregv1.Layer) ([][]byte, error) {
 	// Search for .yaml files in the "crds" directory
 	var yamlFiles [][]byte
 
+	//nolint:gosec // Traversing the temp dir is safe.
 	err = filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err

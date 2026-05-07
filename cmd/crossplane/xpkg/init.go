@@ -97,7 +97,7 @@ Examples:
 
 	b := strings.Builder{}
 	for name, url := range WellKnownTemplates() {
-		b.WriteString(fmt.Sprintf(" - %s (%s)\n", name, url))
+		fmt.Fprintf(&b, " - %s (%s)\n", name, url)
 	}
 
 	return fmt.Sprintf(tpl, b.String())
@@ -250,6 +250,7 @@ func printFile(w io.Writer, path string) error {
 }
 
 func runScript(k *kong.Context, scriptFile string, args ...string) error {
+	//nolint:gosec // User confirmed before running the script.
 	cmd := exec.CommandContext(context.Background(), scriptFile, args...)
 	cmd.Stdout = k.Stdout
 	cmd.Stderr = k.Stderr

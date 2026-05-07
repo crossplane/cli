@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	fnv1 "github.com/crossplane/function-sdk-go/proto/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -32,8 +33,6 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
-
-	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
 
 // Handle is the owner of a running in-process context function.

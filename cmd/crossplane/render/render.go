@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	fnv1 "github.com/crossplane/function-sdk-go/proto/v1"
 	corev1 "k8s.io/api/core/v1"
 	kunstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/kube-openapi/pkg/spec3"
@@ -37,7 +38,6 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
-	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )

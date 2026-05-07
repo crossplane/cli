@@ -21,13 +21,12 @@ import (
 	"encoding/json"
 	"testing"
 
+	fnv1 "github.com/crossplane/function-sdk-go/proto/v1"
 	"github.com/google/go-cmp/cmp"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/structpb"
-
-	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
 
 func mustStruct(t *testing.T, m map[string]any) *structpb.Struct {

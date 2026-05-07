@@ -26,12 +26,11 @@ import (
 	"maps"
 	"sync"
 
+	fnv1 "github.com/crossplane/function-sdk-go/proto/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
-
-	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
 
 // FunctionName is the pkgv1.Function.Name used for the in-process context

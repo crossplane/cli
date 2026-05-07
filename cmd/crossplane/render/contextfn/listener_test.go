@@ -22,14 +22,13 @@ import (
 	"testing"
 	"time"
 
+	fnv1 "github.com/crossplane/function-sdk-go/proto/v1"
 	"github.com/google/go-cmp/cmp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/testing/protocmp"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
-
-	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
 
 func TestListenerRoundTrip(t *testing.T) {

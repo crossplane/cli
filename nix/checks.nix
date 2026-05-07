@@ -20,7 +20,7 @@
       src = self;
       pwd = self;
       modules = ../gomod2nix.toml;
-      go = pkgs.go-unstable;
+      go = pkgs.unstable.go_1_25;
 
       CGO_ENABLED = "0";
 
@@ -48,7 +48,7 @@
       src = self;
       pwd = self;
       modules = ../gomod2nix.toml;
-      go = pkgs.go-unstable;
+      go = pkgs.unstable.go_1_25;
 
       CGO_ENABLED = "0";
 
@@ -79,7 +79,7 @@
       src = self;
       pwd = self;
       modules = ../gomod2nix.toml;
-      go = pkgs.go-unstable;
+      go = pkgs.unstable.go_1_25;
 
       CGO_ENABLED = "0";
 

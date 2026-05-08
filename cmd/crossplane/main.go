@@ -141,7 +141,7 @@ func configFlag(args []string) (string, error) {
 			continue
 		}
 
-		if v := strings.TrimPrefix(a, "--config="); v != "" {
+		if v, ok := strings.CutPrefix(a, "--config="); ok {
 			return v, nil
 		}
 

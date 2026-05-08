@@ -142,6 +142,9 @@ func configFlag(args []string) (string, error) {
 		}
 
 		if v, ok := strings.CutPrefix(a, "--config="); ok {
+			if v == "" {
+				return "", errors.New("flag --config requires a value")
+			}
 			return v, nil
 		}
 

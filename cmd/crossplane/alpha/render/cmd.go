@@ -18,8 +18,8 @@ limitations under the License.
 package render
 
 import (
-	"github.com/crossplane/crossplane/v2/cmd/crank/alpha/render/op"
-	"github.com/crossplane/crossplane/v2/cmd/crank/alpha/render/xr"
+	"github.com/crossplane/cli/v2/cmd/crossplane/alpha/render/op"
+	"github.com/crossplane/cli/v2/cmd/crossplane/alpha/render/xr"
 )
 
 // Cmd contains alpha render subcommands.

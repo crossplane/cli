@@ -38,7 +38,8 @@ import (
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
-	"github.com/crossplane/crossplane/v2/cmd/crank/render/contextfn"
+
+	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
 )
 
 // Cmd arguments and flags for render subcommand.

@@ -34,8 +34,8 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/crossplane/v2/cmd/crank/beta/trace/internal/printer"
-	"github.com/crossplane/crossplane/v2/cmd/crank/common/resource"
+	"github.com/crossplane/cli/v2/cmd/crossplane/beta/trace/internal/printer"
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
 )
 
 // Bubble Tea messages for watch mode.

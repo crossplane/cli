@@ -12,8 +12,9 @@ import (
 
 	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
-	"github.com/crossplane/crossplane/v2/cmd/crank/common/resource"
-	"github.com/crossplane/crossplane/v2/cmd/crank/common/resource/xpkg"
+
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource/xpkg"
 )
 
 // DotPrinter defines the DotPrinter configuration.

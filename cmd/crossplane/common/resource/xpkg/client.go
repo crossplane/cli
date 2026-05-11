@@ -35,7 +35,8 @@ import (
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
-	"github.com/crossplane/crossplane/v2/cmd/crank/common/resource"
+
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
 )
 
 // Client to get a Package with all its dependencies.

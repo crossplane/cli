@@ -20,10 +20,10 @@ limitations under the License.
 package beta
 
 import (
-	"github.com/crossplane/crossplane/v2/cmd/crank/beta/convert"
-	"github.com/crossplane/crossplane/v2/cmd/crank/beta/top"
-	"github.com/crossplane/crossplane/v2/cmd/crank/beta/trace"
-	"github.com/crossplane/crossplane/v2/cmd/crank/beta/validate"
+	"github.com/crossplane/cli/v2/cmd/crossplane/beta/convert"
+	"github.com/crossplane/cli/v2/cmd/crossplane/beta/top"
+	"github.com/crossplane/cli/v2/cmd/crossplane/beta/trace"
+	"github.com/crossplane/cli/v2/cmd/crossplane/beta/validate"
 )
 
 // Cmd contains beta commands.

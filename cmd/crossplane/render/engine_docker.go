@@ -29,8 +29,9 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
-	"github.com/crossplane/crossplane/v2/internal/docker"
-	renderv1alpha1 "github.com/crossplane/crossplane/v2/proto/render/v1alpha1"
+
+	"github.com/crossplane/cli/v2/internal/docker"
+	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
 
 // dockerRenderEngine executes crossplane internal render in a Docker container.

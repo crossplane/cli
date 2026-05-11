@@ -20,7 +20,8 @@ import (
 	"context"
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
-	renderv1alpha1 "github.com/crossplane/crossplane/v2/proto/render/v1alpha1"
+
+	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
 
 // MockEngine is a function-field mock of the Engine interface.

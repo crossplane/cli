@@ -25,7 +25,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
-	"github.com/crossplane/crossplane/v2/internal/docker"
+	"github.com/crossplane/cli/v2/internal/docker"
 )
 
 // createRenderNetwork creates a temporary Docker bridge network for render.

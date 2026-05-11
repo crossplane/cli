@@ -33,8 +33,9 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
-	"github.com/crossplane/crossplane/v2/cmd/crank/render"
-	"github.com/crossplane/crossplane/v2/cmd/crank/render/contextfn"
+
+	"github.com/crossplane/cli/v2/cmd/crossplane/render"
+	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
 )
 
 // Cmd arguments and flags for alpha render op subcommand.

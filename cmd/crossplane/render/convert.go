@@ -32,7 +32,8 @@ import (
 
 	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
-	renderv1alpha1 "github.com/crossplane/crossplane/v2/proto/render/v1alpha1"
+
+	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
 
 // BuildCompositeRequest builds a RenderRequest for a composite resource from

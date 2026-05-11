@@ -26,12 +26,12 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/crossplane/v2/cmd/crank/alpha"
-	"github.com/crossplane/crossplane/v2/cmd/crank/beta"
-	"github.com/crossplane/crossplane/v2/cmd/crank/completion"
-	"github.com/crossplane/crossplane/v2/cmd/crank/render"
-	"github.com/crossplane/crossplane/v2/cmd/crank/version"
-	"github.com/crossplane/crossplane/v2/cmd/crank/xpkg"
+	"github.com/crossplane/cli/v2/cmd/crossplane/alpha"
+	"github.com/crossplane/cli/v2/cmd/crossplane/beta"
+	"github.com/crossplane/cli/v2/cmd/crossplane/completion"
+	"github.com/crossplane/cli/v2/cmd/crossplane/render"
+	"github.com/crossplane/cli/v2/cmd/crossplane/version"
+	"github.com/crossplane/cli/v2/cmd/crossplane/xpkg"
 )
 
 var _ = kong.Must(&cli{})

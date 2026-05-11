@@ -10,7 +10,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/crossplane/crossplane/v2/cmd/crank/common/resource"
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
 )
 
 // simpleGenerator generates a tree of resources for a specific depth and the number of children to

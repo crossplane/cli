@@ -23,7 +23,7 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/crossplane/crossplane/v2/cmd/crank/common/resource"
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
 )
 
 const (

@@ -20,7 +20,7 @@ limitations under the License.
 package alpha
 
 import (
-	"github.com/crossplane/crossplane/v2/cmd/crank/alpha/render"
+	"github.com/crossplane/cli/v2/cmd/crossplane/alpha/render"
 )
 
 // Cmd contains alpha commands.

@@ -18,7 +18,9 @@ package xrd
 
 import (
 	"bufio"
+	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
@@ -37,8 +39,11 @@ type convertCmd struct {
 	// Arguments.
 	InputFile string `arg:"" default:"-" help:"The XRD YAML file to be converted. If not specified or '-', stdin will be used." optional:"" predictor:"file" type:"path"`
 
-	// Flags.
-	OutputFile string `help:"The file to write the generated CRD YAML to. If not specified, stdout will be used." placeholder:"PATH" predictor:"file" short:"o" type:"path"`
+	// Output flags. OutputFile and OutputDir are mutually exclusive; when
+	// neither is set the converted CRDs are emitted on stdout as a multi-doc
+	// YAML stream.
+	OutputFile string `help:"The file to write the generated CRD YAML to. Legacy XRDs produce a multi-doc YAML stream (XR CRD + Claim CRD)." placeholder:"PATH" predictor:"file"      short:"o"   type:"path"  xor:"output"`
+	OutputDir  string `help:"A directory to write the generated CRDs to. Each CRD is written to a separate file named <crd.Name>.yaml."      placeholder:"DIR"  predictor:"directory" type:"path" xor:"output"`
 
 	fs afero.Fs
 }
@@ -48,17 +53,25 @@ func (c *convertCmd) Help() string {
 Convert a Crossplane CompositeResourceDefinition (XRD) into the Kubernetes
 CustomResourceDefinition (CRD) that describes the composite resource type.
 
-The output CRD is what Crossplane derives internally from the XRD. This is
-useful for inspecting the CRD shape, feeding it into kubectl-based tooling
-that doesn't understand XRDs, or as a debugging aid.
+The output CRD(s) are what Crossplane derives internally from the XRD. This is
+useful for inspecting the CRD shape, feeding it into kubectl-based tooling that
+doesn't understand XRDs, or as a debugging aid.
+
+For legacy XRDs that offer a Claim (spec.claimNames set, typically with
+spec.scope: LegacyCluster) two CRDs are produced: one cluster-scoped CRD for
+the XR and one namespaced CRD for the Claim. For namespaced XRDs only the XR
+CRD is produced. The detection is automatic; no flag is needed.
 
 Examples:
 
-  # Convert an XRD file and print the CRD to stdout.
+  # Convert an XRD file and print the CRD(s) to stdout (multi-doc YAML for legacy XRDs).
   crossplane xrd convert xrd.yaml
 
-  # Convert and write the CRD to a file.
-  crossplane xrd convert xrd.yaml -o crd.yaml
+  # Convert and write to a single file (multi-doc YAML for legacy XRDs).
+  crossplane xrd convert xrd.yaml -o crds.yaml
+
+  # Split per-CRD files into a directory (each named <crd.Name>.yaml).
+  crossplane xrd convert xrd.yaml --output-dir ./crds/
 
   # Read the XRD from stdin.
   cat xrd.yaml | crossplane xrd convert -
@@ -86,36 +99,63 @@ func (c *convertCmd) Run(k *kong.Context) error {
 		return errors.Errorf("input is not a %s; got %s", apiextensionsv1.CompositeResourceDefinitionGroupVersionKind, xrd.GroupVersionKind())
 	}
 
-	crd, err := ToCRD(xrd)
+	crds, err := ToCRDs(xrd)
 	if err != nil {
-		return errors.Wrapf(err, "cannot derive CRD from XRD %q", xrd.GetName())
+		return errors.Wrapf(err, "cannot derive CRDs from XRD %q", xrd.GetName())
 	}
 
-	b, err := yaml.Marshal(crd)
-	if err != nil {
-		return errors.Wrap(err, "cannot marshal CRD")
-	}
-
-	output := k.Stdout
-
-	if c.OutputFile != "" {
-		f, err := c.fs.OpenFile(c.OutputFile, os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
-			return errors.Wrap(err, "cannot open output file")
+	switch {
+	case c.OutputDir != "":
+		if err := c.fs.MkdirAll(c.OutputDir, 0o755); err != nil {
+			return errors.Wrapf(err, "cannot create output directory %q", c.OutputDir)
 		}
 
-		defer func() { _ = f.Close() }()
+		for _, crd := range crds {
+			path := filepath.Join(c.OutputDir, crd.GetName()+".yaml")
+			if err := c.writeFile(path, []*extv1.CustomResourceDefinition{crd}); err != nil {
+				return err
+			}
+		}
 
-		output = f
+		return nil
+
+	case c.OutputFile != "":
+		return c.writeFile(c.OutputFile, crds)
+
+	default:
+		return writeCRDs(k.Stdout, crds)
+	}
+}
+
+// writeFile writes the given CRDs to a file as a multi-doc YAML stream.
+func (c *convertCmd) writeFile(path string, crds []*extv1.CustomResourceDefinition) error {
+	f, err := c.fs.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return errors.Wrapf(err, "cannot open output file %q", path)
 	}
 
+	defer func() { _ = f.Close() }()
+
+	return writeCRDs(f, crds)
+}
+
+// writeCRDs writes a multi-doc YAML stream of CRDs to w.
+func writeCRDs(output io.Writer, crds []*extv1.CustomResourceDefinition) error {
 	outputW := bufio.NewWriter(output)
-	if _, err := outputW.WriteString("---\n"); err != nil {
-		return errors.Wrap(err, "cannot write YAML file header")
-	}
 
-	if _, err := outputW.Write(b); err != nil {
-		return errors.Wrap(err, "cannot write YAML file content")
+	for _, crd := range crds {
+		b, err := yaml.Marshal(crd)
+		if err != nil {
+			return errors.Wrapf(err, "cannot marshal CRD %q", crd.GetName())
+		}
+
+		if _, err := outputW.WriteString("---\n"); err != nil {
+			return errors.Wrap(err, "cannot write YAML file header")
+		}
+
+		if _, err := outputW.Write(b); err != nil {
+			return errors.Wrap(err, "cannot write YAML file content")
+		}
 	}
 
 	if err := outputW.Flush(); err != nil {
@@ -125,20 +165,42 @@ func (c *convertCmd) Run(k *kong.Context) error {
 	return nil
 }
 
-// ToCRD converts a Crossplane XRD into a Kubernetes CRD that describes the
-// Composite Resource type, ready to be serialized. The returned CRD's
-// TypeMeta is populated so YAML/JSON marshaling produces a well-formed
-// `kind: CustomResourceDefinition` document, which is something that
-// the underlying xcrd.ForCompositeResource helper does not do on its own.
-// Callers that consume the CRD in-memory should call xcrd.ForCompositeResource directly.
-func ToCRD(xrd *apiextensionsv1.CompositeResourceDefinition) (*extv1.CustomResourceDefinition, error) {
-	crd, err := xcrd.ForCompositeResource(xrd)
+// ToCRDs converts a Crossplane XRD into the Kubernetes CRDs that describe the
+// composite resource type, ready to be serialized. The returned CRDs have
+// their TypeMeta populated so YAML/JSON marshaling produces well-formed
+// `kind: CustomResourceDefinition` documents, which is something that the
+// underlying xcrd helpers do not do on their own.
+//
+// For legacy XRDs that offer a Claim the result is a two-element slice:
+// the CRD for the XR followed by the CRD for the Claim. For namespaced XRDs
+// the result is a single-element slice containing only the XR CRD.
+//
+// Callers that consume the CRD in-memory should call xcrd.ForCompositeResource
+// (and, for legacy XRDs, xcrd.ForCompositeResourceClaim) directly.
+func ToCRDs(xrd *apiextensionsv1.CompositeResourceDefinition) ([]*extv1.CustomResourceDefinition, error) {
+	xrCRD, err := xcrd.ForCompositeResource(xrd)
 	if err != nil {
 		return nil, err
 	}
 
+	setTypeMeta(xrCRD)
+
+	crds := []*extv1.CustomResourceDefinition{xrCRD}
+
+	if xrd.OffersClaim() {
+		claimCRD, err := xcrd.ForCompositeResourceClaim(xrd)
+		if err != nil {
+			return nil, err
+		}
+
+		setTypeMeta(claimCRD)
+		crds = append(crds, claimCRD)
+	}
+
+	return crds, nil
+}
+
+func setTypeMeta(crd *extv1.CustomResourceDefinition) {
 	crd.APIVersion = extv1.SchemeGroupVersion.String()
 	crd.Kind = "CustomResourceDefinition"
-
-	return crd, nil
 }

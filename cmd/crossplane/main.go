@@ -39,6 +39,7 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/resource"
 	"github.com/crossplane/cli/v2/cmd/crossplane/version"
 	"github.com/crossplane/cli/v2/cmd/crossplane/xpkg"
+	"github.com/crossplane/cli/v2/cmd/crossplane/xr"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/maturity"
 )
@@ -69,6 +70,7 @@ type cli struct {
 	Resource    resource.Cmd    `cmd:"" help:"Work with Crossplane resources."                                          maturity:"beta"`
 	Version     version.Cmd     `cmd:"" help:"Print the client and server version information for the current context."`
 	XPKG        xpkg.Cmd        `cmd:"" help:"Work with Crossplane packages."`
+	XR          xr.Cmd          `cmd:"" help:"Work with Crossplane Composite Resources (XRs)."                          maturity:"alpha"`
 
 	// Hidden top-level alias for render, since it's GA but has moved.
 	Render renderxr.Cmd `cmd:"" help:"Render Crossplane compositions locally using functions." hidden:""`

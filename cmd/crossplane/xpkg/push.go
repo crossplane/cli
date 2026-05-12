@@ -60,8 +60,9 @@ type pushCmd struct {
 	Package string `arg:"" help:"Where to push the package. Must be a fully qualified OCI tag, including the registry, repository, and tag." placeholder:"REGISTRY/REPOSITORY:TAG"`
 
 	// Flags. Keep sorted alphabetically.
+	Annotation            []string `help:"An OCI manifest annotation to add to the package in key=value format. Repeatable." placeholder:"KEY=VALUE" short:"a"`
 	InsecureSkipTLSVerify bool     `help:"[INSECURE] Skip verifying TLS certificates."`
-	PackageFiles          []string `help:"A comma-separated list of xpkg files to push." placeholder:"PATH" predictor:"xpkg_file" short:"f" type:"existingfile"`
+	PackageFiles          []string `help:"A comma-separated list of xpkg files to push."                                     placeholder:"PATH"      predictor:"xpkg_file" short:"f" type:"existingfile"`
 
 	// Internal state. These aren't part of the user-exposed CLI structure.
 	fs afero.Fs
@@ -135,7 +136,12 @@ func (c *pushCmd) Run(logger logging.Logger) error {
 		remote.WithTransport(t),
 	}
 
-	return pushImages(logger, images, c.Package, options...)
+	anns, err := parseAnnotations(c.Annotation)
+	if err != nil {
+		return errors.Wrap(err, errParseAnnotations)
+	}
+
+	return pushImages(logger, images, c.Package, anns, options...)
 }
 
 // packageImage describes a package image that will be pushed.
@@ -149,7 +155,7 @@ type packageImage struct {
 }
 
 // pushImages pushes package images to the given URL using the provided options.
-func pushImages(logger logging.Logger, images []packageImage, url string, options ...remote.Option) error {
+func pushImages(logger logging.Logger, images []packageImage, url string, annotations map[string]string, options ...remote.Option) error {
 	if len(options) == 0 {
 		options = []remote.Option{
 			remote.WithAuthFromKeychain(authn.DefaultKeychain),
@@ -169,6 +175,8 @@ func pushImages(logger logging.Logger, images []packageImage, url string, option
 		if err != nil {
 			return errors.Wrapf(err, errAnnotateLayers)
 		}
+
+		img = annotateImage(img, annotations)
 
 		if err := remote.Write(tag, img, options...); err != nil {
 			return errors.Wrapf(err, errFmtPushPackage, pi.Path)
@@ -191,6 +199,8 @@ func pushImages(logger logging.Logger, images []packageImage, url string, option
 			if err != nil {
 				return errors.Wrapf(err, errAnnotateLayers)
 			}
+
+			img = annotateImage(img, annotations)
 
 			d, err := img.Digest()
 			if err != nil {

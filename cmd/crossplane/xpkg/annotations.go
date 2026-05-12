@@ -19,6 +19,9 @@ package xpkg
 import (
 	"strings"
 
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
 
@@ -34,4 +37,13 @@ func parseAnnotations(kvs []string) (map[string]string, error) {
 		anns[k] = v
 	}
 	return anns, nil
+}
+
+// annotateImage applies annotations to an OCI image manifest. It is a no-op
+// when annotations is empty or nil.
+func annotateImage(img v1.Image, annotations map[string]string) v1.Image {
+	if len(annotations) == 0 {
+		return img
+	}
+	return mutate.Annotations(img, annotations).(v1.Image) //nolint:forcetypeassert // mutate.Annotations always returns v1.Image when given v1.Image input
 }

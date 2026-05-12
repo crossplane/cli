@@ -23,7 +23,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/daemon"
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/spf13/afero"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -96,7 +95,7 @@ func (c *buildCmd) AfterApply() error {
 // buildCmd builds a crossplane package.
 type buildCmd struct {
 	// Flags. Keep sorted alphabetically.
-	Annotation               []string `help:"An OCI manifest annotation to add to the package in key=value format. Repeatable." placeholder:"KEY=VALUE" short:"a"`
+	Annotation               []string `help:"An OCI manifest annotation to add to the package in key=value format. Repeatable."                                                                       placeholder:"KEY=VALUE"                                                short:"a"`
 	EmbedRuntimeImage        string   `help:"An OCI image to embed in the package as its runtime."                                                                                                    placeholder:"NAME"                                                     xor:"runtime-image"`
 	EmbedRuntimeImageTarball string   `help:"An OCI image tarball to embed in the package as its runtime."                                                                                            placeholder:"PATH"                                                     predictor:"file"      type:"existingfile" xor:"runtime-image"`
 	ExamplesRoot             string   `default:"./examples"                                                                                                                                           help:"A directory of example YAML files to include in the package."    predictor:"directory" short:"e"           type:"path"`
@@ -189,9 +188,7 @@ func (c *buildCmd) Run(logger logging.Logger) error {
 	if err != nil {
 		return errors.Wrap(err, errParseAnnotations)
 	}
-	if len(anns) > 0 {
-		img = mutate.Annotations(img, anns).(v1.Image)
-	}
+	img = annotateImage(img, anns)
 
 	hash, err := img.Digest()
 	if err != nil {

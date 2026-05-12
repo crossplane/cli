@@ -62,7 +62,7 @@ type pushCmd struct {
 	// Flags. Keep sorted alphabetically.
 	Annotation            []string `help:"An OCI manifest annotation to add to the package in key=value format. Repeatable." placeholder:"KEY=VALUE" short:"a"`
 	InsecureSkipTLSVerify bool     `help:"[INSECURE] Skip verifying TLS certificates."`
-	PackageFiles          []string `help:"A comma-separated list of xpkg files to push." placeholder:"PATH" predictor:"xpkg_file" short:"f" type:"existingfile"`
+	PackageFiles          []string `help:"A comma-separated list of xpkg files to push."                                     placeholder:"PATH"      predictor:"xpkg_file" short:"f" type:"existingfile"`
 
 	// Internal state. These aren't part of the user-exposed CLI structure.
 	fs afero.Fs
@@ -176,9 +176,7 @@ func pushImages(logger logging.Logger, images []packageImage, url string, annota
 			return errors.Wrapf(err, errAnnotateLayers)
 		}
 
-		if len(annotations) > 0 {
-			img = mutate.Annotations(img, annotations).(v1.Image)
-		}
+		img = annotateImage(img, annotations)
 
 		if err := remote.Write(tag, img, options...); err != nil {
 			return errors.Wrapf(err, errFmtPushPackage, pi.Path)
@@ -202,9 +200,7 @@ func pushImages(logger logging.Logger, images []packageImage, url string, annota
 				return errors.Wrapf(err, errAnnotateLayers)
 			}
 
-			if len(annotations) > 0 {
-				img = mutate.Annotations(img, annotations).(v1.Image)
-			}
+			img = annotateImage(img, annotations)
 
 			d, err := img.Digest()
 			if err != nil {

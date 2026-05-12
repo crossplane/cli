@@ -36,6 +36,7 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
+	"github.com/crossplane/cli/v2/internal/terminal"
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 
 	_ "embed"
@@ -151,6 +152,20 @@ func TestCmdRun(t *testing.T) {
 					Functions: "functions.yaml",
 					Timeout:   time.Minute,
 					fs:        newTestFS(nil),
+				},
+			},
+			want: want{err: cmpopts.AnyError},
+		},
+		"MissingFunctionsArgNoProject": {
+			reason: "Omitting the Functions arg without a project file should return a clear error.",
+			args: args{
+				cmd: Cmd{
+					Operation: "operation.yaml",
+					// Functions intentionally empty.
+					ProjectFile: "/nonexistent/path/crossplane-project.yaml",
+					Timeout:     time.Minute,
+					fs:          newTestFS(nil),
+					newEngine:   newEngineFunc(&render.MockEngine{}),
 				},
 			},
 			want: want{err: cmpopts.AnyError},
@@ -372,7 +387,7 @@ func TestCmdRun(t *testing.T) {
 			buf := &bytes.Buffer{}
 			kctx := &kong.Context{Kong: &kong.Kong{Stdout: buf, Stderr: io.Discard}}
 
-			err := tc.args.cmd.Run(kctx, logging.NewNopLogger())
+			err := tc.args.cmd.Run(kctx, logging.NewNopLogger(), terminal.NewSpinnerPrinter(io.Discard, false))
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nRun(...): -want error, +got error:\n%s", tc.reason, diff)
 			}

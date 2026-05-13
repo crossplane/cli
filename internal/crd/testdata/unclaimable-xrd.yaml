@@ -1,0 +1,44 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xinternalbuckets.platform.example.com
+spec:
+  group: platform.example.com
+  names:
+    categories:
+    - crossplane
+    kind: XInternalBucket
+    plural: xinternalbuckets
+  versions:
+  - name: v1alpha1
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        description: InternalBucket is the Schema for the InternalBucket API.
+        properties:
+          spec:
+            description: InternalBucketSpec defines the desired state of InternalBucket.
+            properties:
+              parameters:
+                properties:
+                  acl:
+                    type: string
+                  region:
+                    type: string
+                  versioning:
+                    type: boolean
+                type: object
+                required:
+                - acl
+                - region
+                - versioning
+            type: object
+            required:
+            - parameters
+          status:
+            description: InternalBucketStatus defines the observed state of InternalBucket.
+            type: object
+        required:
+        - spec
+        type: object
+    served: true

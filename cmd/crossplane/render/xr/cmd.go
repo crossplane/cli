@@ -20,6 +20,8 @@ package xr
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"dario.cat/mergo"
@@ -36,9 +38,20 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
+	"github.com/crossplane/cli/v2/internal/async"
+	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/project"
+	"github.com/crossplane/cli/v2/internal/project/functions"
+	"github.com/crossplane/cli/v2/internal/project/projectfile"
+	"github.com/crossplane/cli/v2/internal/schemas/generator"
+	"github.com/crossplane/cli/v2/internal/schemas/manager"
+	"github.com/crossplane/cli/v2/internal/schemas/runner"
+	"github.com/crossplane/cli/v2/internal/terminal"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
 // Cmd arguments and flags for the `render xr` subcommand.
@@ -46,9 +59,9 @@ type Cmd struct {
 	render.EngineFlags `prefix:""`
 
 	// Arguments.
-	CompositeResource string `arg:"" help:"A YAML file specifying the composite resource (XR) to render."                                        predictor:"yaml_file"              type:"existingfile"`
-	Composition       string `arg:"" help:"A YAML file specifying the Composition to use to render the XR. Must be mode: Pipeline."              predictor:"yaml_file"              type:"existingfile"`
-	Functions         string `arg:"" help:"A YAML file or directory of YAML files specifying the Composition Functions to use to render the XR." predictor:"yaml_file_or_directory" type:"path"`
+	CompositeResource string `arg:"" help:"A YAML file specifying the composite resource (XR) to render."                                                                                  predictor:"yaml_file" type:"existingfile"`
+	Composition       string `arg:"" help:"A YAML file specifying the Composition to use to render the XR. Must be mode: Pipeline."                                                        predictor:"yaml_file" type:"existingfile"`
+	Functions         string `arg:"" help:"A YAML file or directory of YAML files specifying the Composition Functions to use to render the XR. May be omitted when running in a project." optional:""           predictor:"yaml_file_or_directory" type:"path"`
 
 	// Flags. Keep them in alphabetical order.
 	ContextFiles           map[string]string `help:"Comma-separated context key-value pairs to pass to the Function pipeline. Values must be files containing JSON/YAML."                           mapsep:""               predictor:"file"`
@@ -63,8 +76,11 @@ type Cmd struct {
 	FunctionCredentials    string            `help:"A YAML file or directory of YAML files specifying credentials to use for Functions to render the XR."                                           placeholder:"PATH"      predictor:"yaml_file_or_directory" type:"path"`
 	FunctionAnnotations    []string          `help:"Override function annotations for all functions. Can be repeated."                                                                              placeholder:"KEY=VALUE" short:"a"`
 
-	Timeout time.Duration `default:"1m"                                                                                                     help:"How long to run before timing out."`
-	XRD     string        `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that defines the XR's schema and properties." optional:""                               placeholder:"PATH" type:"existingfile"`
+	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                      help:"Directory for cached xpkg package contents."          name:"cache-dir"`
+	MaxConcurrency uint          `default:"8"                                                                                                      help:"Maximum concurrency for building embedded functions."`
+	ProjectFile    string        `default:"crossplane-project.yaml"                                                                                help:"Path to the project file. Optional."                  optional:""        predictor:"yaml_file" short:"f" type:"path"`
+	Timeout        time.Duration `default:"1m"                                                                                                     help:"How long to run before timing out."`
+	XRD            string        `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that defines the XR's schema and properties." optional:""                                                 placeholder:"PATH" type:"existingfile"`
 
 	fs afero.Fs
 
@@ -177,7 +193,10 @@ func (c *Cmd) AfterApply() error {
 }
 
 // Run render.
-func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit // Orchestration is inherently complex.
+func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinter) error { //nolint:gocognit // Orchestration is inherently complex.
+	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+	defer cancel()
+
 	xr, err := render.LoadCompositeResource(c.fs, c.CompositeResource)
 	if err != nil {
 		return errors.Wrapf(err, "cannot load composite resource from %q", c.CompositeResource)
@@ -220,9 +239,9 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 		return errors.Errorf("render only supports Composition Function pipelines: Composition %q must use spec.mode: Pipeline", comp.GetName())
 	}
 
-	fns, err := render.LoadFunctions(c.fs, c.Functions)
+	fns, err := c.loadFunctions(ctx, log, sp)
 	if err != nil {
-		return errors.Wrapf(err, "cannot load functions from %q", c.Functions)
+		return err
 	}
 
 	// Apply global annotation overrides to each function
@@ -288,9 +307,6 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 			return errors.Wrapf(err, "cannot load required schemas from %q", c.RequiredSchemas)
 		}
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
-	defer cancel()
 
 	engine := c.newEngine(&c.EngineFlags, log)
 
@@ -428,4 +444,92 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error { //nolint:gocognit
 	}
 
 	return nil
+}
+
+func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter) ([]pkgv1.Function, error) {
+	if c.Functions != "" {
+		fns, err := render.LoadFunctions(c.fs, c.Functions)
+		if err != nil {
+			return nil, errors.Wrapf(err, "cannot load functions from %q", c.Functions)
+		}
+		return fns, nil
+	}
+
+	projFilePath, err := filepath.Abs(c.ProjectFile)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot determine project file path")
+	}
+	projDir := filepath.Dir(projFilePath)
+
+	if _, err := os.Stat(projFilePath); err != nil {
+		return nil, errors.New("functions argument is required when not in a project")
+	}
+
+	log.Debug("Loading functions from project", "project-file", projFilePath)
+
+	projFS := afero.NewBasePathFs(afero.NewOsFs(), projDir)
+	proj, err := projectfile.Parse(projFS, filepath.Base(projFilePath))
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
+	}
+
+	cacheDir := c.CacheDir
+	if cacheDir == "" {
+		cacheDir = dependency.DefaultCacheDir()
+	}
+
+	xpkgClient, err := clixpkg.NewClient(
+		clixpkg.NewRemoteFetcher(),
+		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
+		clixpkg.WithImageConfigs(proj.Spec.ImageConfigs),
+	)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot create xpkg client")
+	}
+	resolver := clixpkg.NewResolver(xpkgClient)
+
+	depMgr := dependency.NewManager(proj, projFS,
+		dependency.WithProjectFile(filepath.Base(projFilePath)),
+		dependency.WithXpkgClient(xpkgClient),
+		dependency.WithResolver(resolver),
+	)
+
+	var fns []pkgv1.Function
+	if err := sp.WrapWithSuccessSpinner("Resolving function dependencies", func() error {
+		var err error
+		fns, err = project.LoadFunctionDependencies(depMgr, proj)
+		return err
+	}); err != nil {
+		return nil, errors.Wrap(err, "cannot load project functions")
+	}
+
+	if err := sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
+		schemasFS := afero.NewBasePathFs(projFS, proj.Spec.Paths.Schemas)
+		generators := generator.AllLanguages()
+		schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(proj.Spec.ImageConfigs))
+		schemaMgr := manager.New(schemasFS, generators, schemaRunner)
+
+		b := project.NewBuilder(
+			project.BuildWithMaxConcurrency(c.MaxConcurrency),
+			project.BuildWithFunctionIdentifier(functions.DefaultIdentifier),
+			project.BuildWithSchemaManager(schemaMgr),
+			project.BuildWithDependencyManager(depMgr),
+		)
+
+		imgMap, err := b.Build(ctx, proj, projFS,
+			project.BuildWithLogger(log),
+			project.BuildWithEventChannel(ch),
+		)
+		if err != nil {
+			return err
+		}
+
+		embeddedFns, err := project.EmbeddedFunctionsToDaemon(ctx, imgMap)
+		fns = append(fns, embeddedFns...)
+		return err
+	}); err != nil {
+		return nil, errors.Wrap(err, "cannot build embedded functions")
+	}
+
+	return fns, nil
 }

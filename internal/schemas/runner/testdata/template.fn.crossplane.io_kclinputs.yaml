@@ -1,0 +1,161 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.15.0
+  name: kclinputs.template.fn.crossplane.io
+spec:
+  group: template.fn.crossplane.io
+  names:
+    categories:
+    - crossplane
+    kind: KCLInput
+    listKind: KCLInputList
+    plural: kclinputs
+    singular: kclinput
+  scope: Namespaced
+  versions:
+  - name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: KCLInput can be used to provide input to this Function.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: RunSpec defines the desired state of Crossplane KCL function.
+            properties:
+              config:
+                description: Config is the compile config.
+                properties:
+                  arguments:
+                    description: Arguments is the list of top level dynamic arguments
+                      for the kcl option function, e.g., env="prod"
+                    items:
+                      type: string
+                    type: array
+                  debug:
+                    description: Debug denotes running kcl in debug mode.
+                    type: boolean
+                  disableNone:
+                    description: DisableNone denotes running kcl and disable dumping
+                      None values.
+                    type: boolean
+                  overrides:
+                    description: Overrides is the list of override paths and values,
+                      e.g., app.image="v2"
+                    items:
+                      type: string
+                    type: array
+                  pathSelectors:
+                    description: PathSelectors is the list of path selectors to select
+                      output result, e.g., a.b.c
+                    items:
+                      type: string
+                    type: array
+                  settings:
+                    description: Settings is the list of kcl setting files including
+                      all of the CLI config.
+                    items:
+                      type: string
+                    type: array
+                  showHidden:
+                    description: ShowHidden denotes output the hidden attribute in
+                      the result.
+                    type: boolean
+                  sortKeys:
+                    description: SortKeys denotes sorting the output result keys,
+                      e.g., `{b = 1, a = 2} => {a = 2, b = 1}`.
+                    type: boolean
+                  strictRangeCheck:
+                    description: StrictRangeCheck performs the 32-bit strict numeric
+                      range checks on numbers.
+                    type: boolean
+                  vendor:
+                    description: Vendor denotes running kcl in the vendor mode.
+                    type: boolean
+                type: object
+              credentials:
+                description: Credentials for remote locations
+                properties:
+                  password:
+                    type: string
+                  url:
+                    type: string
+                  username:
+                    type: string
+                required:
+                - password
+                - username
+                type: object
+              dependencies:
+                description: |-
+                  Dependencies are the external dependencies for the KCL code.
+                  The format of the `dependencies` field is same as the `[dependencies]` in the `kcl.mod` file
+                type: string
+              params:
+                additionalProperties:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                description: Params are the parameters in key-value pairs format.
+                type: object
+              resources:
+                description: |-
+                  Resources is a list of resources to patch and create
+                  This is utilized when a Target is set to PatchResources
+                items:
+                  properties:
+                    base:
+                      description: |-
+                        Base of the composed resource that patches will be applied to.
+                        According to the patches and transforms functions, this may be ommited on
+                        occassion by a previous pipeline
+                      type: object
+                      x-kubernetes-embedded-resource: true
+                      x-kubernetes-preserve-unknown-fields: true
+                    name:
+                      description: Name is a unique identifier for this entry in a
+                        ResourceList
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              source:
+                description: Source is a required field for providing a KCL script
+                  inline.
+                type: string
+              target:
+                default: Resources
+                description: Target determines what object the export output should
+                  be applied to
+                enum:
+                - Default
+                - PatchDesired
+                - PatchResources
+                - Resources
+                - XR
+                type: string
+            required:
+            - source
+            - target
+            type: object
+        type: object
+    served: true
+    storage: true

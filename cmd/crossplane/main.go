@@ -78,6 +78,9 @@ type cli struct {
 	// Hidden top-level alias for render, since it's GA but has moved.
 	Render renderxr.Cmd `cmd:"" help:"Render Crossplane compositions locally using functions." hidden:""`
 
+	// Hidden command to generate the command-reference docs page.
+	GenerateDocs docsCmd `cmd:"" help:"Generate command-reference docs in markdown format." hidden:""`
+
 	// Flags.
 	ConfigPath string      `env:"CROSSPLANE_CONFIG"                  help:"Path to the crossplane CLI config file." name:"config" placeholder:"PATH"`
 	Verbose    verboseFlag `help:"Print verbose logging statements." name:"verbose"`

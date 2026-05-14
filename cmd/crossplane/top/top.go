@@ -35,7 +35,12 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+
+	_ "embed"
 )
+
+//go:embed help/top.md
+var helpDetail string
 
 const (
 	errKubeConfig             = "failed to get kubeconfig"
@@ -57,21 +62,7 @@ type Cmd struct {
 
 // Help returns help instructions for the top command.
 func (c *Cmd) Help() string {
-	return `
-This command returns current resources utilization (CPU and Memory) by Crossplane pods.
-
-Similar to kubectl top pods, it requires Metrics Server to be correctly configured and working on the server.
-
-Examples:
-  # Show resources utilization for all Crossplane pods in the default 'crossplane-system' namespace in a tabular format.
-  crossplane cluster top
-
-  # Show resources utilization for all Crossplane pods in a specified namespace in a tabular format.
-  crossplane cluster top -n <namespace>
-
-  # Add summary of resources utilization for all Crossplane pods in the default 'crossplane-system' on top of the results.
-  crossplane cluster top -s
-`
+	return helpDetail
 }
 
 type topMetrics struct {

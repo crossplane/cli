@@ -31,7 +31,12 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
 	commonIO "github.com/crossplane/cli/v2/cmd/crossplane/convert/io"
+
+	_ "embed"
 )
+
+//go:embed help/composition-environment.md
+var helpDetail string
 
 // Cmd arguments and flags for converting a Composition to use function-environment-configs.
 type Cmd struct {
@@ -48,26 +53,7 @@ type Cmd struct {
 
 // Help returns help message for the migrate composition-environment command.
 func (c *Cmd) Help() string {
-	return `
-This command converts a Crossplane Composition to use function-environment-configs, if needed.
-
-It adds a function pipeline step using crossplane-contrib/function-environment-configs, if needed.
-By default it'll reference the function as function-environment-configs, but it can be overridden
-with the -f flag.
-
-Examples:
-
-  # Convert an existing Composition (Pipeline mode) leveraging native
-  # Composition Environment to use function-environment-configs.
-  crossplane composition convert composition-environment composition.yaml -o composition-environment.yaml
-
-  # Use a different functionRef and output to stdout.
-  crossplane composition convert composition-environment composition.yaml --function-environment-configs-ref local-function-environment-configs
-
-  # Stdin to stdout.
-  cat composition.yaml | ./crossplane composition convert composition-environment
-
-`
+	return helpDetail
 }
 
 // AfterApply implements kong.AfterApply.

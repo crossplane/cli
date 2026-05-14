@@ -40,9 +40,13 @@ import (
 	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	"github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
+	_ "embed"
 	// Load all the auth plugins for the cloud providers.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
+
+//go:embed help/install.md
+var helpInstall string
 
 const (
 	errPkgIdentifier = "invalid package image identifier"
@@ -66,23 +70,7 @@ type installCmd struct {
 }
 
 func (c *installCmd) Help() string {
-	return `
-This command installs a package in a Crossplane control plane. It uses
-~/.kube/config to connect to the control plane. You can override this using the
-KUBECONFIG environment variable.
-
-IMPORTANT: the package must be fully qualified, including the registry, repository, and tag.
-
-Examples:
-
-  # Wait 1 minute for the package to finish installing before returning.
-  crossplane xpkg install provider xpkg.crossplane.io/crossplane-contrib/provider-aws-eks:v0.41.0 --wait=1m
-
-  # Install a Function named function-eg that uses a runtime config named
-  # customconfig.
-  crossplane xpkg install function xpkg.crossplane.io/crossplane/function-example:v0.1.4 function-eg \
-    --runtime-config=customconfig
-`
+	return helpInstall
 }
 
 // Run the package install cmd.

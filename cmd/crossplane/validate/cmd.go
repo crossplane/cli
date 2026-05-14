@@ -32,7 +32,12 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/version"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/load"
+
+	_ "embed"
 )
+
+//go:embed help/validate.md
+var helpDetail string
 
 // Cmd arguments and flags for render subcommand.
 type Cmd struct {
@@ -53,40 +58,7 @@ type Cmd struct {
 
 // Help prints out the help for the validate command.
 func (c *Cmd) Help() string {
-	return `
-This command validates the provided Crossplane resources against the schemas of the provided extensions like XRDs,
-CRDs, providers, functions and configurations. The output of the "crossplane composition render" command can be
-piped to this validate command in order to rapidly validate on the outputs of the composition development experience.
-
-If providers or configurations are provided as extensions, they will be downloaded and loaded as CRDs before performing
-validation. If the cache directory is not provided, it will default to "~/.crossplane/cache".
-Cache directory can be cleaned before downloading schemas by setting the "clean-cache" flag.
-
-All validation is performed offline locally using the Kubernetes API server's validation library, so it does not require
-any Crossplane instance or control plane to be running or configured.
-
-Examples:
-
-  # Validate all resources in the resources.yaml file against the extensions in the extensions.yaml file
-  crossplane resource validate extensions.yaml resources.yaml
-
-  # Validate all resources in the resourceDir folder against the extensions in the crossplane.yaml file and extensionsDir folder
-  crossplane resource validate crossplane.yaml,extensionsDir/ resourceDir/
-
-  # Validate all resources in the resources.yaml file against the extensions in the extensions.yaml file using a specific Crossplane image version
-  crossplane resource validate extensions.yaml resources.yaml --crossplane-image=xpkg.crossplane.io/crossplane/crossplane:v1.20.0
-
-  # Validate all resources in the resourceDir folder against the extensions in the extensionsDir folder and skip
-  # success logs
-  crossplane resource validate extensionsDir/ resourceDir/ --skip-success-results
-
-  # Validate the output of the render command against the extensions in the extensionsDir folder
-  crossplane composition render xr.yaml composition.yaml func.yaml --include-full-xr | crossplane resource validate extensionsDir/ -
-
-  # Validate all resources in the resourceDir folder against the extensions in the extensionsDir folder using provided
-  # cache directory and clean the cache directory before downloading schemas
-  crossplane resource validate extensionsDir/ resourceDir/ --cache-dir .cache --clean-cache
-`
+	return helpDetail
 }
 
 // AfterApply implements kong.AfterApply.

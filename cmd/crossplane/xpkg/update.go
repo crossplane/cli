@@ -36,8 +36,12 @@ import (
 	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	"github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
+	_ "embed"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // Load all the auth plugins for the cloud providers.
 )
+
+//go:embed help/update.md
+var helpUpdate string
 
 // updateCmd updates a package.
 type updateCmd struct {
@@ -48,18 +52,7 @@ type updateCmd struct {
 }
 
 func (c *updateCmd) Help() string {
-	return `
-This command updates a package in a Crossplane control plane. It uses
-~/.kube/config to connect to the control plane. You can override this using the
-KUBECONFIG environment variable.
-
-IMPORTANT: the package must be fully qualified, including the registry, repository, and tag.
-
-Examples:
-
-  # Update the Function named function-eg
-  crossplane xpkg update function xpkg.crossplane.io/crossplane/function-example:v0.1.5 function-eg
-`
+	return helpUpdate
 }
 
 // Run the package update cmd.

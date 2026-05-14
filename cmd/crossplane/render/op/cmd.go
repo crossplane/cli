@@ -36,7 +36,12 @@ import (
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
+
+	_ "embed"
 )
+
+//go:embed help/render.md
+var helpDetail string
 
 // Cmd arguments and flags for alpha render op subcommand.
 type Cmd struct {
@@ -68,94 +73,7 @@ type Cmd struct {
 
 // Help prints out the help for the alpha render op command.
 func (c *Cmd) Help() string {
-	return `
-This command shows you what resources an Operation would create or mutate by
-printing them to stdout. It runs the Crossplane render engine to produce
-high-fidelity output that matches what the real reconciler would produce.
-
-For Operations, it runs the operation function pipeline and shows what
-resources the operation would mutate.
-
-Functions are pulled and run using Docker by default. You can add
-the following annotations to each function to change how they're run:
-
-  render.crossplane.io/runtime: "Development"
-
-    Connect to a function that is already running, instead of using Docker. This
-	is useful to develop and debug new functions. The function must be listening
-	at localhost:9443 and running with the --insecure flag.
-
-  render.crossplane.io/runtime-development-target: "dns:///example.org:7443"
-
-    Connect to a function running somewhere other than localhost:9443. The
-	target uses gRPC target syntax.
-
-  render.crossplane.io/runtime-docker-cleanup: "Orphan"
-
-    Don't stop the function's Docker container after rendering.
-
-  render.crossplane.io/runtime-docker-name: "<name>"
-
-    create a container with that name and also reuse it as long as it is running or can be restarted.
-
-  render.crossplane.io/runtime-docker-pull-policy: "Always"
-
-    Always pull the function's package, even if it already exists locally.
-	Other supported values are Never, or IfNotPresent.
-
-Use the standard DOCKER_HOST, DOCKER_API_VERSION, DOCKER_CERT_PATH, and
-DOCKER_TLS_VERIFY environment variables to configure how this command connects
-to the Docker daemon.
-
-Examples:
-
-  # Render an Operation.
-  crossplane operation render operation.yaml functions.yaml
-
-  # Pin the Crossplane version used for rendering.
-  crossplane operation render operation.yaml functions.yaml \
-    --crossplane-version=v2.2.1
-
-  # Use a local crossplane binary instead of Docker.
-  crossplane operation render operation.yaml functions.yaml \
-    --crossplane-binary=/usr/local/bin/crossplane
-
-  # Pass context values to the function pipeline.
-  crossplane operation render operation.yaml functions.yaml \
-    --context-values=apiextensions.crossplane.io/environment='{"key": "value"}'
-
-  # Pass required resources functions can request.
-  crossplane operation render operation.yaml functions.yaml \
-	--required-resources=required-resources.yaml
-
-  # Pass OpenAPI schemas for functions that need them.
-  crossplane operation render operation.yaml functions.yaml \
-	--required-schemas=schemas/
-
-  # Render a WatchOperation with a watched resource.
-  crossplane operation render watchoperation.yaml functions.yaml \
-	--watched-resource=watched-configmap.yaml
-
-  # Pass credentials to functions that need them.
-  crossplane operation render operation.yaml functions.yaml \
-	--function-credentials=credentials.yaml
-
-  # Include function results and context in output.
-  crossplane operation render operation.yaml functions.yaml -r -c
-
-  # Include the full Operation with original spec and metadata.
-  crossplane operation render operation.yaml functions.yaml -o
-
-  # Override function annotations for remote Docker daemon.
-  crossplane operation render operation.yaml functions.yaml \
-	-a render.crossplane.io/runtime-docker-publish-address=0.0.0.0 \
-	-a render.crossplane.io/runtime-docker-target=192.168.1.100
-
-  # Use development runtime with custom target.
-  crossplane operation render operation.yaml functions.yaml \
-	-a render.crossplane.io/runtime=Development \
-	-a render.crossplane.io/runtime-development-target=localhost:9444
-`
+	return helpDetail
 }
 
 // AfterApply implements kong.AfterApply.

@@ -39,7 +39,12 @@ import (
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
+
+	_ "embed"
 )
+
+//go:embed help/render.md
+var helpDetail string
 
 // Cmd arguments and flags for the `render xr` subcommand.
 type Cmd struct {
@@ -74,98 +79,7 @@ type Cmd struct {
 
 // Help prints out the help for the render command.
 func (c *Cmd) Help() string {
-	return `
-This command shows you what composed resources Crossplane would create by
-printing them to stdout. It also prints any changes that would be made to the
-status of the XR. It runs the Crossplane render engine (either in a Docker
-container or via a local binary) to produce high-fidelity output that matches
-what the real reconciler would produce.
-
-Composition Functions are pulled and run using Docker by default. You can add
-the following annotations to each Function to change how they're run:
-
-  render.crossplane.io/runtime: "Development"
-
-    Connect to a Function that is already running, instead of using Docker. This
-	is useful to develop and debug new Functions. The Function must be listening
-	at localhost:9443 and running with the --insecure flag.
-
-  render.crossplane.io/runtime-development-target: "dns:///example.org:7443"
-
-    Connect to a Function running somewhere other than localhost:9443. The
-	target uses gRPC target syntax (e.g., dns:///example.org:7443 or simply example.org:7443).
-
-  render.crossplane.io/runtime-docker-cleanup: "Orphan"
-
-    Don't stop the Function's Docker container after rendering.
-
-  render.crossplane.io/runtime-docker-name: "<name>"
-
-    create a container with that name and also reuse it as long as it is running or can be restarted.
-
-  render.crossplane.io/runtime-docker-pull-policy: "Always"
-
-    Always pull the Function's package, even if it already exists locally.
-	Other supported values are Never, or IfNotPresent.
-
-  render.crossplane.io/runtime-docker-publish-address: "0.0.0.0"
-
-    Host address that Docker should publish the Function's container port to.
-    Defaults to 127.0.0.1 (localhost only). Use 0.0.0.0 to publish to all host
-    network interfaces, enabling access from remote machines.
-
-  render.crossplane.io/runtime-docker-target: "docker-host"
-
-    Address that the render CLI should use to connect to the Function's Docker
-    container. If not specified, uses the publish address.
-
-Use the standard DOCKER_HOST, DOCKER_API_VERSION, DOCKER_CERT_PATH, and
-DOCKER_TLS_VERIFY environment variables to configure how this command connects
-to the Docker daemon.
-
-Examples:
-
-  # Simulate creating a new XR.
-  crossplane composition render xr.yaml composition.yaml functions.yaml
-
-  # Simulate updating an XR that already exists.
-  crossplane composition render xr.yaml composition.yaml functions.yaml \
-    --observed-resources=existing-observed-resources.yaml
-
-  # Pin the Crossplane version used for rendering.
-  crossplane composition render xr.yaml composition.yaml functions.yaml \
-    --crossplane-version=v2.3.0
-
-  # Use a local crossplane binary instead of Docker.
-  crossplane composition render xr.yaml composition.yaml functions.yaml \
-    --crossplane-binary=/usr/local/bin/crossplane
-
-  # Pass context values to the Function pipeline.
-  crossplane composition render xr.yaml composition.yaml functions.yaml \
-    --context-values=apiextensions.crossplane.io/environment='{"key": "value"}'
-
-  # Pass required resources Functions in the pipeline can request.
-  crossplane composition render xr.yaml composition.yaml functions.yaml \
-	--required-resources=required-resources.yaml
-
-  # Pass OpenAPI schemas for Functions that need them.
-  crossplane composition render xr.yaml composition.yaml functions.yaml \
-	--required-schemas=schemas/
-
-  # Pass credentials to Functions in the pipeline that need them.
-  crossplane composition render xr.yaml composition.yaml functions.yaml \
-	--function-credentials=credentials.yaml
-
-  # Override function annotations for a remote Docker daemon.
-  DOCKER_HOST=tcp://192.168.1.100:2376 crossplane composition render xr.yaml composition.yaml functions.yaml \
-	-a render.crossplane.io/runtime-docker-publish-address=0.0.0.0 \
-	-a render.crossplane.io/runtime-docker-target=192.168.1.100
-
-  # Force all functions to use development runtime.
-  crossplane composition render xr.yaml composition.yaml functions.yaml \
-	-a render.crossplane.io/runtime=Development \
-	-a render.crossplane.io/runtime-development-target=localhost:9444
-`
+	return helpDetail
 }
 
 // AfterApply implements kong.AfterApply.

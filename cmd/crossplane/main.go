@@ -42,7 +42,12 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/xrd"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/maturity"
+
+	_ "embed"
 )
+
+//go:embed help.md
+var helpDescription string
 
 var _ = kong.Must(&cli{})
 
@@ -75,6 +80,9 @@ type cli struct {
 	// Hidden top-level alias for render, since it's GA but has moved.
 	Render renderxr.Cmd `cmd:"" help:"Render Crossplane compositions locally using functions." hidden:""`
 
+	// Hidden command to generate the command-reference docs page.
+	GenerateDocs docsCmd `cmd:"" help:"Generate command-reference docs in markdown format." hidden:""`
+
 	// Flags.
 	ConfigPath string      `env:"CROSSPLANE_CONFIG"                  help:"Path to the crossplane CLI config file." name:"config" placeholder:"PATH"`
 	Verbose    verboseFlag `help:"Print verbose logging statements." name:"verbose"`
@@ -104,18 +112,16 @@ func main() {
 
 	parser := kong.Must(&cli{},
 		kong.Name("crossplane"),
-		kong.Description("A command line tool for interacting with Crossplane."),
 		// Binding a variable to kong context makes it available to all commands
 		// at runtime.
 		kong.BindTo(logger, (*logging.Logger)(nil)),
 		kong.BindTo(configcmd.ConfigPath(cfgPath), (*configcmd.ConfigPath)(nil)),
-		kong.ConfigureHelp(kong.HelpOptions{
-			FlagsLast:           true,
-			Compact:             true,
-			WrapUpperBound:      80,
-			NoExpandSubcommands: true,
-		}),
+		kong.Help(helpPrinter),
 		kong.UsageOnError())
+
+	// Set the top-level Detail to the embedded markdown so it renders via the
+	// markdown help printer. Done before maturity.Apply, which appends to it.
+	parser.Model.Detail = helpDescription
 
 	kongplete.Complete(parser,
 		kongplete.WithPredictors(completion.Predictors()),

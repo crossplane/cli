@@ -17,6 +17,11 @@ limitations under the License.
 // Package config contains the `crossplane config` subcommands.
 package config
 
+import _ "embed"
+
+//go:embed help/config.md
+var helpDetail string
+
 // ConfigPath is the resolved config file path. It is bound by main so that
 // subcommands can receive it as a Run() argument. Using a typed alias keeps
 // the binding distinct from any other string value Kong may know about.
@@ -31,19 +36,5 @@ type Cmd struct {
 
 // Help returns the extended help for the config command.
 func (c *Cmd) Help() string {
-	return `
-Manage the crossplane CLI configuration file.
-
-The config file location is, in priority order:
-  1. The --config flag.
-  2. The CROSSPLANE_CONFIG environment variable.
-  3. $XDG_CONFIG_HOME/crossplane/config.yaml (or ~/.config/crossplane/config.yaml).
-
-Examples:
-  # Show the current effective config.
-  crossplane config view
-
-  # Enable alpha commands.
-  crossplane config set features.enableAlpha true
-`
+	return helpDetail
 }

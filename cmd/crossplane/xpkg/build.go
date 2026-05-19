@@ -34,7 +34,12 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/parser"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/parser/examples"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/parser/yaml"
+
+	_ "embed"
 )
+
+//go:embed help/build.md
+var helpBuild string
 
 const (
 	errGetNameFromMeta         = "failed to get package name from crossplane.yaml"
@@ -108,19 +113,7 @@ type buildCmd struct {
 }
 
 func (c *buildCmd) Help() string {
-	return `
-This command builds a package file from a local directory of files.
-
-Examples:
-
-  # Build a package from the files in the 'package' directory.
-  crossplane xpkg build --package-root=package/
-
-  # Build a package that embeds a Provider's controller OCI image built with
-  # 'docker build' so that the package can also be used to run the provider.
-  # Provider and Function packages support embedding runtime images.
-  crossplane xpkg build --embed-runtime-image=cc873e13cdc1
-`
+	return helpBuild
 }
 
 // GetRuntimeBaseImageOpts returns the controller base image options.

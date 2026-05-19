@@ -20,7 +20,12 @@ package convert
 
 import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/convert/compositionenvironment"
+
+	_ "embed"
 )
+
+//go:embed help/convert.md
+var helpDetail string
 
 // Cmd converts a Crossplane resource to a newer version or a different kind.
 type Cmd struct {
@@ -29,15 +34,5 @@ type Cmd struct {
 
 // Help returns help message for the migrate command.
 func (c *Cmd) Help() string {
-	return `
-This command converts a Crossplane resource to a newer version or a different kind.
-
-Currently supported conversions:
-  * native Composition Environment -> function-environment-configs
-
-Examples:
-  # Convert an existing Composition to use function-environment-configs instead of native Composition Environment,
-  # requires the composition to be in Pipeline mode already.
-  crossplane composition convert composition-environment composition.yaml -o composition-environment.yaml
-`
+	return helpDetail
 }

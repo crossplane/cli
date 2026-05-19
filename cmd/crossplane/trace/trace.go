@@ -41,7 +41,12 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource/xrm"
 	"github.com/crossplane/cli/v2/cmd/crossplane/internal"
 	"github.com/crossplane/cli/v2/cmd/crossplane/trace/internal/printer"
+
+	_ "embed"
 )
+
+//go:embed help/trace.md
+var helpDetail string
 
 const (
 	errGetResource            = "cannot get requested resource"
@@ -78,40 +83,7 @@ type Cmd struct {
 
 // Help returns help message for the trace command.
 func (c *Cmd) Help() string {
-	return `
-This command trace a Crossplane resource (Claim, Composite, or Managed Resource)
-to get a detailed output of its relationships, helpful for troubleshooting.
-
-If needed the resource kind can be also specified further,
-'TYPE[.VERSION][.GROUP]', e.g. mykind.example.org or
-mykind.v1alpha1.example.org.
-
-Examples:
-  # Trace a MyKind resource (mykinds.example.org/v1alpha1) named 'my-res' in the namespace 'my-ns'
-  crossplane resource trace mykind my-res -n my-ns
-
-  # Trace all MyKind resources (mykinds.example.org/v1alpha1) in the namespace 'my-ns'
-  crossplane resource trace mykind -n my-ns
-
-  # Output wide format, showing full errors and condition messages, and other useful info
-  # depending on the target type, e.g. composed resources names for composite resources or image used for packages
-  crossplane resource trace mykind my-res -n my-ns -o wide
-
-  # Show connection secrets in the output
-  crossplane resource trace mykind my-res -n my-ns --show-connection-secrets
-
-  # Output a graph in dot format and pipe to dot to generate a png
-  crossplane resource trace mykind my-res -n my-ns -o dot | dot -Tpng -o output.png
-
-  # Output all retrieved resources to json and pipe to jq to have it coloured
-  crossplane resource trace mykind my-res -n my-ns -o json | jq
-
-  # Output debug logs to stderr while redirecting a dot formatted graph to dot
-  crossplane resource trace mykind my-res -n my-ns -o dot --verbose | dot -Tpng -o output.png
-
-  # Watch a resource continuously until it is deleted
-  crossplane resource trace mykind my-res -n my-ns --watch
-`
+	return helpDetail
 }
 
 func (c *Cmd) setupKubeClient(logger logging.Logger) (clientcmd.ClientConfig, client.WithWatch, meta.RESTMapper, error) {

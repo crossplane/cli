@@ -34,7 +34,12 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+
+	_ "embed"
 )
+
+//go:embed help/init.md
+var helpInit string
 
 const (
 	notes      = "NOTES.txt"
@@ -63,44 +68,12 @@ type initCmd struct {
 }
 
 func (c *initCmd) Help() string {
-	tpl := `
-This command initializes a directory that you can use to build a package. It
-uses a template to initialize the directory. It can use any Git repository as a
-template.
-
-You can specify either a full Git URL or a well-known name as a template. The
-following well-known template names are supported:
-
-%s
-
-If the template contains NOTES.txt in its root directory, it will be
-printed to stdout. This is useful for providing instructions for how
-to use the template.
-
-If the template contains init.sh in its root directory, it will be optionally
-printed out and executed. This is useful for providing a script that can be
-used to initialize the package automatically. Use the -r flag to run the
-script without prompting.
-
-Examples:
-
-  # Initialize a new Go Composition Function named function-example.
-  crossplane xpkg init function-example function-template-go
-
-  # Initialize a new Provider named provider-example from a custom template.
-  crossplane xpkg init provider-example https://github.com/crossplane/provider-template-custom
-
-  # Initialize a new Go Composition Function named function-example and run
-  # its init.sh script (if it exists) without prompting the user or displaying its contents.
-  crossplane xpkg init function-example function-template-go --run-init-script
-`
-
 	b := strings.Builder{}
 	for name, url := range WellKnownTemplates() {
-		fmt.Fprintf(&b, " - %s (%s)\n", name, url)
+		fmt.Fprintf(&b, "- `%s` ([%s](%s))\n", name, url, url)
 	}
 
-	return fmt.Sprintf(tpl, b.String())
+	return fmt.Sprintf(helpInit, b.String())
 }
 
 func (c *initCmd) Run(k *kong.Context, logger logging.Logger) error {

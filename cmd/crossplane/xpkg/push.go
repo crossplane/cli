@@ -37,7 +37,12 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
+
+	_ "embed"
 )
+
+//go:embed help/push.md
+var helpPush string
 
 const (
 	errGetwd           = "failed to get working directory while searching for package"
@@ -68,21 +73,7 @@ type pushCmd struct {
 }
 
 func (c *pushCmd) Help() string {
-	return `
-Packages can be pushed to any OCI registry. A package's OCI tag must be a semantic
-version. Credentials for the registry are automatically retrieved from xpkg login
-and dockers configuration as fallback.
-
-IMPORTANT: the package must be fully qualified, including the registry, repository, and tag.
-
-Examples:
-
-  # Push a multi-platform package.
-  crossplane xpkg push -f function-amd64.xpkg,function-arm64.xpkg xpkg.crossplane.io/crossplane/function-example:v1.0.0
-
-  # Push the xpkg file in the current directory to a different registry.
-  crossplane xpkg push index.docker.io/crossplane/function-example:v1.0.0
-`
+	return helpPush
 }
 
 // AfterApply sets the tag for the parent push command.

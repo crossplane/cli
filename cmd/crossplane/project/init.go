@@ -27,7 +27,12 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
 	"github.com/crossplane/cli/v2/internal/terminal"
+
+	_ "embed"
 )
+
+//go:embed help/init.md
+var initHelp string
 
 const projectFileName = "crossplane-project.yaml"
 
@@ -35,6 +40,10 @@ const projectFileName = "crossplane-project.yaml"
 type initCmd struct {
 	Name      string `arg:""                                                    help:"The name of the new project."`
 	Directory string `help:"Directory to initialize. Defaults to project name." short:"d"                           type:"path"`
+}
+
+func (c *initCmd) Help() string {
+	return initHelp
 }
 
 func (c *initCmd) Run(sp terminal.SpinnerPrinter) error {

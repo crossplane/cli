@@ -47,6 +47,9 @@ import (
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
+//go:embed help/generate.md
+var generateHelp string
+
 var (
 	//go:embed templates/kcl/*
 	kclTemplates embed.FS
@@ -75,6 +78,10 @@ type generateCmd struct {
 	fsPath            string
 	projectRepository string
 	projectSource     string
+}
+
+func (c *generateCmd) Help() string {
+	return generateHelp
 }
 
 // AfterApply sets up the project filesystem.

@@ -39,7 +39,12 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+
+	_ "embed"
 )
+
+//go:embed help/build.md
+var buildHelp string
 
 // buildCmd builds a project into Crossplane packages.
 type buildCmd struct {
@@ -51,6 +56,10 @@ type buildCmd struct {
 
 	proj   *devv1alpha1.Project
 	projFS afero.Fs
+}
+
+func (c *buildCmd) Help() string {
+	return buildHelp
 }
 
 // AfterApply parses flags and reads the project file.

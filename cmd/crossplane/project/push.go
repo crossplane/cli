@@ -37,7 +37,12 @@ import (
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/terminal"
+
+	_ "embed"
 )
+
+//go:embed help/push.md
+var pushHelp string
 
 // pushCmd pushes a built project to an OCI registry.
 type pushCmd struct {
@@ -53,6 +58,10 @@ type pushCmd struct {
 	projFS    afero.Fs
 	packageFS afero.Fs
 	transport http.RoundTripper
+}
+
+func (c *pushCmd) Help() string {
+	return pushHelp
 }
 
 // AfterApply parses flags, reads the project file, and prepares the push

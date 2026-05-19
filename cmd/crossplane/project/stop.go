@@ -29,13 +29,22 @@ import (
 	"github.com/crossplane/cli/v2/internal/project/controlplane"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/terminal"
+
+	_ "embed"
 )
+
+//go:embed help/stop.md
+var stopHelp string
 
 // stopCmd tears down a local dev control plane.
 type stopCmd struct {
 	ProjectFile      string `default:"crossplane-project.yaml"                               help:"Path to project definition." short:"f"`
 	ControlPlaneName string `help:"Name of the dev control plane. Defaults to project name."`
 	RegistryDir      string `help:"Directory for local registry images."`
+}
+
+func (c *stopCmd) Help() string {
+	return stopHelp
 }
 
 // Run executes the stop command.

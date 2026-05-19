@@ -40,7 +40,12 @@ import (
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+
+	_ "embed"
 )
+
+//go:embed help/generate.md
+var generateHelp string
 
 const (
 	functionAutoReadyName    = "crossplane-contrib-function-auto-ready"
@@ -59,6 +64,10 @@ type generateCmd struct {
 	apisFS     afero.Fs
 	proj       *v1alpha1.Project
 	depManager *dependency.Manager
+}
+
+func (c *generateCmd) Help() string {
+	return generateHelp
 }
 
 // AfterApply sets up the project filesystem.

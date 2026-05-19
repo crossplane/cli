@@ -51,7 +51,12 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+
+	_ "embed"
 )
+
+//go:embed help/run.md
+var runHelp string
 
 // runCmd builds a project and runs it in a local dev control plane.
 type runCmd struct {
@@ -73,6 +78,10 @@ type runCmd struct {
 
 	initResources  []runtime.RawExtension
 	extraResources []runtime.RawExtension
+}
+
+func (c *runCmd) Help() string {
+	return runHelp
 }
 
 // AfterApply parses flags and reads the project file.

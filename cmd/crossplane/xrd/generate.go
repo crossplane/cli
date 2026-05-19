@@ -40,7 +40,12 @@ import (
 
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/xrd"
+
+	_ "embed"
 )
+
+//go:embed help/generate.md
+var generateHelp string
 
 type generateCmd struct {
 	File        string `arg:""                                        help:"Path to the XR or XRC YAML file."`
@@ -52,6 +57,10 @@ type generateCmd struct {
 	projFS  afero.Fs
 	apisFS  afero.Fs
 	relFile string
+}
+
+func (c *generateCmd) Help() string {
+	return generateHelp
 }
 
 // AfterApply sets up the project filesystem.

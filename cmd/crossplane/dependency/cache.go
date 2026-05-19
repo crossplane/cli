@@ -31,7 +31,12 @@ import (
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+
+	_ "embed"
 )
+
+//go:embed help/update-cache.md
+var updateHelp string
 
 // updateCacheCmd updates the dependency cache by regenerating all schemas.
 type updateCacheCmd struct {
@@ -39,6 +44,10 @@ type updateCacheCmd struct {
 	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE"       help:"Directory for cached xpkg package contents." name:"cache-dir"`
 	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"        help:"Token for git HTTPS authentication."`
 	GitUsername string `default:"x-access-token"          env:"CROSSPLANE_GIT_USERNAME"                      help:"Username for git HTTPS authentication."`
+}
+
+func (c *updateCacheCmd) Help() string {
+	return updateHelp
 }
 
 // Run executes the update-cache command.
@@ -93,11 +102,18 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) 
 	})
 }
 
+//go:embed help/clean-cache.md
+var cleanHelp string
+
 // cleanCacheCmd removes all generated schemas.
 type cleanCacheCmd struct {
 	ProjectFile  string `default:"crossplane-project.yaml"                                        help:"Path to project definition file."            short:"f"`
 	CacheDir     string `env:"CROSSPLANE_XPKG_CACHE"                                              help:"Directory for cached xpkg package contents." name:"cache-dir"`
 	KeepPackages bool   `help:"Keep cached xpkg package contents; remove only generated schemas." name:"keep-packages"`
+}
+
+func (c *cleanCacheCmd) Help() string {
+	return cleanHelp
 }
 
 // Run executes the clean-cache command.

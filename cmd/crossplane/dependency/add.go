@@ -32,7 +32,12 @@ import (
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+
+	_ "embed"
 )
+
+//go:embed help/add.md
+var addHelp string
 
 // addCmd adds a dependency to the current project.
 type addCmd struct {
@@ -44,6 +49,10 @@ type addCmd struct {
 	APIOnly bool   `help:"Mark an xpkg dependency as API-only (not a runtime dependency)." name:"api-only"`
 	GitRef  string `help:"Git ref for CRD dependencies (branch, tag, or commit SHA)."      name:"git-ref"`
 	GitPath string `help:"Path within the git repository for CRD dependencies."            name:"git-path"`
+}
+
+func (c *addCmd) Help() string {
+	return addHelp
 }
 
 // Run executes the add command.

@@ -20,9 +20,7 @@ permissions:
   contents: read
 
 env:
-  DOCKER_USR: ${{ secrets.DOCKER_USR }}
   AWS_USR: ${{ secrets.AWS_USR }}
-  UPBOUND_MARKETPLACE_PUSH_ROBOT_USR: ${{ secrets.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR }}
 
 jobs:
   promote:
@@ -43,48 +41,6 @@ jobs:
         with:
           name: crossplane
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Login to DockerHub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        if: env.DOCKER_USR != ''
-        with:
-          username: ${{ secrets.DOCKER_USR }}
-          password: ${{ secrets.DOCKER_PSW }}
-
-      - name: Login to Upbound
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        if: env.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR != ''
-        with:
-          registry: xpkg.upbound.io
-          username: ${{ secrets.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR }}
-          password: ${{ secrets.UPBOUND_MARKETPLACE_PUSH_ROBOT_PSW }}
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Promote Images to DockerHub
-        if: env.DOCKER_USR != ''
-        env:
-          VERSION: ${{ inputs.version }}
-          CHANNEL: ${{ inputs.channel }}
-        run: nix run .#promote-images -- crossplane/crossplane "$VERSION" "$CHANNEL"
-
-      - name: Promote Images to Upbound
-        if: env.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR != ''
-        env:
-          VERSION: ${{ inputs.version }}
-          CHANNEL: ${{ inputs.channel }}
-        run: nix run .#promote-images -- xpkg.upbound.io/crossplane/crossplane "$VERSION" "$CHANNEL"
-
-      - name: Promote Images to GitHub Container Registry
-        env:
-          VERSION: ${{ inputs.version }}
-          CHANNEL: ${{ inputs.channel }}
-        run: nix run .#promote-images -- ghcr.io/crossplane/crossplane "$VERSION" "$CHANNEL"
 
       - name: Promote Artifacts to S3
         if: env.AWS_USR != ''

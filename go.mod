@@ -12,8 +12,8 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/containerd/errdefs v1.0.0
-	github.com/crossplane/crossplane-runtime/v2 v2.3.0-rc.0.0.20260504135302-a596e1f75635
-	github.com/crossplane/crossplane/apis/v2 v2.0.0-20260424160951-8f231230ebb6
+	github.com/crossplane/crossplane-runtime/v2 v2.3.0
+	github.com/crossplane/crossplane/apis/v2 v2.3.0
 	github.com/crossplane/function-sdk-go v0.6.1-0.20260506001521-78a3dd862da1
 	github.com/docker/cli v29.4.0+incompatible
 	github.com/docker/docker v28.5.2+incompatible
@@ -197,7 +197,7 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/in-toto/attestation v1.1.2 // indirect
-	github.com/in-toto/in-toto-golang v0.10.0 // indirect
+	github.com/in-toto/in-toto-golang v0.11.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/jedisct1/go-minisign v0.0.0-20241212093149-d2f9f49435c7 // indirect

@@ -226,10 +226,10 @@ github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSV
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
 github.com/creack/pty v1.1.18 h1:n56/Zwd5o6whRC5PMGretI4IdRLlmBXYNjScPaBgsbY=
 github.com/creack/pty v1.1.18/go.mod h1:MOBLtS5ELjhRRrroQr9kyvTxUAFNvYEK993ew/Vr4O4=
-github.com/crossplane/crossplane-runtime/v2 v2.3.0-rc.0.0.20260504135302-a596e1f75635 h1:s2SMqGr0k2e0a76KZBRz9khcQ/2+rZRfXh/qT1mDzVQ=
-github.com/crossplane/crossplane-runtime/v2 v2.3.0-rc.0.0.20260504135302-a596e1f75635/go.mod h1:Ka1RUeGewtYwI1GdNYNdJKnocTWbueDkqbRrcqDCA2M=
-github.com/crossplane/crossplane/apis/v2 v2.0.0-20260424160951-8f231230ebb6 h1:9ki6AJQgBJIcLNjK+scUZp2ZDenuAo18d0JSNOlkY2Y=
-github.com/crossplane/crossplane/apis/v2 v2.0.0-20260424160951-8f231230ebb6/go.mod h1:h7KE74Z4TFs1L/FFv3RdsiG9Uax7L56oHpcggSZnONg=
+github.com/crossplane/crossplane-runtime/v2 v2.3.0 h1:FvcMGxRuPF3zw7NclU0S8B96d33iOogXtiHZyFwcRiA=
+github.com/crossplane/crossplane-runtime/v2 v2.3.0/go.mod h1:PAo3zIfmMzrS18HGyHJLXCeXIp0nFW2Md2Fn9gocMaU=
+github.com/crossplane/crossplane/apis/v2 v2.3.0 h1:Tw3bDcQN7v8PIwMiZx+6w5/2EBU8Q8vKpvmAsdTgLe4=
+github.com/crossplane/crossplane/apis/v2 v2.3.0/go.mod h1:o+D0ktZQKJCFcpfzMKA4n53aTo2sFqqDsADBNIRuIyE=
 github.com/crossplane/function-sdk-go v0.6.1-0.20260506001521-78a3dd862da1 h1:jqnuzsHs2nLi/683A1Qj7WLOpf7zB4hHhx7+6uEBCTU=
 github.com/crossplane/function-sdk-go v0.6.1-0.20260506001521-78a3dd862da1/go.mod h1:yg4qMMRBQPZ75INoGEjfGQ014z4GilpgDcx4Fdf6AaA=
 github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467 h1:uX1JmpONuD549D73r6cgnxyUu18Zb7yHAy5AYU0Pm4Q=
@@ -523,8 +523,8 @@ github.com/huandu/xstrings v1.5.0/go.mod h1:y5/lhBue+AyNmUVz9RLU9xbLR0o4KIIExikq
 github.com/ianlancetaylor/demangle v0.0.0-20200824232613-28f6c0f3b639/go.mod h1:aSSvb/t6k1mPoxDqO4vJh6VOCGPwU4O0C2/Eqndh1Sc=
 github.com/in-toto/attestation v1.1.2 h1:MBFn6lsMq6dptQZJBhalXTcWMb/aJy3V+GX3VYj/V1E=
 github.com/in-toto/attestation v1.1.2/go.mod h1:gYFddHMZj3DiQ0b62ltNi1Vj5rC879bTmBbrv9CRHpM=
-github.com/in-toto/in-toto-golang v0.10.0 h1:+s2eZQSK3WmWfYV85qXVSBfqgawi/5L02MaqA4o/tpM=
-github.com/in-toto/in-toto-golang v0.10.0/go.mod h1:wjT4RiyFlLWCmLUJjwB8oZcjaq7HA390aMJcD3xXgmg=
+github.com/in-toto/in-toto-golang v0.11.0 h1:nfidMYBFx+E0lnmX5KUnN2Pdm8zdNKal1ayjJuzzRoA=
+github.com/in-toto/in-toto-golang v0.11.0/go.mod h1:u3PjTnwFKjp5a1YCcw8SJg0G+tMeKfVoWsWeFMDCMtw=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/invopop/jsonschema v0.14.0 h1:MHQqLhvpNUZfw+hM3AZDYK7jxO8FZoQeQM77g8iyZjg=

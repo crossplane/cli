@@ -17,7 +17,9 @@ limitations under the License.
 // Package xpkg contains Crossplane packaging commands.
 package xpkg
 
-import _ "embed"
+import (
+	_ "embed"
+)
 
 //go:embed help/xpkg.md
 var helpXpkg string
@@ -29,6 +31,7 @@ type Cmd struct {
 	// Keep subcommands sorted alphabetically.
 	Batch   batchCmd   `cmd:"" help:"Batch build and push a family of provider packages."`
 	Build   buildCmd   `cmd:"" help:"Build a new package."`
+	CRD     crdCmd     `cmd:"" help:"Download CRDs from package dependencies."`
 	Init    initCmd    `cmd:"" help:"Initialize a new package from a template."`
 	Install installCmd `cmd:"" help:"Install a package in a control plane."`
 	Push    pushCmd    `cmd:"" help:"Push a package to a registry."`

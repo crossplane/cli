@@ -53,12 +53,12 @@ const (
 )
 
 type generateCmd struct {
-	XRD         string `arg:""                                              help:"Path to the CompositeResourceDefinition (XRD) file."`
-	Name        string `help:"Name prefix for the composition."             optional:""`
-	Plural      string `help:"Custom plural for the CompositeTypeRef.Kind." optional:""`
-	Path        string `help:"Output file path override."                   optional:""`
-	ProjectFile string `default:"crossplane-project.yaml"                   help:"Path to project definition file."                    short:"f"`
-	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE"                         help:"Directory for cached xpkg package contents."         name:"cache-dir"`
+	XRD         string `arg:""                                        help:"Path to the CompositeResourceDefinition (XRD) file."`
+	Name        string `help:"Name prefix for the composition."       optional:""`
+	Plural      string `help:"Custom plural for the referenced kind." optional:""`
+	Path        string `help:"Output file."                           optional:""`
+	ProjectFile string `default:"crossplane-project.yaml"             help:"Path to project definition file."                    short:"f"`
+	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE"                   help:"Directory for cached xpkg package contents."         name:"cache-dir"`
 
 	projFS     afero.Fs
 	apisFS     afero.Fs

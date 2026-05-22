@@ -41,14 +41,14 @@ var addHelp string
 
 // addCmd adds a dependency to the current project.
 type addCmd struct {
-	Package     string `arg:""                            help:"Package to be added (e.g. xpkg.crossplane.io/crossplane-contrib/provider-nop:v0.5.0, k8s:v1.33.0, a git repo URL, or an HTTP URL)."`
-	ProjectFile string `default:"crossplane-project.yaml" help:"Path to project definition file."                                                                                                   short:"f"`
-	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE"       help:"Directory for cached xpkg package contents."                                                                                        name:"cache-dir"`
+	Package     string `arg:""                            help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
+	ProjectFile string `default:"crossplane-project.yaml" help:"Path to project definition file."                                                        short:"f"`
+	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE"       help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
 
 	// Flags for specific dependency types.
 	APIOnly bool   `help:"Mark an xpkg dependency as API-only (not a runtime dependency)." name:"api-only"`
 	GitRef  string `help:"Git ref for CRD dependencies (branch, tag, or commit SHA)."      name:"git-ref"`
-	GitPath string `help:"Path within the git repository for CRD dependencies."            name:"git-path"`
+	GitPath string `help:"Path to CRDs in the git repository."                             name:"git-path"`
 }
 
 func (c *addCmd) Help() string {

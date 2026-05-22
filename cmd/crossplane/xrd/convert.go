@@ -31,48 +31,28 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
 	commonIO "github.com/crossplane/cli/v2/cmd/crossplane/convert/io"
+
+	_ "embed"
 )
+
+//go:embed help/convert.md
+var convertHelp string
 
 type convertCmd struct {
 	// Arguments.
-	InputFile string `arg:"" default:"-" help:"The XRD YAML file to be converted. If not specified or '-', stdin will be used." optional:"" predictor:"file" type:"path"`
+	InputFile string `arg:"" default:"-" help:"The XRD YAML file to convert, or '-' for stdin." optional:"" predictor:"file" type:"path"`
 
 	// Output flags. OutputFile and OutputDir are mutually exclusive; when
 	// neither is set the converted CRDs are emitted on stdout as a multi-doc
 	// YAML stream.
 	OutputFile string `help:"The file to write the generated CRD YAML to. Legacy XRDs produce a multi-doc YAML stream (XR CRD + Claim CRD)." placeholder:"PATH" predictor:"file"      short:"o"   type:"path"  xor:"output"`
-	OutputDir  string `help:"A directory to write the generated CRDs to. Each CRD is written to a separate file named <crd.Name>.yaml."      placeholder:"DIR"  predictor:"directory" type:"path" xor:"output"`
+	OutputDir  string `help:"A directory to write the generated CRDs to. Each CRD gets a separate file named after the CRD."                 placeholder:"DIR"  predictor:"directory" type:"path" xor:"output"`
 
 	fs afero.Fs
 }
 
 func (c *convertCmd) Help() string {
-	return `
-Convert a CompositeResourceDefinition (XRD) into the CustomResourceDefinition(s)
-that Crossplane derives from it internally.
-
-Useful for inspecting the generated CRD shape, feeding it into kubectl-based
-tooling that doesn't understand XRDs, or debugging composition behavior.
-
-Output depends on the XRD type, detected automatically:
-  * Namespaced or Cluster-scoped XRD -> 1 CRD for the XR
-  * Legacy XRD without claimNames    -> 1 CRD for the XR
-  * Legacy XRD with claimNames       -> 2 CRDs: one for the XR and one for the Claim
-
-Examples:
-
-  # Convert an XRD file and print the CRD(s) to stdout (multi-doc YAML for legacy XRDs).
-  crossplane xrd convert xrd.yaml
-
-  # Convert and write to a single file (multi-doc YAML for legacy XRDs).
-  crossplane xrd convert xrd.yaml -o crds.yaml
-
-  # Split per-CRD files into a directory (each named <crd.Name>.yaml).
-  crossplane xrd convert xrd.yaml --output-dir ./crds/
-
-  # Read the XRD from stdin.
-  cat xrd.yaml | crossplane xrd convert -
-`
+	return convertHelp
 }
 
 // AfterApply implements kong.AfterApply.

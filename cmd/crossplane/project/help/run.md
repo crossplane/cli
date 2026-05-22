@@ -10,14 +10,14 @@ This command:
 - Installs the project's Configuration on the control plane.
 - Updates kubeconfig so `kubectl` points at the development control plane.
 
-By default the control plane is named after the project. Use
+By default, `run` names the control plane after the project. Use
 `--control-plane-name` to choose a different name, which is useful when running
 multiple projects side-by-side.
 
-The Crossplane version installed in the dev control plane can be pinned with
-`--crossplane-version`; otherwise the latest stable version is used.
+You can use a Crossplane version other than the latest stable version by
+specifying the `--crossplane-version` flag.
 
-Resources can be applied around the project install:
+You can provide resources to apply around the project install:
 
 - `--init-resources` applies one or more files *before* installing the
   Configuration (useful for things like `ImageConfig`).

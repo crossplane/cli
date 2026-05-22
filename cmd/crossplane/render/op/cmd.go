@@ -61,14 +61,14 @@ type Cmd struct {
 	render.EngineFlags `prefix:""`
 
 	// Arguments.
-	Operation string `arg:"" help:"A YAML file specifying the Operation to render."                                                                                                     predictor:"yaml_file" type:"existingfile"`
-	Functions string `arg:"" help:"A YAML file or directory of YAML files specifying the operation functions to use to render the Operation. May be omitted when running in a project." optional:""           predictor:"yaml_file_or_directory" type:"path"`
+	Operation string `arg:"" help:"A YAML file specifying the Operation to render."                                                                                          predictor:"yaml_file" type:"existingfile"`
+	Functions string `arg:"" help:"A YAML file or directory of YAML files specifying the Composition Functions to use to render the XR. Optional when running in a project." optional:""           predictor:"yaml_file_or_directory" type:"path"`
 
 	// Flags. Keep them in alphabetical order.
 	ContextFiles           map[string]string `help:"Comma-separated context key-value pairs to pass to the function pipeline. Values must be files containing JSON."                           mapsep:""               predictor:"file"`
 	ContextValues          map[string]string `help:"Comma-separated context key-value pairs to pass to the function pipeline. Values must be JSON. Keys take precedence over --context-files." mapsep:""`
 	FunctionCredentials    string            `help:"A YAML file or directory of YAML files specifying credentials to use for functions."                                                       placeholder:"PATH"      predictor:"yaml_file_or_directory" type:"path"`
-	FunctionAnnotations    []string          `help:"Override function annotations for all functions. Can be repeated."                                                                         placeholder:"KEY=VALUE" short:"a"`
+	FunctionAnnotations    []string          `help:"Override function annotations for all functions. Provide multiple annotations by repeating the argument."                                  placeholder:"KEY=VALUE" short:"a"`
 	IncludeContext         bool              `help:"Include the context in the rendered output as a resource of kind: Context."                                                                short:"c"`
 	IncludeFullOperation   bool              `help:"Include a direct copy of the input Operation's spec and metadata fields in the rendered output."                                           short:"o"`
 	IncludeFunctionResults bool              `help:"Include informational and warning messages from functions in the rendered output as resources of kind: Result."                            short:"r"`

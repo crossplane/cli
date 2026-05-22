@@ -1,11 +1,11 @@
 The `composition convert composition-environment` command converts a Crossplane
 Composition to use `function-environment-configs` in place of native Composition
-Environments, which were removed in Crossplane v1.18.
+Environments (removed in Crossplane 1.18).
 
 It adds a function pipeline step using
 `crossplane-contrib/function-environment-configs` if needed. By default the
-function is referenced as `function-environment-configs`, but this can be
-overridden with `--function-environment-configs-ref`.
+function name is `function-environment-configs`, but this can be overridden with
+`--function-environment-configs-ref`.
 
 ## Examples
 

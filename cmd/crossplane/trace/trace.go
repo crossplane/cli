@@ -67,18 +67,18 @@ const (
 // Cmd builds the trace tree for a Crossplane resource.
 type Cmd struct {
 	Resource string `arg:"" help:"Kind of the Crossplane resource, accepts the 'TYPE[.VERSION][.GROUP][/NAME]' format." predictor:"k8s_resource"`
-	Name     string `arg:"" help:"Name of the Crossplane resource, can be passed as part of the resource too."          optional:""              predictor:"k8s_resource_name"`
+	Name     string `arg:"" help:"Name of the Crossplane resource, if not passed as part of the resource."              optional:""              predictor:"k8s_resource_name"`
 
 	// TODO(phisco): add support for all the usual kubectl flags; configFlags := genericclioptions.NewConfigFlags(true).AddFlags(...)
-	Context                   string `default:""                                    help:"Kubernetes context."                             name:"context"                                                             predictor:"context"              short:"c"`
-	Namespace                 string `default:""                                    help:"Namespace of the resource."                      name:"namespace"                                                           predictor:"namespace"            short:"n"`
-	Output                    string `default:"default"                             enum:"default,wide,json,dot,yaml"                      help:"Output format. One of: default, wide, json, dot, yaml."              name:"output"                    short:"o"`
-	ShowConnectionSecrets     bool   `help:"Show connection secrets in the output." name:"show-connection-secrets"                         short:"s"`
-	ShowPackageDependencies   string `default:"unique"                              enum:"unique,all,none"                                 help:"Show package dependencies in the output. One of: unique, all, none." name:"show-package-dependencies"`
-	ShowPackageRevisions      string `default:"active"                              enum:"active,all,none"                                 help:"Show package revisions in the output. One of: active, all, none."    name:"show-package-revisions"`
-	ShowPackageRuntimeConfigs bool   `default:"false"                               help:"Show package runtime configs in the output."     name:"show-package-runtime-configs"`
-	Concurrency               int    `default:"5"                                   help:"load concurrency"                                name:"concurrency"`
-	Watch                     bool   `default:"false"                               help:"Watch for changes until the resource is deleted" name:"watch"                                                               short:"w"`
+	Context                   string `default:""                                    help:"Kubernetes context."                         name:"context"                                                             predictor:"context"              short:"c"`
+	Namespace                 string `default:""                                    help:"Namespace of the resource."                  name:"namespace"                                                           predictor:"namespace"            short:"n"`
+	Output                    string `default:"default"                             enum:"default,wide,json,dot,yaml"                  help:"Output format. One of: default, wide, json, dot, yaml."              name:"output"                    short:"o"`
+	ShowConnectionSecrets     bool   `help:"Show connection secrets in the output." name:"show-connection-secrets"                     short:"s"`
+	ShowPackageDependencies   string `default:"unique"                              enum:"unique,all,none"                             help:"Show package dependencies in the output. One of: unique, all, none." name:"show-package-dependencies"`
+	ShowPackageRevisions      string `default:"active"                              enum:"active,all,none"                             help:"Show package revisions in the output. One of: active, all, none."    name:"show-package-revisions"`
+	ShowPackageRuntimeConfigs bool   `default:"false"                               help:"Show package runtime configs in the output." name:"show-package-runtime-configs"`
+	Concurrency               int    `default:"5"                                   help:"load concurrency"                            name:"concurrency"`
+	Watch                     bool   `default:"false"                               help:"Watch for changes until resource deletion."  name:"watch"                                                               short:"w"`
 }
 
 // Help returns help message for the trace command.

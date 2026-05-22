@@ -48,11 +48,11 @@ import (
 var generateHelp string
 
 type generateCmd struct {
-	File        string `arg:""                                        help:"Path to the XR or XRC YAML file."`
-	From        string `default:"xr"                                  enum:"xr,simpleschema"                  help:"Input format: xr or simpleschema."`
-	Path        string `help:"Output path within the APIs directory." optional:""`
-	Plural      string `help:"Custom plural form for the XRD."        optional:""`
-	ProjectFile string `default:"crossplane-project.yaml"             help:"Path to project definition."      short:"f"`
+	File        string `arg:""                                 help:"Path to the XR or XRC YAML file."`
+	From        string `default:"xr"                           enum:"xr,simpleschema"                  help:"Input format: xr or simpleschema."`
+	Path        string `help:"Output path."                    optional:""`
+	Plural      string `help:"Custom plural form for the XRD." optional:""`
+	ProjectFile string `default:"crossplane-project.yaml"      help:"Path to project definition."      short:"f"`
 
 	projFS  afero.Fs
 	apisFS  afero.Fs

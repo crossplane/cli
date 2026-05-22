@@ -1,5 +1,5 @@
 The `config` command manages the configuration file for the `crossplane`
-CLI. The config file location is, in priority order:
+CLI. The configuration file location is, in priority order:
 
 1. The `--config` flag.
 2. The `CROSSPLANE_CONFIG` environment variable.
@@ -7,7 +7,7 @@ CLI. The config file location is, in priority order:
 
 ## Examples
 
-Show the current effective config:
+Show the current effective configuration:
 
 ```shell
 crossplane config view

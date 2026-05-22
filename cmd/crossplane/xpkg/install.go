@@ -57,16 +57,16 @@ const (
 // installCmd installs a package.
 type installCmd struct {
 	// Arguments.
-	Kind    string `arg:"" enum:"provider,configuration,function"                                                                            help:"The kind of package to install. One of \"provider\", \"configuration\", or \"function\"."`
-	Package string `arg:"" help:"The package to install, must  be fully qualified, including the registry, repository, and tag."             placeholder:"REGISTRY/REPOSITORY:TAG"`
+	Kind    string `arg:"" enum:"provider,configuration,function"                                                                            help:"The kind of package to install. One of 'provider', 'configuration', or 'function'."`
+	Package string `arg:"" help:"The package to install, must be fully qualified, including the registry, repository, and tag."              placeholder:"REGISTRY/REPOSITORY:TAG"`
 	Name    string `arg:"" help:"The name of the new package in the Crossplane API. Derived from the package repository and tag by default." optional:""`
 
 	// Flags. Keep sorted alphabetically.
 	RuntimeConfig        string        `help:"Install the package with a runtime configuration (for example a DeploymentRuntimeConfig)."               placeholder:"NAME"`
 	ManualActivation     bool          `help:"Require the new package's first revision to be manually activated."                                      short:"m"`
 	PackagePullSecrets   []string      `help:"A comma-separated list of secrets the package manager should use to pull the package from the registry." placeholder:"NAME"`
-	RevisionHistoryLimit int64         `help:"How many package revisions may exist before the oldest revisions are deleted."                           placeholder:"LIMIT"                                                                                                                                     short:"r"`
-	Wait                 time.Duration `default:"0s"                                                                                                   help:"How long to wait for the package to install before returning. The command does not wait by default. Returns an error if the timeout is exceeded." short:"w"`
+	RevisionHistoryLimit int64         `help:"Number of package revisions that can exist before garbage collection."                                   placeholder:"LIMIT"                                                                                       short:"r"`
+	Wait                 time.Duration `default:"0s"                                                                                                   help:"How long to wait for the package to install before returning. The command doesn't wait by default." short:"w"`
 }
 
 func (c *installCmd) Help() string {

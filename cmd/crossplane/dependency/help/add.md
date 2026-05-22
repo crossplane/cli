@@ -1,6 +1,6 @@
-The `dependency add` command adds a dependency to a Crossplane Project. The
-dependency is added to the project's metadata file and language bindings
-(schemas) are generated its CRDs when applicable.
+The `dependency add` command adds a dependency to a Crossplane Project metadata
+file and generates language bindings (schemas) for the dependency package's
+CRDs.
 
 ## Dependency types
 
@@ -13,10 +13,9 @@ Projects support three kinds of dependencies:
 An xpkg dependency may be either a runtime dependency (the default) or a
 build-time dependency. Runtime dependencies become dependencies of the
 Configuration produced by `crossplane project build` or `crossplane project run`
-and thus get installed into a cluster when the Configuration is
-installed. Build-time dependencies, on the other hand, are used only for schema
-generation and do not become Configuration dependencies. Use the `--api-only`
-flag to indicate that an xpkg dependency should be build-time only.
+and are thus installed into a cluster with the Configuration. Build-time
+dependencies have schemas generated but don't become Configuration
+dependencies. Use the `--api-only` flag to add a build-time xpkg dependency.
 
 Non-xpkg dependencies are always build-time dependencies.
 

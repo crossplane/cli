@@ -11,32 +11,32 @@ would produce.
 
 ## Function runtime configuration
 
-Operation Functions are pulled and run using Docker by default. You can add the
-following annotations to each Function to change how they're run:
+By default, the `render` command pulls and runs Operation Functions using
+Docker. You can add the following annotations to each Function to change how
+they're run:
 
 | Annotation | Purpose |
 | ---------- | ------- |
-| `render.crossplane.io/runtime: "Development"` | Connect to a Function that is already running, instead of using Docker. This is useful to develop and debug new Functions. The Function must be listening at `localhost:9443` and running with the `--insecure` flag. |
-| `render.crossplane.io/runtime-development-target: "dns:///example.org:7443"` | Connect to a Function running somewhere other than `localhost:9443`. The target uses gRPC target syntax (e.g., `dns:///example.org:7443` or simply `example.org:7443`). |
+| `render.crossplane.io/runtime: "Development"` | Connect to a Function running locally, instead of using Docker, for example when developing or debugging a new Function. The Function must be listening at `localhost:9443` and running with the `--insecure` flag. |
+| `render.crossplane.io/runtime-development-target: "dns:///example.org:7443"` | Connect to a Function running somewhere other than `localhost:9443`. The target uses gRPC target syntax (for example, `dns:///example.org:7443` or `example.org:7443`). |
 | `render.crossplane.io/runtime-docker-cleanup: "Orphan"` | Don't stop the Function's Docker container after rendering. |
-| `render.crossplane.io/runtime-docker-name: "<name>"` | Create a container with that name and reuse it as long as it is running or can be restarted. |
+| `render.crossplane.io/runtime-docker-name: "<name>"` | Create or reuse a container with the given name. Restart the container if needed. |
 | `render.crossplane.io/runtime-docker-pull-policy: "Always"` | Always pull the Function's package, even if it already exists locally. Other supported values are `Never` or `IfNotPresent`. |
 | `render.crossplane.io/runtime-docker-publish-address: "0.0.0.0"` | Host address that Docker should publish the Function's container port to. Defaults to `127.0.0.1` (localhost only). Use `0.0.0.0` to publish to all host network interfaces, enabling access from remote machines. |
 | `render.crossplane.io/runtime-docker-target: "docker-host"` | Address that the render CLI should use to connect to the Function's Docker container. If not specified, uses the publish address. |
 
 Use the standard `DOCKER_HOST`, `DOCKER_API_VERSION`, `DOCKER_CERT_PATH`, and
 `DOCKER_TLS_VERIFY` environment variables to configure how this command connects
-to the Docker daemon. See the [Docker environment
-variables](https://docs.docker.com/engine/reference/commandline/cli/#environment-variables)
+to the Docker daemon. See the
+[Docker environment variables](https://docs.docker.com/engine/reference/commandline/cli/#environment-variables)
 reference.
 
 ## Project support
 
 When running `render` in a Crossplane Project (any directory containing a
-`crossplane-project.yaml` project metadata file), it is optional to provide the
-functions file as an argument. If the functions file is omitted, function
-dependencies defined in the project metadata will be used. Embedded functions
-from the project will also be built and run by render.
+`crossplane-project.yaml` project metadata file), you may omit the functions
+file argument in favor of using function dependencies defined in the project
+metadata and embedded functions from the project.
 
 ## Examples
 

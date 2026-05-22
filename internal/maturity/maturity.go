@@ -73,13 +73,13 @@ func Apply(app *kong.Application, enabled map[Level]bool) {
 
 	switch {
 	case enabled[LevelBeta] && enabled[LevelAlpha]:
-		detailStr = "Alpha and beta features are enabled. Manage enabled features with \"crossplane config set\"."
+		detailStr = "> **Note:** Alpha and beta features are enabled. Manage enabled features with \"crossplane config set\"."
 	case enabled[LevelBeta]:
-		detailStr = "Beta features are enabled. Manage enabled features with \"crossplane config set\"."
+		detailStr = "> **Note:** Beta features are enabled. Manage enabled features with \"crossplane config set\"."
 	case enabled[LevelAlpha]:
-		detailStr = "Alpha features are enabled. Manage enabled features with \"crossplane config set\"."
+		detailStr = "> **Note:** Alpha features are enabled. Manage enabled features with \"crossplane config set\"."
 	default:
-		detailStr = "Alpha and beta features are disabled. To enable them use \"crossplane config set\"."
+		detailStr = "> **Note:** Alpha and beta features are disabled. To enable them use \"crossplane config set\"."
 	}
 
 	app.Detail += "\n\n" + detailStr
@@ -100,9 +100,10 @@ func effectiveLevel(n *kong.Node) Level {
 }
 
 func detailForLevel(l Level, detail string) string {
+	// Detail is markdown-formatted, so format our banners as blockquotes.
 	banners := map[Level]string{
-		LevelAlpha: "NOTE: Alpha features are experimental and may be changed or removed in a future release.",
-		LevelBeta:  "NOTE: Beta features may be changed in a future release.",
+		LevelAlpha: "> **Note:** Alpha features are experimental and may change or disappear in a future release.",
+		LevelBeta:  "> **Note:** Beta features may change in a future release.",
 	}
 
 	if b := banners[l]; b != "" {

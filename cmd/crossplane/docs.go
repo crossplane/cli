@@ -200,6 +200,13 @@ func normalizeDetail(detail string, headingLevel int) string {
 		bqRE := regexp.MustCompile(`^> \*\*(\w+):\*\* `)
 		bqMatch := bqRE.FindStringSubmatch(line)
 		if bqMatch != nil {
+			// Omit the feature enablement message from the top-level command
+			// detail, since it's not useful in the generated docs. It's a
+			// little gross that we're hard-coding this, but it's good enough.
+			if strings.Contains(line, "Alpha and beta features are enabled.") {
+				continue
+			}
+
 			bq = true
 			fmt.Fprintf(&sb, "{{<hint \"%s\" >}}\n", strings.ToLower(bqMatch[1]))
 			line = strings.TrimPrefix(line, bqMatch[0])
@@ -225,6 +232,11 @@ func normalizeDetail(detail string, headingLevel int) string {
 		}
 
 		sb.WriteString(line + "\n")
+	}
+
+	// Close the "hint" box if it appeared at the very end of the detail.
+	if bq {
+		sb.WriteString("{{< /hint >}}\n")
 	}
 
 	return strings.TrimSpace(sb.String())

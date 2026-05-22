@@ -96,8 +96,8 @@ sandbox = true
 # Cachix is a binary cache service. Our GitHub Actions CI pushes there, so if CI
 # has recently built the commit you're on Nix will download stuff instead of
 # rebuilding it locally.
-extra-substituters = https://crossplane-cli.cachix.org
-extra-trusted-public-keys = crossplane-cli.cachix.org-1:NJluVUN9TX0rY/zAxHYaT19Y5ik4ELH4uFuxje+62d4=
+extra-substituters = https://crossplane.cachix.org
+extra-trusted-public-keys = crossplane.cachix.org-1:NJluVUN9TX0rY/zAxHYaT19Y5ik4ELH4uFuxje+62d4=
 "
 
 # Only allocate a TTY if stdout is a terminal. TTY mode corrupts binary

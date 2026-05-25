@@ -14,6 +14,9 @@ description: "Command reference for the Crossplane CLI"
 This documentation is for the `crossplane` CLI [[ .Version ]].
 
 [[ range .Commands ]]
+[[- range .NoVale ]]
+<!-- vale [[ . ]] = NO -->
+[[- end ]]
 <!-- vale Google.Headings = NO -->
 <!-- vale Microsoft.Headings = NO -->
 [[ .Heading ]] [[ .FullPath ]]
@@ -47,6 +50,9 @@ crossplane [[ .Summary ]]
 [[ range .Flags ]]| [[ if .Short ]]`[[ .Short ]]`[[ end ]] | `[[ .Long ]]` | [[ if .Required ]]**Required.** [[ end ]][[ .Help ]] |
 [[ end ]]{{< /table >}}
 [[ end ]]
+[[- range .NoVale ]]
+<!-- vale [[ . ]] = YES -->
+[[- end ]]
 [[ end ]]
 
 <!-- vale cli-docs = NO -->

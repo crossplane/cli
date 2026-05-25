@@ -78,6 +78,7 @@ type docsCommand struct {
 	Summary    string
 	Positional []docsPositional
 	Flags      []docsFlag
+	NoVale     []string
 }
 
 // docsInput is the top-level template input.
@@ -126,6 +127,11 @@ func buildDocsCommand(n *kong.Node) docsCommand {
 		Detail:     normalizeDetail(n.Detail, headingLevel),
 		Summary:    n.Summary(),
 	}
+
+	if n.Tag != nil && n.Tag.Get("novale") != "" {
+		dc.NoVale = strings.Split(n.Tag.Get("novale"), ",")
+	}
+
 	for _, p := range n.Positional {
 		dc.Positional = append(dc.Positional, docsPositional{
 			Display:  p.Summary(),

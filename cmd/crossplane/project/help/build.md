@@ -2,10 +2,10 @@ The `project build` command builds a Crossplane Project into a set of xpkgs. It
 builds each embedded function in the project and a Configuration package that
 ties everything together. The output of the build is a special `.xpkg` file
 containing all the built packages, placed in the project's output directory
-(`_output/` by default). The `project push` command can consume packges from the
-output file and push them to an OCI registry.
+(`_output/` by default). The `project push` command can consume packages from
+the output file and push them to an OCI registry.
 
-The `build `command constructs the repository for the built Configuration from
+The `build` command constructs the repository for the built Configuration from
 `spec.repository` in `crossplane-project.yaml`. Override it for a single build
 with `--repository`.
 

@@ -1,6 +1,6 @@
 The `function generate` command creates an embedded function in the specified
 language under the project's `functions/` directory. It optionally idempotently
-adds the new function to end of a Composition's pipeline when given a
+adds the new function to the end of a Composition's pipeline when given a
 Composition path.
 
 ## Supported languages

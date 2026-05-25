@@ -238,6 +238,9 @@ func normalizeDetail(detail string, headingLevel int) string {
 	if bq {
 		sb.WriteString("{{< /hint >}}\n")
 	}
+	if table {
+		sb.WriteString("{{< /table >}}\n")
+	}
 
 	return strings.TrimSpace(sb.String())
 }

@@ -33,7 +33,7 @@ they exceed 64 characters, and other kind-specific printer columns.
 ### Graphviz dot output
 
 Use `--output=dot` to print a textual
-[Graphviz dot](https://graphviz.org/docs/layouts/dot/) graph.Pipe to `dot` to
+[Graphviz dot](https://graphviz.org/docs/layouts/dot/) graph. Pipe to `dot` to
 render an image:
 
 ```shell

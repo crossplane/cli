@@ -5,8 +5,8 @@ local OCI registry.
 When run from a project directory, the `stop` command tears down the control
 plane whose name matches the project name. When run outside a project directory,
 pass `--control-plane-name` to identify the control plane to tear down. If you
-passed `--registry-dir` to `up project run`, pass it to `up project stop` as
-well to clean up the registry data.
+passed `--registry-dir` to `crossplane project run`, pass it to `crossplane
+project stop` as well to clean up the registry data.
 
 ## Examples
 

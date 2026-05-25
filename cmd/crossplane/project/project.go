@@ -22,6 +22,6 @@ type Cmd struct {
 	Init  initCmd  `cmd:"" help:"Initialize a new project."`
 	Build buildCmd `cmd:"" help:"Build a project into Crossplane packages."`
 	Push  pushCmd  `cmd:"" help:"Push a built project to an OCI registry."`
-	Run   runCmd   `cmd:"" help:"Build and run a project in a local dev control plane."`
+	Run   runCmd   `cmd:"" help:"Build and run a project in a local dev control plane." novale:"Google.WordList[\"admin\"]"`
 	Stop  stopCmd  `cmd:"" help:"Tear down a local dev control plane."`
 }

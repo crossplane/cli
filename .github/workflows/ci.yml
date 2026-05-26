@@ -204,11 +204,12 @@ jobs:
           ./bin/linux_amd64/crossplane config set features.enableAlpha true
           ./bin/linux_amd64/crossplane generate-docs -o ./docs/content/master/cli/command-reference.md
 
-      - name: Install Vale
-        env:
-          VALE_VERSION: "3.14.2"
-        run: wget https://github.com/errata-ai/vale/releases/download/v${{env.VALE_VERSION}}/vale_${{env.VALE_VERSION}}_Linux_64-bit.tar.gz && tar -xvzf vale_${{env.VALE_VERSION}}_Linux_64-bit.tar.gz
-
       - name: Run Vale
-        run: |
-          ./vale --config="./docs/utils/vale/.vale.ini" ./docs/content/master/cli/command-reference.md
+        uses: vale-cli/vale-action@v2.1.1
+        with:
+          version: "3.14.2"
+          files: ./docs/content/master/cli/command-reference.md
+          vale_flags: "--config=./docs/utils/vale/.vale.ini"
+          fail_on_error: true
+          reporter: local
+          filter_mode: nofilter

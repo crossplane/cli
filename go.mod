@@ -259,7 +259,7 @@ require (
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
-	github.com/sigstore/cosign/v2 v2.6.1 // indirect
+	github.com/sigstore/cosign/v2 v2.6.2 // indirect
 	github.com/sigstore/cosign/v3 v3.0.5 // indirect
 	github.com/sigstore/protobuf-specs v0.5.0 // indirect
 	github.com/sigstore/rekor v1.5.1 // indirect

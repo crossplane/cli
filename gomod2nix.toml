@@ -696,8 +696,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v1.4.0"
     hash = "sha256-U36bC271jQsjuWFF8BfLz4WicxPJUcPHRGxLvTz4Mdw="
   [mod."github.com/sigstore/cosign/v2"]
-    version = "v2.6.1"
-    hash = "sha256-//aFi4lORbfwD3Gzd8P5JB1TpBF2I0SCNXpwTLdq99o="
+    version = "v2.6.2"
+    hash = "sha256-72IUo1sAXY6ecNWu/nxaj8PSeor9UcU7J2e4zT1V4ZQ="
   [mod."github.com/sigstore/cosign/v3"]
     version = "v3.0.5"
     hash = "sha256-wN5iAfcBCDTvhbvSar4DBw7w1sxIFWcMKv8qkx07mfo="

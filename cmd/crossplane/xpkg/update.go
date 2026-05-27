@@ -46,7 +46,7 @@ var helpUpdate string
 // updateCmd updates a package.
 type updateCmd struct {
 	// Arguments.
-	Kind    string `arg:"" enum:"provider,configuration,function"                                                                                  help:"The kind of package to update. One of \"provider\", \"configuration\", or \"function\"."`
+	Kind    string `arg:"" enum:"provider,configuration,function"                                                                                  help:"The kind of package to update. One of 'provider', 'configuration', or 'function'."`
 	Package string `arg:"" help:"The package to update to. Must be fully qualified, including the registry, repository, and tag."                  placeholder:"REGISTRY/REPOSITORY:TAG"`
 	Name    string `arg:"" help:"The name of the package to update in the Crossplane API. Derived from the package repository and tag by default." optional:""`
 }

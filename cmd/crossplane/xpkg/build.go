@@ -99,12 +99,12 @@ func (c *buildCmd) AfterApply() error {
 // buildCmd builds a crossplane package.
 type buildCmd struct {
 	// Flags. Keep sorted alphabetically.
-	EmbedRuntimeImage        string   `help:"An OCI image to embed in the package as its runtime."                                                                                                    placeholder:"NAME"                                                     xor:"runtime-image"`
-	EmbedRuntimeImageTarball string   `help:"An OCI image tarball to embed in the package as its runtime."                                                                                            placeholder:"PATH"                                                     predictor:"file"      type:"existingfile" xor:"runtime-image"`
-	ExamplesRoot             string   `default:"./examples"                                                                                                                                           help:"A directory of example YAML files to include in the package."    predictor:"directory" short:"e"           type:"path"`
-	Ignore                   []string `help:"Comma-separated file paths, specified relative to --package-root, to exclude from the package. Wildcards are supported. Directories cannot be excluded." placeholder:"PATH"`
-	PackageFile              string   `help:"The file to write the package to. Defaults to a generated filename in --package-root."                                                                   placeholder:"PATH"                                                     predictor:"xpkg_file" short:"o"           type:"path"`
-	PackageRoot              string   `default:"."                                                                                                                                                    help:"The directory that contains the package's crossplane.yaml file." predictor:"directory" short:"f"           type:"existingdir"`
+	EmbedRuntimeImage        string   `help:"An OCI image to embed in the package as its runtime."                                                  placeholder:"NAME"                                                     xor:"runtime-image"`
+	EmbedRuntimeImageTarball string   `help:"An OCI image tarball to embed in the package as its runtime."                                          placeholder:"PATH"                                                     predictor:"file"      type:"existingfile" xor:"runtime-image"`
+	ExamplesRoot             string   `default:"./examples"                                                                                         help:"A directory of example YAML files to include in the package."    predictor:"directory" short:"e"           type:"path"`
+	Ignore                   []string `help:"comma-separated list of globs specifying files to exclude from the build, relative to --package-root." placeholder:"PATH"`
+	PackageFile              string   `help:"The file to write the package to. Defaults to a generated filename in --package-root."                 placeholder:"PATH"                                                     predictor:"xpkg_file" short:"o"           type:"path"`
+	PackageRoot              string   `default:"."                                                                                                  help:"The directory that contains the package's crossplane.yaml file." predictor:"directory" short:"f"           type:"existingdir"`
 
 	// Internal state. These aren't part of the user-exposed CLI structure.
 	fs      afero.Fs

@@ -1,30 +1,30 @@
 The `resource validate` command validates the provided Crossplane resources
 against the schemas of the provided extensions (XRDs, CRDs, Providers,
 Functions, and Configurations). It uses the Kubernetes API server's validation
-library plus additional checks (such as unknown-field detection, a common source
-of difficult-to-debug Crossplane issues).
+library plus other checks such as unknown-field detection, a common source of
+difficult-to-debug Crossplane issues.
 
-If Providers or Configurations are provided as extensions, they are downloaded
-and loaded as CRDs before validation. If `--cache-dir` is not set, it defaults
-to `~/.crossplane/cache`. Clean the cache before downloading schemas with
-`--clean-cache`.
+The `validate` command downloads any Providers or Configurations provided as
+extensions, and loads their CRDs before validation. If `--cache-dir` isn't set,
+it defaults to `~/.crossplane/cache`. Clean the cache before downloading schemas
+with `--clean-cache`.
 
-All validation is performed offline using the Kubernetes API server's validation
-library — no Crossplane instance or control plane is required.
+All validation happens offline using the Kubernetes API server's validation
+library, without requiring a Crossplane instance or control plane.
 
 `crossplane resource validate` supports validating:
 
 - A managed or composite resource against a Provider or XRD schema.
 - The output of `crossplane composition render`.
-- An XRD's [Common Expression
-  Language](https://kubernetes.io/docs/reference/using-api/cel/) (CEL) rules.
+- An XRD's [Common Expression Language](https://kubernetes.io/docs/reference/using-api/cel/)
+  (CEL) rules.
 - Resources against a directory of schemas.
 
 ## Validate resources against a schema
 
 When validating against a Provider, the command downloads the Provider package
-to `--cache-dir`. Access to a Kubernetes cluster or Crossplane pod is not
-required — only the ability to download the Provider package.
+to `--cache-dir`. Access to a Kubernetes cluster or Crossplane pod isn't
+required as `validate` downloads the Provider extracts it locally.
 
 Create a Provider manifest:
 
@@ -60,7 +60,7 @@ crossplane resource validate provider.yaml managedResource.yaml
 
 ## Validate render output
 
-Pipe the output of `crossplane composition render` to `validate` to check
+Pipe the output of `crossplane composition render` to `validate` to validate
 complete Crossplane resource pipelines, including XRs, Compositions, and
 Functions. Use `--include-full-xr` on `render`, and `-` (read stdin) on
 `validate`:
@@ -70,10 +70,12 @@ crossplane composition render xr.yaml composition.yaml func.yaml --include-full-
     crossplane resource validate schemas.yaml -
 ```
 
-## Validate CEL rules
+<!-- vale Google.Headings = NO -->
+## Validate Common Expression Language rules
+<!-- vale Google.Headings = YES -->
 
-XRDs can define [validation
-rules](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-rules)
+XRDs can define
+[validation rules](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-rules)
 in CEL via `x-kubernetes-validations`. `validate` evaluates them:
 
 ```yaml
@@ -91,10 +93,10 @@ spec:
 
 ## Validate against a directory of schemas
 
-`validate` can also take a directory of schema YAML files. Only `.yaml` and
-`.yml` files are processed; other files are ignored.
+`validate` can also take a directory of schema YAML files to use for
+validation. It ignores any files with extensions other than `.yml` or `.yaml`.
 
-```text
+```plaintext
 schemas/
 ├── platform-ref-aws.yaml
 ├── providers/

@@ -75,7 +75,7 @@ type cli struct {
 	// Subcommands.
 	Cluster     cluster.Cmd     `cmd:"" help:"Inspect a Crossplane cluster."                                            maturity:"beta"`
 	Composition composition.Cmd `cmd:"" help:"Work with Crossplane Compositions."`
-	Config      configcmd.Cmd   `cmd:"" help:"View and modify the crossplane CLI config file."`
+	Config      configcmd.Cmd   `cmd:"" help:"View and update the crossplane CLI configuration file."                   novale:"gitlab.SubstitutionWarning[\"config\"]"`
 	Dependency  dependency.Cmd  `cmd:"" help:"Manage dependencies of control plane Projects."                           maturity:"beta"`
 	Function    function.Cmd    `cmd:"" help:"Work with functions in control plane Projects."                           maturity:"beta"`
 	Operation   operation.Cmd   `cmd:"" help:"Work with Crossplane Operations."                                         maturity:"alpha"`
@@ -92,7 +92,7 @@ type cli struct {
 	GenerateDocs docsCmd `cmd:"" help:"Generate command-reference docs in markdown format." hidden:""`
 
 	// Flags.
-	ConfigPath string      `env:"CROSSPLANE_CONFIG"                  help:"Path to the crossplane CLI config file." name:"config" placeholder:"PATH"`
+	ConfigPath string      `env:"CROSSPLANE_CONFIG"                  help:"Path to the crossplane CLI configuration file." name:"config" placeholder:"PATH"`
 	Verbose    verboseFlag `help:"Print verbose logging statements." name:"verbose"`
 
 	// Completion

@@ -30,8 +30,8 @@ type ConfigPath string //nolint:revive // The "Config" stutter is intentional; t
 // Cmd groups subcommands for inspecting and modifying the CLI config file.
 type Cmd struct {
 	// Keep subcommands sorted alphabetically.
-	Set  setCmd  `cmd:"" help:"Set a config value and write it to the config file."`
-	View viewCmd `cmd:"" help:"Print the current effective config as YAML."`
+	Set  setCmd  `cmd:"" help:"Set a value and write it to the configuration file." novale:"gitlab.SubstitutionWarning[\"config\"]"`
+	View viewCmd `cmd:"" help:"Print the current effective configuration as YAML."  novale:"gitlab.SubstitutionWarning[\"config\"]"`
 }
 
 // Help returns the extended help for the config command.

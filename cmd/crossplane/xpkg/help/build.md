@@ -1,8 +1,8 @@
 The `xpkg build` command builds a package file from a local directory of
-files. The CLI combines a directory of YAML files and packages them as an [OCI
-container image](https://opencontainers.org/), applying the annotations and
-values required by the [Crossplane XPKG
-specification](https://github.com/crossplane/crossplane/blob/main/contributing/specifications/xpkg.md).
+files. The CLI combines a directory of YAML files and packages them as an
+[OCI container image](https://opencontainers.org/), applying the annotations and
+values required by the
+[Crossplane XPKG specification](https://github.com/crossplane/crossplane/blob/main/contributing/specifications/xpkg.md).
 
 `crossplane xpkg build` supports building Configuration, Function, and Provider
 package types.
@@ -14,9 +14,8 @@ fields.
 
 ## Ignore files
 
-Use `--ignore` to provide a comma-separated list of files and directories
-(relative to `--package-root`) to skip. Wildcards are supported. Directories
-themselves cannot be excluded.
+Use `--ignore` to provide a comma-separated list of globs specifying files to
+exclude from the build, relative to `--package-root`.
 
 ```shell
 crossplane xpkg build --ignore="./test/*,kind-config.yaml"
@@ -24,9 +23,10 @@ crossplane xpkg build --ignore="./test/*,kind-config.yaml"
 
 ## Set the package name
 
-By default the package is named from a combination of `metadata.name` and a hash
-of the package contents, and written to `--package-root`. Override the location
-and filename with `--package-file` (`-o`):
+By default, the `build` command constructs the package filename using a
+combination of `metadata.name` and a hash of the package contents, and writes it
+to `--package-root`. Override the location and filename with `--package-file`
+(`-o`):
 
 ```shell
 crossplane xpkg build -o /home/crossplane/example.xpkg
@@ -39,9 +39,8 @@ Include YAML files demonstrating how to use the package with `--examples-root`
 
 ## Include a runtime image
 
-Function and Provider packages can embed a controller container image so that
-the package can also be used to run the controller. Embedding is supported for
-those package kinds only.
+Function and Provider packages embed a controller container image. Configuration
+packages don't have a runtime image.
 
 > **Note:** Images referenced with `--embed-runtime-image` must be in the local
 > Docker cache. Use `docker pull` to download a missing image.

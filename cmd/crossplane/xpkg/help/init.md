@@ -2,21 +2,20 @@ The `xpkg init` command initializes a directory that you can use to build a
 package. It uses a template to initialize the directory, and can use any Git
 repository as a template.
 
-Specify either a full Git URL or a well-known name as the template. The
-following well-known template names are supported:
+Specify either a full Git URL or one of the following names as the template:
 
 %s
 
-## NOTES.txt
+## `NOTES.txt`
 
-If the template contains a `NOTES.txt` file in its root, its contents are
-printed to stdout after the directory is initialized. Useful for instructions on
-how to use the template.
+The `init` command prints the contents of any `NOTES.txt` file in the template
+root after initializing the directory. Useful for instructions on how to use the
+template.
 
-## init.sh
+## `init.sh`
 
-If the template contains an `init.sh` file in its root, you are prompted to view
-and/or run it. Useful for scripts that personalize the template. Pass `-r`
+The `init` command executes any `init.sh` file in the template root (after user
+confirmation). Useful for scripts that personalize the template. Pass `-r`
 (`--run-init-script`) to run the script without prompting.
 
 ## Examples

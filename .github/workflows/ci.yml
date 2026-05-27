@@ -176,3 +176,40 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_PSW }}
           AWS_DEFAULT_REGION: us-east-1
         run: nix run --option warn-dirty false .#promote-artifacts -- main "$VERSION" master
+
+  # Validate our generated docs.
+  validate-docs:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    needs: [build-artifacts]
+
+    steps:
+      - name: Checkout crossplane/docs
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: crossplane/docs
+          persist-credentials: false
+          path: ./docs
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: output
+          path: .
+
+      - name: Generate docs
+        run: |
+          chmod +x ./bin/linux_amd64/crossplane
+          ./bin/linux_amd64/crossplane config set features.enableAlpha true
+          ./bin/linux_amd64/crossplane generate-docs -o ./docs/content/master/cli/command-reference.md
+
+      - name: Run Vale
+        uses: vale-cli/vale-action@v2.1.1
+        with:
+          version: "3.14.2"
+          files: ./docs/content/master/cli/command-reference.md
+          vale_flags: "--config=./docs/utils/vale/.vale.ini"
+          fail_on_error: true
+          reporter: local
+          filter_mode: nofilter

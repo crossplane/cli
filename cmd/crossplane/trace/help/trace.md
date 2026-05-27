@@ -1,6 +1,6 @@
 The `resource trace` command traces a Crossplane resource (Claim, Composite, or
-Managed Resource) to give a detailed view of its relationships — helpful for
-troubleshooting.
+Managed Resource) to give a detailed view of its relationships and help
+troubleshoot compositions.
 
 The command requires a resource type and a resource name:
 
@@ -8,12 +8,11 @@ The command requires a resource type and a resource name:
 crossplane resource trace <resource kind> <resource name>
 ```
 
-Kubernetes-style `<kind>/<name>` input works too — for example, `crossplane
+Kubernetes-style `<kind>/<name>` input works too: for example, `crossplane
 resource trace example.crossplane.io/my-xr`.
 
-If needed the resource kind can be specified further as
-`TYPE[.VERSION][.GROUP]`, for example `mykind.example.org` or
-`mykind.v1alpha1.example.org`.
+You can further specify the kind as `TYPE[.VERSION][.GROUP]` if needed; for
+example, `mykind.example.org` or `mykind.v1alpha1.example.org`.
 
 By default, `crossplane resource trace` uses the Kubernetes configuration at
 `~/.kube/config`. Override with the `KUBECONFIG` environment variable.
@@ -29,14 +28,13 @@ a [Graphviz](https://graphviz.org/docs/layouts/dot/) graph).
 ### Wide output
 
 Use `--output=wide` to print the full `Ready` and `Status` messages even when
-they exceed 64 characters, and additional per-kind columns (for example,
-composed resource names for composite resources, or image used for packages).
+they exceed 64 characters, and other kind-specific printer columns.
 
 ### Graphviz dot output
 
-Use `--output=dot` to print a textual [Graphviz
-dot](https://graphviz.org/docs/layouts/dot/) graph. Pipe to `dot` to render an
-image:
+Use `--output=dot` to print a textual
+[Graphviz dot](https://graphviz.org/docs/layouts/dot/) graph. Pipe to `dot` to
+render an image:
 
 ```shell
 crossplane resource trace cluster.aws.platformref.upbound.io platform-ref-aws -o dot | dot -Tpng -o graph.png
@@ -50,20 +48,20 @@ name and namespace.
 
 ## Print package dependencies
 
-The `--show-package-dependencies` flag controls how package dependencies are
-displayed:
+The `--show-package-dependencies` flag controls how the display of package
+dependencies:
 
-- `unique` (default) — include each required package only once.
-- `all` — show every package that requires the same dependency.
-- `none` — hide all package dependencies.
+- `unique` (default): include each required package only once.
+- `all`: show every package that requires the same dependency.
+- `none`: hide all package dependencies.
 
 ## Print package revisions
 
-The `--show-package-revisions` flag controls which package revisions are shown:
+The `--show-package-revisions` flag controls the display of package revisions:
 
-- `active` (default) — show only the active revisions.
-- `all` — show all revisions, including inactive ones.
-- `none` — hide all revisions.
+- `active` (default): show only the active revisions.
+- `all`: show all revisions, including inactive ones.
+- `none`: hide all revisions.
 
 ## Examples
 
@@ -109,7 +107,7 @@ Output debug logs to stderr while piping a dot graph to dot:
 crossplane resource trace mykind my-res -n my-ns -o dot --verbose | dot -Tpng -o output.png
 ```
 
-Watch a resource continuously until it is deleted:
+Watch a resource continuously until its deletion:
 
 ```shell
 crossplane resource trace mykind my-res -n my-ns --watch

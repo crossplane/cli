@@ -29,7 +29,7 @@ import (
 )
 
 type setCmd struct {
-	Key   string `arg:"" help:"Config key to set (e.g. features.enableAlpha)."`
+	Key   string `arg:"" help:"Key to set (for example, features.enableAlpha)."`
 	Value string `arg:"" help:"Value to assign."`
 
 	fs afero.Fs

@@ -64,9 +64,9 @@ type Cmd struct {
 	render.EngineFlags `prefix:""`
 
 	// Arguments.
-	CompositeResource string `arg:"" help:"A YAML file specifying the composite resource (XR) to render."                                                                                  predictor:"yaml_file" type:"existingfile"`
-	Composition       string `arg:"" help:"A YAML file specifying the Composition to use to render the XR. Must be mode: Pipeline."                                                        predictor:"yaml_file" type:"existingfile"`
-	Functions         string `arg:"" help:"A YAML file or directory of YAML files specifying the Composition Functions to use to render the XR. May be omitted when running in a project." optional:""           predictor:"yaml_file_or_directory" type:"path"`
+	CompositeResource string `arg:"" help:"A YAML file specifying the composite resource (XR) to render."                                                                            predictor:"yaml_file" type:"existingfile"`
+	Composition       string `arg:"" help:"A YAML file specifying the Composition to use to render the XR. Must be mode: Pipeline."                                                  predictor:"yaml_file" type:"existingfile"`
+	Functions         string `arg:"" help:"A YAML file or directory of YAML files specifying the Composition Functions to use to render the XR. Optional when running in a project." optional:""           predictor:"yaml_file_or_directory" type:"path"`
 
 	// Flags. Keep them in alphabetical order.
 	ContextFiles           map[string]string `help:"Comma-separated context key-value pairs to pass to the Function pipeline. Values must be files containing JSON/YAML."                           mapsep:""               predictor:"file"`
@@ -79,7 +79,7 @@ type Cmd struct {
 	RequiredSchemas        string            `help:"A directory of JSON files specifying OpenAPI v3 schemas (from kubectl get --raw /openapi/v3/<group-version>)."                                  placeholder:"DIR"       predictor:"directory"              short:"s"   type:"path"`
 	IncludeContext         bool              `help:"Include the context in the rendered output as a resource of kind: Context."                                                                     short:"c"`
 	FunctionCredentials    string            `help:"A YAML file or directory of YAML files specifying credentials to use for Functions to render the XR."                                           placeholder:"PATH"      predictor:"yaml_file_or_directory" type:"path"`
-	FunctionAnnotations    []string          `help:"Override function annotations for all functions. Can be repeated."                                                                              placeholder:"KEY=VALUE" short:"a"`
+	FunctionAnnotations    []string          `help:"Override function annotations for all functions. Provide multiple annotations by repeating the argument."                                       placeholder:"KEY=VALUE" short:"a"`
 
 	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                      help:"Directory for cached xpkg package contents."          name:"cache-dir"`
 	MaxConcurrency uint          `default:"8"                                                                                                      help:"Maximum concurrency for building embedded functions."`

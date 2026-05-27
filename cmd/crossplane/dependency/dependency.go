@@ -19,7 +19,7 @@ package dependency
 
 // Cmd contains commands for dependency management.
 type Cmd struct {
-	Add         addCmd         `cmd:"" help:"Add a dependency to the current project."`
+	Add         addCmd         `cmd:"" help:"Add a dependency to the current project."             novale:"Google.WordList[\"k8s\"],Google.Units,gitlab.Units"`
 	UpdateCache updateCacheCmd `cmd:"" help:"Update the dependency cache for the current project."`
 	CleanCache  cleanCacheCmd  `cmd:"" help:"Clean the dependency cache."`
 }

@@ -1,11 +1,12 @@
 The `project stop` command tears down the local development control plane
-previously created by `crossplane project run`. The KIND cluster and the local
-OCI registry are both removed.
+created by `crossplane project run`. It removes both the KIND cluster and the
+local OCI registry.
 
-When run from a project directory the control plane name is derived from the
-project name. When run outside a project directory, pass `--control-plane-name`
-to identify the control plane to tear down. Pass `--registry-dir` to point at
-the local registry directory used by `project run` if it was overridden there.
+When run from a project directory, the `stop` command tears down the control
+plane whose name matches the project name. When run outside a project directory,
+pass `--control-plane-name` to identify the control plane to tear down. If you
+passed `--registry-dir` to `crossplane project run`, pass it to `crossplane
+project stop` as well to clean up the registry data.
 
 ## Examples
 

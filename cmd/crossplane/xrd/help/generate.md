@@ -2,8 +2,8 @@ The `xrd generate` command creates a CompositeResourceDefinition (XRD) from
 either an example Composite Resource (XR) or a SimpleSchema document, and writes
 it into the project's APIs directory.
 
-By default the input is treated as an XR; pass `--from simpleschema` to generate
-an XRD from a SimpleSchema definition instead.
+XR is the default input format; pass `--from simpleschema` to generate an XRD
+from a SimpleSchema definition instead.
 
 ## Examples
 
@@ -15,14 +15,13 @@ crossplane xrd generate examples/cluster/example.yaml
 ```
 
 Generate an XRD with a specific plural form, useful when automatic pluralization
-is wrong (e.g., "postgres"):
+is wrong (for example, "postgres"):
 
 ```shell
 crossplane xrd generate examples/postgres/example.yaml --plural postgreses
 ```
 
-Generate an XRD and save it to a custom path within the project's APIs
-directory:
+Generate an XRD and save it to a custom path:
 
 ```shell
 crossplane xrd generate examples/postgres/example.yaml --path database/definition.yaml

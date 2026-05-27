@@ -2,7 +2,7 @@ The `xpkg install` command installs a package in a Crossplane control plane. It
 uses `~/.kube/config` to connect to the control plane; override the path with
 the `KUBECONFIG` environment variable.
 
-Specify the package kind, fully-qualified package OCI reference, and optionally
+Specify the package kind, fully qualified package OCI reference, and optionally
 a name for the package inside Crossplane:
 
 ```shell
@@ -12,12 +12,13 @@ crossplane xpkg install <package-kind> <oci-ref> [<optional-name>]
 The `<package-kind>` is one of `configuration`, `function`, or `provider`.
 
 > **Important:** The package reference must be fully qualified, including the
-> registry, repository, and tag (e.g., registry.example.com/package:v1.0.0).
+> registry, repository, and tag (for example,
+> registry.example.com/package:v1.0.0).
 
 ## Wait for package install
 
 By default the command returns as soon as Crossplane accepts the package. It
-does not wait for the download or install to complete. To inspect download or
+doesn't wait for the download or install to complete. To inspect download or
 installation problems, run `kubectl describe <kind>`.
 
 Use `--wait` (`-w`) to make the command wait for the package to become `HEALTHY`
@@ -52,7 +53,7 @@ Wait 1 minute for the package to finish installing before returning:
 crossplane xpkg install provider xpkg.crossplane.io/crossplane-contrib/provider-aws-eks:v0.41.0 --wait=1m
 ```
 
-Install a Function named function-eg using a custom runtime config:
+Install a Function named function-eg using a custom `DeploymentRuntimeConfig`:
 
 ```shell
 crossplane xpkg install function xpkg.crossplane.io/crossplane/function-example:v0.1.4 function-eg \

@@ -327,8 +327,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v1.5.1-0.20230307220236-3a3c6141e376"
     hash = "sha256-f4k0gSYuo0/q3WOoTxl2eFaj7WZpdz29ih6CKc8Ude8="
   [mod."github.com/go-git/go-billy/v5"]
-    version = "v5.8.0"
-    hash = "sha256-c4ScYknbM+MPHF+2vqnGMBuBLc4U1iYuyymq61Vts9Y="
+    version = "v5.9.0"
+    hash = "sha256-6+i1Xk8kR6EY8y6YSE9Oyj8ykcvyHUHZv04GfwOIzzs="
   [mod."github.com/go-git/go-git/v5"]
     version = "v5.18.0"
     hash = "sha256-9n2mTwPvx9d90ZEmezIq6SY7UET/32WNw2xYAp8mQ5Y="
@@ -840,8 +840,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v0.52.0"
     hash = "sha256-/6Ajm6bIPt5xXNL5mmeNfJh4EZjgFgVlHEwp1TiC5cM="
   [mod."golang.org/x/exp"]
-    version = "v0.0.0-20260218203240-3dfff04db8fa"
-    hash = "sha256-vsit1x+iQymfiWhINdZgd4wQhMoWMp3tqcjbDjcV0oY="
+    version = "v0.0.0-20260410095643-746e56fc9e2f"
+    hash = "sha256-JaDJGLIRoJjjvsg3dgfFuo7XApEJO2V4kUDmd58qTLI="
   [mod."golang.org/x/mod"]
     version = "v0.35.0"
     hash = "sha256-ICEQxokHywOFInDPqoP+go9l1tZSz3roknF5SXPtNV4="

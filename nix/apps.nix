@@ -187,6 +187,11 @@
             aws s3 sync --delete --only-show-errors "''${BUILD_PATH}" "''${CHANNEL_PATH}/current"
           fi
 
+          if [ "''${BRANCH}" == "main" ]; then
+            echo "Uploading install.sh..."
+            aws s3 cp --only-show-errors install.sh "s3://crossplane-cli-releases/"
+          fi
+
           echo "Done"
         '';
       }

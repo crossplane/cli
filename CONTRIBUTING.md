@@ -88,7 +88,7 @@ cd docs
 # Generate the docs.
 crossplane generate-docs -o content/master/cli/command-reference.md
 
-# Build the docs serve them locally for preview.
+# Build the docs and serve them locally for preview.
 hugo serve
 ```
 

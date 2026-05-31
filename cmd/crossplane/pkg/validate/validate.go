@@ -70,14 +70,16 @@ func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured,
 			continue
 		}
 
+		// A defaulting failure is recorded as a warning-class error and does
+		// not abort validation: schema and CEL checks still run on the
+		// (un-defaulted) resource so the user sees every problem at once,
+		// matching the historical behavior of the SchemaValidation entry
+		// point this package replaced.
 		if err := applyDefaults(r, gvk, crds); err != nil {
-			rvr.Status = ValidationStatusDefaultingFailed
 			rvr.Errors = append(rvr.Errors, FieldValidationError{
 				Type:    FieldErrorTypeDefaulting,
 				Message: err.Error(),
 			})
-			result.Resources = append(result.Resources, rvr)
-			continue
 		}
 
 		for _, v := range sv {
@@ -95,11 +97,7 @@ func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured,
 			}
 		}
 
-		if len(rvr.Errors) > 0 {
-			rvr.Status = ValidationStatusInvalid
-		} else {
-			rvr.Status = ValidationStatusValid
-		}
+		rvr.Status = statusFromErrors(rvr.Errors)
 		result.Resources = append(result.Resources, rvr)
 	}
 
@@ -174,6 +172,28 @@ func newValidatorsAndStructurals(crds []*extv1.CustomResourceDefinition) (map[ru
 	return validators, structurals, nil
 }
 
+// statusFromErrors picks the right ValidationStatus given the errors a
+// resource accumulated during validation. A real schema/CEL/unknown-field
+// error trumps a defaulting failure: the schema error is the actionable
+// problem, and DefaultingFailed is reserved for the case where defaulting
+// was the only thing that went wrong.
+func statusFromErrors(errs []FieldValidationError) ValidationStatus {
+	if len(errs) == 0 {
+		return ValidationStatusValid
+	}
+	onlyDefaulting := true
+	for _, e := range errs {
+		if e.Type != FieldErrorTypeDefaulting {
+			onlyDefaulting = false
+			break
+		}
+	}
+	if onlyDefaulting {
+		return ValidationStatusDefaultingFailed
+	}
+	return ValidationStatusInvalid
+}
+
 // fieldErrorToFieldValidationError converts a k8s field.Error into our structured type.
 func fieldErrorToFieldValidationError(e *field.Error, errType string) FieldValidationError {
 	out := FieldValidationError{
@@ -188,13 +208,18 @@ func fieldErrorToFieldValidationError(e *field.Error, errType string) FieldValid
 }
 
 // computeSummary calculates aggregate counts from per-resource results.
+//
+// DefaultingFailed counts toward Valid: a defaulting failure is a warning,
+// not a failure, and ResultError must not surface it as an error. This
+// mirrors the historical SchemaValidation semantics where defaulting errors
+// produced a [!] line but did not increment the failure counter.
 func computeSummary(results []ResourceValidationResult) ValidationSummary {
 	s := ValidationSummary{Total: len(results)}
 	for _, r := range results {
 		switch r.Status {
-		case ValidationStatusValid:
+		case ValidationStatusValid, ValidationStatusDefaultingFailed:
 			s.Valid++
-		case ValidationStatusInvalid, ValidationStatusDefaultingFailed:
+		case ValidationStatusInvalid:
 			s.Invalid++
 		case ValidationStatusMissingSchema:
 			s.MissingSchemas++

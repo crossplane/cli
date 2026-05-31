@@ -256,8 +256,8 @@ func TestSchemaValidate(t *testing.T) {
 				perRes:  []expect{{status: ValidationStatusInvalid, errorTypes: []string{FieldErrorTypeUnknownField}}},
 			},
 		},
-		"DefaultingFailure": {
-			reason: "When applyDefaults cannot find a matching version, status should be DefaultingFailed with a defaulting error.",
+		"DefaultingFailureOnly": {
+			reason: "A defaulting-only failure is a warning: status DefaultingFailed, summary counts as Valid (matches historical SchemaValidation semantics).",
 			args: args{
 				resources: []*unstructured.Unstructured{defaultingFailureResource},
 				// testCRDNoMatchingVersion matches group+kind but only has v1beta1;
@@ -265,8 +265,26 @@ func TestSchemaValidate(t *testing.T) {
 				crds: []*extv1.CustomResourceDefinition{testCRDNoMatchingVersion, testCRD},
 			},
 			want: want{
-				summary: ValidationSummary{Total: 1, Invalid: 1},
+				summary: ValidationSummary{Total: 1, Valid: 1},
 				perRes:  []expect{{status: ValidationStatusDefaultingFailed, errorTypes: []string{FieldErrorTypeDefaulting}}},
+			},
+		},
+		"DefaultingFailureWithSchemaError": {
+			reason: "Schema validation must still run when defaulting fails; both errors must be reported and the resource must be Invalid (not DefaultingFailed).",
+			args: args{
+				// Same multi-CRD trick as DefaultingFailureOnly to force a defaulting failure,
+				// but the resource has a wrong-typed replicas value so schema validation also fails.
+				// Regression guard: a prior version of this code did `continue` after a defaulting
+				// failure, silently hiding the schema error.
+				resources: []*unstructured.Unstructured{invalidSchemaResource},
+				crds:      []*extv1.CustomResourceDefinition{testCRDNoMatchingVersion, testCRD},
+			},
+			want: want{
+				summary: ValidationSummary{Total: 1, Invalid: 1},
+				perRes: []expect{{
+					status:     ValidationStatusInvalid,
+					errorTypes: []string{FieldErrorTypeDefaulting, FieldErrorTypeSchema},
+				}},
 			},
 		},
 		"Empty": {

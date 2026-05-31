@@ -99,21 +99,13 @@ func renderText(result *pkgvalidate.ValidationResult, w io.Writer, opts RenderOp
 			if _, err := fmt.Fprintf(w, "[!] could not find CRD/XRD for: %s\n", gvk); err != nil {
 				return err
 			}
-		case pkgvalidate.ValidationStatusDefaultingFailed:
+		case pkgvalidate.ValidationStatusInvalid, pkgvalidate.ValidationStatusDefaultingFailed:
+			// A resource may carry a mix of defaulting (warning) and
+			// schema/CEL (failure) errors. Print each error with the
+			// prefix appropriate to its type, regardless of the
+			// resource's overall status.
 			for _, e := range r.Errors {
-				if e.Type == pkgvalidate.FieldErrorTypeDefaulting {
-					if _, err := fmt.Fprintf(w, "[!] failed to apply defaults for %s, %s: %s\n", gvk, r.Name, e.Message); err != nil {
-						return err
-					}
-				}
-			}
-		case pkgvalidate.ValidationStatusInvalid:
-			for _, e := range r.Errors {
-				prefix := "schema validation error"
-				if e.Type == pkgvalidate.FieldErrorTypeCEL {
-					prefix = "CEL validation error"
-				}
-				if _, err := fmt.Fprintf(w, "[x] %s %s, %s : %s\n", prefix, gvk, r.Name, e.Message); err != nil {
+				if err := writeErrorLine(w, gvk, r.Name, e); err != nil {
 					return err
 				}
 			}
@@ -131,4 +123,21 @@ func renderText(result *pkgvalidate.ValidationResult, w io.Writer, opts RenderOp
 		return err
 	}
 	return nil
+}
+
+// writeErrorLine emits a single per-error line in the historical text
+// format. Defaulting failures use the [!] warning prefix; schema, CEL,
+// and unknown-field errors use [x].
+func writeErrorLine(w io.Writer, gvk, name string, e pkgvalidate.FieldValidationError) error {
+	switch e.Type {
+	case pkgvalidate.FieldErrorTypeDefaulting:
+		_, err := fmt.Fprintf(w, "[!] failed to apply defaults for %s, %s: %s\n", gvk, name, e.Message)
+		return err
+	case pkgvalidate.FieldErrorTypeCEL:
+		_, err := fmt.Fprintf(w, "[x] CEL validation error %s, %s : %s\n", gvk, name, e.Message)
+		return err
+	default:
+		_, err := fmt.Fprintf(w, "[x] schema validation error %s, %s : %s\n", gvk, name, e.Message)
+		return err
+	}
 }

@@ -91,6 +91,59 @@ func TestRenderValidationResult_Text(t *testing.T) {
 	}
 }
 
+// defaultingFixture covers the DefaultingFailed status (warning-only) and an
+// Invalid resource that has both a defaulting error and a schema error,
+// exercising the per-error prefix selection in renderText.
+func defaultingFixture() *pkgvalidate.ValidationResult {
+	return &pkgvalidate.ValidationResult{
+		// Summary: defaulting-only resource counts as Valid; the mixed-error
+		// resource counts as Invalid.
+		Summary: pkgvalidate.ValidationSummary{Total: 2, Valid: 1, Invalid: 1},
+		Resources: []pkgvalidate.ResourceValidationResult{
+			{
+				APIVersion: "test.org/v1alpha1", Kind: "Test", Name: "warn-only",
+				Status: pkgvalidate.ValidationStatusDefaultingFailed,
+				Errors: []pkgvalidate.FieldValidationError{{
+					Type:    pkgvalidate.FieldErrorTypeDefaulting,
+					Message: "no schema found for version v1alpha1 in CRD test-other-version",
+				}},
+			},
+			{
+				APIVersion: "test.org/v1alpha1", Kind: "Test", Name: "mixed",
+				Status: pkgvalidate.ValidationStatusInvalid,
+				Errors: []pkgvalidate.FieldValidationError{
+					{
+						Type:    pkgvalidate.FieldErrorTypeDefaulting,
+						Message: "no schema found for version v1alpha1 in CRD test-other-version",
+					},
+					{
+						Type:    pkgvalidate.FieldErrorTypeSchema,
+						Field:   "spec.replicas",
+						Message: `spec.replicas: Invalid value: "string": spec.replicas in body must be of type integer: "string"`,
+						Value:   "string",
+					},
+				},
+			},
+		},
+	}
+}
+
+const expectedTextDefaulting = `[!] failed to apply defaults for test.org/v1alpha1, Kind=Test, warn-only: no schema found for version v1alpha1 in CRD test-other-version
+[!] failed to apply defaults for test.org/v1alpha1, Kind=Test, mixed: no schema found for version v1alpha1 in CRD test-other-version
+[x] schema validation error test.org/v1alpha1, Kind=Test, mixed : spec.replicas: Invalid value: "string": spec.replicas in body must be of type integer: "string"
+Total 2 resources: 0 missing schemas, 1 success cases, 1 failure cases
+`
+
+func TestRenderValidationResult_TextDefaulting(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderValidationResult(defaultingFixture(), OutputFormatText, &buf, RenderOptions{}); err != nil {
+		t.Fatalf("RenderValidationResult() unexpected error: %v", err)
+	}
+	if got := buf.String(); got != expectedTextDefaulting {
+		t.Errorf("text output mismatch\n--- want ---\n%s\n--- got ---\n%s", expectedTextDefaulting, got)
+	}
+}
+
 func TestRenderValidationResult_JSON(t *testing.T) {
 	in := fixture()
 	var buf bytes.Buffer

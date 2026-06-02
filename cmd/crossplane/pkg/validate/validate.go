@@ -42,7 +42,7 @@ import (
 // returned error is non-nil only for setup failures (for example, a CRD that
 // cannot be converted or compiled); per-resource validation failures are
 // reported via ResourceValidationResult.Status and .Errors, not via the error.
-func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured, crds []*extv1.CustomResourceDefinition) (*ValidationResult, error) { //nolint:gocognit // validation has many branches
+func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured, crds []*extv1.CustomResourceDefinition) (*ValidationResult, error) {
 	schemaValidators, structurals, err := newValidatorsAndStructurals(crds)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create schema validators")
@@ -51,58 +51,68 @@ func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured,
 	result := &ValidationResult{
 		Resources: make([]ResourceValidationResult, 0, len(resources)),
 	}
-
 	for _, r := range resources {
-		gvk := r.GetObjectKind().GroupVersionKind()
-		rvr := ResourceValidationResult{
-			APIVersion: gvk.GroupVersion().String(),
-			Kind:       gvk.Kind,
-			Name:       getResourceName(r),
-			Namespace:  r.GetNamespace(),
-		}
-
-		sv, ok := schemaValidators[gvk]
-		s := structurals[gvk]
-
-		if !ok {
-			rvr.Status = ValidationStatusMissingSchema
-			result.Resources = append(result.Resources, rvr)
-			continue
-		}
-
-		// A defaulting failure is recorded as a warning-class error and does
-		// not abort validation: schema and CEL checks still run on the
-		// (un-defaulted) resource so the user sees every problem at once,
-		// matching the historical behavior of the SchemaValidation entry
-		// point this package replaced.
-		if err := applyDefaults(r, gvk, crds); err != nil {
-			rvr.Errors = append(rvr.Errors, FieldValidationError{
-				Type:    FieldErrorTypeDefaulting,
-				Message: err.Error(),
-			})
-		}
-
-		for _, v := range sv {
-			for _, e := range validation.ValidateCustomResource(nil, r, *v) {
-				rvr.Errors = append(rvr.Errors, fieldErrorToFieldValidationError(e, FieldErrorTypeSchema))
-			}
-			for _, e := range validateUnknownFields(r.UnstructuredContent(), s) {
-				rvr.Errors = append(rvr.Errors, fieldErrorToFieldValidationError(e, FieldErrorTypeUnknownField))
-			}
-
-			celValidator := cel.NewValidator(s, true, celconfig.PerCallLimit)
-			celErrs, _ := celValidator.Validate(ctx, nil, s, r.Object, nil, celconfig.PerCallLimit)
-			for _, e := range celErrs {
-				rvr.Errors = append(rvr.Errors, fieldErrorToFieldValidationError(e, FieldErrorTypeCEL))
-			}
-		}
-
-		rvr.Status = statusFromErrors(rvr.Errors)
-		result.Resources = append(result.Resources, rvr)
+		result.Resources = append(result.Resources, validateResource(ctx, r, schemaValidators, structurals, crds))
 	}
-
 	result.Summary = computeSummary(result.Resources)
 	return result, nil
+}
+
+// validateResource runs every check (schema, CEL, unknown fields, defaulting)
+// against a single resource and returns its ResourceValidationResult. It is
+// the per-resource decomposition of SchemaValidate; pulling it out keeps the
+// outer function a clean fan-out and lets each branch read top-to-bottom.
+func validateResource(
+	ctx context.Context,
+	r *unstructured.Unstructured,
+	schemaValidators map[runtimeschema.GroupVersionKind][]*validation.SchemaValidator,
+	structurals map[runtimeschema.GroupVersionKind]*schema.Structural,
+	crds []*extv1.CustomResourceDefinition,
+) ResourceValidationResult {
+	gvk := r.GetObjectKind().GroupVersionKind()
+	rvr := ResourceValidationResult{
+		APIVersion: gvk.GroupVersion().String(),
+		Kind:       gvk.Kind,
+		Name:       getResourceName(r),
+		Namespace:  r.GetNamespace(),
+	}
+
+	sv, ok := schemaValidators[gvk]
+	if !ok {
+		rvr.Status = ValidationStatusMissingSchema
+		return rvr
+	}
+	s := structurals[gvk]
+
+	// A defaulting failure is recorded as a warning-class error and does
+	// not abort validation: schema and CEL checks still run on the
+	// (un-defaulted) resource so the user sees every problem at once,
+	// matching the historical behavior of the SchemaValidation entry
+	// point this package replaced.
+	if err := applyDefaults(r, gvk, crds); err != nil {
+		rvr.Errors = append(rvr.Errors, FieldValidationError{
+			Type:    FieldErrorTypeDefaulting,
+			Message: err.Error(),
+		})
+	}
+
+	for _, v := range sv {
+		for _, e := range validation.ValidateCustomResource(nil, r, *v) {
+			rvr.Errors = append(rvr.Errors, fieldErrorToFieldValidationError(e, FieldErrorTypeSchema))
+		}
+		for _, e := range validateUnknownFields(r.UnstructuredContent(), s) {
+			rvr.Errors = append(rvr.Errors, fieldErrorToFieldValidationError(e, FieldErrorTypeUnknownField))
+		}
+
+		celValidator := cel.NewValidator(s, true, celconfig.PerCallLimit)
+		celErrs, _ := celValidator.Validate(ctx, nil, s, r.Object, nil, celconfig.PerCallLimit)
+		for _, e := range celErrs {
+			rvr.Errors = append(rvr.Errors, fieldErrorToFieldValidationError(e, FieldErrorTypeCEL))
+		}
+	}
+
+	rvr.Status = statusFromErrors(rvr.Errors)
+	return rvr
 }
 
 // ResultError returns an error summarizing the outcome of validation, or nil

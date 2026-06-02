@@ -17,10 +17,10 @@ limitations under the License.
 package validate
 
 import (
-	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -186,9 +186,13 @@ func TestSchemaValidate(t *testing.T) {
 		resources []*unstructured.Unstructured
 		crds      []*extv1.CustomResourceDefinition
 	}
+	// expect declares everything we assert about a single resource's result:
+	// its Status and the exact set of FieldValidationErrors. Message and
+	// Value are compared with cmpopts.IgnoreFields below, since k8s
+	// validation libraries phrase those strings differently across versions.
 	type expect struct {
-		status     ValidationStatus
-		errorTypes []string // expected FieldValidationError.Type values (order-independent, subset)
+		status ValidationStatus
+		errors []FieldValidationError
 	}
 	type want struct {
 		summary ValidationSummary
@@ -213,14 +217,19 @@ func TestSchemaValidate(t *testing.T) {
 			},
 		},
 		"InvalidSchema": {
-			reason: "A resource violating OpenAPI schema should be Invalid with a schema-type field error.",
+			reason: "A resource violating OpenAPI schema should be Invalid with a schema-type field error on spec.replicas.",
 			args: args{
 				resources: []*unstructured.Unstructured{invalidSchemaResource},
 				crds:      []*extv1.CustomResourceDefinition{testCRD},
 			},
 			want: want{
 				summary: ValidationSummary{Total: 1, Invalid: 1},
-				perRes:  []expect{{status: ValidationStatusInvalid, errorTypes: []string{FieldErrorTypeSchema}}},
+				perRes: []expect{{
+					status: ValidationStatusInvalid,
+					errors: []FieldValidationError{
+						{Type: FieldErrorTypeSchema, Field: "spec.replicas"},
+					},
+				}},
 			},
 		},
 		"InvalidCEL": {
@@ -231,7 +240,13 @@ func TestSchemaValidate(t *testing.T) {
 			},
 			want: want{
 				summary: ValidationSummary{Total: 1, Invalid: 1},
-				perRes:  []expect{{status: ValidationStatusInvalid, errorTypes: []string{FieldErrorTypeCEL}}},
+				perRes: []expect{{
+					status: ValidationStatusInvalid,
+					errors: []FieldValidationError{
+						// Field is the CEL rule's location, "spec" in this fixture.
+						{Type: FieldErrorTypeCEL, Field: "spec"},
+					},
+				}},
 			},
 		},
 		"MissingSchema": {
@@ -246,14 +261,19 @@ func TestSchemaValidate(t *testing.T) {
 			},
 		},
 		"UnknownField": {
-			reason: "A resource with a field not declared in the schema should surface an unknownField error.",
+			reason: "A resource with a field not declared in the schema should surface an unknownField error on the offending field path.",
 			args: args{
 				resources: []*unstructured.Unstructured{unknownFieldResource},
 				crds:      []*extv1.CustomResourceDefinition{testCRD},
 			},
 			want: want{
 				summary: ValidationSummary{Total: 1, Invalid: 1},
-				perRes:  []expect{{status: ValidationStatusInvalid, errorTypes: []string{FieldErrorTypeUnknownField}}},
+				perRes: []expect{{
+					status: ValidationStatusInvalid,
+					errors: []FieldValidationError{
+						{Type: FieldErrorTypeUnknownField, Field: "spec.unknownField"},
+					},
+				}},
 			},
 		},
 		"DefaultingFailureOnly": {
@@ -266,11 +286,16 @@ func TestSchemaValidate(t *testing.T) {
 			},
 			want: want{
 				summary: ValidationSummary{Total: 1, Valid: 1},
-				perRes:  []expect{{status: ValidationStatusDefaultingFailed, errorTypes: []string{FieldErrorTypeDefaulting}}},
+				perRes: []expect{{
+					status: ValidationStatusDefaultingFailed,
+					errors: []FieldValidationError{
+						{Type: FieldErrorTypeDefaulting},
+					},
+				}},
 			},
 		},
 		"DefaultingFailureWithSchemaError": {
-			reason: "Schema validation must still run when defaulting fails; both errors must be reported and the resource must be Invalid (not DefaultingFailed).",
+			reason: "Schema validation must still run when defaulting fails; both errors must be reported in order, and the resource must be Invalid (not DefaultingFailed).",
 			args: args{
 				// Same multi-CRD trick as DefaultingFailureOnly to force a defaulting failure,
 				// but the resource has a wrong-typed replicas value so schema validation also fails.
@@ -282,8 +307,13 @@ func TestSchemaValidate(t *testing.T) {
 			want: want{
 				summary: ValidationSummary{Total: 1, Invalid: 1},
 				perRes: []expect{{
-					status:     ValidationStatusInvalid,
-					errorTypes: []string{FieldErrorTypeDefaulting, FieldErrorTypeSchema},
+					status: ValidationStatusInvalid,
+					errors: []FieldValidationError{
+						// Defaulting comes first because the implementation
+						// records it before running schema/CEL checks.
+						{Type: FieldErrorTypeDefaulting},
+						{Type: FieldErrorTypeSchema, Field: "spec.replicas"},
+					},
 				}},
 			},
 		},
@@ -305,16 +335,25 @@ func TestSchemaValidate(t *testing.T) {
 				summary: ValidationSummary{Total: 3, Valid: 1, Invalid: 1, MissingSchemas: 1},
 				perRes: []expect{
 					{status: ValidationStatusValid},
-					{status: ValidationStatusInvalid, errorTypes: []string{FieldErrorTypeSchema}},
+					{
+						status: ValidationStatusInvalid,
+						errors: []FieldValidationError{
+							{Type: FieldErrorTypeSchema, Field: "spec.replicas"},
+						},
+					},
 					{status: ValidationStatusMissingSchema},
 				},
 			},
 		},
 	}
 
+	// Message and Value text comes from k8s validator libraries and changes
+	// across versions; we assert on Type and Field instead.
+	ignoreErrTextFields := cmpopts.IgnoreFields(FieldValidationError{}, "Message", "Value")
+
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			result, err := SchemaValidate(context.Background(), tc.args.resources, tc.args.crds)
+			result, err := SchemaValidate(t.Context(), tc.args.resources, tc.args.crds)
 			if (err != nil) != tc.want.wantErr {
 				t.Fatalf("%s\nSchemaValidate() err = %v, wantErr = %v", tc.reason, err, tc.want.wantErr)
 			}
@@ -332,11 +371,20 @@ func TestSchemaValidate(t *testing.T) {
 				if r.Status != exp.status {
 					t.Errorf("%s\nResources[%d].Status = %q, want %q", tc.reason, i, r.Status, exp.status)
 				}
-				if !containsAllErrorTypes(r.Errors, exp.errorTypes) {
-					t.Errorf("%s\nResources[%d].Errors = %+v; want to include types %v", tc.reason, i, r.Errors, exp.errorTypes)
+				// Treat a nil-valued exp.errors as "expect no errors". Use a
+				// concrete empty slice instead of nil for the comparison so
+				// cmp doesn't trip on slice-nilness when the validator
+				// returns `nil`.
+				wantErrs := exp.errors
+				if wantErrs == nil {
+					wantErrs = []FieldValidationError{}
 				}
-				if len(exp.errorTypes) == 0 && len(r.Errors) != 0 {
-					t.Errorf("%s\nResources[%d].Errors = %+v; want empty", tc.reason, i, r.Errors)
+				gotErrs := r.Errors
+				if gotErrs == nil {
+					gotErrs = []FieldValidationError{}
+				}
+				if diff := cmp.Diff(wantErrs, gotErrs, ignoreErrTextFields); diff != "" {
+					t.Errorf("%s\nResources[%d].Errors mismatch (-want +got):\n%s", tc.reason, i, diff)
 				}
 			}
 		})
@@ -384,22 +432,4 @@ func TestResultError(t *testing.T) {
 			}
 		})
 	}
-}
-
-// containsAllErrorTypes returns true when every wanted type appears at least
-// once in the given FieldValidationError slice.
-func containsAllErrorTypes(errs []FieldValidationError, wantTypes []string) bool {
-	if len(wantTypes) == 0 {
-		return true
-	}
-	seen := make(map[string]bool, len(errs))
-	for _, e := range errs {
-		seen[e.Type] = true
-	}
-	for _, t := range wantTypes {
-		if !seen[t] {
-			return false
-		}
-	}
-	return true
 }

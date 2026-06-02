@@ -20,15 +20,12 @@ package validate
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
-	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
@@ -126,27 +123,14 @@ func (c *Cmd) Run(k *kong.Context, _ logging.Logger) error {
 		return errors.Wrapf(err, "cannot download and load cache")
 	}
 
-	// Validate resources against schemas and render in the requested format.
-	if err := c.validateAndRender(context.Background(), resources, m.crds, k.Stdout); err != nil {
+	// Validate resources against schemas, render in the requested format,
+	// and return a CLI-shaped error when validation didn't pass.
+	result, err := pkgvalidate.SchemaValidate(context.Background(), resources, m.crds)
+	if err != nil {
 		return errors.Wrapf(err, "cannot validate resources")
 	}
 
-	return nil
-}
-
-// validateAndRender runs schema validation on the given resources and CRDs,
-// writes the result to w in the format configured on the Cmd, and returns a
-// non-nil error when validation failed (or when ErrorOnMissingSchemas is set
-// and any resource had no matching schema). It is the core of Cmd.Run,
-// extracted so that tests can exercise the flag-driven behaviour without the
-// file/cache loading machinery.
-func (c *Cmd) validateAndRender(ctx context.Context, resources []*unstructured.Unstructured, crds []*extv1.CustomResourceDefinition, w io.Writer) error {
-	result, err := pkgvalidate.SchemaValidate(ctx, resources, crds)
-	if err != nil {
-		return err
-	}
-
-	if err := render.RenderValidationResult(result, render.OutputFormat(c.Output), w, render.RenderOptions{SkipSuccessResults: c.SkipSuccessResults}); err != nil {
+	if err := render.OutputFormat(c.Output).Render(result, k.Stdout, render.RenderOptions{SkipSuccessResults: c.SkipSuccessResults}); err != nil {
 		return errors.Wrap(err, "cannot render validation result")
 	}
 

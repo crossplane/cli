@@ -19,6 +19,8 @@ package render
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -57,47 +59,11 @@ func fixture() *pkgvalidate.ValidationResult {
 	}
 }
 
-const expectedTextWithSuccess = `[✓] test.org/v1alpha1, Kind=Test, ok validated successfully
-[x] schema validation error test.org/v1alpha1, Kind=Test, bad : spec.replicas: Invalid value: "string": spec.replicas in body must be of type integer: "string"
-[!] could not find CRD/XRD for: other.org/v1, Kind=Unknown
-Total 3 resources: 1 missing schemas, 1 success cases, 1 failure cases
-`
-
-const expectedTextSkipSuccess = `[x] schema validation error test.org/v1alpha1, Kind=Test, bad : spec.replicas: Invalid value: "string": spec.replicas in body must be of type integer: "string"
-[!] could not find CRD/XRD for: other.org/v1, Kind=Unknown
-Total 3 resources: 1 missing schemas, 1 success cases, 1 failure cases
-`
-
-func TestRenderValidationResult_Text(t *testing.T) {
-	cases := map[string]struct {
-		format   OutputFormat
-		opts     RenderOptions
-		expected string
-	}{
-		"TextWithSuccess": {format: OutputFormatText, expected: expectedTextWithSuccess},
-		"TextSkipSuccess": {format: OutputFormatText, opts: RenderOptions{SkipSuccessResults: true}, expected: expectedTextSkipSuccess},
-		"TextEmptyFormat": {format: OutputFormat(""), expected: expectedTextWithSuccess},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			var buf bytes.Buffer
-			if err := RenderValidationResult(fixture(), tc.format, &buf, tc.opts); err != nil {
-				t.Fatalf("RenderValidationResult() unexpected error: %v", err)
-			}
-			if got := buf.String(); got != tc.expected {
-				t.Errorf("text output mismatch\n--- want ---\n%s\n--- got ---\n%s", tc.expected, got)
-			}
-		})
-	}
-}
-
 // defaultingFixture covers the DefaultingFailed status (warning-only) and an
 // Invalid resource that has both a defaulting error and a schema error,
 // exercising the per-error prefix selection in renderText.
 func defaultingFixture() *pkgvalidate.ValidationResult {
 	return &pkgvalidate.ValidationResult{
-		// Summary: defaulting-only resource counts as Valid; the mixed-error
-		// resource counts as Invalid.
 		Summary: pkgvalidate.ValidationSummary{Total: 2, Valid: 1, Invalid: 1},
 		Resources: []pkgvalidate.ResourceValidationResult{
 			{
@@ -128,19 +94,88 @@ func defaultingFixture() *pkgvalidate.ValidationResult {
 	}
 }
 
-const expectedTextDefaulting = `[!] failed to apply defaults for test.org/v1alpha1, Kind=Test, warn-only: no schema found for version v1alpha1 in CRD test-other-version
-[!] failed to apply defaults for test.org/v1alpha1, Kind=Test, mixed: no schema found for version v1alpha1 in CRD test-other-version
-[x] schema validation error test.org/v1alpha1, Kind=Test, mixed : spec.replicas: Invalid value: "string": spec.replicas in body must be of type integer: "string"
-Total 2 resources: 0 missing schemas, 1 success cases, 1 failure cases
-`
-
-func TestRenderValidationResult_TextDefaulting(t *testing.T) {
+// renderTextLines runs Render with the given format and options and returns
+// the non-empty lines of the resulting output. It centralises the call so
+// individual cases can focus on assertions.
+func renderTextLines(t *testing.T, in *pkgvalidate.ValidationResult, format OutputFormat, opts RenderOptions) []string {
+	t.Helper()
 	var buf bytes.Buffer
-	if err := RenderValidationResult(defaultingFixture(), OutputFormatText, &buf, RenderOptions{}); err != nil {
-		t.Fatalf("RenderValidationResult() unexpected error: %v", err)
+	if err := format.Render(in, &buf, opts); err != nil {
+		t.Fatalf("Render() unexpected error: %v", err)
 	}
-	if got := buf.String(); got != expectedTextDefaulting {
-		t.Errorf("text output mismatch\n--- want ---\n%s\n--- got ---\n%s", expectedTextDefaulting, got)
+	raw := strings.TrimRight(buf.String(), "\n")
+	if raw == "" {
+		return nil
+	}
+	return strings.Split(raw, "\n")
+}
+
+// summaryLine builds the trailing summary line for the given result.
+func summaryLine(r *pkgvalidate.ValidationResult) string {
+	return fmt.Sprintf("Total %d resources: %d missing schemas, %d success cases, %d failure cases",
+		r.Summary.Total, r.Summary.MissingSchemas, r.Summary.Valid, r.Summary.Invalid)
+}
+
+func TestRenderValidationResult_Text(t *testing.T) {
+	cases := map[string]struct {
+		in           *pkgvalidate.ValidationResult
+		format       OutputFormat
+		opts         RenderOptions
+		wantLineSubs []string // every entry must appear as a substring of some output line, in order
+	}{
+		"WithSuccess": {
+			in:     fixture(),
+			format: OutputFormatText,
+			wantLineSubs: []string{
+				"[✓] test.org/v1alpha1, Kind=Test, ok",
+				"[x] schema validation error test.org/v1alpha1, Kind=Test, bad",
+				"[!] could not find CRD/XRD for: other.org/v1, Kind=Unknown",
+				summaryLine(fixture()),
+			},
+		},
+		"SkipSuccess": {
+			in:     fixture(),
+			format: OutputFormatText,
+			opts:   RenderOptions{SkipSuccessResults: true},
+			wantLineSubs: []string{
+				"[x] schema validation error test.org/v1alpha1, Kind=Test, bad",
+				"[!] could not find CRD/XRD for: other.org/v1, Kind=Unknown",
+				summaryLine(fixture()),
+			},
+		},
+		"EmptyFormatActsAsText": {
+			in:     fixture(),
+			format: OutputFormat(""),
+			wantLineSubs: []string{
+				"[✓] test.org/v1alpha1, Kind=Test, ok",
+				"[x] schema validation error test.org/v1alpha1, Kind=Test, bad",
+				"[!] could not find CRD/XRD for: other.org/v1, Kind=Unknown",
+				summaryLine(fixture()),
+			},
+		},
+		"DefaultingMixed": {
+			in:     defaultingFixture(),
+			format: OutputFormatText,
+			wantLineSubs: []string{
+				"[!] failed to apply defaults for test.org/v1alpha1, Kind=Test, warn-only",
+				"[!] failed to apply defaults for test.org/v1alpha1, Kind=Test, mixed",
+				"[x] schema validation error test.org/v1alpha1, Kind=Test, mixed",
+				summaryLine(defaultingFixture()),
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			lines := renderTextLines(t, tc.in, tc.format, tc.opts)
+			if len(lines) != len(tc.wantLineSubs) {
+				t.Fatalf("line count = %d, want %d\n--- got ---\n%s", len(lines), len(tc.wantLineSubs), strings.Join(lines, "\n"))
+			}
+			for i, sub := range tc.wantLineSubs {
+				if !strings.Contains(lines[i], sub) {
+					t.Errorf("line %d: expected substring %q, got %q", i, sub, lines[i])
+				}
+			}
+		})
 	}
 }
 

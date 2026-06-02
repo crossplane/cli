@@ -18,186 +18,265 @@ package validate
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/alecthomas/kong"
-	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
 	"sigs.k8s.io/yaml"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	pkgvalidate "github.com/crossplane/cli/v2/cmd/crossplane/pkg/validate"
 )
 
-// parseCmdFlags exercises Kong's parsing of the Cmd struct tags. It builds a
-// Cmd with fake positional args so we can focus on flag behaviour.
-func parseCmdFlags(t *testing.T, args ...string) *Cmd {
+// runCmd parses the given CLI args through Kong and invokes the validate
+// command's Run, returning whatever was written to stdout plus the error
+// returned by Run. Tests interact with the command exactly the way a real
+// CLI invocation would, so the helper does not bypass any of the
+// production code paths in cmd.go.
+func runCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	c := &Cmd{}
-	// Positional args Extensions and Resources are required; supply dummies.
-	full := append([]string{"ext.yaml", "res.yaml"}, args...)
-	parser, err := kong.New(c)
+	var c Cmd
+	parser, err := kong.New(&c)
 	if err != nil {
 		t.Fatalf("kong.New(): %v", err)
 	}
-	if _, err := parser.Parse(full); err != nil {
-		t.Fatalf("kong.Parse(%v): %v", full, err)
+	kongCtx, err := parser.Parse(args)
+	if err != nil {
+		return "", err
 	}
-	return c
+	var stdout bytes.Buffer
+	kongCtx.Stdout = &stdout
+	runErr := c.Run(kongCtx, logging.NewNopLogger())
+	return stdout.String(), runErr
 }
 
-func TestCmd_OutputFlagParsing(t *testing.T) {
-	cases := map[string]struct {
-		args []string
-		want string
-	}{
-		"default":    {args: nil, want: "text"},
-		"long_text":  {args: []string{"--output=text"}, want: "text"},
-		"long_json":  {args: []string{"--output=json"}, want: "json"},
-		"long_yaml":  {args: []string{"--output=yaml"}, want: "yaml"},
-		"short_flag": {args: []string{"-o", "json"}, want: "json"},
+// runCmdOK is runCmd plus a t.Fatal on parse error, used when the test
+// is asserting against Run's behaviour rather than Kong's parsing.
+func runCmdOK(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	var c Cmd
+	parser, err := kong.New(&c)
+	if err != nil {
+		t.Fatalf("kong.New(): %v", err)
 	}
+	kongCtx, err := parser.Parse(args)
+	if err != nil {
+		t.Fatalf("kong.Parse(%v): %v", args, err)
+	}
+	var stdout bytes.Buffer
+	kongCtx.Stdout = &stdout
+	runErr := c.Run(kongCtx, logging.NewNopLogger())
+	return stdout.String(), runErr
+}
+
+// commonArgs are the fixture arguments shared by every e2e test:
+// pre-populated cache + a stand-in crossplane image whose package.yaml
+// lives under testdata/cache. Both keep the test offline.
+var commonArgs = []string{
+	"--cache-dir=testdata/cache",
+	"--crossplane-image=xpkg.crossplane.io/crossplane/crossplane:v0.0.0-test",
+}
+
+// TestCmd_OutputEnumValidation asserts that Kong rejects unknown --output
+// values before Run is called.
+func TestCmd_OutputEnumValidation(t *testing.T) {
+	args := append([]string{
+		"testdata/cmd/crd.yaml",
+		"testdata/cmd/resources_valid.yaml",
+		"--output=xml",
+	}, commonArgs...)
+	_, err := runCmd(t, args...)
+	if err == nil {
+		t.Errorf("kong.Parse(--output=xml) = nil; want enum-validation error")
+	}
+}
+
+// TestCmd_Run drives the validate command end-to-end through Kong. Each
+// case writes real fixture files and a real validation result to a real
+// stdout writer; nothing is mocked. The pre-populated testdata/cache
+// directory keeps the run offline.
+func TestCmd_Run(t *testing.T) {
+	cases := map[string]struct {
+		extensions string
+		resources  string
+		extraArgs  []string
+		wantErr    bool
+		// assertText is invoked when --output is text (the default). It
+		// receives the captured stdout.
+		assertText func(t *testing.T, stdout string)
+		// assertJSON is invoked when --output=json. It is given the
+		// already-parsed ValidationResult.
+		assertJSON func(t *testing.T, result *pkgvalidate.ValidationResult)
+		// assertYAML, same idea but for --output=yaml.
+		assertYAML func(t *testing.T, result *pkgvalidate.ValidationResult)
+	}{
+		"DefaultText_Valid": {
+			extensions: "testdata/cmd/crd.yaml",
+			resources:  "testdata/cmd/resources_valid.yaml",
+			assertText: func(t *testing.T, out string) {
+				if !strings.Contains(out, "[✓] cmd.example.org/v1alpha1, Kind=Test, ok-instance") {
+					t.Errorf("missing success line in output:\n%s", out)
+				}
+				if !strings.Contains(out, "Total 1 resources: 0 missing schemas, 1 success cases, 0 failure cases") {
+					t.Errorf("missing summary line in output:\n%s", out)
+				}
+			},
+		},
+		"Text_InvalidExitsNonZero": {
+			extensions: "testdata/cmd/crd.yaml",
+			resources:  "testdata/cmd/resources_invalid.yaml",
+			wantErr:    true,
+			assertText: func(t *testing.T, out string) {
+				if !strings.Contains(out, "[x] schema validation error cmd.example.org/v1alpha1, Kind=Test, bad-instance") {
+					t.Errorf("missing schema-error line in output:\n%s", out)
+				}
+			},
+		},
+		"JSON_Valid": {
+			extensions: "testdata/cmd/crd.yaml",
+			resources:  "testdata/cmd/resources_valid.yaml",
+			extraArgs:  []string{"--output=json"},
+			assertJSON: func(t *testing.T, r *pkgvalidate.ValidationResult) {
+				if r.Summary.Total != 1 || r.Summary.Valid != 1 {
+					t.Errorf("Summary = %+v; want Total=1 Valid=1", r.Summary)
+				}
+				if len(r.Resources) != 1 || r.Resources[0].Status != pkgvalidate.ValidationStatusValid {
+					t.Errorf("Resources = %+v; want one Valid entry", r.Resources)
+				}
+			},
+		},
+		"JSON_InvalidExitsNonZero": {
+			extensions: "testdata/cmd/crd.yaml",
+			resources:  "testdata/cmd/resources_invalid.yaml",
+			extraArgs:  []string{"--output=json"},
+			wantErr:    true,
+			assertJSON: func(t *testing.T, r *pkgvalidate.ValidationResult) {
+				if r.Summary.Invalid != 1 {
+					t.Errorf("Summary.Invalid = %d; want 1", r.Summary.Invalid)
+				}
+				if len(r.Resources) != 1 || r.Resources[0].Status != pkgvalidate.ValidationStatusInvalid {
+					t.Errorf("Resources = %+v; want one Invalid entry", r.Resources)
+				}
+				if len(r.Resources[0].Errors) == 0 || r.Resources[0].Errors[0].Type != pkgvalidate.FieldErrorTypeSchema {
+					t.Errorf("Resources[0].Errors = %+v; want at least one schema error", r.Resources[0].Errors)
+				}
+			},
+		},
+		"YAML_Valid": {
+			extensions: "testdata/cmd/crd.yaml",
+			resources:  "testdata/cmd/resources_valid.yaml",
+			extraArgs:  []string{"--output=yaml"},
+			assertYAML: func(t *testing.T, r *pkgvalidate.ValidationResult) {
+				if r.Summary.Total != 1 || r.Summary.Valid != 1 {
+					t.Errorf("Summary = %+v; want Total=1 Valid=1", r.Summary)
+				}
+			},
+		},
+		"JSON_MissingSchema_NoFlag": {
+			// Default behaviour: a missing schema is reported but doesn't fail the run.
+			extensions: "testdata/cmd/crd.yaml",
+			resources:  "testdata/cmd/resources_missing.yaml",
+			extraArgs:  []string{"--output=json"},
+			assertJSON: func(t *testing.T, r *pkgvalidate.ValidationResult) {
+				if r.Summary.MissingSchemas != 1 || r.Summary.Invalid != 0 {
+					t.Errorf("Summary = %+v; want MissingSchemas=1 Invalid=0", r.Summary)
+				}
+				if len(r.Resources) != 1 || r.Resources[0].Status != pkgvalidate.ValidationStatusMissingSchema {
+					t.Errorf("Resources = %+v; want one MissingSchema entry", r.Resources)
+				}
+			},
+		},
+		"JSON_MissingSchema_WithFlag": {
+			// --error-on-missing-schemas escalates a missing schema to a non-zero exit.
+			extensions: "testdata/cmd/crd.yaml",
+			resources:  "testdata/cmd/resources_missing.yaml",
+			extraArgs:  []string{"--output=json", "--error-on-missing-schemas"},
+			wantErr:    true,
+			assertJSON: func(t *testing.T, r *pkgvalidate.ValidationResult) {
+				if r.Summary.MissingSchemas != 1 {
+					t.Errorf("Summary.MissingSchemas = %d; want 1", r.Summary.MissingSchemas)
+				}
+			},
+		},
+		"SkipSuccessResults_TextSuppressesCheckmark": {
+			extensions: "testdata/cmd/crd.yaml",
+			resources:  "testdata/cmd/resources_valid.yaml",
+			extraArgs:  []string{"--skip-success-results"},
+			assertText: func(t *testing.T, out string) {
+				if strings.Contains(out, "[✓]") {
+					t.Errorf("--skip-success-results should suppress [✓] lines; got:\n%s", out)
+				}
+				if !strings.Contains(out, "1 success cases") {
+					t.Errorf("summary should still report success cases; got:\n%s", out)
+				}
+			},
+		},
+		"SkipSuccessResults_JSONStillIncludesValid": {
+			// In JSON mode the flag is ignored; success entries remain part
+			// of the structured payload so consumers can filter themselves.
+			extensions: "testdata/cmd/crd.yaml",
+			resources:  "testdata/cmd/resources_valid.yaml",
+			extraArgs:  []string{"--output=json", "--skip-success-results"},
+			assertJSON: func(t *testing.T, r *pkgvalidate.ValidationResult) {
+				if r.Summary.Valid != 1 {
+					t.Errorf("--skip-success-results must not strip valid entries from JSON; got %+v", r)
+				}
+			},
+		},
+	}
+
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			c := parseCmdFlags(t, tc.args...)
-			if c.Output != tc.want {
-				t.Errorf("Cmd.Output = %q; want %q", c.Output, tc.want)
+			args := append([]string{tc.extensions, tc.resources}, append(commonArgs, tc.extraArgs...)...)
+			stdout, err := runCmdOK(t, args...)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Run() err = %v, wantErr = %v\n--- stdout ---\n%s", err, tc.wantErr, stdout)
+			}
+			// Strip any package-fetcher chatter the manager writes before
+			// the validation result so downstream parsers see only the
+			// payload.
+			payload := stripFetcherNoise(stdout)
+
+			if tc.assertText != nil {
+				tc.assertText(t, payload)
+			}
+			if tc.assertJSON != nil {
+				var got pkgvalidate.ValidationResult
+				if err := json.Unmarshal([]byte(payload), &got); err != nil {
+					t.Fatalf("stdout is not valid JSON: %v\n%s", err, payload)
+				}
+				tc.assertJSON(t, &got)
+			}
+			if tc.assertYAML != nil {
+				var got pkgvalidate.ValidationResult
+				if err := yaml.Unmarshal([]byte(payload), &got); err != nil {
+					t.Fatalf("stdout is not valid YAML: %v\n%s", err, payload)
+				}
+				tc.assertYAML(t, &got)
 			}
 		})
 	}
 }
 
-func TestCmd_OutputFlagRejectsUnknown(t *testing.T) {
-	c := &Cmd{}
-	parser, err := kong.New(c)
-	if err != nil {
-		t.Fatalf("kong.New(): %v", err)
+// stripFetcherNoise drops any header lines the manager writes to stdout
+// (cache notices, "schemas does not exist, downloading: ...") so the
+// downstream parsers see only the validation payload. It looks for the
+// first line that starts a payload — JSON {, YAML resources:/summary:
+// header, or a text marker like [✓]/[x]/[!]/Total — and returns from there.
+func stripFetcherNoise(out string) string {
+	lines := strings.Split(out, "\n")
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		switch {
+		case strings.HasPrefix(t, "{"):
+			return strings.Join(lines[i:], "\n")
+		case strings.HasPrefix(t, "resources:") || strings.HasPrefix(t, "summary:"):
+			return strings.Join(lines[i:], "\n")
+		case strings.HasPrefix(t, "[✓]") || strings.HasPrefix(t, "[x]") || strings.HasPrefix(t, "[!]") || strings.HasPrefix(t, "Total"):
+			return strings.Join(lines[i:], "\n")
+		}
 	}
-	if _, err := parser.Parse([]string{"ext.yaml", "res.yaml", "--output=xml"}); err == nil {
-		t.Errorf("kong.Parse(--output=xml) = nil; want non-nil enum-validation error")
-	}
-}
-
-// invalidFixture mirrors the `Invalid` case from the backward-compat test —
-// a resource whose replicas field is the wrong type.
-func invalidFixture() ([]*unstructured.Unstructured, []*extv1.CustomResourceDefinition) {
-	return []*unstructured.Unstructured{{Object: map[string]any{
-			"apiVersion": "test.org/v1alpha1",
-			"kind":       "Test",
-			"metadata":   map[string]any{"name": "test"},
-			"spec":       map[string]any{"replicas": "not-an-int"},
-		}}},
-		[]*extv1.CustomResourceDefinition{testCRD}
-}
-
-func validFixture() ([]*unstructured.Unstructured, []*extv1.CustomResourceDefinition) {
-	return []*unstructured.Unstructured{{Object: map[string]any{
-			"apiVersion": "test.org/v1alpha1",
-			"kind":       "Test",
-			"metadata":   map[string]any{"name": "test"},
-			"spec":       map[string]any{"replicas": 1},
-		}}},
-		[]*extv1.CustomResourceDefinition{testCRD}
-}
-
-func missingFixture() ([]*unstructured.Unstructured, []*extv1.CustomResourceDefinition) {
-	return []*unstructured.Unstructured{{Object: map[string]any{
-			"apiVersion": "test.org/v1alpha1",
-			"kind":       "Test",
-			"metadata":   map[string]any{"name": "test"},
-			"spec":       map[string]any{"replicas": 1},
-		}}},
-		[]*extv1.CustomResourceDefinition{}
-}
-
-func TestCmd_ValidateAndRender(t *testing.T) {
-	type fixture func() ([]*unstructured.Unstructured, []*extv1.CustomResourceDefinition)
-	type want struct {
-		stdoutSubstr string
-		wantErr      bool
-		parseAs      string // "json", "yaml", or "" for no structural parse
-	}
-
-	cases := map[string]struct {
-		output                string
-		errorOnMissingSchemas bool
-		skipSuccess           bool
-		fix                   fixture
-		want                  want
-	}{
-		"default_text_valid": {
-			output: "text", fix: validFixture,
-			want: want{stdoutSubstr: "[✓] test.org/v1alpha1, Kind=Test, test validated successfully"},
-		},
-		"output_text_explicit_invalid": {
-			output: "text", fix: invalidFixture,
-			want: want{stdoutSubstr: "[x] schema validation error", wantErr: true},
-		},
-		"output_json_valid": {
-			output: "json", fix: validFixture,
-			want: want{parseAs: "json"},
-		},
-		"output_yaml_valid": {
-			output: "yaml", fix: validFixture,
-			want: want{parseAs: "yaml"},
-		},
-		"output_json_invalid_exits_nonzero": {
-			output: "json", fix: invalidFixture,
-			want: want{parseAs: "json", wantErr: true},
-		},
-		"output_json_missing_with_flag": {
-			output: "json", errorOnMissingSchemas: true, fix: missingFixture,
-			want: want{parseAs: "json", wantErr: true},
-		},
-		"output_json_missing_without_flag": {
-			output: "json", errorOnMissingSchemas: false, fix: missingFixture,
-			want: want{parseAs: "json"},
-		},
-		"skip_success_with_json_still_has_full_payload": {
-			output: "json", skipSuccess: true, fix: validFixture,
-			want: want{parseAs: "json"},
-		},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			c := &Cmd{Output: tc.output, ErrorOnMissingSchemas: tc.errorOnMissingSchemas, SkipSuccessResults: tc.skipSuccess}
-			resources, crds := tc.fix()
-			var buf bytes.Buffer
-			err := c.validateAndRender(context.Background(), resources, crds, &buf)
-			if (err != nil) != tc.want.wantErr {
-				t.Errorf("validateAndRender() err = %v; wantErr = %v", err, tc.want.wantErr)
-			}
-
-			if tc.want.stdoutSubstr != "" && !strings.Contains(buf.String(), tc.want.stdoutSubstr) {
-				t.Errorf("stdout missing substring %q\n--- got ---\n%s", tc.want.stdoutSubstr, buf.String())
-			}
-
-			switch tc.want.parseAs {
-			case "json":
-				var got pkgvalidate.ValidationResult
-				if e := json.Unmarshal(buf.Bytes(), &got); e != nil {
-					t.Fatalf("stdout is not valid JSON: %v\n%s", e, buf.String())
-				}
-				if got.Summary.Total == 0 {
-					t.Errorf("JSON result.Summary.Total == 0; fixture had resources")
-				}
-				// For skip_success case, verify Valid results are still included.
-				if tc.skipSuccess && got.Summary.Valid == 0 {
-					t.Errorf("--skip-success-results must not strip valid entries from JSON payload; got %+v", got)
-				}
-			case "yaml":
-				var got pkgvalidate.ValidationResult
-				if e := yaml.Unmarshal(buf.Bytes(), &got); e != nil {
-					t.Fatalf("stdout is not valid YAML: %v\n%s", e, buf.String())
-				}
-				if got.Summary.Total == 0 {
-					t.Errorf("YAML result.Summary.Total == 0; fixture had resources")
-				}
-			}
-		})
-	}
+	return out
 }

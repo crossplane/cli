@@ -29,14 +29,14 @@ var helpXpkg string
 // Cmd contains commands for interacting with xpkgs.
 type Cmd struct {
 	// Keep subcommands sorted alphabetically.
-	Batch   batchCmd   `cmd:"" help:"Batch build and push a family of provider packages."`
-	Build   buildCmd   `cmd:"" help:"Build a new package."`
-	CRD     crdCmd     `cmd:"" help:"Download CRDs from package dependencies."`
-	Init    initCmd    `cmd:"" help:"Initialize a new package from a template."`
-	Install installCmd `cmd:"" help:"Install a package in a control plane."`
-	Push    pushCmd    `cmd:"" help:"Push a package to a registry."`
-	Update  updateCmd  `cmd:"" help:"Update a package in a control plane."`
-	Extract extractCmd `cmd:"" help:"Extract package contents into a Crossplane cache compatible format. Fetches from a remote registry by default."`
+	Batch       batchCmd       `cmd:"" help:"Batch build and push a family of provider packages."`
+	Build       buildCmd       `cmd:"" help:"Build a new package."`
+	ExtractCrds extractCRDsCmd `cmd:"" name:"extract-crds" help:"Download CRDs from package dependencies."`
+	Init        initCmd        `cmd:"" help:"Initialize a new package from a template."`
+	Install     installCmd     `cmd:"" help:"Install a package in a control plane."`
+	Push        pushCmd        `cmd:"" help:"Push a package to a registry."`
+	Update      updateCmd      `cmd:"" help:"Update a package in a control plane."`
+	Extract     extractCmd     `cmd:"" help:"Extract package contents into a Crossplane cache compatible format. Fetches from a remote registry by default."`
 }
 
 // Help prints out the help for the xpkg command.

@@ -27,6 +27,7 @@ import (
 
 	"github.com/invopop/jsonschema"
 	"github.com/spf13/afero"
+	runtimeSchema "k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/kube-openapi/pkg/spec3"
 	"k8s.io/kube-openapi/pkg/validation/spec"
 
@@ -63,7 +64,7 @@ func (jsonGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 	}
 
 	for name, schema := range schemas {
-		jschema, err := ToJSONSchema(schema, "", "", "")
+		jschema, err := ToJSONSchema(schema, runtimeSchema.GroupVersionKind{})
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to generate jsonschema for %s", name)
 		}
@@ -82,11 +83,10 @@ func (jsonGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 	return schemaFS, nil
 }
 
-// ToJSONSchema converts any JSON-compatible schema (e.g., *spec.Schema or
-// *extv1.JSONSchemaProps) to a *jsonschema.Schema with YAML language server
-// compatibility fixes applied. When group, version, and kind are non-empty, it
-// also sets $id and x-kubernetes-group-version-kind metadata.
-func ToJSONSchema(s any, group, version, kind string) (*jsonschema.Schema, error) {
+// ToJSONSchema converts any JSON-compatible schema (e.g., *spec.Schema or *extv1.JSONSchemaProps)
+// to a *jsonschema.Schema with YAML language server compatibility fixes applied.
+// When gvk is non-empty, it also sets $id and x-kubernetes-group-version-kind metadata.
+func ToJSONSchema(s any, gvk runtimeSchema.GroupVersionKind) (*jsonschema.Schema, error) {
 	bs, err := json.Marshal(s)
 	if err != nil {
 		return nil, err
@@ -99,14 +99,14 @@ func ToJSONSchema(s any, group, version, kind string) (*jsonschema.Schema, error
 
 	mutateJSONSchema(&conv)
 
-	if group != "" && version != "" && kind != "" {
-		conv.ID = jsonschema.ID(fmt.Sprintf("%s/%s/%s.json", group, version, strings.ToLower(kind)))
+	if !gvk.Empty() {
+		conv.ID = jsonschema.ID(fmt.Sprintf("%s/%s/%s.json", gvk.Group, gvk.Version, strings.ToLower(gvk.Kind)))
 		conv.Extras = map[string]any{
 			"x-kubernetes-group-version-kind": []map[string]string{
 				{
-					"group":   group,
-					"version": version,
-					"kind":    kind,
+					"group":   gvk.Group,
+					"version": gvk.Version,
+					"kind":    gvk.Kind,
 				},
 			},
 		}
@@ -208,7 +208,7 @@ func (jsonGenerator) GenerateFromOpenAPI(_ context.Context, fromFS afero.Fs, _ r
 	}
 
 	for name, schema := range schemas {
-		jschema, err := ToJSONSchema(schema, "", "", "")
+		jschema, err := ToJSONSchema(schema, runtimeSchema.GroupVersionKind{})
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to generate jsonschema for %s", name)
 		}

@@ -17,6 +17,7 @@ limitations under the License.
 package xpkg
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	runtimeSchema "k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -36,10 +38,13 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 )
 
+//go:embed help/extract-crds.md
+var helpExtractCRDs string
+
 const errWriteOutput = "cannot write output"
 
-// Cmd arguments and flags for the crd subcommand.
-type crdCmd struct {
+// Cmd arguments and flags for the extract-crds subcommand.
+type extractCRDsCmd struct {
 	// Arguments.
 	Extensions string `arg:"" help:"Extension sources as a comma-separated list of files, directories, or '-' for standard input."`
 
@@ -56,46 +61,19 @@ type crdCmd struct {
 	fs afero.Fs
 }
 
-// Help prints out the help for the crd command.
-func (c *crdCmd) Help() string {
-	return `
-This command downloads CRDs from Crossplane package dependencies (providers, functions, configurations) and writes
-them as YAML files to the specified output directory. With --json-schema, it extracts the OpenAPI v3 schemas from
-CRDs and writes them as JSON Schema files suitable for use with YAML language servers.
-
-By default, files are organized by API group and version (e.g., <group>/<version>/<kind>.{yaml|json} for CRDs
-or JSON schemas). Use --flat to not create subfolders and write all files directly to the output directory.
-
-It accepts the same extension sources as the validate command: crossplane.yaml files, directories containing package
-manifests, or Provider/Function/Configuration resources.
-
-Examples:
-
-  # Download CRDs organized by group
-  crossplane xpkg crd crossplane.yaml --output-dir ./crds
-
-  # Download CRDs as flat files
-  crossplane xpkg crd crossplane.yaml --output-dir ./crds --flat
-
-  # Download JSON Schemas for YAML language server
-  crossplane xpkg crd crossplane.yaml --output-dir ./schemas --json-schema
-
-  # Download CRDs from multiple sources
-  crossplane xpkg crd crossplane.yaml,providers/ --output-dir ./crds
-
-  # Force re-download of cached schemas
-  crossplane xpkg crd crossplane.yaml --output-dir ./crds --clean-cache
-`
+// Help prints out the help for the extract-crds command.
+func (c *extractCRDsCmd) Help() string {
+	return helpExtractCRDs
 }
 
 // AfterApply implements kong.AfterApply.
-func (c *crdCmd) AfterApply() error {
+func (c *extractCRDsCmd) AfterApply() error {
 	c.fs = afero.NewOsFs()
 	return nil
 }
 
 // Run downloads CRDs from package dependencies and writes them to the output directory.
-func (c *crdCmd) Run(k *kong.Context, _ logging.Logger) error {
+func (c *extractCRDsCmd) Run(k *kong.Context, _ logging.Logger) error {
 	extensionLoader, err := load.NewLoader(c.Extensions)
 	if err != nil {
 		return errors.Wrapf(err, "cannot load extensions from %q", c.Extensions)
@@ -149,7 +127,7 @@ func (c *crdCmd) Run(k *kong.Context, _ logging.Logger) error {
 // writeCRDs marshals each CRD to YAML and writes it to the output directory.
 // By default, files are organized by group and version. With --flat, files are
 // written directly to the output directory using the CRD name.
-func (c *crdCmd) writeCRDs(k *kong.Context, crds []*extv1.CustomResourceDefinition) error {
+func (c *extractCRDsCmd) writeCRDs(k *kong.Context, crds []*extv1.CustomResourceDefinition) error {
 	for _, crd := range crds {
 		data, err := yaml.Marshal(crd)
 		if err != nil {
@@ -193,7 +171,7 @@ func storageVersion(crd *extv1.CustomResourceDefinition) string {
 // outputPath returns the file path for a resource. flatName is used as the
 // filename in --flat mode. In structured mode, files are organized by group
 // and version.
-func (c *crdCmd) outputPath(flatName, group, version, kind, ext string) string {
+func (c *extractCRDsCmd) outputPath(flatName, group, version, kind, ext string) string {
 	if c.Flat {
 		return filepath.Join(c.OutputDir, flatName+ext)
 	}
@@ -204,7 +182,7 @@ func (c *crdCmd) outputPath(flatName, group, version, kind, ext string) string {
 // them as JSON Schema files organized by group and version. It applies the
 // shared schema mutations from internal/schemas/generator for YAML language
 // server compatibility (additionalProperties: false on object types, etc.).
-func (c *crdCmd) writeJSONSchemas(k *kong.Context, crds []*extv1.CustomResourceDefinition) error {
+func (c *extractCRDsCmd) writeJSONSchemas(k *kong.Context, crds []*extv1.CustomResourceDefinition) error {
 	count := 0
 
 	for _, crd := range crds {
@@ -216,7 +194,8 @@ func (c *crdCmd) writeJSONSchemas(k *kong.Context, crds []*extv1.CustomResourceD
 				continue
 			}
 
-			schema, err := generator.ToJSONSchema(ver.Schema.OpenAPIV3Schema, group, ver.Name, kind)
+			gvk := runtimeSchema.GroupVersionKind{Group: group, Version: ver.Name, Kind: kind}
+			schema, err := generator.ToJSONSchema(ver.Schema.OpenAPIV3Schema, gvk)
 			if err != nil {
 				return errors.Wrapf(err, "cannot convert schema for %s/%s %s", group, ver.Name, kind)
 			}

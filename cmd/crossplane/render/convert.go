@@ -77,17 +77,26 @@ func BuildCompositeRequest(in CompositionInputs) (*renderv1alpha1.RenderRequest,
 		return nil, errors.Wrap(err, "cannot convert required schemas to protobuf")
 	}
 
+	var xrdStruct *structpb.Struct
+	if in.XRD != nil {
+		xrdStruct, err = resource.AsStruct(in.XRD)
+		if err != nil {
+			return nil, errors.Wrap(err, "cannot convert XRD to protobuf")
+		}
+	}
+
 	return &renderv1alpha1.RenderRequest{
 		Meta: &renderv1alpha1.RequestMeta{},
 		Input: &renderv1alpha1.RenderRequest_Composite{
 			Composite: &renderv1alpha1.CompositeInput{
-				CompositeResource: xrStruct,
-				Composition:       compStruct,
-				Functions:         fnInputs,
-				ObservedResources: observedStructs,
-				RequiredResources: requiredStructs,
-				RequiredSchemas:   schemaStructs,
-				Credentials:       credStructs,
+				CompositeResource:           xrStruct,
+				Composition:                 compStruct,
+				Functions:                   fnInputs,
+				ObservedResources:           observedStructs,
+				RequiredResources:           requiredStructs,
+				RequiredSchemas:             schemaStructs,
+				Credentials:                 credStructs,
+				CompositeResourceDefinition: xrdStruct,
 			},
 		},
 	}, nil

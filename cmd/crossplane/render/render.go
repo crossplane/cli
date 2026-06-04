@@ -158,7 +158,11 @@ func injectNetworkAnnotation(fns []pkgv1.Function, networkName string) {
 		if fns[i].Annotations == nil {
 			fns[i].Annotations = make(map[string]string)
 		}
-		fns[i].Annotations[AnnotationKeyRuntimeDockerNetwork] = networkName
+
+		_, ok := fns[i].Annotations[AnnotationKeyRuntimeDockerNetwork]
+		if !ok {
+			fns[i].Annotations[AnnotationKeyRuntimeDockerNetwork] = networkName
+		}
 	}
 }
 

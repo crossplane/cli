@@ -59,6 +59,13 @@ type CompositionInputs struct {
 	ObservedResources   []composed.Unstructured
 	RequiredResources   []kunstructured.Unstructured
 	RequiredSchemas     []spec3.OpenAPI
+
+	// XRD is the CompositeResourceDefinition the binary should consider
+	// when rendering. The binary uses it to pick the right composite.Schema
+	// (Legacy vs Modern) for the input XR's GVK, mirroring the production
+	// reconciler. Optional; when nil the binary falls back to its default
+	// behavior (Schema=Modern).
+	XRD *kunstructured.Unstructured
 }
 
 // CompositionOutputs contains all outputs from the render process.

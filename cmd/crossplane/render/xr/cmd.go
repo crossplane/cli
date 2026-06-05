@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"dario.cat/mergo"
@@ -339,6 +341,20 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 			return errors.Wrapf(err, "cannot replace condition timestamps in composed resource %s", cr.GetName())
 		}
 	}
+
+	// Sort composite resources by composition-resource-name to ensure stable
+	// output across runs.
+	slices.SortStableFunc(out.ComposedResources, func(a, b composed.Unstructured) int {
+		nameA, nameB := "", ""
+		if anns := a.GetAnnotations(); anns != nil {
+			nameA = anns[xcrd.AnnotationKeyCompositionResourceName]
+		}
+		if anns := b.GetAnnotations(); anns != nil {
+			nameB = anns[xcrd.AnnotationKeyCompositionResourceName]
+		}
+
+		return strings.Compare(nameA, nameB)
+	})
 
 	_, _ = fmt.Fprintln(k.Stdout, "---")
 	if err := s.Encode(out.CompositeResource, k.Stdout); err != nil {

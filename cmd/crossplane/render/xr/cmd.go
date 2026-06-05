@@ -329,6 +329,17 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		out.CompositeResource = updatedXR
 	}
 
+	// Replace condition timestamps in the XR and any composed resources with a
+	// stable value.
+	if err := render.ReplaceConditionTimestamps(&out.CompositeResource.Unstructured); err != nil {
+		return errors.Wrap(err, "cannot replace condition timestamps in xr")
+	}
+	for i, cr := range out.ComposedResources {
+		if err := render.ReplaceConditionTimestamps(&out.ComposedResources[i].Unstructured); err != nil {
+			return errors.Wrapf(err, "cannot replace condition timestamps in composed resource %s", cr.GetName())
+		}
+	}
+
 	_, _ = fmt.Fprintln(k.Stdout, "---")
 	if err := s.Encode(out.CompositeResource, k.Stdout); err != nil {
 		return errors.Wrapf(err, "cannot marshal composite resource %q to YAML", xr.GetName())

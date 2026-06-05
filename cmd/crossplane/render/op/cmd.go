@@ -267,6 +267,17 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		out.Operation.Spec = *op.Spec.DeepCopy()
 	}
 
+	// Replace condition timestamps in the operation and any applied resources with a
+	// stable value.
+	if err := render.ReplaceConditionTimestamps(out.Operation); err != nil {
+		return errors.Wrap(err, "cannot replace condition timestamps in operation")
+	}
+	for i, ar := range out.AppliedResources {
+		if err := render.ReplaceConditionTimestamps(&out.AppliedResources[i]); err != nil {
+			return errors.Wrapf(err, "cannot replace condition timestamps in applied resource %s", ar.GetName())
+		}
+	}
+
 	// Always output the Operation (with metadata and status, optionally with spec)
 	if out.Operation != nil {
 		_, _ = fmt.Fprintln(k.Stdout, "---")

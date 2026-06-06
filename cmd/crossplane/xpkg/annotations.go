@@ -1,5 +1,5 @@
 /*
-Copyright 2025 The Crossplane Authors.
+Copyright 2026 The Crossplane Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -46,4 +46,13 @@ func annotateImage(img v1.Image, annotations map[string]string) v1.Image {
 		return img
 	}
 	return mutate.Annotations(img, annotations).(v1.Image) //nolint:forcetypeassert // mutate.Annotations always returns v1.Image when given v1.Image input
+}
+
+// annotateIndex applies annotations to an OCI image index manifest. It is a
+// no-op when annotations is empty or nil.
+func annotateIndex(idx v1.ImageIndex, annotations map[string]string) v1.ImageIndex {
+	if len(annotations) == 0 {
+		return idx
+	}
+	return mutate.Annotations(idx, annotations).(v1.ImageIndex) //nolint:forcetypeassert // mutate.Annotations always returns v1.ImageIndex when given v1.ImageIndex input
 }

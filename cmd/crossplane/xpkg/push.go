@@ -65,7 +65,7 @@ type pushCmd struct {
 	Package string `arg:"" help:"Where to push the package. Must be a fully qualified OCI tag, including the registry, repository, and tag." placeholder:"REGISTRY/REPOSITORY:TAG"`
 
 	// Flags. Keep sorted alphabetically.
-	Annotation            []string `help:"An OCI manifest annotation to add to the package in key=value format. Repeatable." placeholder:"KEY=VALUE" short:"a"`
+	OCIAnnotation         []string `help:"An OCI manifest annotation to add to the package in key=value format. Repeatable." name:"oci-annotation" placeholder:"KEY=VALUE" short:"a"`
 	InsecureSkipTLSVerify bool     `help:"[INSECURE] Skip verifying TLS certificates."`
 	PackageFiles          []string `help:"A comma-separated list of xpkg files to push."                                     placeholder:"PATH"      predictor:"xpkg_file" short:"f" type:"existingfile"`
 
@@ -127,7 +127,7 @@ func (c *pushCmd) Run(logger logging.Logger) error {
 		remote.WithTransport(t),
 	}
 
-	anns, err := parseAnnotations(c.Annotation)
+	anns, err := parseAnnotations(c.OCIAnnotation)
 	if err != nil {
 		return errors.Wrap(err, errParseAnnotations)
 	}
@@ -240,7 +240,8 @@ func pushImages(logger logging.Logger, images []packageImage, url string, annota
 		return err
 	}
 
-	if err := remote.WriteIndex(tag, mutate.AppendManifests(empty.Index, adds...), options...); err != nil {
+	idx := annotateIndex(mutate.AppendManifests(empty.Index, adds...), annotations)
+	if err := remote.WriteIndex(tag, idx, options...); err != nil {
 		return errors.Wrapf(err, errFmtWriteIndex, len(adds))
 	}
 

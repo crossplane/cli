@@ -100,7 +100,7 @@ func (c *buildCmd) AfterApply() error {
 // buildCmd builds a crossplane package.
 type buildCmd struct {
 	// Flags. Keep sorted alphabetically.
-	Annotation               []string `help:"An OCI manifest annotation to add to the package in key=value format. Repeatable."                                                                       placeholder:"KEY=VALUE"                                                short:"a"`
+	OCIAnnotation            []string `help:"An OCI manifest annotation to add to the package in key=value format. Repeatable."                                                                       name:"oci-annotation"                                                  placeholder:"KEY=VALUE" short:"a"`
 	EmbedRuntimeImage        string   `help:"An OCI image to embed in the package as its runtime."                                                                                                    placeholder:"NAME"                                                     xor:"runtime-image"`
 	EmbedRuntimeImageTarball string   `help:"An OCI image tarball to embed in the package as its runtime."                                                                                            placeholder:"PATH"                                                     predictor:"file"      type:"existingfile" xor:"runtime-image"`
 	ExamplesRoot             string   `default:"./examples"                                                                                                                                           help:"A directory of example YAML files to include in the package."    predictor:"directory" short:"e"           type:"path"`
@@ -177,7 +177,7 @@ func (c *buildCmd) Run(logger logging.Logger) error {
 		return errors.Wrap(err, errBuildPackage)
 	}
 
-	anns, err := parseAnnotations(c.Annotation)
+	anns, err := parseAnnotations(c.OCIAnnotation)
 	if err != nil {
 		return errors.Wrap(err, errParseAnnotations)
 	}

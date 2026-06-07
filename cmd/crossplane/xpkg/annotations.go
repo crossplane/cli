@@ -34,6 +34,9 @@ func parseAnnotations(kvs []string) (map[string]string, error) {
 		if !ok {
 			return nil, errors.Errorf("invalid annotation %q: must be in key=value format", kv)
 		}
+		if k == "" {
+			return nil, errors.Errorf("invalid annotation %q: key must not be empty", kv)
+		}
 		anns[k] = v
 	}
 	return anns, nil

@@ -29,6 +29,16 @@ import (
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
 
+type mockContainerRunner struct {
+	MockRun func(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error)
+}
+
+func (m *mockContainerRunner) Run(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error) {
+	return m.MockRun(ctx, img, opts...)
+}
+
+var _ containerRunner = &mockContainerRunner{}
+
 func TestDockerRenderEngine_Render(t *testing.T) {
 	rsp := &renderv1alpha1.RenderResponse{
 		Output: &renderv1alpha1.RenderResponse_Composite{
@@ -41,7 +51,7 @@ func TestDockerRenderEngine_Render(t *testing.T) {
 	}
 
 	cases := map[string]struct {
-		runFn     runContainerFn
+		runFn     func(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error)
 		wantRsp   bool
 		wantErr   bool
 		wantInErr []string
@@ -111,9 +121,9 @@ func TestDockerRenderEngine_Render(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			e := &dockerRenderEngine{
-				image:        "test-image",
-				log:          logging.NewNopLogger(),
-				runContainer: tc.runFn,
+				image:  "test-image",
+				log:    logging.NewNopLogger(),
+				runner: &mockContainerRunner{MockRun: tc.runFn},
 			}
 
 			rsp, err := e.Render(context.Background(), &renderv1alpha1.RenderRequest{})

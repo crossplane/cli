@@ -34,10 +34,23 @@ import (
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
 
-// runContainerFn matches docker.RunContainer's signature. It's a seam for
-// testing the engine's failure-mode handling without a real Docker daemon —
-// see runContainer below.
-type runContainerFn func(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error)
+// containerRunner is the subset of internal/docker the engine depends on. It
+// follows the same one-method-interface mock pattern as pullClient in
+// runtime_docker.go, letting tests substitute a mockContainerRunner without a
+// real Docker daemon.
+type containerRunner interface {
+	Run(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error)
+}
+
+// realContainerRunner adapts docker.RunContainer to the containerRunner
+// interface so dockerRenderEngine can hold the seam by interface rather than
+// function pointer.
+type realContainerRunner struct{}
+
+// Run delegates to docker.RunContainer.
+func (realContainerRunner) Run(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error) {
+	return docker.RunContainer(ctx, img, opts...)
+}
 
 // dockerRenderEngine executes crossplane internal render in a Docker container.
 type dockerRenderEngine struct {
@@ -49,17 +62,12 @@ type dockerRenderEngine struct {
 
 	log logging.Logger
 
-	// runContainer is the function used to actually run the render container.
-	// Production callers leave it nil and Render falls through to
-	// docker.RunContainer. Tests inject a fake so we can exercise the engine's
-	// behaviour around the docker package's return contract — particularly
-	// the exit-code-3 partial-output recovery path and the difference between
-	// *docker.ContainerExitError and other failure types like image-pull
-	// errors. Spinning up a real container that exits with a chosen code on
-	// demand is awkward; replacing the call at the package level via a global
-	// var would race in parallel tests. A per-instance unexported field gives
-	// us hermetic, sub-second tests with no shared mutable state.
-	runContainer runContainerFn
+	// runner runs the render container. Production callers leave it nil and
+	// Render falls through to realContainerRunner{}. Tests substitute a
+	// mockContainerRunner to exercise the engine's failure-mode handling
+	// (exit-3 partial output, *docker.ContainerExitError vs non-exit errors)
+	// without a real Docker daemon.
+	runner containerRunner
 }
 
 func (e *dockerRenderEngine) CheckContextSupport() error {
@@ -141,12 +149,12 @@ func (e *dockerRenderEngine) Render(ctx context.Context, req *renderv1alpha1.Ren
 
 	e.log.Debug("Running crossplane internal render in Docker", "image", e.image, "network", e.network)
 
-	run := e.runContainer
-	if run == nil {
-		run = docker.RunContainer
+	runner := e.runner
+	if runner == nil {
+		runner = realContainerRunner{}
 	}
 
-	stdout, stderr, err := run(ctx, e.image, opts...)
+	stdout, stderr, err := runner.Run(ctx, e.image, opts...)
 	if err != nil {
 		var exitErr *docker.ContainerExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode == ExitCodePipelineFatal && len(stdout) > 0 {

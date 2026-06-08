@@ -29,15 +29,43 @@ import (
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
 
-// envHelperMode is the env var that, when set on a re-exec of the test binary,
-// causes TestMain to dispatch to runRenderHelper instead of running tests.
-// The value selects which canned response the helper emits.
+// envHelperMode drives the "helper process" pattern used by these tests.
+// When set in a process's environment, TestMain below dispatches to
+// runRenderHelper (which exits) instead of running the test suite.
+//
+// Why this pattern.  localRenderEngine.Render exec's a binary at a path the
+// caller supplies, then reads its stdout, captures its stderr, and
+// inspects its exit code. To exercise the four behavioural branches the
+// engine cares about (success / pipeline-fatal with partial stdout /
+// pipeline-fatal with empty stdout / hard-fail with stderr) we need a
+// "binary" that can do each on demand. The options are:
+//
+//  1. Ship a shell script per case — cross-platform pain, plus shell
+//     script bytes are awkward when the binary needs to write a real
+//     marshaled RenderResponse to stdout.
+//  2. Build a side helper binary in testdata/ — extra build orchestration.
+//  3. Re-exec the test binary itself, switching its behaviour on an env
+//     var. This is the standard Go stdlib idiom (used in os/exec's own
+//     tests) and is what we do here.
+//
+// How it works.  Tests do `t.Setenv(envHelperMode, "<case>")` and pass
+// os.Args[0] as the binary path. The engine exec's that binary; the child
+// process inherits the env var, TestMain sees it set, and dispatches to
+// runRenderHelper which writes the canned response and exits with the
+// chosen code — never reaching m.Run(). The parent reads the result as if
+// it had just exec'd a real `crossplane internal render`. When the env
+// var is unset (the normal `go test` invocation) TestMain falls through
+// to m.Run() and the tests behave like any other Go tests.
+//
+// The cost is a few extra lines of TestMain plumbing; the benefit is a
+// fully self-contained, deterministic, cross-platform fake binary with
+// access to the same proto types the tests assert on.
 const envHelperMode = "GO_HELPER_LOCAL_RENDER_MODE"
 
 // TestMain re-uses os.Args[0] as a stand-in for the `crossplane` binary when
 // the engine_local tests want to control its stdout/stderr/exit-code. When
 // envHelperMode is set we play the helper role and exit; otherwise we run the
-// normal test suite.
+// normal test suite. See the envHelperMode doc above for why.
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(envHelperMode); mode != "" {
 		runRenderHelper(mode)

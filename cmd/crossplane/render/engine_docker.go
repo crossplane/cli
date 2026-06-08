@@ -35,8 +35,8 @@ import (
 )
 
 // runContainerFn matches docker.RunContainer's signature. It's a seam for
-// testing — production callers leave it nil and the engine uses the real
-// docker.RunContainer.
+// testing the engine's failure-mode handling without a real Docker daemon —
+// see runContainer below.
 type runContainerFn func(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error)
 
 // dockerRenderEngine executes crossplane internal render in a Docker container.
@@ -49,7 +49,16 @@ type dockerRenderEngine struct {
 
 	log logging.Logger
 
-	// runContainer is overrideable for tests; defaults to docker.RunContainer.
+	// runContainer is the function used to actually run the render container.
+	// Production callers leave it nil and Render falls through to
+	// docker.RunContainer. Tests inject a fake so we can exercise the engine's
+	// behaviour around the docker package's return contract — particularly
+	// the exit-code-3 partial-output recovery path and the difference between
+	// *docker.ContainerExitError and other failure types like image-pull
+	// errors. Spinning up a real container that exits with a chosen code on
+	// demand is awkward; replacing the call at the package level via a global
+	// var would race in parallel tests. A per-instance unexported field gives
+	// us hermetic, sub-second tests with no shared mutable state.
 	runContainer runContainerFn
 }
 

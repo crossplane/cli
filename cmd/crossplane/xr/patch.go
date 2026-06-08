@@ -26,6 +26,7 @@ import (
 
 	commonIO "github.com/crossplane/cli/v2/cmd/crossplane/convert/io"
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
+	xrpkg "github.com/crossplane/cli/v2/pkg/xr"
 
 	_ "embed"
 )
@@ -77,7 +78,7 @@ func (c *patchCmd) Run(k *kong.Context) error {
 		return errors.Wrapf(err, "cannot load XRD from %q", c.XRD)
 	}
 
-	if err := ApplyXRDDefaults(xr, xrd); err != nil {
+	if err := xrpkg.ApplyXRDDefaults(xr, xrd); err != nil {
 		return errors.Wrapf(err, "cannot apply XRD defaults to XR %q", xr.GetName())
 	}
 

@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package xr provides library functions for working with XRs.
 package xr
 
 import (
@@ -29,9 +30,7 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 )
 
-// ApplyXRDDefaults applies default values from an XRD's openAPIV3Schema to an
-// XR. The XR is mutated in place.
-//
+// ApplyXRDDefaults applies default values from an XRD's openAPIV3Schema to an XR. The XR is mutated in place.
 // This is the canonical XRD-defaulting entry point for the cli; downstream
 // commands and tools (e.g. `crossplane render xr --xrd`) call into this
 // function rather than re-implementing the schema-defaulting routine.
@@ -41,14 +40,13 @@ func ApplyXRDDefaults(xr *unstructured.Unstructured, xrdef *apiextensionsv1.Comp
 		return errors.Wrapf(err, "cannot derive CRD from XRD %q", xrdef.GetName())
 	}
 
-	return DefaultValues(xr.UnstructuredContent(), xr.GetAPIVersion(), *crd)
+	return ApplyCRDDefaults(xr.UnstructuredContent(), xr.GetAPIVersion(), *crd)
 }
 
-// DefaultValues sets default values on the XR based on the CRD schema.
-//
+// ApplyCRDDefaults sets default values on the XR based on the CRD schema.
 // Callers starting from an XRD should prefer ApplyXRDDefaults; this is the
 // lower-level routine for callers that already have a CRD in hand.
-func DefaultValues(xr map[string]any, apiVersion string, crd extv1.CustomResourceDefinition) error {
+func ApplyCRDDefaults(xr map[string]any, apiVersion string, crd extv1.CustomResourceDefinition) error {
 	var (
 		k       apiextensions.JSONSchemaProps
 		version *extv1.CustomResourceDefinitionVersion

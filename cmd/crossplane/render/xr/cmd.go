@@ -41,7 +41,6 @@ import (
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
-	xrcmd "github.com/crossplane/cli/v2/cmd/crossplane/xr"
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project"
@@ -52,6 +51,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	xrpkg "github.com/crossplane/cli/v2/pkg/xr"
 
 	_ "embed"
 )
@@ -169,7 +169,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 			return errors.Wrapf(err, "cannot load XRD from %q", c.XRD)
 		}
 
-		if err := xrcmd.ApplyXRDDefaults(xr.GetUnstructured(), xrd); err != nil {
+		if err := xrpkg.ApplyXRDDefaults(xr.GetUnstructured(), xrd); err != nil {
 			return errors.Wrapf(err, "cannot apply XRD defaults to XR %q", xr.GetName())
 		}
 	}

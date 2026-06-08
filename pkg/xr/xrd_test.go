@@ -23,7 +23,7 @@ import (
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
-func TestDefaultValues(t *testing.T) {
+func TestApplyCRDDefaults(t *testing.T) {
 	type args struct {
 		xr         map[string]any
 		crd        extv1.CustomResourceDefinition
@@ -254,13 +254,13 @@ func TestDefaultValues(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			err := DefaultValues(tc.args.xr, tc.args.apiVersion, tc.args.crd)
+			err := ApplyCRDDefaults(tc.args.xr, tc.args.apiVersion, tc.args.crd)
 			if (err != nil) != tc.wantErr {
-				t.Errorf("DefaultValues() error = %v, wantErr %v", err, tc.wantErr)
+				t.Errorf("ApplyCRDDefaults() error = %v, wantErr %v", err, tc.wantErr)
 			}
 
 			if diff := cmp.Diff(tc.want, tc.args.xr); diff != "" {
-				t.Errorf("DefaultValues() mismatch (-want +got):\n%s", diff)
+				t.Errorf("ApplyCRDDefaults() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

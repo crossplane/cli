@@ -30,8 +30,6 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
-	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
-	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composed"
 	ucomposite "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
@@ -40,14 +38,6 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
-)
-
-// Annotations added to composed resources.
-const (
-	AnnotationKeyCompositionResourceName = "crossplane.io/composition-resource-name"
-	AnnotationKeyCompositeName           = "crossplane.io/composite"
-	AnnotationKeyClaimNamespace          = "crossplane.io/claim-namespace"
-	AnnotationKeyClaimName               = "crossplane.io/claim-name"
 )
 
 // CompositionInputs contains all inputs to the render process.
@@ -152,54 +142,6 @@ func RewriteAddressesForDocker(fns []*renderv1alpha1.FunctionInput) []*renderv1a
 		fn.Address = strings.Replace(fn.GetAddress(), "127.0.0.1:", "host.docker.internal:", 1)
 	}
 	return fns
-}
-
-// GetSecret retrieves the secret with the specified name and namespace from the provided list of secrets.
-func GetSecret(name string, nameSpace string, secrets []corev1.Secret) (*corev1.Secret, error) {
-	for _, s := range secrets {
-		if s.GetName() == name && s.GetNamespace() == nameSpace {
-			return &s, nil
-		}
-	}
-
-	return nil, errors.Errorf("secret %q not found", name)
-}
-
-// SetComposedResourceMetadata sets standard, required composed resource
-// metadata. It mirrors the behavior of RenderComposedResourceMetadata in
-// Crossplane's composition controller.
-func SetComposedResourceMetadata(cd resource.Object, xr resource.LegacyComposite, name string) error {
-	namePrefix := xr.GetLabels()[AnnotationKeyCompositeName]
-	if namePrefix == "" {
-		namePrefix = xr.GetName()
-	}
-
-	if cd.GetName() == "" && cd.GetGenerateName() == "" {
-		cd.SetGenerateName(namePrefix + "-")
-	}
-
-	if xr.GetNamespace() != "" {
-		cd.SetNamespace(xr.GetNamespace())
-	}
-
-	meta.AddAnnotations(cd, map[string]string{AnnotationKeyCompositionResourceName: name})
-	meta.AddLabels(cd, map[string]string{AnnotationKeyCompositeName: namePrefix})
-
-	if xr.GetLabels()[AnnotationKeyClaimName] != "" && xr.GetLabels()[AnnotationKeyClaimNamespace] != "" {
-		meta.AddLabels(cd, map[string]string{
-			AnnotationKeyClaimNamespace: xr.GetLabels()[AnnotationKeyClaimNamespace],
-			AnnotationKeyClaimName:      xr.GetLabels()[AnnotationKeyClaimName],
-		})
-	} else if ref := xr.GetClaimReference(); ref != nil {
-		meta.AddLabels(cd, map[string]string{
-			AnnotationKeyClaimNamespace: ref.Namespace,
-			AnnotationKeyClaimName:      ref.Name,
-		})
-	}
-
-	or := meta.AsController(meta.TypedReferenceTo(xr, xr.GetObjectKind().GroupVersionKind()))
-
-	return errors.Wrapf(meta.AddControllerReference(cd, or), "cannot set composite resource %q as controller ref of composed resource", xr.GetName())
 }
 
 // injectNetworkAnnotation sets the Docker network annotation on all functions

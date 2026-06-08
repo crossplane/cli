@@ -337,7 +337,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 	for i := range out.ComposedResources {
 		_, _ = fmt.Fprintln(k.Stdout, "---")
 		if err := s.Encode(&out.ComposedResources[i], k.Stdout); err != nil {
-			return errors.Wrapf(err, "cannot marshal composed resource %q to YAML", out.ComposedResources[i].GetAnnotations()[render.AnnotationKeyCompositionResourceName])
+			return errors.Wrapf(err, "cannot marshal composed resource %q to YAML", out.ComposedResources[i].GetAnnotations()[xcrd.AnnotationKeyCompositionResourceName])
 		}
 	}
 

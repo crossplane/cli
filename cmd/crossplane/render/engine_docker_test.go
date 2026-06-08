@@ -51,10 +51,11 @@ func TestDockerRenderEngine_Render(t *testing.T) {
 	}
 
 	cases := map[string]struct {
-		runFn     func(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error)
-		wantRsp   bool
-		wantErr   bool
-		wantInErr []string
+		runFn                func(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error)
+		wantRsp              bool
+		wantErr              bool
+		wantInErr            []string
+		wantSingleOccurrence []string // strings that must appear exactly once (catches double-stderr bugs)
 	}{
 		"Success": {
 			runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
@@ -87,7 +88,9 @@ func TestDockerRenderEngine_Render(t *testing.T) {
 			wantErr: true,
 			wantInErr: []string{
 				"cannot run crossplane internal render in Docker",
+				"boom: no partial",
 			},
+			wantSingleOccurrence: []string{"boom: no partial"},
 		},
 		"HardFailWithExitError": {
 			runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
@@ -102,6 +105,7 @@ func TestDockerRenderEngine_Render(t *testing.T) {
 				"cannot run crossplane internal render in Docker",
 				"the container is sad",
 			},
+			wantSingleOccurrence: []string{"the container is sad"},
 		},
 		"HardFailNonExitError": {
 			runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
@@ -142,6 +146,16 @@ func TestDockerRenderEngine_Render(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("Render(): error %q does not contain %q", err.Error(), want)
+				}
+			}
+
+			for _, want := range tc.wantSingleOccurrence {
+				if err == nil {
+					t.Errorf("Render(): error is nil but expected exactly one occurrence of %q", want)
+					continue
+				}
+				if got := strings.Count(err.Error(), want); got != 1 {
+					t.Errorf("Render(): error %q contains %q %d times, want exactly 1 (double-formatting bug?)", err.Error(), want, got)
 				}
 			}
 

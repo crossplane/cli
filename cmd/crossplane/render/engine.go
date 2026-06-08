@@ -44,6 +44,14 @@ type Engine interface {
 	Setup(ctx context.Context, fns []pkgv1.Function) (cleanup func(), err error)
 
 	// Render executes the render request and returns the response.
+	//
+	// On a pipeline-fatal exit (ExitCodePipelineFatal — see
+	// crossplane/crossplane#7455), Render may return BOTH a non-nil partial
+	// response AND a non-nil error. Callers that need to recover
+	// output.RequiredResources (or any other partial output) must check the
+	// returned response even when err != nil. Standard "nil-rsp on err"
+	// callers can ignore this; the response will simply be nil for them on
+	// any other failure mode.
 	Render(ctx context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error)
 }
 

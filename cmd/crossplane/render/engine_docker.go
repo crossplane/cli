@@ -166,10 +166,19 @@ func (e *dockerRenderEngine) Render(ctx context.Context, req *renderv1alpha1.Ren
 			}
 			return rsp, errors.Errorf("crossplane internal render in Docker: pipeline returned fatal: %s", exitErr.Stderr)
 		}
-		// stderr may have been folded into err already (ContainerExitError
-		// stringifies it); fall back to the captured stderr buffer otherwise
-		// so messages from non-exit failures (e.g. image pull) aren't lost.
-		return nil, errors.Errorf("cannot run crossplane internal render in Docker: %s: %s", err.Error(), stderr)
+		// On a *ContainerExitError, err.Error() already embeds stderr
+		// (ContainerExitError.Error stringifies it as "container exited with
+		// status N: <stderr>"), so wrapping err is sufficient. For non-exit
+		// failures (e.g. image pull errors), append the captured stderr
+		// buffer so its content isn't lost when err.Error() doesn't include
+		// it.
+		if errors.As(err, &exitErr) {
+			return nil, errors.Wrap(err, "cannot run crossplane internal render in Docker")
+		}
+		if len(stderr) > 0 {
+			return nil, errors.Errorf("cannot run crossplane internal render in Docker: %s: %s", err.Error(), stderr)
+		}
+		return nil, errors.Wrap(err, "cannot run crossplane internal render in Docker")
 	}
 
 	rsp := &renderv1alpha1.RenderResponse{}

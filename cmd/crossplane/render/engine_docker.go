@@ -34,6 +34,11 @@ import (
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
 
+// runContainerFn matches docker.RunContainer's signature. It's a seam for
+// testing — production callers leave it nil and the engine uses the real
+// docker.RunContainer.
+type runContainerFn func(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error)
+
 // dockerRenderEngine executes crossplane internal render in a Docker container.
 type dockerRenderEngine struct {
 	// image is the Crossplane Docker image reference.
@@ -43,6 +48,9 @@ type dockerRenderEngine struct {
 	network string
 
 	log logging.Logger
+
+	// runContainer is overrideable for tests; defaults to docker.RunContainer.
+	runContainer runContainerFn
 }
 
 func (e *dockerRenderEngine) CheckContextSupport() error {
@@ -78,6 +86,14 @@ func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (f
 
 // Render marshals the request, runs it through a Docker container, and returns
 // the response.
+//
+// Stderr from the container is captured (via docker.RunContainer's stderr
+// return) and surfaced in returned errors so callers can inspect fatal
+// pipeline messages programmatically. When the container exits with
+// ExitCodePipelineFatal (a pipeline step returned SEVERITY_FATAL) and stdout
+// carries a partial RenderResponse, Render parses it and returns both the
+// partial response AND a non-nil error containing stderr — letting callers
+// recover the partial output (e.g. RequiredResources) and iterate.
 func (e *dockerRenderEngine) Render(ctx context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
 	// Update any localhost function addresses if needed.
 	if cinput := req.GetComposite(); cinput != nil {
@@ -116,9 +132,27 @@ func (e *dockerRenderEngine) Render(ctx context.Context, req *renderv1alpha1.Ren
 
 	e.log.Debug("Running crossplane internal render in Docker", "image", e.image, "network", e.network)
 
-	stdout, _, err := docker.RunContainer(ctx, e.image, opts...)
+	run := e.runContainer
+	if run == nil {
+		run = docker.RunContainer
+	}
+
+	stdout, stderr, err := run(ctx, e.image, opts...)
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot run crossplane internal render in Docker")
+		var exitErr *docker.ContainerExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode == ExitCodePipelineFatal && len(stdout) > 0 {
+			// Pipeline-fatal with partial output. Parse the partial response
+			// and return both it and the stderr-bearing error.
+			rsp := &renderv1alpha1.RenderResponse{}
+			if uerr := proto.Unmarshal(stdout, rsp); uerr != nil {
+				return nil, errors.Errorf("cannot unmarshal partial render response after pipeline fatal: %s: %s", uerr.Error(), exitErr.Stderr)
+			}
+			return rsp, errors.Errorf("crossplane internal render in Docker: pipeline returned fatal: %s", exitErr.Stderr)
+		}
+		// stderr may have been folded into err already (ContainerExitError
+		// stringifies it); fall back to the captured stderr buffer otherwise
+		// so messages from non-exit failures (e.g. image pull) aren't lost.
+		return nil, errors.Errorf("cannot run crossplane internal render in Docker: %s: %s", err.Error(), stderr)
 	}
 
 	rsp := &renderv1alpha1.RenderResponse{}

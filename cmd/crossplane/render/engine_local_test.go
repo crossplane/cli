@@ -24,7 +24,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
@@ -81,11 +84,7 @@ func TestMain(m *testing.M) {
 func runRenderHelper(mode string) {
 	_, _ = io.Copy(io.Discard, os.Stdin)
 
-	rsp := &renderv1alpha1.RenderResponse{
-		Output: &renderv1alpha1.RenderResponse_Composite{
-			Composite: &renderv1alpha1.CompositeOutput{},
-		},
-	}
+	rsp := helperResponse()
 	rspBytes, err := proto.Marshal(rsp)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "helper: cannot marshal canned response: %v\n", err)
@@ -112,76 +111,121 @@ func runRenderHelper(mode string) {
 	}
 }
 
-func TestLocalRenderEngine_Render(t *testing.T) {
+// helperResponse returns the canned RenderResponse the helper writes to
+// stdout. Shared with the test so we can assert exact-content round-trip.
+func helperResponse() *renderv1alpha1.RenderResponse {
+	xr, _ := structpb.NewStruct(map[string]any{
+		"apiVersion": "example.org/v1",
+		"kind":       "XR",
+		"metadata":   map[string]any{"name": "test-xr"},
+	})
+	return &renderv1alpha1.RenderResponse{
+		Output: &renderv1alpha1.RenderResponse_Composite{
+			Composite: &renderv1alpha1.CompositeOutput{
+				CompositeResource: xr,
+			},
+		},
+	}
+}
+
+func TestLocalRenderEngineRender(t *testing.T) {
+	type args struct {
+		mode string
+	}
+
+	type want struct {
+		rsp                  *renderv1alpha1.RenderResponse
+		wantErr              bool
+		wantInErr            []string
+		wantSingleOccurrence []string
+	}
+
 	cases := map[string]struct {
-		mode      string
-		wantRsp   bool
-		wantErr   bool
-		wantInErr []string
+		reason string
+		args   args
+		want   want
 	}{
 		"Success": {
-			mode:    "success",
-			wantRsp: true,
+			reason: "Render returns the unmarshaled response and no error on a clean exit.",
+			args:   args{mode: "success"},
+			want:   want{rsp: helperResponse()},
 		},
 		"FatalWithPartialOutput": {
-			mode:    "fatal-with-partial",
-			wantRsp: true,
-			wantErr: true,
-			wantInErr: []string{
-				"pipeline returned fatal",
-				"boom: pipeline step requested fatal",
+			reason: "On exit-3 with non-empty stdout, Render parses the partial response and returns it alongside a stderr-bearing error.",
+			args:   args{mode: "fatal-with-partial"},
+			want: want{
+				rsp:     helperResponse(),
+				wantErr: true,
+				wantInErr: []string{
+					"pipeline returned fatal",
+					"boom: pipeline step requested fatal",
+				},
+				wantSingleOccurrence: []string{"boom: pipeline step requested fatal"},
 			},
 		},
 		"FatalWithNoPartialOutput": {
-			mode:    "fatal-no-partial",
-			wantRsp: false,
-			wantErr: true,
-			wantInErr: []string{
-				"cannot run crossplane internal render",
-				"pipeline step requested fatal but produced no output",
+			reason: "On exit-3 with empty stdout, Render falls back to the hard-fail path with stderr in the error.",
+			args:   args{mode: "fatal-no-partial"},
+			want: want{
+				wantErr: true,
+				wantInErr: []string{
+					"cannot run crossplane internal render",
+					"pipeline step requested fatal but produced no output",
+				},
+				wantSingleOccurrence: []string{"pipeline step requested fatal but produced no output"},
 			},
 		},
 		"HardFail": {
-			mode:    "hard-fail",
-			wantRsp: false,
-			wantErr: true,
-			wantInErr: []string{
-				"cannot run crossplane internal render",
-				"the binary is sad",
+			reason: "Non-fatal exit codes surface stderr in the returned error.",
+			args:   args{mode: "hard-fail"},
+			want: want{
+				wantErr: true,
+				wantInErr: []string{
+					"cannot run crossplane internal render",
+					"the binary is sad",
+				},
+				wantSingleOccurrence: []string{"the binary is sad"},
 			},
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv(envHelperMode, tc.mode)
+			t.Setenv(envHelperMode, tc.args.mode)
 
 			e := &localRenderEngine{BinaryPath: os.Args[0]}
 
 			rsp, err := e.Render(context.Background(), &renderv1alpha1.RenderRequest{})
 
 			switch {
-			case tc.wantErr && err == nil:
-				t.Fatalf("Render(): want error, got nil")
-			case !tc.wantErr && err != nil:
-				t.Fatalf("Render(): unexpected error: %v", err)
+			case tc.want.wantErr && err == nil:
+				t.Fatalf("\n%s\nRender(...): want error, got nil", tc.reason)
+			case !tc.want.wantErr && err != nil:
+				t.Fatalf("\n%s\nRender(...): unexpected error: %v", tc.reason, err)
 			}
 
-			for _, want := range tc.wantInErr {
+			for _, s := range tc.want.wantInErr {
 				if err == nil {
-					t.Errorf("Render(): error is nil but expected to contain %q", want)
+					t.Errorf("\n%s\nRender(...): error is nil but expected to contain %q", tc.reason, s)
 					continue
 				}
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("Render(): error %q does not contain %q", err.Error(), want)
+				if !strings.Contains(err.Error(), s) {
+					t.Errorf("\n%s\nRender(...): error %q does not contain %q", tc.reason, err.Error(), s)
 				}
 			}
 
-			switch {
-			case tc.wantRsp && rsp == nil:
-				t.Errorf("Render(): want non-nil response, got nil")
-			case !tc.wantRsp && rsp != nil:
-				t.Errorf("Render(): want nil response, got %+v", rsp)
+			for _, s := range tc.want.wantSingleOccurrence {
+				if err == nil {
+					t.Errorf("\n%s\nRender(...): error is nil but expected exactly one occurrence of %q", tc.reason, s)
+					continue
+				}
+				if got := strings.Count(err.Error(), s); got != 1 {
+					t.Errorf("\n%s\nRender(...): error %q contains %q %d times, want exactly 1 (double-formatting bug?)", tc.reason, err.Error(), s, got)
+				}
+			}
+
+			if diff := cmp.Diff(tc.want.rsp, rsp, protocmp.Transform()); diff != "" {
+				t.Errorf("\n%s\nRender(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

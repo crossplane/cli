@@ -21,7 +21,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
@@ -39,85 +42,126 @@ func (m *mockContainerRunner) Run(ctx context.Context, img string, opts ...docke
 
 var _ containerRunner = &mockContainerRunner{}
 
-func TestDockerRenderEngine_Render(t *testing.T) {
-	rsp := &renderv1alpha1.RenderResponse{
+func TestDockerRenderEngineRender(t *testing.T) {
+	// A canned response with a distinguishing CompositeResource so a successful
+	// (or partial) round-trip through Render asserts the unmarshal path, not
+	// just that we got something non-nil back.
+	xrStruct, err := structpb.NewStruct(map[string]any{
+		"apiVersion": "example.org/v1",
+		"kind":       "XR",
+		"metadata":   map[string]any{"name": "test-xr"},
+	})
+	if err != nil {
+		t.Fatalf("cannot construct canned XR struct: %v", err)
+	}
+	cannedRsp := &renderv1alpha1.RenderResponse{
 		Output: &renderv1alpha1.RenderResponse_Composite{
-			Composite: &renderv1alpha1.CompositeOutput{},
+			Composite: &renderv1alpha1.CompositeOutput{
+				CompositeResource: xrStruct,
+			},
 		},
 	}
-	rspBytes, err := proto.Marshal(rsp)
+	cannedRspBytes, err := proto.Marshal(cannedRsp)
 	if err != nil {
 		t.Fatalf("cannot marshal canned response: %v", err)
 	}
 
-	cases := map[string]struct {
-		runFn                func(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error)
-		wantRsp              bool
+	type args struct {
+		runFn func(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error)
+	}
+
+	type want struct {
+		rsp                  *renderv1alpha1.RenderResponse
 		wantErr              bool
 		wantInErr            []string
-		wantSingleOccurrence []string // strings that must appear exactly once (catches double-stderr bugs)
+		wantSingleOccurrence []string
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
 	}{
 		"Success": {
-			runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
-				return rspBytes, nil, nil
+			reason: "Render returns the unmarshaled response and no error on a clean exit.",
+			args: args{
+				runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
+					return cannedRspBytes, nil, nil
+				},
 			},
-			wantRsp: true,
+			want: want{rsp: cannedRsp},
 		},
 		"FatalWithPartialOutput": {
-			runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
-				return rspBytes, []byte("boom: pipeline step requested fatal"), &docker.ContainerExitError{
-					ExitCode: ExitCodePipelineFatal,
-					Stderr:   []byte("boom: pipeline step requested fatal"),
-				}
+			reason: "On exit-3 with non-empty stdout, Render parses the partial response and returns it alongside a stderr-bearing error.",
+			args: args{
+				runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
+					return cannedRspBytes, []byte("boom: pipeline step requested fatal"), &docker.ContainerExitError{
+						ExitCode: ExitCodePipelineFatal,
+						Stderr:   []byte("boom: pipeline step requested fatal"),
+					}
+				},
 			},
-			wantRsp: true,
-			wantErr: true,
-			wantInErr: []string{
-				"pipeline returned fatal",
-				"boom: pipeline step requested fatal",
+			want: want{
+				rsp:     cannedRsp,
+				wantErr: true,
+				wantInErr: []string{
+					"pipeline returned fatal",
+					"boom: pipeline step requested fatal",
+				},
 			},
 		},
 		"FatalWithNoPartialOutput": {
-			runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
-				return nil, []byte("boom: no partial"), &docker.ContainerExitError{
-					ExitCode: ExitCodePipelineFatal,
-					Stderr:   []byte("boom: no partial"),
-				}
+			reason: "On exit-3 with empty stdout, Render falls back to the hard-fail path and surfaces stderr exactly once.",
+			args: args{
+				runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
+					return nil, []byte("boom: no partial"), &docker.ContainerExitError{
+						ExitCode: ExitCodePipelineFatal,
+						Stderr:   []byte("boom: no partial"),
+					}
+				},
 			},
-			wantRsp: false,
-			wantErr: true,
-			wantInErr: []string{
-				"cannot run crossplane internal render in Docker",
-				"boom: no partial",
+			want: want{
+				wantErr: true,
+				wantInErr: []string{
+					"cannot run crossplane internal render in Docker",
+					"boom: no partial",
+				},
+				wantSingleOccurrence: []string{"boom: no partial"},
 			},
-			wantSingleOccurrence: []string{"boom: no partial"},
 		},
 		"HardFailWithExitError": {
-			runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
-				return nil, []byte("the container is sad"), &docker.ContainerExitError{
-					ExitCode: 1,
-					Stderr:   []byte("the container is sad"),
-				}
+			reason: "Non-fatal exit codes wrap the *ContainerExitError (whose Error already embeds stderr) without doubling stderr.",
+			args: args{
+				runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
+					return nil, []byte("the container is sad"), &docker.ContainerExitError{
+						ExitCode: 1,
+						Stderr:   []byte("the container is sad"),
+					}
+				},
 			},
-			wantRsp: false,
-			wantErr: true,
-			wantInErr: []string{
-				"cannot run crossplane internal render in Docker",
-				"the container is sad",
+			want: want{
+				wantErr: true,
+				wantInErr: []string{
+					"cannot run crossplane internal render in Docker",
+					"the container is sad",
+				},
+				wantSingleOccurrence: []string{"the container is sad"},
 			},
-			wantSingleOccurrence: []string{"the container is sad"},
 		},
 		"HardFailNonExitError": {
-			runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
-				// e.g. image-pull failure: not a *ContainerExitError.
-				return nil, []byte("non-exit stderr"), &nonExitError{msg: "image pull failed"}
+			reason: "Non-exit errors (e.g. image-pull failures) get the captured stderr buffer appended so its content isn't lost.",
+			args: args{
+				runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
+					return nil, []byte("non-exit stderr"), &nonExitError{msg: "image pull failed"}
+				},
 			},
-			wantRsp: false,
-			wantErr: true,
-			wantInErr: []string{
-				"cannot run crossplane internal render in Docker",
-				"image pull failed",
-				"non-exit stderr",
+			want: want{
+				wantErr: true,
+				wantInErr: []string{
+					"cannot run crossplane internal render in Docker",
+					"image pull failed",
+					"non-exit stderr",
+				},
 			},
 		},
 	}
@@ -127,43 +171,40 @@ func TestDockerRenderEngine_Render(t *testing.T) {
 			e := &dockerRenderEngine{
 				image:  "test-image",
 				log:    logging.NewNopLogger(),
-				runner: &mockContainerRunner{MockRun: tc.runFn},
+				runner: &mockContainerRunner{MockRun: tc.args.runFn},
 			}
 
 			rsp, err := e.Render(context.Background(), &renderv1alpha1.RenderRequest{})
 
 			switch {
-			case tc.wantErr && err == nil:
-				t.Fatalf("Render(): want error, got nil")
-			case !tc.wantErr && err != nil:
-				t.Fatalf("Render(): unexpected error: %v", err)
+			case tc.want.wantErr && err == nil:
+				t.Fatalf("\n%s\nRender(...): want error, got nil", tc.reason)
+			case !tc.want.wantErr && err != nil:
+				t.Fatalf("\n%s\nRender(...): unexpected error: %v", tc.reason, err)
 			}
 
-			for _, want := range tc.wantInErr {
+			for _, s := range tc.want.wantInErr {
 				if err == nil {
-					t.Errorf("Render(): error is nil but expected to contain %q", want)
+					t.Errorf("\n%s\nRender(...): error is nil but expected to contain %q", tc.reason, s)
 					continue
 				}
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("Render(): error %q does not contain %q", err.Error(), want)
+				if !strings.Contains(err.Error(), s) {
+					t.Errorf("\n%s\nRender(...): error %q does not contain %q", tc.reason, err.Error(), s)
 				}
 			}
 
-			for _, want := range tc.wantSingleOccurrence {
+			for _, s := range tc.want.wantSingleOccurrence {
 				if err == nil {
-					t.Errorf("Render(): error is nil but expected exactly one occurrence of %q", want)
+					t.Errorf("\n%s\nRender(...): error is nil but expected exactly one occurrence of %q", tc.reason, s)
 					continue
 				}
-				if got := strings.Count(err.Error(), want); got != 1 {
-					t.Errorf("Render(): error %q contains %q %d times, want exactly 1 (double-formatting bug?)", err.Error(), want, got)
+				if got := strings.Count(err.Error(), s); got != 1 {
+					t.Errorf("\n%s\nRender(...): error %q contains %q %d times, want exactly 1 (double-formatting bug?)", tc.reason, err.Error(), s, got)
 				}
 			}
 
-			switch {
-			case tc.wantRsp && rsp == nil:
-				t.Errorf("Render(): want non-nil response, got nil")
-			case !tc.wantRsp && rsp != nil:
-				t.Errorf("Render(): want nil response, got %+v", rsp)
+			if diff := cmp.Diff(tc.want.rsp, rsp, protocmp.Transform()); diff != "" {
+				t.Errorf("\n%s\nRender(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

@@ -225,10 +225,10 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v3.17.0"
     hash = "sha256-b9dCq5GN5ac64UG23Rijv1qcmUZNcxb8DJQycAa96EQ="
   [mod."github.com/crossplane/crossplane-runtime/v2"]
-    version = "v2.3.1"
-    hash = "sha256-tQQr8PUtKE16jasw+0bKD03Q6ANSBZWR/3DW3o9gO78="
+    version = "v2.3.2"
+    hash = "sha256-GzcQz6qzsOL5SRVtJLiEo345HGOlGE053RNedvfNff8="
   [mod."github.com/crossplane/crossplane/apis/v2"]
-    version = "v2.3.1"
+    version = "v2.3.2"
     hash = "sha256-Mld+dYtG/JpCD4VB9/CjAaJ/t8Lh/92WDOpeKlccG6o="
   [mod."github.com/crossplane/function-sdk-go"]
     version = "v0.6.1-0.20260506001521-78a3dd862da1"

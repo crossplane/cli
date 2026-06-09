@@ -169,8 +169,9 @@ func TestLocalRenderEngineRender(t *testing.T) {
 			want: want{
 				wantErr: true,
 				wantInErr: []string{
-					"cannot run crossplane internal render",
+					"crossplane internal render returned error with output",
 					"pipeline step requested fatal but produced no output",
+					"exit status 3",
 				},
 				wantSingleOccurrence: []string{"pipeline step requested fatal but produced no output"},
 			},
@@ -181,8 +182,9 @@ func TestLocalRenderEngineRender(t *testing.T) {
 			want: want{
 				wantErr: true,
 				wantInErr: []string{
-					"cannot run crossplane internal render",
+					"crossplane internal render returned error with output",
 					"the binary is sad",
+					"exit status 1",
 				},
 				wantSingleOccurrence: []string{"the binary is sad"},
 			},

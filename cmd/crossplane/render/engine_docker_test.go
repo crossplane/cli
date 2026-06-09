@@ -123,14 +123,15 @@ func TestDockerRenderEngineRender(t *testing.T) {
 			want: want{
 				wantErr: true,
 				wantInErr: []string{
-					"cannot run crossplane internal render in Docker",
+					"crossplane internal render in Docker returned error with output",
 					"boom: no partial",
+					"container exited with status 3",
 				},
 				wantSingleOccurrence: []string{"boom: no partial"},
 			},
 		},
 		"HardFailWithExitError": {
-			reason: "Non-fatal exit codes wrap the *ContainerExitError (whose Error already embeds stderr) without doubling stderr.",
+			reason: "Non-fatal exit codes wrap the *ContainerExitError; stderr is included once via Wrapf, exit code via the wrapped Error().",
 			args: args{
 				runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
 					return nil, []byte("the container is sad"), &docker.ContainerExitError{
@@ -142,8 +143,9 @@ func TestDockerRenderEngineRender(t *testing.T) {
 			want: want{
 				wantErr: true,
 				wantInErr: []string{
-					"cannot run crossplane internal render in Docker",
+					"crossplane internal render in Docker returned error with output",
 					"the container is sad",
+					"container exited with status 1",
 				},
 				wantSingleOccurrence: []string{"the container is sad"},
 			},
@@ -158,7 +160,7 @@ func TestDockerRenderEngineRender(t *testing.T) {
 			want: want{
 				wantErr: true,
 				wantInErr: []string{
-					"cannot run crossplane internal render in Docker",
+					"crossplane internal render in Docker returned error with output",
 					"image pull failed",
 					"non-exit stderr",
 				},

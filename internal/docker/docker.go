@@ -388,7 +388,9 @@ func RunWithBindMount(hostPath, containerPath string) RunContainerOption {
 // a non-zero status. It carries the exit code so callers can branch on
 // well-known codes (e.g. the partial-output-on-fatal exit from
 // `crossplane internal render`) and the captured stderr so callers can surface
-// the failure details to users.
+// the failure details to users. Error() returns only the exit-code summary;
+// callers that want the stderr content in the error message should wrap with
+// errors.Wrapf using the Stderr field directly.
 type ContainerExitError struct {
 	ExitCode int
 	Stderr   []byte
@@ -396,7 +398,7 @@ type ContainerExitError struct {
 
 // Error implements error.
 func (e *ContainerExitError) Error() string {
-	return fmt.Sprintf("container exited with status %d: %s", e.ExitCode, e.Stderr)
+	return fmt.Sprintf("container exited with status %d", e.ExitCode)
 }
 
 // RunContainer creates a container, optionally pipes stdin, waits for it to

@@ -34,10 +34,7 @@ import (
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
 
-// containerRunner is the subset of internal/docker the engine depends on. It
-// follows the same one-method-interface mock pattern as pullClient in
-// runtime_docker.go, letting tests substitute a mockContainerRunner without a
-// real Docker daemon.
+// containerRunner is the subset of internal/docker the engine depends on.
 type containerRunner interface {
 	Run(ctx context.Context, img string, opts ...docker.RunContainerOption) ([]byte, []byte, error)
 }
@@ -162,23 +159,11 @@ func (e *dockerRenderEngine) Render(ctx context.Context, req *renderv1alpha1.Ren
 			// and return both it and the stderr-bearing error.
 			rsp := &renderv1alpha1.RenderResponse{}
 			if uerr := proto.Unmarshal(stdout, rsp); uerr != nil {
-				return nil, errors.Errorf("cannot unmarshal partial render response after pipeline fatal: %s: %s", uerr.Error(), exitErr.Stderr)
+				return nil, errors.Wrapf(uerr, "cannot unmarshal partial render response after pipeline fatal: %s", exitErr.Stderr)
 			}
 			return rsp, errors.Errorf("crossplane internal render in Docker: pipeline returned fatal: %s", exitErr.Stderr)
 		}
-		// On a *ContainerExitError, err.Error() already embeds stderr
-		// (ContainerExitError.Error stringifies it as "container exited with
-		// status N: <stderr>"), so wrapping err is sufficient. For non-exit
-		// failures (e.g. image pull errors), append the captured stderr
-		// buffer so its content isn't lost when err.Error() doesn't include
-		// it.
-		if errors.As(err, &exitErr) {
-			return nil, errors.Wrap(err, "cannot run crossplane internal render in Docker")
-		}
-		if len(stderr) > 0 {
-			return nil, errors.Errorf("cannot run crossplane internal render in Docker: %s: %s", err.Error(), stderr)
-		}
-		return nil, errors.Wrap(err, "cannot run crossplane internal render in Docker")
+		return nil, errors.Wrapf(err, "crossplane internal render in Docker returned error with output: %s", stderr)
 	}
 
 	rsp := &renderv1alpha1.RenderResponse{}

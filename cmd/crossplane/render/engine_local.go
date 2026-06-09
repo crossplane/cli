@@ -75,14 +75,11 @@ func (e *localRenderEngine) Render(ctx context.Context, req *renderv1alpha1.Rend
 			// and return both it and the stderr-bearing error.
 			rsp := &renderv1alpha1.RenderResponse{}
 			if uerr := proto.Unmarshal(out, rsp); uerr != nil {
-				return nil, errors.Errorf("cannot unmarshal partial render response after pipeline fatal: %s: %s", uerr.Error(), stderr.String())
+				return nil, errors.Wrapf(uerr, "cannot unmarshal partial render response after pipeline fatal: %s", stderr.String())
 			}
 			return rsp, errors.Errorf("crossplane internal render: pipeline returned fatal: %s", stderr.String())
 		}
-		if stderr.Len() > 0 {
-			return nil, errors.Errorf("cannot run crossplane internal render: %s: %s", err.Error(), stderr.String())
-		}
-		return nil, errors.Wrap(err, "cannot run crossplane internal render")
+		return nil, errors.Wrapf(err, "crossplane internal render returned error with output: %s", stderr.String())
 	}
 
 	rsp := &renderv1alpha1.RenderResponse{}

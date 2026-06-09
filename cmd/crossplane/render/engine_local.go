@@ -19,7 +19,6 @@ package render
 import (
 	"bytes"
 	"context"
-	"os"
 	"os/exec"
 
 	"google.golang.org/protobuf/proto"
@@ -49,19 +48,38 @@ func (e *localRenderEngine) Setup(_ context.Context, _ []pkgv1.Function) (func()
 
 // Render marshals the request, runs it through a local binary, and returns
 // the response.
+//
+// Stderr is captured into the returned error so callers can surface fatal
+// pipeline messages programmatically. When the binary exits with
+// ExitCodePipelineFatal (a pipeline step returned SEVERITY_FATAL) and stdout
+// carries a partial RenderResponse, Render parses it and returns both the
+// partial response AND a non-nil error containing stderr — letting callers
+// recover the partial output (e.g. RequiredResources) and iterate.
 func (e *localRenderEngine) Render(ctx context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
 	data, err := proto.Marshal(req)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot marshal render request")
 	}
 
+	var stderr bytes.Buffer
+
 	cmd := exec.CommandContext(ctx, e.BinaryPath, "internal", "render") //nolint:gosec // The binary path is user-supplied via CLI flag.
 	cmd.Stdin = bytes.NewReader(data)
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = &stderr
 
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot run crossplane internal render")
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == ExitCodePipelineFatal && len(out) > 0 {
+			// Pipeline-fatal with partial output. Parse the partial response
+			// and return both it and the stderr-bearing error.
+			rsp := &renderv1alpha1.RenderResponse{}
+			if uerr := proto.Unmarshal(out, rsp); uerr != nil {
+				return nil, errors.Wrapf(uerr, "cannot unmarshal partial render response after pipeline fatal: %s", stderr.String())
+			}
+			return rsp, errors.Errorf("crossplane internal render: pipeline returned fatal: %s", stderr.String())
+		}
+		return nil, errors.Wrapf(err, "crossplane internal render returned error with output: %s", stderr.String())
 	}
 
 	rsp := &renderv1alpha1.RenderResponse{}

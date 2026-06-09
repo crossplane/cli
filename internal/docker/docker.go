@@ -384,9 +384,31 @@ func RunWithBindMount(hostPath, containerPath string) RunContainerOption {
 	}
 }
 
+// ContainerExitError is returned by RunContainer when the container exits with
+// a non-zero status. It carries the exit code so callers can branch on
+// well-known codes (e.g. the partial-output-on-fatal exit from
+// `crossplane internal render`) and the captured stderr so callers can surface
+// the failure details to users. Error() returns only the exit-code summary;
+// callers that want the stderr content in the error message should wrap with
+// errors.Wrapf using the Stderr field directly.
+type ContainerExitError struct {
+	ExitCode int
+	Stderr   []byte
+}
+
+// Error implements error.
+func (e *ContainerExitError) Error() string {
+	return fmt.Sprintf("container exited with status %d", e.ExitCode)
+}
+
 // RunContainer creates a container, optionally pipes stdin, waits for it to
 // exit, and returns stdout and stderr. The container is always removed on
 // return. This is intended for short-lived "run to completion" containers.
+//
+// On non-zero exit RunContainer returns the captured stdout, stderr, and a
+// *ContainerExitError carrying the exit code. Callers that need to recover a
+// partial stdout (e.g. exit code 3 from `crossplane internal render` per
+// crossplane/crossplane#7455) should errors.As against *ContainerExitError.
 func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) ([]byte, []byte, error) {
 	cfg := &runContainerConfig{
 		containerConfig: &container.Config{
@@ -467,7 +489,10 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 	select {
 	case status := <-statusCh:
 		if status.StatusCode != 0 {
-			return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("container exited with status %d: %s", status.StatusCode, stderr.String())
+			return stdout.Bytes(), stderr.Bytes(), &ContainerExitError{
+				ExitCode: int(status.StatusCode),
+				Stderr:   stderr.Bytes(),
+			}
 		}
 	case err := <-errCh:
 		return nil, nil, errors.Wrap(err, "error waiting for container")

@@ -42,6 +42,13 @@ import (
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
 
+// ExitCodePipelineFatal is the exit code that `crossplane internal render`
+// returns when a pipeline step responds with SEVERITY_FATAL. The binary
+// populates stdout with a partial RenderResponse on this code so callers can
+// recover output.RequiredResources (and similar) and iterate. See
+// crossplane/crossplane#7455 for the upstream contract.
+const ExitCodePipelineFatal = 3
+
 // Annotations added to composed resources.
 const (
 	AnnotationKeyCompositionResourceName = "crossplane.io/composition-resource-name"

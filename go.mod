@@ -12,8 +12,8 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/containerd/errdefs v1.0.0
-	github.com/crossplane/crossplane-runtime/v2 v2.3.1
-	github.com/crossplane/crossplane/apis/v2 v2.3.1
+	github.com/crossplane/crossplane-runtime/v2 v2.3.2
+	github.com/crossplane/crossplane/apis/v2 v2.3.2
 	github.com/crossplane/function-sdk-go v0.6.1-0.20260506001521-78a3dd862da1
 	github.com/docker/cli v29.4.0+incompatible
 	github.com/docker/docker v28.5.2+incompatible

@@ -202,13 +202,13 @@ jobs:
         run: |
           chmod +x ./bin/linux_amd64/crossplane
           ./bin/linux_amd64/crossplane config set features.enableAlpha true
-          ./bin/linux_amd64/crossplane generate-docs -o ./docs/content/master/cli/command-reference.md
+          ./bin/linux_amd64/crossplane generate-docs -o ./docs/content/cli/master/command-reference.md
 
       - name: Run Vale
         uses: vale-cli/vale-action@d89dee975228ae261d22c15adcd03578634d429c # v2.1.1
         with:
           version: "3.14.2"
-          files: ./docs/content/master/cli/command-reference.md
+          files: ./docs/content/cli/master/command-reference.md
           vale_flags: "--config=./docs/utils/vale/.vale.ini"
           fail_on_error: true
           reporter: local
@@ -217,4 +217,4 @@ jobs:
       - name: Show generated docs on failure
         if: ${{ failure() }}
         run: |
-          cat ./docs/content/master/cli/command-reference.md
+          cat ./docs/content/cli/master/command-reference.md

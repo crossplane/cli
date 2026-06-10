@@ -86,7 +86,7 @@ git clone https://github.com/crossplane/docs.git
 cd docs
 
 # Generate the docs.
-crossplane generate-docs -o content/master/cli/command-reference.md
+crossplane generate-docs -o content/cli/master/command-reference.md
 
 # Build the docs and serve them locally for preview.
 hugo serve

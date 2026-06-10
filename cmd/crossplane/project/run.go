@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -65,13 +66,14 @@ type runCmd struct {
 	MaxConcurrency uint   `default:"8"                       help:"Max concurrent builds."`
 	CacheDir       string `env:"CROSSPLANE_XPKG_CACHE"       help:"Directory for cached xpkg package contents." name:"cache-dir"`
 
-	ControlPlaneName  string        `help:"Name of the dev control plane. Defaults to project name."`
-	CrossplaneVersion string        `help:"Version of Crossplane to install."`
-	RegistryDir       string        `help:"Directory for local registry images."`
-	ClusterAdmin      bool          `default:"true"                                                  help:"Grant Crossplane the cluster-admin role." negatable:""`
-	Timeout           time.Duration `default:"5m"                                                    help:"Max wait for project readiness."`
-	InitResources     []string      `help:"Resources to apply before installing."                    type:"path"`
-	ExtraResources    []string      `help:"Resources to apply after installing."                     type:"path"`
+	ControlPlaneName   string        `help:"Name of the dev control plane. Defaults to project name."`
+	CrossplaneVersion  string        `help:"Version of Crossplane to install."`
+	RegistryDir        string        `help:"Directory for local registry images."`
+	ContainerdCertsDir string        `help:"Host directory mounted into the control-plane node at /etc/containerd/certs.d for private CA trust." type:"path" name:"containerd-certs-dir"`
+	ClusterAdmin       bool          `default:"true"                                                  help:"Grant Crossplane the cluster-admin role." negatable:""`
+	Timeout            time.Duration `default:"5m"                                                    help:"Max wait for project readiness."`
+	InitResources      []string      `help:"Resources to apply before installing."                    type:"path"`
+	ExtraResources     []string      `help:"Resources to apply after installing."                     type:"path"`
 
 	proj   *devv1alpha1.Project
 	projFS afero.Fs
@@ -125,6 +127,21 @@ func (c *runCmd) AfterApply() error {
 			}
 			c.extraResources = append(c.extraResources, e)
 		}
+	}
+
+	if c.ContainerdCertsDir != "" {
+		absDir, err := filepath.Abs(c.ContainerdCertsDir)
+		if err != nil {
+			return errors.Wrap(err, "failed to resolve --containerd-certs-dir path")
+		}
+		info, err := os.Stat(absDir)
+		if err != nil {
+			return errors.Wrapf(err, "failed to access --containerd-certs-dir path %q", absDir)
+		}
+		if !info.IsDir() {
+			return errors.Errorf("--containerd-certs-dir must be a directory: %q", absDir)
+		}
+		c.ContainerdCertsDir = absDir
 	}
 
 	return nil
@@ -199,6 +216,7 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error { 
 				controlplane.WithName(c.ControlPlaneName),
 				controlplane.WithCrossplaneVersion(c.CrossplaneVersion),
 				controlplane.WithRegistryDir(c.RegistryDir),
+				controlplane.WithContainerdCertsDir(c.ContainerdCertsDir),
 				controlplane.WithClusterAdmin(c.ClusterAdmin),
 				controlplane.WithLogger(logger),
 			)

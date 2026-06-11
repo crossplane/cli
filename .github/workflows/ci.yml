@@ -117,6 +117,9 @@ jobs:
       contents: read
     runs-on: ubuntu-24.04
 
+    outputs:
+      version: ${{ steps.set-version.outputs.version }}
+
     steps:
       - name: Cleanup Disk
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
@@ -147,9 +150,11 @@ jobs:
       # Pure (sandboxed, reproducible) Nix build inputs can only come from git
       # tracked files, so we set it in flake.nix before building.
       - name: Set Version
+        id: set-version
         run: |
           VERSION=$(git describe --dirty --always --tags | sed 's/-/./2g')
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           sed -i "s|buildVersion = null;|buildVersion = \"$VERSION\";|" flake.nix
 
       - name: Build Artifacts
@@ -218,3 +223,44 @@ jobs:
         if: ${{ failure() }}
         run: |
           cat ./docs/content/cli/master/command-reference.md
+
+      # If we're running on main, create a PR to update the "master" version of
+      # the reference docs on docs.crossplane.io, which should always reflect
+      # the current main build.
+      #
+      # To reduce noise, avoid creating a docs update PR if only the version
+      # number has changed. We assume a diffstat of +1/-1 is just a version
+      # number change.
+      - name: Find docs changes
+        if: ${{ github.ref == 'refs/heads/main' }}
+        id: find-changes
+        run: |
+          cd docs
+          diffstat=$(git diff --numstat content/cli/master/command-reference.md)
+          added=$(echo "$diffstat" | awk '{ print $1 }')
+          deleted=$(echo "$diffstat" | awk '{ print $2 }')
+          changed="false"
+          if [[ ${added} -ne 1 || ${deleted} -ne 1 ]]; then
+            changed="true"
+          fi
+          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/create-github-app-token@v2
+        if: ${{ github.ref == 'refs/heads/main' && steps.find-changes.outputs.changed == 'true' }}
+        id: generate-token
+        with:
+          app-id: ${{ secrets.CLI_DOCS_BOT_APP_ID }}
+          private-key: ${{ secrets.CLI_DOCS_BOT_APP_PRIVATE_KEY }}
+          owner: crossplane
+          repositories: docs
+
+      - name: Create docs PR
+        if: ${{ github.ref == 'refs/heads/main' && steps.find-changes.outputs.changed == 'true' }}
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          path: ./docs
+          commit-message: Update master CLI reference docs for ${{ needs.build-artifacts.outputs.version }}
+          title: Update master CLI reference docs for ${{ needs.build-artifacts.outputs.version }}
+          branch: cli-docs-${{ needs.build-artifacts.outputs.version }}
+          add-paths: content/cli/master/command-reference.md

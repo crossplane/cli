@@ -1,4 +1,20 @@
-package render
+/*
+Copyright 2026 The Crossplane Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package xr
 
 import (
 	"testing"
@@ -7,7 +23,7 @@ import (
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
-func TestDefaultValues(t *testing.T) {
+func TestApplyCRDDefaults(t *testing.T) {
 	type args struct {
 		xr         map[string]any
 		crd        extv1.CustomResourceDefinition
@@ -238,13 +254,13 @@ func TestDefaultValues(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			err := DefaultValues(tc.args.xr, tc.args.apiVersion, tc.args.crd)
+			err := ApplyCRDDefaults(tc.args.xr, tc.args.apiVersion, tc.args.crd)
 			if (err != nil) != tc.wantErr {
-				t.Errorf("DefaultValues() error = %v, wantErr %v", err, tc.wantErr)
+				t.Errorf("ApplyCRDDefaults() error = %v, wantErr %v", err, tc.wantErr)
 			}
 
 			if diff := cmp.Diff(tc.want, tc.args.xr); diff != "" {
-				t.Errorf("DefaultValues() mismatch (-want +got):\n%s", diff)
+				t.Errorf("ApplyCRDDefaults() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

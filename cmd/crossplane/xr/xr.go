@@ -20,4 +20,5 @@ package xr
 // Cmd contains XR subcommands.
 type Cmd struct {
 	Generate generateCmd `cmd:"" help:"Generate a Composite Resource (XR) from a Claim."`
+	Patch    patchCmd    `cmd:"" help:"Patch a Composite Resource (XR)."`
 }

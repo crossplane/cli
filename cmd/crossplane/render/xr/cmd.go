@@ -37,7 +37,6 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composed"
-	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
@@ -54,6 +53,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	xrpkg "github.com/crossplane/cli/v2/pkg/xr"
 
 	_ "embed"
 )
@@ -171,13 +171,8 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 			return errors.Wrapf(err, "cannot load XRD from %q", c.XRD)
 		}
 
-		crd, err := xcrd.ForCompositeResource(xrd)
-		if err != nil {
-			return errors.Wrapf(err, "cannot derive composite CRD from XRD %q", xrd.GetName())
-		}
-
-		if err := render.DefaultValues(xr.UnstructuredContent(), xr.GetAPIVersion(), *crd); err != nil {
-			return errors.Wrapf(err, "cannot default values for XR %q", xr.GetName())
+		if err := xrpkg.ApplyXRDDefaults(xr.GetUnstructured(), xrd); err != nil {
+			return errors.Wrapf(err, "cannot apply XRD defaults to XR %q", xr.GetName())
 		}
 	}
 

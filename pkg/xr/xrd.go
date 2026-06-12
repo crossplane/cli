@@ -30,6 +30,11 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 )
 
+// AnnotationKeyCompositionResourceName is the annotation that records a
+// composed resource's name within the composition. Re-exported from
+// crossplane-runtime so callers don't need a direct dependency on xcrd.
+const AnnotationKeyCompositionResourceName = xcrd.AnnotationKeyCompositionResourceName
+
 // ApplyXRDDefaults applies default values from an XRD's openAPIV3Schema to an XR. The XR is mutated in place.
 // This is the canonical XRD-defaulting entry point for the cli; downstream
 // commands and tools (e.g. `crossplane render xr --xrd`) call into this

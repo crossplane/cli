@@ -342,10 +342,10 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 	slices.SortStableFunc(out.ComposedResources, func(a, b composed.Unstructured) int {
 		nameA, nameB := "", ""
 		if anns := a.GetAnnotations(); anns != nil {
-			nameA = anns[xcrd.AnnotationKeyCompositionResourceName]
+			nameA = anns[xrpkg.AnnotationKeyCompositionResourceName]
 		}
 		if anns := b.GetAnnotations(); anns != nil {
-			nameB = anns[xcrd.AnnotationKeyCompositionResourceName]
+			nameB = anns[xrpkg.AnnotationKeyCompositionResourceName]
 		}
 
 		return strings.Compare(nameA, nameB)
@@ -359,7 +359,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 	for i := range out.ComposedResources {
 		_, _ = fmt.Fprintln(k.Stdout, "---")
 		if err := s.Encode(&out.ComposedResources[i], k.Stdout); err != nil {
-			return errors.Wrapf(err, "cannot marshal composed resource %q to YAML", out.ComposedResources[i].GetAnnotations()[xcrd.AnnotationKeyCompositionResourceName])
+			return errors.Wrapf(err, "cannot marshal composed resource %q to YAML", out.ComposedResources[i].GetAnnotations()[xrpkg.AnnotationKeyCompositionResourceName])
 		}
 	}
 

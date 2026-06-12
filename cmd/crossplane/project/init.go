@@ -38,9 +38,9 @@ const projectFileName = "crossplane-project.yaml"
 
 // initCmd initializes a new project.
 type initCmd struct {
-	Name       string `arg:""                       help:"The name of the new project."`
-	Directory  string `arg:""                       help:"Directory to initialize. Defaults to project name." optional:"" short:"d" type:"path"`
-	Repository string `default:"example.com/my-org" help:"Override the repository in the project file."       optional:""`
+	Name       string `arg:""                                                    help:"The name of the new project."`
+	Directory  string `help:"Directory to initialize. Defaults to project name." short:"d"                                           type:"path"`
+	Repository string `default:"example.com/my-org"                              help:"Override the repository in the project file." optional:"" short:"r"`
 }
 
 func (c *initCmd) Help() string {
@@ -62,6 +62,10 @@ func (c *initCmd) Run(sp terminal.SpinnerPrinter) error {
 		return err
 	}
 
+	repo := strings.TrimRight(c.Repository, "/")
+	if repo == "" {
+		return errors.New("repository cannot be empty; set --repository to an OCI repository prefix like 'xpkg.crossplane.io/my-org'")
+	}
 	return sp.WrapWithSuccessSpinner("Initializing project", func() error {
 		if err := os.MkdirAll(c.Directory, 0o750); err != nil {
 			return errors.Wrapf(err, "failed to create directory %s", c.Directory)
@@ -75,7 +79,7 @@ metadata:
   name: %s
 spec:
   repository: %s/%s
-`, c.Name, c.Repository, c.Name)
+`, c.Name, repo, c.Name)
 
 		if err := os.WriteFile(projFile, []byte(content), 0o600); err != nil {
 			return errors.Wrapf(err, "failed to write %s", projectFileName)

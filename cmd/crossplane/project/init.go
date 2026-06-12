@@ -62,7 +62,7 @@ func (c *initCmd) Run(sp terminal.SpinnerPrinter) error {
 		return err
 	}
 
-	repo := strings.TrimRight(c.Repository, "/")
+	repo := strings.TrimRight(strings.TrimSpace(c.Repository), "/")
 	if repo == "" {
 		return errors.New("repository cannot be empty; set --repository to an OCI repository prefix like 'xpkg.crossplane.io/my-org'")
 	}

@@ -45,9 +45,10 @@ import (
 var helpPush string
 
 const (
-	errGetwd           = "failed to get working directory while searching for package"
-	errFindPackageinWd = "failed to find a package in current working directory"
-	errAnnotateLayers  = "failed to propagate xpkg annotations from OCI image config file to image layers"
+	errGetwd            = "failed to get working directory while searching for package"
+	errFindPackageinWd  = "failed to find a package in current working directory"
+	errAnnotateLayers   = "failed to propagate xpkg annotations from OCI image config file to image layers"
+	errParseAnnotations = "failed to parse annotations"
 
 	errFmtNewTag        = "failed to parse package tag %q"
 	errFmtReadPackage   = "failed to read package file %s"
@@ -67,7 +68,7 @@ type pushCmd struct {
 	// Flags. Keep sorted alphabetically.
 	OCIAnnotation         []string `help:"An OCI manifest annotation to add to the package in key=value format. Repeatable." name:"oci-annotation" placeholder:"KEY=VALUE" short:"a"`
 	InsecureSkipTLSVerify bool     `help:"[INSECURE] Skip verifying TLS certificates."`
-	PackageFiles          []string `help:"A comma-separated list of xpkg files to push."                                     placeholder:"PATH"      predictor:"xpkg_file" short:"f" type:"existingfile"`
+	PackageFiles          []string `help:"A comma-separated list of xpkg files to push."                                     placeholder:"PATH"    predictor:"xpkg_file"   short:"f" type:"existingfile"`
 
 	// Internal state. These aren't part of the user-exposed CLI structure.
 	fs afero.Fs

@@ -77,6 +77,11 @@ func WithUpdateCache(update bool) Option {
 	}
 }
 
+// CRDs returns the collected CRDs.
+func (m *Manager) CRDs() []*extv1.CustomResourceDefinition {
+	return m.crds
+}
+
 // NewManager returns a new Manager.
 func NewManager(cacheDir string, fs afero.Fs, w io.Writer, opts ...Option) *Manager {
 	m := &Manager{}

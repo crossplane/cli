@@ -19,6 +19,7 @@ package generator
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"maps"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/invopop/jsonschema"
 	"github.com/spf13/afero"
+	runtimeSchema "k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/kube-openapi/pkg/spec3"
 	"k8s.io/kube-openapi/pkg/validation/spec"
 
@@ -63,7 +65,7 @@ func (jsonGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 	}
 
 	for name, schema := range schemas {
-		jschema, err := oapiSchemaToJSONSchema(schema)
+		jschema, err := ToJSONSchema(schema, runtimeSchema.GroupVersionKind{})
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to generate jsonschema for %s", name)
 		}
@@ -82,7 +84,10 @@ func (jsonGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 	return schemaFS, nil
 }
 
-func oapiSchemaToJSONSchema(s *spec.Schema) (*jsonschema.Schema, error) {
+// ToJSONSchema converts any JSON-compatible schema (e.g., *spec.Schema or *extv1.JSONSchemaProps)
+// to a *jsonschema.Schema with YAML language server compatibility fixes applied.
+// When gvk is non-empty, it also sets $id and x-kubernetes-group-version-kind metadata.
+func ToJSONSchema(s any, gvk runtimeSchema.GroupVersionKind) (*jsonschema.Schema, error) {
 	bs, err := json.Marshal(s)
 	if err != nil {
 		return nil, err
@@ -93,9 +98,27 @@ func oapiSchemaToJSONSchema(s *spec.Schema) (*jsonschema.Schema, error) {
 		return nil, err
 	}
 
-	return mutateJSONSchema(&conv), nil
+	mutateJSONSchema(&conv)
+
+	if !gvk.Empty() {
+		conv.ID = jsonschema.ID(fmt.Sprintf("%s/%s/%s.json", gvk.Group, gvk.Version, strings.ToLower(gvk.Kind)))
+		conv.Extras = map[string]any{
+			"x-kubernetes-group-version-kind": []map[string]string{
+				{
+					"group":   gvk.Group,
+					"version": gvk.Version,
+					"kind":    gvk.Kind,
+				},
+			},
+		}
+	}
+
+	return &conv, nil
 }
 
+// mutateJSONSchema applies YAML language server compatibility fixes to a JSON
+// Schema: sets additionalProperties to false on object types and rewrites
+// component $ref paths to file references.
 func mutateJSONSchema(s *jsonschema.Schema) *jsonschema.Schema {
 	if s.Type == "object" && s.AdditionalProperties == nil {
 		s.AdditionalProperties = jsonschema.FalseSchema
@@ -186,7 +209,7 @@ func (jsonGenerator) GenerateFromOpenAPI(_ context.Context, fromFS afero.Fs, _ r
 	}
 
 	for name, schema := range schemas {
-		jschema, err := oapiSchemaToJSONSchema(schema)
+		jschema, err := ToJSONSchema(schema, runtimeSchema.GroupVersionKind{})
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to generate jsonschema for %s", name)
 		}

@@ -20,6 +20,7 @@ package xrd
 import (
 	"fmt"
 	"maps"
+	"math"
 
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
@@ -107,9 +108,28 @@ func inferProperty(value any) (extv1.JSONSchemaProps, error) {
 		return extv1.JSONSchemaProps{
 			Type: "integer",
 		}, nil
-	case float32, float64:
+	case float32:
+		// JSON doesn't have integers, so json.Unmarshal treats all numbers as
+		// floats. Try to detect whehter the number is actually an integer, so
+		// that we're more likely to infer the user's intent. This heuristic
+		// isn't perfect since not all integers are representable as floats, but
+		// it will work for common cases.
+		t := "number"
+		if math.Trunc(float64(v)) == float64(v) {
+			t = "integer"
+		}
+
 		return extv1.JSONSchemaProps{
-			Type: "number",
+			Type: t,
+		}, nil
+	case float64:
+		t := "number"
+		if math.Trunc(v) == v {
+			t = "integer"
+		}
+
+		return extv1.JSONSchemaProps{
+			Type: t,
 		}, nil
 	case bool:
 		return extv1.JSONSchemaProps{

@@ -53,6 +53,12 @@ func TestInferProperty(t *testing.T) {
 				output: extv1.JSONSchemaProps{Type: "number"},
 			},
 		},
+		"IntegerAsFloatType": {
+			input: float64(1),
+			want: want{
+				output: extv1.JSONSchemaProps{Type: "integer"},
+			},
+		},
 		"BooleanType": {
 			input: true,
 			want: want{

@@ -262,5 +262,8 @@ jobs:
           path: ./docs
           commit-message: Update master CLI reference docs for ${{ needs.build-artifacts.outputs.version }}
           title: Update master CLI reference docs for ${{ needs.build-artifacts.outputs.version }}
-          branch: cli-docs-${{ needs.build-artifacts.outputs.version }}
+          # We use a static branch name so that if an existing PR is already
+          # open it gets updated, rather than opening a sequence of PRs of which
+          # it makes sense to merge only the most recent.
+          branch: auto-update-cli-docs
           add-paths: content/cli/master/command-reference.md

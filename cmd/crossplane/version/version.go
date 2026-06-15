@@ -26,6 +26,8 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/version"
+
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
 )
 
 const (
@@ -35,6 +37,8 @@ const (
 // Cmd represents the version command.
 type Cmd struct {
 	Client bool `env:"" help:"If true, shows client version only (no server required)."`
+
+	Impersonation kube.ImpersonationFlags `embed:""`
 }
 
 // Run runs the version command.
@@ -48,7 +52,7 @@ func (c *Cmd) Run(k *kong.Context) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	vxp, err := FetchCrossplaneVersion(ctx)
+	vxp, err := FetchCrossplaneVersion(ctx, c.Impersonation)
 	if err != nil {
 		return errors.Wrap(err, errGetCrossplaneVersion)
 	}

@@ -26,6 +26,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
 )
 
 const (
@@ -37,13 +39,15 @@ const (
 // FetchCrossplaneVersion initializes a Kubernetes client and fetches
 // and returns the version of the Crossplane deployment. If the version
 // does not have a leading 'v', it prepends it.
-func FetchCrossplaneVersion(ctx context.Context) (string, error) {
+func FetchCrossplaneVersion(ctx context.Context, imp kube.ImpersonationFlags) (string, error) {
 	var version string
 
 	config, err := ctrl.GetConfig()
 	if err != nil {
 		return "", errors.Wrap(err, errKubeConfig)
 	}
+
+	imp.Apply(config)
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {

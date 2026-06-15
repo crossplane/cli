@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	controllerClient "sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
 	"github.com/crossplane/cli/v2/cmd/crossplane/internal"
 )
 
@@ -48,7 +49,7 @@ func Predictors() map[string]complete.Predictor {
 // last completed argument.
 func kubernetesResourcePredictor() complete.PredictFunc {
 	return func(a complete.Args) []string {
-		_, kubeconfig, _, err := kubernetesClient(parseConfigOverride(a))
+		_, kubeconfig, _, err := kubernetesClient(parseConfigOverride(a), parseImpersonation(a))
 		if err != nil {
 			return nil
 		}
@@ -103,7 +104,7 @@ func kubernetesResourcePredictor() complete.PredictFunc {
 // last completed argument.
 func kubernetesResourceNamePredictor() complete.PredictFunc {
 	return func(a complete.Args) []string {
-		client, kubeconfig, clientconfig, err := kubernetesClient(parseConfigOverride(a))
+		client, kubeconfig, clientconfig, err := kubernetesClient(parseConfigOverride(a), parseImpersonation(a))
 		if err != nil {
 			return nil
 		}
@@ -189,7 +190,7 @@ func contextPredictor() complete.PredictFunc {
 // last completed argument.
 func namespacePredictor() complete.PredictFunc {
 	return func(a complete.Args) []string {
-		client, err := kubernetesClientset()
+		client, err := kubernetesClientset(parseImpersonation(a))
 		if err != nil {
 			return nil
 		}
@@ -211,8 +212,9 @@ func namespacePredictor() complete.PredictFunc {
 	}
 }
 
-// kubernetesClientset returns a Kubernetes clientset using the default kubeconfig.
-func kubernetesClientset() (*kubernetes.Clientset, error) {
+// kubernetesClientset returns a Kubernetes clientset using the default
+// kubeconfig and the given impersonation flags.
+func kubernetesClientset(imp kube.ImpersonationFlags) (*kubernetes.Clientset, error) {
 	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(),
 		&clientcmd.ConfigOverrides{},
@@ -223,11 +225,14 @@ func kubernetesClientset() (*kubernetes.Clientset, error) {
 		return nil, err
 	}
 
+	imp.Apply(kubeConfig)
+
 	return kubernetes.NewForConfig(kubeConfig)
 }
 
-// kubernetesClient returns a Kubernetes client and a rest.Config using the provided config overrides.
-func kubernetesClient(configOverrides *clientcmd.ConfigOverrides) (controllerClient.Client, *rest.Config, clientcmd.ClientConfig, error) {
+// kubernetesClient returns a Kubernetes client and a rest.Config using the
+// provided config overrides and impersonation flags.
+func kubernetesClient(configOverrides *clientcmd.ConfigOverrides, imp kube.ImpersonationFlags) (controllerClient.Client, *rest.Config, clientcmd.ClientConfig, error) {
 	clientconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(),
 		configOverrides,
@@ -237,6 +242,8 @@ func kubernetesClient(configOverrides *clientcmd.ConfigOverrides) (controllerCli
 	if err != nil {
 		return nil, nil, nil, err
 	}
+
+	imp.Apply(kubeconfig)
 
 	client, err := controllerClient.New(rest.CopyConfig(kubeconfig), controllerClient.Options{})
 	if err != nil {
@@ -260,6 +267,32 @@ func parseConfigOverride(a complete.Args) *clientcmd.ConfigOverrides {
 	return &clientcmd.ConfigOverrides{
 		CurrentContext: context,
 	}
+}
+
+// parseImpersonation parses the kubectl-compatible impersonation flags (--as,
+// --as-group, --as-uid) from the completed command line arguments. Supports
+// both "--flag value" and "--flag=value" forms; --as-group may be repeated.
+func parseImpersonation(a complete.Args) kube.ImpersonationFlags {
+	var imp kube.ImpersonationFlags
+
+	for i, arg := range a.All {
+		switch {
+		case arg == "--as" && i+1 < len(a.All):
+			imp.As = a.All[i+1]
+		case strings.HasPrefix(arg, "--as="):
+			imp.As = strings.TrimPrefix(arg, "--as=")
+		case arg == "--as-uid" && i+1 < len(a.All):
+			imp.AsUID = a.All[i+1]
+		case strings.HasPrefix(arg, "--as-uid="):
+			imp.AsUID = strings.TrimPrefix(arg, "--as-uid=")
+		case arg == "--as-group" && i+1 < len(a.All):
+			imp.AsGroup = append(imp.AsGroup, a.All[i+1])
+		case strings.HasPrefix(arg, "--as-group="):
+			imp.AsGroup = append(imp.AsGroup, strings.TrimPrefix(arg, "--as-group="))
+		}
+	}
+
+	return imp
 }
 
 // parseNamespaceOverride parses the namespace override from the completed command line arguments.

@@ -36,6 +36,8 @@ import (
 	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	"github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
+
 	_ "embed"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // Load all the auth plugins for the cloud providers.
 )
@@ -49,6 +51,8 @@ type updateCmd struct {
 	Kind    string `arg:"" enum:"provider,configuration,function"                                                                                  help:"The kind of package to update. One of 'provider', 'configuration', or 'function'."`
 	Package string `arg:"" help:"The package to update to. Must be fully qualified, including the registry, repository, and tag."                  placeholder:"REGISTRY/REPOSITORY:TAG"`
 	Name    string `arg:"" help:"The name of the package to update in the Crossplane API. Derived from the package repository and tag by default." optional:""`
+
+	Impersonation kube.ImpersonationFlags `embed:""`
 }
 
 func (c *updateCmd) Help() string {
@@ -92,6 +96,8 @@ func (c *updateCmd) Run(k *kong.Context, logger logging.Logger) error {
 	if err != nil {
 		return errors.Wrap(err, errKubeConfig)
 	}
+
+	c.Impersonation.Apply(cfg)
 
 	logger.Debug("Found kubeconfig")
 

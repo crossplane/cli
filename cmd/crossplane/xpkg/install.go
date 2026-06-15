@@ -40,6 +40,8 @@ import (
 	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	"github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
+
 	_ "embed"
 	// Load all the auth plugins for the cloud providers.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -67,6 +69,8 @@ type installCmd struct {
 	PackagePullSecrets   []string      `help:"A comma-separated list of secrets the package manager should use to pull the package from the registry." placeholder:"NAME"`
 	RevisionHistoryLimit int64         `help:"Number of package revisions that can exist before garbage collection."                                   placeholder:"LIMIT"                                                                                       short:"r"`
 	Wait                 time.Duration `default:"0s"                                                                                                   help:"How long to wait for the package to install before returning. The command doesn't wait by default." short:"w"`
+
+	Impersonation kube.ImpersonationFlags `embed:""`
 }
 
 func (c *installCmd) Help() string {
@@ -147,6 +151,8 @@ func (c *installCmd) Run(k *kong.Context, logger logging.Logger) error {
 	if err != nil {
 		return errors.Wrap(err, errKubeConfig)
 	}
+
+	c.Impersonation.Apply(cfg)
 
 	logger.Debug("Found kubeconfig")
 

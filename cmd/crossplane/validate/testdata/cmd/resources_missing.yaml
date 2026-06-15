@@ -1,0 +1,4 @@
+apiVersion: nosuch.example.org/v1
+kind: Unknown
+metadata:
+  name: missing-schema

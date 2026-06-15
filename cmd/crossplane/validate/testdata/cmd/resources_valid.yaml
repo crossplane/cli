@@ -1,0 +1,6 @@
+apiVersion: cmd.example.org/v1alpha1
+kind: Test
+metadata:
+  name: ok-instance
+spec:
+  replicas: 3

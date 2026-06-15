@@ -1,0 +1,27 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: tests.cmd.example.org
+spec:
+  group: cmd.example.org
+  names:
+    kind: Test
+    listKind: TestList
+    plural: tests
+    singular: test
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - replicas
+              properties:
+                replicas:
+                  type: integer

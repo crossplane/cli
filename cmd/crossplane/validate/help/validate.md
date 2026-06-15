@@ -136,6 +136,14 @@ Skip success log lines (only print problems):
 crossplane resource validate extensionsDir/ resourceDir/ --skip-success-results
 ```
 
+Emit machine-readable results (JSON or YAML) for piping to `jq`, scripts, or
+CI systems. The structured payload includes per-resource status and
+field-level error details:
+
+```shell
+crossplane resource validate extensionsDir/ resourceDir/ --output json | jq .
+```
+
 Validate the output of render against extensions in a directory:
 
 ```shell

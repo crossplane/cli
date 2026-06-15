@@ -32,12 +32,44 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/version"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/load"
+	pkgvalidate "github.com/crossplane/cli/v2/pkg/validate"
+	"github.com/crossplane/cli/v2/pkg/validate/output"
 
 	_ "embed"
 )
 
 //go:embed help/validate.md
 var helpDetail string
+
+// errWriteOutput is the error message wrapped around I/O failures when the
+// validate command writes to its output writer.
+const errWriteOutput = "cannot write output"
+
+// rendererFlag adapts output.RendererFor to Kong's MapperValue interface
+// so the --output flag is decoded straight into a typed output.Renderer
+// at parse time. Cmd then carries the resolved renderer as a dependency
+// instead of a format identifier.
+//
+// The wrapper lives in this package (the CLI consumer) rather than in
+// render so the render package stays free of any kong dependency and
+// can be imported by non-CLI consumers like crossplane-diff.
+type rendererFlag struct {
+	output.Renderer
+}
+
+// Decode implements kong.MapperValue.
+func (f *rendererFlag) Decode(ctx *kong.DecodeContext) error {
+	var s string
+	if err := ctx.Scan.PopValueInto("output", &s); err != nil {
+		return err
+	}
+	r, err := output.RendererFor(output.Format(s))
+	if err != nil {
+		return err
+	}
+	f.Renderer = r
+	return nil
+}
 
 // Cmd arguments and flags for render subcommand.
 type Cmd struct {
@@ -46,12 +78,17 @@ type Cmd struct {
 	Resources  string `arg:"" help:"Resource sources as a comma-separated list of files, directories, or '-' for standard input."`
 
 	// Flags. Keep them in alphabetical order.
-	CacheDir              string `default:"~/.crossplane/cache"                                        help:"Absolute path to the cache directory for downloaded schemas."                                                                                                                                                                                                 predictor:"directory"`
+	CacheDir              string `default:"~/.crossplane/cache"                                        help:"Absolute path to the cache directory for downloaded schemas." predictor:"directory"`
 	CleanCache            bool   `help:"Clean the cache directory before downloading package schemas."`
 	CrossplaneImage       string `help:"Specify the Crossplane image for validating built-in schemas."`
 	ErrorOnMissingSchemas bool   `default:"false"                                                      help:"Return non zero exit code if missing schemas."`
-	SkipSuccessResults    bool   `help:"Skip printing success results."`
-	UpdateCache           bool   `default:"false"                                                      help:"Update cached schemas by downloading the latest version that satisfies a constraint. May be useful if you are using semantic version constraints and want to get the latest version, but this slows down the cache lookup due to the required network calls."`
+	// rendererFlag.Decode rejects unknown formats, which is what Kong's
+	// "enum" tag would normally enforce — but enum doesn't apply to
+	// MapperValue-backed fields. The help text is the user-facing list
+	// of valid values.
+	Output             rendererFlag `default:"text"                        help:"Output format for validation results (text, json, or yaml)."                                                                                                                                                                                                  short:"o"`
+	SkipSuccessResults bool         `help:"Skip printing success results."`
+	UpdateCache        bool         `default:"false"                       help:"Update cached schemas by downloading the latest version that satisfies a constraint. May be useful if you are using semantic version constraints and want to get the latest version, but this slows down the cache lookup due to the required network calls."`
 
 	fs afero.Fs
 }
@@ -61,7 +98,9 @@ func (c *Cmd) Help() string {
 	return helpDetail
 }
 
-// AfterApply implements kong.AfterApply.
+// AfterApply implements kong.AfterApply. The renderer is already resolved
+// by Kong's MapperValue plumbing on Cmd.Output by the time this runs, so
+// AfterApply only sets the filesystem.
 func (c *Cmd) AfterApply() error {
 	c.fs = afero.NewOsFs()
 	return nil
@@ -116,10 +155,16 @@ func (c *Cmd) Run(k *kong.Context, _ logging.Logger) error {
 		return errors.Wrapf(err, "cannot download and load cache")
 	}
 
-	// Validate resources against schemas
-	if err := SchemaValidation(context.Background(), resources, m.crds, c.ErrorOnMissingSchemas, c.SkipSuccessResults, k.Stdout); err != nil {
+	// Validate resources against schemas, render in the requested format,
+	// and return a CLI-shaped error when validation didn't pass.
+	result, err := pkgvalidate.SchemaValidate(context.Background(), resources, m.crds)
+	if err != nil {
 		return errors.Wrapf(err, "cannot validate resources")
 	}
 
-	return nil
+	if err := c.Output.Render(result, k.Stdout, output.Options{SkipSuccessResults: c.SkipSuccessResults}); err != nil {
+		return errors.Wrap(err, "cannot render validation result")
+	}
+
+	return pkgvalidate.ResultError(result, c.ErrorOnMissingSchemas)
 }

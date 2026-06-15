@@ -38,25 +38,31 @@ func TestInferProperty(t *testing.T) {
 		"StringType": {
 			input: "hello",
 			want: want{
-				output: extv1.JSONSchemaProps{Type: "string"},
+				output: extv1.JSONSchemaProps{Type: schemaTypeString},
 			},
 		},
 		"IntegerType": {
 			input: 42,
 			want: want{
-				output: extv1.JSONSchemaProps{Type: "integer"},
+				output: extv1.JSONSchemaProps{Type: schemaTypeInteger},
 			},
 		},
 		"FloatType": {
 			input: 3.14,
 			want: want{
-				output: extv1.JSONSchemaProps{Type: "number"},
+				output: extv1.JSONSchemaProps{Type: schemaTypeNumber},
+			},
+		},
+		"IntegerAsFloatType": {
+			input: float64(1),
+			want: want{
+				output: extv1.JSONSchemaProps{Type: schemaTypeInteger},
 			},
 		},
 		"BooleanType": {
 			input: true,
 			want: want{
-				output: extv1.JSONSchemaProps{Type: "boolean"},
+				output: extv1.JSONSchemaProps{Type: schemaTypeBoolean},
 			},
 		},
 		"ObjectType": {
@@ -65,9 +71,9 @@ func TestInferProperty(t *testing.T) {
 			},
 			want: want{
 				output: extv1.JSONSchemaProps{
-					Type: "object",
+					Type: schemaTypeObject,
 					Properties: map[string]extv1.JSONSchemaProps{
-						"key": {Type: "string"},
+						"key": {Type: schemaTypeString},
 					},
 				},
 			},
@@ -76,9 +82,31 @@ func TestInferProperty(t *testing.T) {
 			input: []any{"one", "two"},
 			want: want{
 				output: extv1.JSONSchemaProps{
-					Type: "array",
+					Type: schemaTypeArray,
 					Items: &extv1.JSONSchemaPropsOrArray{
-						Schema: &extv1.JSONSchemaProps{Type: "string"},
+						Schema: &extv1.JSONSchemaProps{Type: schemaTypeString},
+					},
+				},
+			},
+		},
+		"ArrayWithMixedNumbersIntegerFirst": {
+			input: []any{1, float32(3.14)},
+			want: want{
+				output: extv1.JSONSchemaProps{
+					Type: schemaTypeArray,
+					Items: &extv1.JSONSchemaPropsOrArray{
+						Schema: &extv1.JSONSchemaProps{Type: schemaTypeNumber},
+					},
+				},
+			},
+		},
+		"ArrayWithMixedNumbersFloatFirst": {
+			input: []any{float32(3.14), 1},
+			want: want{
+				output: extv1.JSONSchemaProps{
+					Type: schemaTypeArray,
+					Items: &extv1.JSONSchemaPropsOrArray{
+						Schema: &extv1.JSONSchemaProps{Type: schemaTypeNumber},
 					},
 				},
 			},
@@ -87,9 +115,9 @@ func TestInferProperty(t *testing.T) {
 			input: []any{},
 			want: want{
 				output: extv1.JSONSchemaProps{
-					Type: "array",
+					Type: schemaTypeArray,
 					Items: &extv1.JSONSchemaPropsOrArray{
-						Schema: &extv1.JSONSchemaProps{Type: "object"},
+						Schema: &extv1.JSONSchemaProps{Type: schemaTypeObject},
 					},
 				},
 			},
@@ -97,7 +125,7 @@ func TestInferProperty(t *testing.T) {
 		"NilValue": {
 			input: nil,
 			want: want{
-				output: extv1.JSONSchemaProps{Type: "string"},
+				output: extv1.JSONSchemaProps{Type: schemaTypeString},
 			},
 		},
 		"ArrayWithMixedTypes": {
@@ -123,20 +151,20 @@ func TestInferProperty(t *testing.T) {
 			},
 			want: want{
 				output: extv1.JSONSchemaProps{
-					Type: "array",
+					Type: schemaTypeArray,
 					Items: &extv1.JSONSchemaPropsOrArray{
 						Schema: &extv1.JSONSchemaProps{
-							Type: "object",
+							Type: schemaTypeObject,
 							Properties: map[string]extv1.JSONSchemaProps{
-								"name": {Type: "string"},
-								"cidr": {Type: "string"},
+								"name": {Type: schemaTypeString},
+								"cidr": {Type: schemaTypeString},
 								"serviceEndpoints": {
 									Type: "array",
 									Items: &extv1.JSONSchemaPropsOrArray{
-										Schema: &extv1.JSONSchemaProps{Type: "string"},
+										Schema: &extv1.JSONSchemaProps{Type: schemaTypeString},
 									},
 								},
-								"delegation": {Type: "string"},
+								"delegation": {Type: schemaTypeString},
 							},
 						},
 					},
@@ -180,8 +208,8 @@ func TestInferProperties(t *testing.T) {
 			},
 			want: want{
 				output: map[string]extv1.JSONSchemaProps{
-					"key1": {Type: "string"},
-					"key2": {Type: "integer"},
+					"key1": {Type: schemaTypeString},
+					"key2": {Type: schemaTypeInteger},
 				},
 			},
 		},
@@ -194,9 +222,9 @@ func TestInferProperties(t *testing.T) {
 			want: want{
 				output: map[string]extv1.JSONSchemaProps{
 					"nested": {
-						Type: "object",
+						Type: schemaTypeObject,
 						Properties: map[string]extv1.JSONSchemaProps{
-							"key": {Type: "boolean"},
+							"key": {Type: schemaTypeBoolean},
 						},
 					},
 				},
@@ -211,7 +239,7 @@ func TestInferProperties(t *testing.T) {
 					"array": {
 						Type: "array",
 						Items: &extv1.JSONSchemaPropsOrArray{
-							Schema: &extv1.JSONSchemaProps{Type: "string"},
+							Schema: &extv1.JSONSchemaProps{Type: schemaTypeString},
 						},
 					},
 				},

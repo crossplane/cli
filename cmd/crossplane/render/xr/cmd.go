@@ -220,23 +220,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		}
 	}
 
-	if c.CrossplaneDockerNetwork == "" {
-		// Default to the first docker-network annotation in the provided functions
-		for _, fn := range fns {
-			if value, ok := fn.Annotations[render.AnnotationKeyRuntimeDockerNetwork]; ok {
-				c.CrossplaneDockerNetwork = value
-				break
-			}
-		}
-
-		// Overwrite with docker-network annotation from function-annotations cli flag if set
-		if len(c.FunctionAnnotations) > 0 {
-			annotations := render.NewAnnotationsFromStrings(c.FunctionAnnotations)
-			if value, ok := annotations[render.AnnotationKeyRuntimeDockerNetwork]; ok {
-				c.CrossplaneDockerNetwork = value
-			}
-		}
-	}
+	c.SetDefaultCrossplaneDockerNetwork(fns)
 
 	engine := c.newEngine(&c.EngineFlags, log)
 

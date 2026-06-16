@@ -259,6 +259,29 @@ func TestCmdRun(t *testing.T) {
 			},
 			want: want{err: cmpopts.AnyError},
 		},
+		"FunctionAnnotationNetworkDefaultsEngineNetwork": {
+			reason: "A runtime Docker network supplied by --function-annotations should default the Crossplane engine Docker network before the engine is created.",
+			args: args{
+				cmd: Cmd{
+					Operation:           "operation.yaml",
+					Functions:           "functions.yaml",
+					FunctionAnnotations: []string{render.AnnotationKeyRuntimeDockerNetwork + "=override-network"},
+					Timeout:             time.Minute,
+					fs:                  newTestFS(nil),
+					newEngine: func(flags *render.EngineFlags, _ logging.Logger) render.Engine {
+						if diff := cmp.Diff("override-network", flags.CrossplaneDockerNetwork); diff != "" {
+							t.Errorf("CrossplaneDockerNetwork: -want, +got:\n%s", diff)
+						}
+						return &render.MockEngine{
+							MockSetup: func(_ context.Context, _ []pkgv1.Function) (func(), error) {
+								return func() {}, errors.New("setup blew up")
+							},
+						}
+					},
+				},
+			},
+			want: want{err: cmpopts.AnyError},
+		},
 		"LoadFunctionCredentialsError": {
 			reason: "Missing function credentials file should return a wrapped load error.",
 			args: args{

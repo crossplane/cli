@@ -19,16 +19,19 @@ package xrd
 import (
 	"bytes"
 	"path/filepath"
+	"slices"
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	apiextensionsv2 "github.com/crossplane/crossplane/apis/v2/apiextensions/v2"
 
 	commonIO "github.com/crossplane/cli/v2/cmd/crossplane/convert/io"
 
@@ -72,8 +75,13 @@ func (c *convertCmd) Run(k *kong.Context) error {
 		return errors.Wrap(err, "cannot unmarshal XRD")
 	}
 
-	if xrd.GroupVersionKind() != apiextensionsv1.CompositeResourceDefinitionGroupVersionKind {
-		return errors.Errorf("input is not a %s; got %s", apiextensionsv1.CompositeResourceDefinitionGroupVersionKind, xrd.GroupVersionKind())
+	xrdGVKs := []schema.GroupVersionKind{
+		apiextensionsv1.CompositeResourceDefinitionGroupVersionKind,
+		apiextensionsv2.CompositeResourceDefinitionGroupVersionKind,
+	}
+
+	if !slices.Contains(xrdGVKs, xrd.GroupVersionKind()) {
+		return errors.Errorf("input is not one of %v; got %s", xrdGVKs, xrd.GroupVersionKind())
 	}
 
 	crds, err := toCRDs(xrd)

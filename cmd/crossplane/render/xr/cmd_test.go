@@ -78,6 +78,9 @@ var includeFunctionResultsOutput string
 //go:embed testdata/cmd/output/include-full-xr.yaml
 var includeFullXROutput string
 
+//go:embed testdata/cmd/xrd.yaml
+var xrdYAML string
+
 func newEngineFunc(engine render.Engine) func(*render.EngineFlags, logging.Logger) render.Engine {
 	return func(*render.EngineFlags, logging.Logger) render.Engine {
 		return engine
@@ -469,6 +472,49 @@ func TestCmdRun(t *testing.T) {
 				},
 			},
 			want: want{err: cmpopts.AnyError},
+		},
+		"XRDPassedToEngine": {
+			reason: "When --xrd is set, the XRD should be forwarded to the render engine so it can determine the composite schema (Legacy vs Modern).",
+			args: args{
+				cmd: Cmd{
+					CompositeResource: "xr.yaml",
+					Composition:       "composition.yaml",
+					Functions:         "functions.yaml",
+					XRD:               "xrd.yaml",
+					Timeout:           time.Minute,
+					fs:                newTestFS(map[string]string{"xrd.yaml": xrdYAML}),
+					newEngine: newEngineFunc(&render.MockEngine{
+						MockRender: func(_ context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
+							if req.GetComposite().GetCompositeResourceDefinition() == nil {
+								t.Error("expected render request to contain the XRD, got nil")
+							}
+							return &renderv1alpha1.RenderResponse{
+								Output: &renderv1alpha1.RenderResponse_Composite{
+									Composite: &renderv1alpha1.CompositeOutput{
+										CompositeResource: fillResourceRefs(t, req.GetComposite().GetCompositeResource()),
+										ComposedResources: []*structpb.Struct{
+											mustNewStruct(t, map[string]any{
+												"apiVersion": "example.org/v1alpha1",
+												"kind":       "ComposedResource",
+												"metadata": map[string]any{
+													"name": "composed-foo",
+													"annotations": map[string]any{
+														"crossplane.io/composition-resource-name": "composed-foo",
+													},
+												},
+												"spec": map[string]any{"coolField": "composed!"},
+											}),
+										},
+									},
+								},
+							}, nil
+						},
+					}),
+				},
+			},
+			want: want{
+				stdout: successOutput,
+			},
 		},
 		"IncludeFullXR": {
 			reason: "With --include-full-xr, the rendered XR is merged into the input XR so the input's spec.fromXR survives alongside any updated fields.",

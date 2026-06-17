@@ -39,7 +39,7 @@ func (f *EngineFlags) SetDefaultCrossplaneDockerNetwork(fns []pkgv1.Function) {
 	}
 
 	for _, fn := range fns {
-		if value, ok := fn.Annotations[AnnotationKeyRuntimeDockerNetwork]; ok {
+		if value, ok := fn.Annotations[AnnotationKeyRuntimeDockerNetwork]; ok && value != "" {
 			f.CrossplaneDockerNetwork = value
 			return
 		}

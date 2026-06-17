@@ -151,14 +151,19 @@ func RewriteAddressesForDocker(fns []*renderv1alpha1.FunctionInput) []*renderv1a
 	return fns
 }
 
-// injectNetworkAnnotation sets the Docker network annotation on all functions
+// injectNetworkAnnotation sets the Docker network annotation
+// on all functions without existing runtime-docker-network annotation
 // so their containers join the specified network.
 func injectNetworkAnnotation(fns []pkgv1.Function, networkName string) {
 	for i := range fns {
 		if fns[i].Annotations == nil {
 			fns[i].Annotations = make(map[string]string)
 		}
-		fns[i].Annotations[AnnotationKeyRuntimeDockerNetwork] = networkName
+
+		_, ok := fns[i].Annotations[AnnotationKeyRuntimeDockerNetwork]
+		if !ok {
+			fns[i].Annotations[AnnotationKeyRuntimeDockerNetwork] = networkName
+		}
 	}
 }
 

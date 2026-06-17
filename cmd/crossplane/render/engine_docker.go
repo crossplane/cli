@@ -53,8 +53,7 @@ func (realContainerRunner) Run(ctx context.Context, img string, opts ...docker.R
 type dockerRenderEngine struct {
 	// image is the Crossplane Docker image reference.
 	image string
-	// network is the Docker network to connect the container to. When set,
-	// the container joins this network so it can reach function containers.
+	// network is the Docker network to connect the container to.
 	network string
 
 	log logging.Logger
@@ -83,12 +82,20 @@ func (e *dockerRenderEngine) CheckContextSupport() error {
 // containers also join it. The returned cleanup function removes the
 // network.
 func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (func(), error) {
-	networkID, networkName, err := createRenderNetwork(ctx)
+	var networkID, networkName string
+
+	if e.network != "" {
+		// e.network was pre-configured, we don't own the network, so there is nothing to clean up.
+		return func() {}, nil
+	}
+
+	var err error
+	networkID, networkName, err = createRenderNetwork(ctx)
 	if err != nil {
 		return func() {}, errors.Wrap(err, "cannot create Docker network for rendering")
 	}
-
 	e.network = networkName
+
 	injectNetworkAnnotation(fns, networkName)
 
 	cleanup := func() { //nolint:contextcheck // Detached context for cleanup.

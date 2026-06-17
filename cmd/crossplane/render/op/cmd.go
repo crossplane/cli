@@ -167,6 +167,8 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		}
 	}
 
+	c.SetDefaultCrossplaneDockerNetwork(fns)
+
 	engine := c.newEngine(&c.EngineFlags, log)
 
 	seedCtx := len(c.ContextValues) > 0 || len(c.ContextFiles) > 0

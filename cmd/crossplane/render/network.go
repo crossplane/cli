@@ -25,8 +25,26 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
+	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+
 	"github.com/crossplane/cli/v2/internal/docker"
 )
+
+// SetDefaultCrossplaneDockerNetwork defaults the Crossplane render engine's
+// Docker network to the first function runtime Docker network annotation.
+// If network is already set, return with no changes.
+func (f *EngineFlags) SetDefaultCrossplaneDockerNetwork(fns []pkgv1.Function) {
+	if f.CrossplaneDockerNetwork != "" {
+		return
+	}
+
+	for _, fn := range fns {
+		if value, ok := fn.Annotations[AnnotationKeyRuntimeDockerNetwork]; ok && value != "" {
+			f.CrossplaneDockerNetwork = value
+			return
+		}
+	}
+}
 
 // createRenderNetwork creates a temporary Docker bridge network for render.
 // Function containers and the Crossplane render container join this network so

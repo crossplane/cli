@@ -31,6 +31,7 @@ import (
 	"github.com/spf13/afero"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	kruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/kube-openapi/pkg/spec3"
 
@@ -166,6 +167,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		return errors.Wrap(err, "cannot apply function annotation overrides")
 	}
 
+	var xrdUnstructured *unstructured.Unstructured
 	if c.XRD != "" {
 		xrd, err := render.LoadXRD(c.fs, c.XRD)
 		if err != nil {
@@ -175,6 +177,12 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		if err := xrpkg.ApplyXRDDefaults(xr.GetUnstructured(), xrd); err != nil {
 			return errors.Wrapf(err, "cannot apply XRD defaults to XR %q", xr.GetName())
 		}
+
+		obj, err := kruntime.DefaultUnstructuredConverter.ToUnstructured(xrd)
+		if err != nil {
+			return errors.Wrapf(err, "cannot convert XRD %q to unstructured", xrd.GetName())
+		}
+		xrdUnstructured = &unstructured.Unstructured{Object: obj}
 	}
 
 	fcreds := []corev1.Secret{}
@@ -283,6 +291,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		RequiredResources:   rrs,
 		RequiredSchemas:     rsc,
 		FunctionCredentials: fcreds,
+		XRD:                 xrdUnstructured,
 	}
 	req, err := render.BuildCompositeRequest(in)
 	if err != nil {

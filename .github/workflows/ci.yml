@@ -245,7 +245,7 @@ jobs:
           fi
           echo "changed=${changed}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         if: ${{ github.ref == 'refs/heads/main' && steps.find-changes.outputs.changed == 'true' }}
         id: generate-token
         with:

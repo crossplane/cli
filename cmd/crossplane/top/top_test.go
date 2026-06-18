@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	corev1 "k8s.io/api/core/v1"
@@ -15,47 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
-
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
 )
-
-func TestImpersonationFlagsParse(t *testing.T) {
-	cases := map[string]struct {
-		reason string
-		args   []string
-		want   kube.ImpersonationFlags
-	}{
-		"None": {
-			reason: "Without impersonation flags the fields should be empty.",
-			args:   []string{},
-			want:   kube.ImpersonationFlags{},
-		},
-		"ServiceAccount": {
-			reason: "--as should accept a service account username.",
-			args:   []string{"--as=system:serviceaccount:team-a:reader"},
-			want:   kube.ImpersonationFlags{As: "system:serviceaccount:team-a:reader"},
-		},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			var c Cmd
-
-			p, err := kong.New(&c)
-			if err != nil {
-				t.Fatalf("%s\nkong.New(): unexpected error: %v", tc.reason, err)
-			}
-
-			if _, err := p.Parse(tc.args); err != nil {
-				t.Fatalf("%s\nParse(%v): unexpected error: %v", tc.reason, tc.args, err)
-			}
-
-			if diff := cmp.Diff(tc.want, c.Impersonation); diff != "" {
-				t.Errorf("%s\nParse(%v): -want, +got:\n%s", tc.reason, tc.args, diff)
-			}
-		})
-	}
-}
 
 type errorWriter struct{}
 

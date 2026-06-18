@@ -36,7 +36,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
+	"github.com/crossplane/cli/v2/internal/kube"
 
 	_ "embed"
 )

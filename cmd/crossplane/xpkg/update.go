@@ -36,7 +36,7 @@ import (
 	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	"github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
+	"github.com/crossplane/cli/v2/internal/kube"
 
 	_ "embed"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // Load all the auth plugins for the cloud providers.

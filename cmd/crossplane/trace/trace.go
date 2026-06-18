@@ -36,12 +36,12 @@ import (
 
 	"github.com/crossplane/crossplane/apis/v2/pkg"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource/xpkg"
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource/xrm"
 	"github.com/crossplane/cli/v2/cmd/crossplane/internal"
 	"github.com/crossplane/cli/v2/cmd/crossplane/trace/internal/printer"
+	"github.com/crossplane/cli/v2/internal/kube"
 
 	_ "embed"
 )

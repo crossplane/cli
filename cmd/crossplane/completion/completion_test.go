@@ -6,7 +6,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/posener/complete"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
+	"github.com/crossplane/cli/v2/internal/kube"
 )
 
 func TestParseImpersonation(t *testing.T) {

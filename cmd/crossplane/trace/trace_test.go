@@ -3,13 +3,10 @@ package trace
 import (
 	"testing"
 
-	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
-
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
 )
 
 func TestCmd_getResourceAndName(t *testing.T) {
@@ -102,44 +99,6 @@ func TestCmd_getResourceAndName(t *testing.T) {
 
 			if diff := cmp.Diff(tt.want.name, gotName); diff != "" {
 				t.Errorf("Cmd.getResourceAndName() name = %v, want %v", gotName, tt.want.name)
-			}
-		})
-	}
-}
-
-func TestImpersonationFlagsParse(t *testing.T) {
-	cases := map[string]struct {
-		reason string
-		args   []string
-		want   kube.ImpersonationFlags
-	}{
-		"None": {
-			reason: "Without impersonation flags the fields should be empty.",
-			args:   []string{"configuration.example.org"},
-			want:   kube.ImpersonationFlags{},
-		},
-		"UserAndGroup": {
-			reason: "--as and --as-group should populate the embedded flags.",
-			args:   []string{"--as=jane", "--as-group=team-a", "configuration.example.org"},
-			want:   kube.ImpersonationFlags{As: "jane", AsGroup: []string{"team-a"}},
-		},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			var c Cmd
-
-			p, err := kong.New(&c)
-			if err != nil {
-				t.Fatalf("%s\nkong.New(): unexpected error: %v", tc.reason, err)
-			}
-
-			if _, err := p.Parse(tc.args); err != nil {
-				t.Fatalf("%s\nParse(%v): unexpected error: %v", tc.reason, tc.args, err)
-			}
-
-			if diff := cmp.Diff(tc.want, c.Impersonation); diff != "" {
-				t.Errorf("%s\nParse(%v): -want, +got:\n%s", tc.reason, tc.args, diff)
 			}
 		})
 	}

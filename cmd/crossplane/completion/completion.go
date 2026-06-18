@@ -18,8 +18,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	controllerClient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
 	"github.com/crossplane/cli/v2/cmd/crossplane/internal"
+	"github.com/crossplane/cli/v2/internal/kube"
 )
 
 // Predictors returns all supported predictors.

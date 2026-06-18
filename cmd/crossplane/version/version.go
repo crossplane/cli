@@ -27,7 +27,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/version"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/kube"
+	"github.com/crossplane/cli/v2/internal/kube"
 )
 
 const (

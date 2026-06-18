@@ -67,22 +67,13 @@ const (
 // ImageTagMap is a map of container image tags to images.
 type ImageTagMap map[name.Tag]v1.Image
 
-// Builder is able to build a project into a set of packages.
-type Builder interface {
-	// Build builds a project into a set of packages. It returns a map
-	// containing images that were built from the project. The returned map will
-	// always include one image with the ConfigurationTag, which is the
-	// configuration package built from the APIs found in the project.
-	Build(ctx context.Context, project *devv1alpha1.Project, projectFS afero.Fs, opts ...BuildOption) (ImageTagMap, error)
-}
-
-// BuilderOption configures a builder.
-type BuilderOption func(b *realBuilder)
+// BuilderOption configures a Builder.
+type BuilderOption func(b *Builder)
 
 // BuildWithFunctionIdentifier sets the function identifier that will be used to
 // find function builders for any functions in a project.
 func BuildWithFunctionIdentifier(i functions.Identifier) BuilderOption {
-	return func(b *realBuilder) {
+	return func(b *Builder) {
 		b.functionIdentifier = i
 	}
 }
@@ -90,7 +81,7 @@ func BuildWithFunctionIdentifier(i functions.Identifier) BuilderOption {
 // BuildWithMaxConcurrency sets the maximum concurrency for building embedded
 // functions.
 func BuildWithMaxConcurrency(n uint) BuilderOption {
-	return func(b *realBuilder) {
+	return func(b *Builder) {
 		b.maxConcurrency = n
 	}
 }
@@ -98,7 +89,7 @@ func BuildWithMaxConcurrency(n uint) BuilderOption {
 // BuildWithSchemaManager sets the schema manager that will be used to generate
 // language-specific schemas from XRDs before building functions.
 func BuildWithSchemaManager(m *manager.Manager) BuilderOption {
-	return func(b *realBuilder) {
+	return func(b *Builder) {
 		b.schemaManager = m
 	}
 }
@@ -107,8 +98,22 @@ func BuildWithSchemaManager(m *manager.Manager) BuilderOption {
 // ensure schemas are present for the project's declared dependencies before
 // building functions.
 func BuildWithDependencyManager(m *dependency.Manager) BuilderOption {
-	return func(b *realBuilder) {
+	return func(b *Builder) {
 		b.dependencyManager = m
+	}
+}
+
+// BuildWithTempDir sets the directory into which the builder decompresses
+// gzipped function runtime tarballs. The returned images may read from these
+// files lazily, so the caller owns the directory and must remove it only after
+// it has finished consuming the images.
+//
+// If unset, the decompressed tarballs are written to the OS default temporary
+// directory and are not removed; callers that build gzipped tarball functions
+// should set this to a directory they delete.
+func BuildWithTempDir(dir string) BuilderOption {
+	return func(b *Builder) {
+		b.tempDir = dir
 	}
 }
 
@@ -145,15 +150,26 @@ func BuildWithProjectBasePath(path string) BuildOption {
 	}
 }
 
-type realBuilder struct {
+// A Builder builds a project into a set of packages.
+//
+// The images Build returns may read lazily from temporary files on disk - for
+// example, when a function's runtime is supplied as a gzipped tarball that is
+// decompressed once during the build. These files are written to the temporary
+// directory set by BuildWithTempDir, which the caller owns and is responsible
+// for removing once it has finished consuming the returned images.
+type Builder struct {
 	functionIdentifier functions.Identifier
 	maxConcurrency     uint
 	schemaManager      *manager.Manager
 	dependencyManager  *dependency.Manager
+	tempDir            string
 }
 
-// Build implements the Builder interface.
-func (b *realBuilder) Build(ctx context.Context, project *devv1alpha1.Project, projectFS afero.Fs, opts ...BuildOption) (ImageTagMap, error) { //nolint:gocyclo // This is the main build orchestration.
+// Build builds a project into a set of packages. It returns a map containing
+// images that were built from the project. The returned map will always include
+// one image with the ConfigurationTag, which is the configuration package built
+// from the APIs found in the project.
+func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, projectFS afero.Fs, opts ...BuildOption) (ImageTagMap, error) { //nolint:gocyclo // This is the main build orchestration.
 	o := &buildOptions{
 		log: logging.NewNopLogger(),
 	}
@@ -342,7 +358,7 @@ func resolveFunctions(project *devv1alpha1.Project, projectFS afero.Fs) ([]devv1
 }
 
 // buildFunctions builds the given list of embedded functions.
-func (b *realBuilder) buildFunctions(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fns []devv1alpha1.Function, basePath string, eventCh async.EventChannel) (ImageTagMap, []xpmetav1.Dependency, error) {
+func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fns []devv1alpha1.Function, basePath string, eventCh async.EventChannel) (ImageTagMap, []xpmetav1.Dependency, error) {
 	var (
 		imgMap = make(map[name.Tag]v1.Image)
 		imgMu  sync.Mutex
@@ -417,7 +433,7 @@ func (b *realBuilder) buildFunctions(ctx context.Context, projectFS afero.Fs, pr
 // buildFunction builds the package images for a single function. It resolves
 // the function's runtime images (either by building from source or by loading
 // a pre-built tarball) and then wraps each one with the package metadata.
-func (b *realBuilder) buildFunction(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fn devv1alpha1.Function, basePath string) ([]v1.Image, error) {
+func (b *Builder) buildFunction(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fn devv1alpha1.Function, basePath string) ([]v1.Image, error) {
 	fnName := fn.Name()
 	meta := &xpmetav1.Function{
 		TypeMeta: metav1.TypeMeta{
@@ -495,12 +511,12 @@ func (b *realBuilder) buildFunction(ctx context.Context, projectFS afero.Fs, pro
 // runtimeImages returns the per-architecture runtime images for a function. For
 // Directory-source functions this dispatches to the appropriate builder. For
 // Tarball-source functions it loads the supplied OCI tarball.
-func (b *realBuilder) runtimeImages(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fn devv1alpha1.Function, basePath string) ([]v1.Image, error) {
+func (b *Builder) runtimeImages(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fn devv1alpha1.Function, basePath string) ([]v1.Image, error) {
 	switch fn.Source {
 	case devv1alpha1.FunctionSourceDirectory:
 		return b.buildDirectoryRuntime(ctx, projectFS, project, fn.Directory, basePath)
 	case devv1alpha1.FunctionSourceTarball:
-		return loadTarballRuntime(projectFS, fn.Tarball, project.Spec.Architectures)
+		return loadTarballRuntime(projectFS, fn.Tarball, project.Spec.Architectures, b.tempDir)
 	default:
 		// Should be caught at validation time, but be defensive.
 		return nil, errors.Errorf("unsupported function source %q", fn.Source)
@@ -509,7 +525,7 @@ func (b *realBuilder) runtimeImages(ctx context.Context, projectFS afero.Fs, pro
 
 // buildDirectoryRuntime invokes the appropriate language builder to produce
 // runtime images from a function's source directory.
-func (b *realBuilder) buildDirectoryRuntime(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, dir *devv1alpha1.FunctionDirectory, basePath string) ([]v1.Image, error) {
+func (b *Builder) buildDirectoryRuntime(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, dir *devv1alpha1.FunctionDirectory, basePath string) ([]v1.Image, error) {
 	fnFS := afero.NewBasePathFs(projectFS, filepath.Join(project.Spec.Paths.Functions, dir.Name))
 
 	fnBasePath := ""
@@ -548,10 +564,10 @@ func (b *realBuilder) buildDirectoryRuntime(ctx context.Context, projectFS afero
 // `docker save`, Nix's dockerTools.buildImage, Bazel's oci_tarball,
 // `ko build --tarball`, etc. The gzipped variant is what most Nix image
 // builders emit by default.
-func loadTarballRuntime(projectFS afero.Fs, tb *devv1alpha1.FunctionTarball, architectures []string) ([]v1.Image, error) {
+func loadTarballRuntime(projectFS afero.Fs, tb *devv1alpha1.FunctionTarball, architectures []string, tempDir string) ([]v1.Image, error) {
 	images := make([]v1.Image, 0, len(architectures))
 	for _, arch := range architectures {
-		img, rel, err := loadRuntimeImage(projectFS, tb.PathPrefix, arch)
+		img, rel, err := loadRuntimeImage(projectFS, tb.PathPrefix, arch, tempDir)
 		if err != nil {
 			return nil, err
 		}
@@ -573,16 +589,6 @@ func loadTarballRuntime(projectFS afero.Fs, tb *devv1alpha1.FunctionTarball, arc
 	return images, nil
 }
 
-// fsOpener returns a tarball.Opener that reads a plain tar file from the given
-// filesystem. tarball.Image calls its opener multiple times - once for the
-// manifest and once per layer - so each call returns a fresh reader positioned
-// at the start of the file.
-func fsOpener(fsys afero.Fs, path string) tarball.Opener {
-	return func() (io.ReadCloser, error) {
-		return fsys.Open(path)
-	}
-}
-
 // loadRuntimeImage loads the runtime image for a single architecture. It tries
 // each candidate tarball in turn, preferring the plain .tar over the gzipped
 // .tar.gz, and loads the first one that exists. It returns the loaded image and
@@ -590,14 +596,16 @@ func fsOpener(fsys afero.Fs, path string) tarball.Opener {
 //
 // The tarballs are read through the project filesystem rather than from a real
 // on-disk path, so loading works the same whether the project FS is an
-// afero.BasePathFs or an in-memory FS in tests.
-func loadRuntimeImage(projectFS afero.Fs, prefix, arch string) (v1.Image, string, error) {
+// afero.BasePathFs or an in-memory FS in tests. A gzipped tarball is decompressed
+// once to a temporary file in tempDir; the image reads from that file lazily, so
+// the caller must keep the directory until it has finished consuming the image.
+func loadRuntimeImage(projectFS afero.Fs, prefix, arch, tempDir string) (v1.Image, string, error) {
 	candidates := []struct {
-		path   string
-		opener func(afero.Fs, string) tarball.Opener
+		path string
+		open func(fsys afero.Fs, path, tempDir string) (tarball.Opener, error)
 	}{
-		{path: fmt.Sprintf("%s-%s.tar", prefix, arch), opener: fsOpener},
-		{path: fmt.Sprintf("%s-%s.tar.gz", prefix, arch), opener: gzipOpener},
+		{path: fmt.Sprintf("%s-%s.tar", prefix, arch), open: fsOpener},
+		{path: fmt.Sprintf("%s-%s.tar.gz", prefix, arch), open: gzipOpener},
 	}
 
 	tried := make([]string, 0, len(candidates))
@@ -612,7 +620,12 @@ func loadRuntimeImage(projectFS afero.Fs, prefix, arch string) (v1.Image, string
 			continue
 		}
 
-		img, err := tarball.Image(c.opener(projectFS, c.path), nil)
+		opener, err := c.open(projectFS, c.path, tempDir)
+		if err != nil {
+			return nil, c.path, errors.Wrapf(err, "failed to open runtime image for architecture %q from %q", arch, c.path)
+		}
+
+		img, err := tarball.Image(opener, nil)
 		if err != nil {
 			return nil, c.path, errors.Wrapf(err, "failed to load runtime image for architecture %q from %q", arch, c.path)
 		}
@@ -622,36 +635,40 @@ func loadRuntimeImage(projectFS afero.Fs, prefix, arch string) (v1.Image, string
 	return nil, tried[0], errors.Errorf("no runtime image found for architecture %q: looked for %v", arch, tried)
 }
 
-// gzipOpener returns a tarball.Opener that reads a gzipped tar file from the
-// given filesystem. Like fsOpener it can be called repeatedly; each call
-// returns a fresh decompressing reader that reads the file from the beginning.
-func gzipOpener(fsys afero.Fs, path string) tarball.Opener {
-	return func() (io.ReadCloser, error) {
-		f, err := fsys.Open(path)
-		if err != nil {
-			return nil, err
-		}
-		gz, err := gzip.NewReader(f)
-		if err != nil {
-			_ = f.Close()
-			return nil, err
-		}
-		return gzipReadCloser{Reader: gz, file: f}, nil
+// fsOpener returns a tarball.Opener that reads the plain tar at path directly
+// from fsys. Each call returns a fresh reader at the start of the file, as
+// tarball.Image requires. It needs no temporary directory; tempDir lets it share
+// a signature with gzipOpener so loadRuntimeImage can treat both uniformly.
+func fsOpener(fsys afero.Fs, path, _ string) (tarball.Opener, error) {
+	return func() (io.ReadCloser, error) { return fsys.Open(path) }, nil
+}
+
+// gzipOpener decompresses the gzipped tar at path on fsys once into tempDir and
+// returns a tarball.Opener that reads the decompressed file.
+//
+// tarball.Image calls the opener repeatedly - once for the manifest, once for
+// the config, and once per layer - so decompressing once up front avoids
+// re-running gzip over the whole image for every call.
+func gzipOpener(fsys afero.Fs, path, tempDir string) (tarball.Opener, error) {
+	f, err := fsys.Open(path)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to open %q", path)
 	}
-}
+	defer f.Close() //nolint:errcheck // Read-only file we copy from below.
 
-// gzipReadCloser ties together a gzip.Reader and the underlying file so that
-// closing the gzip reader also closes the file.
-type gzipReadCloser struct {
-	*gzip.Reader
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to read gzip header of %q", path)
+	}
+	defer gz.Close() //nolint:errcheck // Read-only reader.
 
-	file afero.File
-}
-
-// Close closes both the gzip reader and the underlying file, joining any errors
-// so neither failure is lost.
-func (g gzipReadCloser) Close() error {
-	return errors.Join(g.Reader.Close(), g.file.Close())
+	tmpPath, err := writeTempTarball(tempDir, gz)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to decompress %q", path)
+	}
+	return func() (io.ReadCloser, error) {
+		return os.Open(tmpPath) //nolint:gosec // tmpPath is a file we created in our own temp directory.
+	}, nil
 }
 
 func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string, exclude []string) error {
@@ -758,9 +775,12 @@ func fnMetaFromProject(proj *devv1alpha1.Project, fnName string) metav1.ObjectMe
 	return *meta
 }
 
-// NewBuilder returns a new project builder.
-func NewBuilder(opts ...BuilderOption) Builder {
-	b := &realBuilder{
+// NewBuilder returns a new project builder. Callers that build functions whose
+// runtime is supplied as a gzipped tarball should set BuildWithTempDir and
+// remove the directory once they have finished consuming the images returned by
+// Build.
+func NewBuilder(opts ...BuilderOption) *Builder {
+	b := &Builder{
 		functionIdentifier: functions.DefaultIdentifier,
 		maxConcurrency:     8,
 	}
@@ -770,4 +790,30 @@ func NewBuilder(opts ...BuilderOption) Builder {
 	}
 
 	return b
+}
+
+// writeTempTarball copies r to a new temporary file in dir and returns its path.
+// If dir is empty the OS default temporary directory is used. The caller owns
+// the file and is responsible for removing it (or the directory containing it).
+func writeTempTarball(dir string, r io.Reader) (string, error) {
+	f, err := os.CreateTemp(dir, "runtime-*.tar")
+	if err != nil {
+		return "", errors.Wrap(err, "failed to create temporary file")
+	}
+	// Close the file on the error paths below. The happy path closes it
+	// explicitly to capture the flush error, leaving this a harmless second
+	// close.
+	defer f.Close() //nolint:errcheck // See comment above.
+
+	// The tarball is a trusted, locally-built image, so we don't bound the
+	// decompressed size.
+	if _, err := io.Copy(f, r); err != nil {
+		_ = os.Remove(f.Name())
+		return "", errors.Wrap(err, "failed to copy tarball")
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", errors.Wrap(err, "failed to flush temporary file")
+	}
+	return f.Name(), nil
 }

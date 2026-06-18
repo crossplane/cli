@@ -19,6 +19,7 @@ package project
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -123,11 +124,21 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error 
 		dependency.WithResolver(resolver),
 	)
 
+	// The builder may decompress function runtime tarballs into this directory;
+	// the built images read from it lazily, so we remove it only after the
+	// package has been written below.
+	tempDir, err := os.MkdirTemp("", "crossplane-build-")
+	if err != nil {
+		return errors.Wrap(err, "failed to create temporary build directory")
+	}
+	defer os.RemoveAll(tempDir) //nolint:errcheck // Best-effort cleanup of temporary files.
+
 	b := project.NewBuilder(
 		project.BuildWithMaxConcurrency(concurrency),
 		project.BuildWithFunctionIdentifier(functions.DefaultIdentifier),
 		project.BuildWithSchemaManager(schemaMgr),
 		project.BuildWithDependencyManager(depMgr),
+		project.BuildWithTempDir(tempDir),
 	)
 
 	var imgMap project.ImageTagMap

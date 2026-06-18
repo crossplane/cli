@@ -377,6 +377,39 @@ func goCollectOpenAPIs(fromFS afero.Fs) ([]goOpenAPI, error) { //nolint:gocognit
 var generateGoMutex sync.Mutex //nolint:gochecknoglobals // Must be global.
 
 func generateGo(s *spec3.OpenAPI, version string, mutators ...func(*spec3.OpenAPI)) (string, error) {
+	// codegen.Generate sets some global state that's used by the utility
+	// functions we call from our mutators. That has two implications for us:
+	//
+	// 1. We must hold the `generateGoMutex` while calling the mutators, not
+	//    just when we call `codegen.Generate`.
+	// 2. We must call `codegen.Generate` with the options we're going to use
+	//    *before* we call the mutators, so that the global state is correct
+	//    inside the codegen package. We call it with a minimal input and ignore
+	//    the output - this call is just to set up the global state. Once
+	//    https://github.com/oapi-codegen/oapi-codegen/pull/2393 is merged we
+	//    can use `codegen.SetGlobalStateOptions` instead of calling `Generate`.
+	generateGoMutex.Lock()
+	defer generateGoMutex.Unlock()
+
+	cfg := codegen.Configuration{
+		PackageName: version,
+		Generate: codegen.GenerateOptions{
+			Models: true,
+		},
+		OutputOptions: codegen.OutputOptions{
+			SkipPrune:      true,
+			NameNormalizer: string(codegen.NameNormalizerFunctionToCamelCaseWithInitialisms),
+			SkipFmt:        true,
+			UserTemplates: map[string]string{
+				"imports.tmpl": goImportsTemplate,
+			},
+		},
+	}
+	_, err := codegen.Generate(&openapi3.T{}, cfg)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to setup codegen global state")
+	}
+
 	for _, mut := range mutators {
 		mut(s)
 	}
@@ -394,22 +427,7 @@ func generateGo(s *spec3.OpenAPI, version string, mutators ...func(*spec3.OpenAP
 	}
 
 	// Generate code!
-	generateGoMutex.Lock()
-	defer generateGoMutex.Unlock()
-	goCode, err := codegen.Generate(oapiInput, codegen.Configuration{
-		PackageName: version,
-		Generate: codegen.GenerateOptions{
-			Models: true,
-		},
-		OutputOptions: codegen.OutputOptions{
-			SkipPrune:      true,
-			NameNormalizer: string(codegen.NameNormalizerFunctionToCamelCaseWithInitialisms),
-			SkipFmt:        true,
-			UserTemplates: map[string]string{
-				"imports.tmpl": goImportsTemplate,
-			},
-		},
-	})
+	goCode, err := codegen.Generate(oapiInput, cfg)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to generate go code from OpenAPI schema")
 	}
@@ -542,9 +560,6 @@ func goRenamePropertyTypes(baseName string, props map[string]spec.Schema) {
 }
 
 func goFixName(name string) string {
-	generateGoMutex.Lock()
-	defer generateGoMutex.Unlock()
-
 	lastDot := strings.LastIndex(name, ".")
 	if lastDot == -1 {
 		return codegen.ToCamelCaseWithInitialisms(name)

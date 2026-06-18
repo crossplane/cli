@@ -87,6 +87,26 @@ let
 
 in
 {
+  # Host-native CLI binary. This is the default package, so nix build and nix
+  # run give you a binary for your own machine rather than the full release.
+  binary =
+    { version }:
+    goBinary {
+      inherit version;
+      pname = "crossplane";
+      subPackage = "cmd/crossplane";
+      platform = {
+        os = pkgs.stdenv.hostPlatform.parsed.kernel.name;
+        # Go and Nix disagree on architecture names.
+        arch =
+          {
+            "x86_64" = "amd64";
+            "aarch64" = "arm64";
+          }
+          .${pkgs.stdenv.hostPlatform.parsed.cpu.name};
+      };
+    };
+
   # Full release package with all artifacts.
   release =
     {

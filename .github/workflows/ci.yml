@@ -158,7 +158,7 @@ jobs:
           sed -i "s|buildVersion = null;|buildVersion = \"$VERSION\";|" flake.nix
 
       - name: Build Artifacts
-        run: nix build --option warn-dirty false --print-build-logs
+        run: nix build .#release --option warn-dirty false --print-build-logs
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

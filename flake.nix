@@ -108,7 +108,8 @@
           build = import ./nix/build.nix { inherit pkgs self; };
         in
         {
-          default = build.release {
+          default = build.binary { inherit version; };
+          release = build.release {
             inherit
               version
               goPlatforms

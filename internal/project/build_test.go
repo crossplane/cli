@@ -19,6 +19,8 @@ package project
 import (
 	"compress/gzip"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,8 +29,8 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/spf13/afero"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -258,9 +260,11 @@ func TestBuilderDependsOn(t *testing.T) {
 	}
 	proj.Default()
 
-	imgMap, err := NewBuilder(
+	b := NewBuilder(
 		BuildWithFunctionIdentifier(functions.FakeIdentifier),
-	).Build(t.Context(), proj, projFS)
+	)
+
+	imgMap, err := b.Build(t.Context(), proj, projFS)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -414,7 +418,9 @@ func TestBuilderBuildExplicitFunctions(t *testing.T) {
 	}
 	proj.Default()
 
-	imgMap, err := NewBuilder(BuildWithFunctionIdentifier(functions.FakeIdentifier)).Build(t.Context(), proj, projFS)
+	b := NewBuilder(BuildWithFunctionIdentifier(functions.FakeIdentifier))
+
+	imgMap, err := b.Build(t.Context(), proj, projFS)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -464,7 +470,9 @@ func TestBuilderBuildTarballFunction(t *testing.T) {
 	}
 	proj.Default()
 
-	imgMap, err := NewBuilder(BuildWithFunctionIdentifier(functions.FakeIdentifier)).Build(t.Context(), proj, projFS)
+	b := NewBuilder(BuildWithFunctionIdentifier(functions.FakeIdentifier))
+
+	imgMap, err := b.Build(t.Context(), proj, projFS)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -582,7 +590,7 @@ func TestLoadTarballRuntime(t *testing.T) {
 			}
 
 			tb := &devv1alpha1.FunctionTarball{Name: "fn", PathPrefix: "fn"}
-			got, err := loadTarballRuntime(projFS, tb, tc.args.archs)
+			got, err := loadTarballRuntime(projFS, tb, tc.args.archs, t.TempDir())
 
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("loadTarballRuntime(...): -want error, +got error:\n%s", diff)
@@ -591,6 +599,73 @@ func TestLoadTarballRuntime(t *testing.T) {
 				t.Errorf("loadTarballRuntime(...) architectures: -want, +got:\n%s", diff)
 			}
 		})
+	}
+}
+
+// TestLoadRuntimeImageGzip checks that loading a multi-layer image from a gzipped
+// tarball yields the same image as the equivalent plain tarball - including when
+// every layer is read, which happens lazily after loading from the decompressed
+// temporary file - and that the tarball is decompressed into the builder's temp
+// directory.
+func TestLoadRuntimeImageGzip(t *testing.T) {
+	t.Parallel()
+
+	projFS := afero.NewMemMapFs()
+	// The same multi-layer image under both a plain and a gzipped path, so the
+	// two must load to identical digests.
+	img := runtimeImageForArch(t, "amd64")
+	writeRuntimeTarImage(t, projFS, "plain-amd64.tar", "amd64", img)
+	writeRuntimeTarImage(t, projFS, "gz-amd64.tar.gz", "amd64", img)
+
+	tempDir := t.TempDir()
+
+	plain, _, err := loadRuntimeImage(projFS, "plain", "amd64", tempDir)
+	if err != nil {
+		t.Fatalf("loadRuntimeImage(plain): %v", err)
+	}
+	gz, _, err := loadRuntimeImage(projFS, "gz", "amd64", tempDir)
+	if err != nil {
+		t.Fatalf("loadRuntimeImage(gz): %v", err)
+	}
+
+	// digestReadingLayers computes the image digest and reads every layer's
+	// content. Reading the layers forces the per-layer opener calls that, for
+	// the gzipped image, are served from the decompressed temporary file.
+	digestReadingLayers := func(img v1.Image) v1.Hash {
+		t.Helper()
+		d, err := img.Digest()
+		if err != nil {
+			t.Fatalf("Digest(): %v", err)
+		}
+		layers, err := img.Layers()
+		if err != nil {
+			t.Fatalf("Layers(): %v", err)
+		}
+		for _, l := range layers {
+			rc, err := l.Compressed()
+			if err != nil {
+				t.Fatalf("Compressed(): %v", err)
+			}
+			if _, err := io.Copy(io.Discard, rc); err != nil {
+				t.Fatalf("reading layer: %v", err)
+			}
+			_ = rc.Close()
+		}
+		return d
+	}
+
+	if diff := cmp.Diff(digestReadingLayers(plain), digestReadingLayers(gz)); diff != "" {
+		t.Errorf("gzipped and plain tarballs produced different digests: -plain, +gz:\n%s", diff)
+	}
+
+	// The gzipped tarball should have been decompressed into the builder's temp
+	// directory; the plain tar is read directly and leaves nothing behind.
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q): %v", tempDir, err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected exactly one decompressed tarball in temp dir, got %d: %v", len(entries), entries)
 	}
 }
 
@@ -609,16 +684,43 @@ func archsOf(t *testing.T, imgs []v1.Image) []string {
 	return archs
 }
 
-// writeRuntimeTar writes a single-platform Docker-style image tarball to the
-// given path on fsys containing an empty image whose config records the given
-// architecture. If the path ends with ".tar.gz" the tarball is gzipped.
-func writeRuntimeTar(t *testing.T, fsys afero.Fs, path, arch string) {
+// runtimeImageForArch returns a multi-layer single-platform image whose config
+// records the given architecture. The layers mean loading it from a tarball
+// exercises the per-layer lazy opener calls tarball.Image makes.
+func runtimeImageForArch(t *testing.T, arch string) v1.Image {
 	t.Helper()
 
-	img, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{OS: "linux", Architecture: arch})
+	img, err := random.Image(256, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = cfg.DeepCopy()
+	cfg.OS, cfg.Architecture = "linux", arch
+	img, err = mutate.ConfigFile(img, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
+}
+
+// writeRuntimeTar writes a single-platform Docker-style image tarball recording
+// the given architecture to path on fsys. If the path ends with ".tar.gz" the
+// tarball is gzipped.
+func writeRuntimeTar(t *testing.T, fsys afero.Fs, path, arch string) {
+	t.Helper()
+	writeRuntimeTarImage(t, fsys, path, arch, runtimeImageForArch(t, arch))
+}
+
+// writeRuntimeTarImage writes img as a single-platform Docker-style image
+// tarball to path on fsys. If the path ends with ".tar.gz" the tarball is
+// gzipped.
+func writeRuntimeTarImage(t *testing.T, fsys afero.Fs, path, arch string, img v1.Image) {
+	t.Helper()
+
 	tag, err := name.NewTag("crossplane.io/test:" + arch)
 	if err != nil {
 		t.Fatal(err)

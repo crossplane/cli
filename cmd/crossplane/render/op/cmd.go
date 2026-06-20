@@ -379,11 +379,21 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(proj.Spec.ImageConfigs))
 		schemaMgr := manager.New(schemasFS, generators, schemaRunner)
 
+		// The builder may decompress function runtime tarballs into this
+		// directory; the built images read from it lazily, so we remove it only
+		// after they have been written to the daemon below.
+		tempDir, err := os.MkdirTemp("", "crossplane-build-")
+		if err != nil {
+			return errors.Wrap(err, "failed to create temporary build directory")
+		}
+		defer os.RemoveAll(tempDir) //nolint:errcheck // Best-effort cleanup of temporary files.
+
 		b := project.NewBuilder(
 			project.BuildWithMaxConcurrency(c.MaxConcurrency),
 			project.BuildWithFunctionIdentifier(functions.DefaultIdentifier),
 			project.BuildWithSchemaManager(schemaMgr),
 			project.BuildWithDependencyManager(depMgr),
+			project.BuildWithTempDir(tempDir),
 		)
 
 		imgMap, err := b.Build(ctx, proj, projFS,

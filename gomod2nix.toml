@@ -204,8 +204,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v1.6.3"
     hash = "sha256-XZm4EastgX67Dgm5BpOEW/PY4aLcHM/O8+Xbz26PuTY="
   [mod."github.com/containerd/containerd"]
-    version = "v1.7.32"
-    hash = "sha256-4SHa5JF563h1NtCl2OWzheMJg8jH1qCPaCY3/iwaqVM="
+    version = "v1.7.33"
+    hash = "sha256-5hXYyZJcXZiS0kTlcIgEfUwIZj/E++BOC7zI2tn3/Wg="
   [mod."github.com/containerd/errdefs"]
     version = "v1.0.0"
     hash = "sha256-wMZGoeqvRhuovYCJx0Js4P3qFCNTZ/6Atea/kNYoPMI="

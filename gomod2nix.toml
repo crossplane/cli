@@ -225,11 +225,11 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v3.17.0"
     hash = "sha256-b9dCq5GN5ac64UG23Rijv1qcmUZNcxb8DJQycAa96EQ="
   [mod."github.com/crossplane/crossplane-runtime/v2"]
-    version = "v2.3.2"
-    hash = "sha256-GzcQz6qzsOL5SRVtJLiEo345HGOlGE053RNedvfNff8="
+    version = "v2.3.3"
+    hash = "sha256-EV8OVPduo12izMXcPySnNvMble5cyZc1sS+zsljdWgU="
   [mod."github.com/crossplane/crossplane/apis/v2"]
-    version = "v2.3.2"
-    hash = "sha256-Mld+dYtG/JpCD4VB9/CjAaJ/t8Lh/92WDOpeKlccG6o="
+    version = "v2.3.3"
+    hash = "sha256-mRQAdTjq/hKxrvbdG80M+QoTibJI3XO287ICx70feYY="
   [mod."github.com/crossplane/function-sdk-go"]
     version = "v0.6.1-0.20260506001521-78a3dd862da1"
     hash = "sha256-PFppHOnNdKBh4lipILeXI5Rp8rj+CR1XIjvu5iFmA2U="
@@ -450,8 +450,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v0.21.2"
     hash = "sha256-6ONiJAQYguYJc6vcvdgFZYNtecrrOC7OzTVX4sIN5T8="
   [mod."github.com/google/go-containerregistry/pkg/authn/k8schain"]
-    version = "v0.0.0-20230919002926-dbcd01c402b2"
-    hash = "sha256-y/xHODMYpIsday3XuwTS8bO5+1CMjgazalC2fijnC6c="
+    version = "v0.0.0-20260312205200-e9163014982e"
+    hash = "sha256-RtHWZgcWWACijaU4/zA2r07/jZecWVvemrSWpAQb2Og="
   [mod."github.com/google/go-containerregistry/pkg/authn/kubernetes"]
     version = "v0.0.0-20250225234217-098045d5e61f"
     hash = "sha256-UZyDwMt9qQw5XHHDOlTyYMRvG1BiDfBHeZLmoMzunB4="

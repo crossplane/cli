@@ -27,7 +27,7 @@ require (
 	github.com/google/go-containerregistry v0.21.2
 	github.com/google/ko v0.18.1
 	github.com/invopop/jsonschema v0.14.0
-	github.com/kubernetes-sigs/kro v0.9.1
+	github.com/kubernetes-sigs/kro v0.9.2
 	github.com/muesli/termenv v0.16.0
 	github.com/oapi-codegen/oapi-codegen/v2 v2.7.1
 	github.com/pkg/errors v0.9.1

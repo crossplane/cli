@@ -525,8 +525,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v2.3.0"
     hash = "sha256-50JhbQyT67BK38HIdJihPtjV7orYp96HknI2VP7A9Yc="
   [mod."github.com/kubernetes-sigs/kro"]
-    version = "v0.9.1"
-    hash = "sha256-fxmbgdU4OCBloYoNu5uJo9pzDohW7uwJiW1622J9Kn8="
+    version = "v0.9.2"
+    hash = "sha256-qMz3CE94IVeJILjwqgPFiBCZPWRlML2RqtJka55BY/0="
   [mod."github.com/lann/builder"]
     version = "v0.0.0-20180802200727-47ae307949d0"
     hash = "sha256-NDZvsU6T2jVq5pfhp/VoJcMTq8DXKXiEkfZHloOX6c0="

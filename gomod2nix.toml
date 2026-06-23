@@ -612,8 +612,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v0.0.0-20180817012639-2ea982251481"
     hash = "sha256-pufLisYZW//uJXtCkobaU0Etnu+ZPQCqaRzRItx65hk="
   [mod."github.com/oapi-codegen/oapi-codegen/v2"]
-    version = "v2.7.0"
-    hash = "sha256-Eo8/3dkcOzrLC2pR+F5+rfcRt836YByq8UwnjsqAuD8="
+    version = "v2.7.1"
+    hash = "sha256-OkHJUdSchSTOuIhgIpr2gXKyRbGbABVY44X1A2OyI18="
   [mod."github.com/oasdiff/yaml"]
     version = "v0.0.9"
     hash = "sha256-je1aZ/MUidJRSTfJs8NpbWC63z73MUnU+SD3baiaDgY="

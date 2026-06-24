@@ -36,3 +36,15 @@ Read the XRD from stdin:
 ```shell
 cat xrd.yaml | crossplane xrd convert -
 ```
+
+Convert an XRD to JSON Schema and print to stdout:
+
+```shell
+crossplane xrd convert xrd.yaml --json-schema
+```
+
+Convert an XRD to JSON Schema files in a directory:
+
+```shell
+crossplane xrd convert xrd.yaml --json-schema --output-dir ./schemas/
+```

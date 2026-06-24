@@ -17,9 +17,15 @@ limitations under the License.
 package xrd
 
 import (
+	"bytes"
+	"encoding/json"
+	"path/filepath"
 	"testing"
 
+	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
+	"github.com/invopop/jsonschema"
+	"github.com/spf13/afero"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -100,6 +106,88 @@ func TestToCRDs(t *testing.T) {
 	}
 }
 
+func TestConvertJSONSchema(t *testing.T) {
+	xrd := minimalXRD(apiextensionsv1.CompositeResourceScopeNamespaced, nil)
+	crds, err := toCRDs(xrd)
+	if err != nil {
+		t.Fatalf("toCRDs(): unexpected error: %v", err)
+	}
+
+	wantFile := "example.org_v1alpha1_xtestapp.json"
+
+	cases := map[string]struct {
+		reason    string
+		cmd       convertCmd
+		wantFile  string
+		wantStdio bool
+	}{
+		"Stdout": {
+			reason:    "With no output flags, JSON Schema should be written to stdout.",
+			cmd:       convertCmd{JSONSchema: true},
+			wantStdio: true,
+		},
+		"OutputFile": {
+			reason:   "With -o, JSON Schema should be written to the specified file.",
+			cmd:      convertCmd{JSONSchema: true, OutputFile: "/out/schema.json"},
+			wantFile: "/out/schema.json",
+		},
+		"OutputDir": {
+			reason:   "With --output-dir, JSON Schema should be written as a named file in the directory.",
+			cmd:      convertCmd{JSONSchema: true, OutputDir: "/schemas"},
+			wantFile: filepath.Join("/schemas", wantFile),
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			fs := afero.NewMemMapFs()
+			tc.cmd.fs = fs
+
+			buf := &bytes.Buffer{}
+			app, err := kong.New(&struct{}{})
+			if err != nil {
+				t.Fatalf("cannot create kong app: %v", err)
+			}
+			k, err := app.Parse([]string{})
+			if err != nil {
+				t.Fatalf("cannot parse kong: %v", err)
+			}
+			k.Stdout = buf
+
+			outputs, err := toJSONSchemaOutputs(crds)
+			if err != nil {
+				t.Fatalf("\n%s\ntoJSONSchemaOutputs(): unexpected error: %v", tc.reason, err)
+			}
+
+			if err := tc.cmd.writeOutputs(k, outputs); err != nil {
+				t.Fatalf("\n%s\nwriteOutputs(): unexpected error: %v", tc.reason, err)
+			}
+
+			var raw []byte
+			if tc.wantStdio {
+				if buf.Len() == 0 {
+					t.Fatalf("\n%s\nexpected stdout output, got nothing", tc.reason)
+				}
+				raw = buf.Bytes()
+			} else {
+				raw, err = afero.ReadFile(fs, tc.wantFile)
+				if err != nil {
+					t.Fatalf("\n%s\nexpected file %s to exist: %v", tc.reason, tc.wantFile, err)
+				}
+			}
+
+			var s jsonschema.Schema
+			if err := json.Unmarshal(raw, &s); err != nil {
+				t.Errorf("\n%s\noutput is not valid JSON Schema: %v", tc.reason, err)
+			}
+
+			if s.ID == "" {
+				t.Errorf("\n%s\nexpected JSON Schema $id to be set", tc.reason)
+			}
+		})
+	}
+}
+
 // minimalXRD returns a minimal valid XRD with the given scope and (optional)
 // claim names. All other fields are populated with defaults sufficient to
 // satisfy xcrd.ForCompositeResource / xcrd.ForCompositeResourceClaim.
@@ -125,3 +213,4 @@ func minimalXRD(scope apiextensionsv1.CompositeResourceScope, claimNames *extv1.
 		},
 	}
 }
+

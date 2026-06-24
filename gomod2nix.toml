@@ -228,8 +228,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v2.4.0-rc.0"
     hash = "sha256-HVsb4hm9fOhLBt3TcYz+hVvsRa+250IXolOxuzAMChc="
   [mod."github.com/crossplane/function-sdk-go"]
-    version = "v0.6.1-0.20260506001521-78a3dd862da1"
-    hash = "sha256-PFppHOnNdKBh4lipILeXI5Rp8rj+CR1XIjvu5iFmA2U="
+    version = "v0.7.1"
+    hash = "sha256-BHAKkiae8CzWuP7G0EORhu7jmIqQnepzMfqOhEJtrTo="
   [mod."github.com/cyberphone/json-canonicalization"]
     version = "v0.0.0-20241213102144-19d51d7fe467"
     hash = "sha256-eqH3UKAZ9eOlZjYdN7nWuJ1hFm2JAP1PVbJInQk6OLw="
@@ -261,8 +261,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v28.5.2+incompatible"
     hash = "sha256-M8Q4m6vNbxKVpmEyYXwBnGinWvnN2LyH84zH73dDClE="
   [mod."github.com/docker/docker-credential-helpers"]
-    version = "v0.9.5"
-    hash = "sha256-7fm66H8bvqjiEssTy/oiAMmQd7T15aVS+EANrw+4H4U="
+    version = "v0.9.6"
+    hash = "sha256-0UYcZJqcNL06pC+CFyz8cmnTG27nipXHnEPhJDhtN+o="
   [mod."github.com/docker/go-connections"]
     version = "v0.7.0"
     hash = "sha256-J+3epfT+oKV2Q8ELESsPyBFIzgnXfITH1GlgbDSkRwg="
@@ -429,8 +429,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v1.1.3"
     hash = "sha256-/6Us2eNRFi2IIp7p5uPUXLridilAdk4SmZhcTYR0csw="
   [mod."github.com/google/cel-go"]
-    version = "v0.27.0"
-    hash = "sha256-ECoJqNV108IURzaxtaznDajf1yw3jvQPjZi0dQHSIBY="
+    version = "v0.28.0"
+    hash = "sha256-86MSoJX3fovcAWir41Z34nM0HcaDh0yRA+lIiVA1gEM="
   [mod."github.com/google/certificate-transparency-go"]
     version = "v1.3.3"
     hash = "sha256-CdAOfBmZ7xs51YUxLhg5edjxeCQqE2Kw0jOe+jHgvfA="
@@ -546,8 +546,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v0.1.14"
     hash = "sha256-JC60PjKj7MvhZmUHTZ9p372FV72I9Mxvli3fivTbxuA="
   [mod."github.com/mattn/go-isatty"]
-    version = "v0.0.20"
-    hash = "sha256-qhw9hWtU5wnyFyuMbKx+7RB8ckQaFQ8D+8GKPkN3HHQ="
+    version = "v0.0.22"
+    hash = "sha256-6O/0jc33pKUzlzUGpH8Ekk54XgJvx6Qe7kJtbcNJAV4="
   [mod."github.com/mattn/go-localereader"]
     version = "v0.0.1"
     hash = "sha256-JlWckeGaWG+bXK8l8WEdZqmSiTwCA8b1qbmBKa/Fj3E="
@@ -596,6 +596,9 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
   [mod."github.com/monochromegane/go-gitignore"]
     version = "v0.0.0-20200626010858-205db1a8cc00"
     hash = "sha256-j1Mgb2TUUIiBcXB+slOkjtvcjmqSMEsG5RZYE7vGXOU="
+  [mod."github.com/morikuni/aec"]
+    version = "v1.1.0"
+    hash = "sha256-7qguYn105pHlAOYhVerR15EVynw4bN9Lh+kv5UVmuPU="
   [mod."github.com/muesli/ansi"]
     version = "v0.0.0-20230316100256-276c6243b2f6"
     hash = "sha256-qRKn0Bh2yvP0QxeEMeZe11Vz0BPFIkVcleKsPeybKMs="
@@ -798,8 +801,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v1.2.1"
     hash = "sha256-73bFYhnxNf4SfeQ52ebnwOWywdQbqc9lWawCcSgofvE="
   [mod."go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"]
-    version = "v0.67.0"
-    hash = "sha256-efihYJm1SmM0T+n4e8MsUtTS5yAROK8svGwPAycd7fA="
+    version = "v0.68.0"
+    hash = "sha256-n90fV18xmJMBnxzLF4S0rqEdAcAPmLl835eFGoQc3K8="
   [mod."go.opentelemetry.io/otel"]
     version = "v1.43.0"
     hash = "sha256-oRemJUZhA7AzfUoBbRVA32u/XhMpipxLywHoJ1qsHBs="
@@ -828,8 +831,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v1.11.0"
     hash = "sha256-Lb6rHHfR62Ozg2j2JZy3MKOMKdsfzd1IYTR57r3Mhp0="
   [mod."go.uber.org/zap"]
-    version = "v1.27.1"
-    hash = "sha256-bn/MMu7X3GkUuW12Xwn9JYbOJeEu9+yoQtkmO+36xlQ="
+    version = "v1.28.0"
+    hash = "sha256-x+MIioLe/gBKjZyRc8shaBR5nO5Pv++8U9gHPZ5W+5A="
   [mod."go.yaml.in/yaml/v2"]
     version = "v2.4.3"
     hash = "sha256-WqfrOUQFvfuORgl1yyVOcsEXU/vwWQHkcVWx3vCxvaw="
@@ -876,14 +879,14 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v2.5.0"
     hash = "sha256-L3Xy24GTtcDHmMgc9rlgUm3GrxFO7XQKJhfYIr3li1s="
   [mod."google.golang.org/genproto/googleapis/api"]
-    version = "v0.0.0-20260401024825-9d38bb4040a9"
-    hash = "sha256-BXg1F9SwkNalLgqbjfpmr+KcFrZcZXuubJh990f+1mI="
+    version = "v0.0.0-20260427160629-7cedc36a6bc4"
+    hash = "sha256-0oDv+9PHqX8UpkfVmqDdARGS+kuVIIiRKhLyPNDgv+Q="
   [mod."google.golang.org/genproto/googleapis/rpc"]
-    version = "v0.0.0-20260401024825-9d38bb4040a9"
+    version = "v0.0.0-20260427160629-7cedc36a6bc4"
     hash = "sha256-ldJTTb7hhj1mdmzTn9IEkQVwCoj3KRlENZtUSEKHABU="
   [mod."google.golang.org/grpc"]
-    version = "v1.80.0"
-    hash = "sha256-+p50KGJvGWdpB/4f0h477dCAfoOL5m2PzG8BGOekVgY="
+    version = "v1.81.1"
+    hash = "sha256-YZ5KMHmN1HvsMxyIBIl3SmFmL3r+6bwjzzFLxUFhm1o="
   [mod."google.golang.org/protobuf"]
     version = "v1.36.11"
     hash = "sha256-7W+6jntfI/awWL3JP6yQedxqP5S9o3XvPgJ2XxxsIeE="

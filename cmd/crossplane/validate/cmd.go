@@ -19,7 +19,6 @@ package validate
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +28,6 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
-	"github.com/crossplane/crossplane-runtime/v2/pkg/version"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/load"
 	pkgvalidate "github.com/crossplane/cli/v2/pkg/validate"
@@ -78,9 +76,9 @@ type Cmd struct {
 	Resources  string `arg:"" help:"Resource sources as a comma-separated list of files, directories, or '-' for standard input."`
 
 	// Flags. Keep them in alphabetical order.
-	CacheDir              string `default:"~/.crossplane/cache"                                        help:"Absolute path to the cache directory for downloaded schemas." predictor:"directory"`
+	CacheDir              string `default:"~/.crossplane/cache"                                        help:"Absolute path to the cache directory for downloaded schemas."  predictor:"directory"`
 	CleanCache            bool   `help:"Clean the cache directory before downloading package schemas."`
-	CrossplaneImage       string `help:"Specify the Crossplane image for validating built-in schemas."`
+	CrossplaneImage       string `default:"xpkg.crossplane.io/crossplane/crossplane:stable"            help:"Specify the Crossplane image for validating built-in schemas."`
 	ErrorOnMissingSchemas bool   `default:"false"                                                      help:"Return non zero exit code if missing schemas."`
 	// rendererFlag.Decode rejects unknown formats, which is what Kong's
 	// "enum" tag would normally enforce — but enum doesn't apply to
@@ -110,10 +108,6 @@ func (c *Cmd) AfterApply() error {
 func (c *Cmd) Run(k *kong.Context, _ logging.Logger) error {
 	if c.Resources == "-" && c.Extensions == "-" {
 		return errors.New("cannot use stdin for both extensions and resources")
-	}
-
-	if len(c.CrossplaneImage) < 1 {
-		c.CrossplaneImage = fmt.Sprintf("xpkg.crossplane.io/crossplane/crossplane:%s", version.New().GetVersionString())
 	}
 
 	// Load all extensions

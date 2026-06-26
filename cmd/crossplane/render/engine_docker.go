@@ -19,7 +19,6 @@ package render
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -146,17 +145,6 @@ func (e *dockerRenderEngine) Render(ctx context.Context, req *renderv1alpha1.Ren
 		opts = append(opts, docker.RunWithNetworkName(e.network))
 	}
 
-	// Bind-mount the directory of every unix-socket function target into the
-	// render container at the same path so unix:// targets are reachable.
-	for _, fn := range getFunctionInputs(req) {
-		addr := fn.GetAddress()
-		if !strings.HasPrefix(addr, "unix://") {
-			continue
-		}
-		dir := filepath.Dir(strings.TrimPrefix(addr, "unix://"))
-		opts = append(opts, docker.RunWithBindMount(dir, dir))
-	}
-
 	e.log.Debug("Running crossplane internal render in Docker", "image", e.image, "network", e.network)
 
 	runner := e.runner
@@ -185,17 +173,4 @@ func (e *dockerRenderEngine) Render(ctx context.Context, req *renderv1alpha1.Ren
 	}
 
 	return rsp, nil
-}
-
-// getFunctionInputs returns the FunctionInput list regardless of which oneof
-// variant the RenderRequest carries.
-func getFunctionInputs(req *renderv1alpha1.RenderRequest) []*renderv1alpha1.FunctionInput {
-	switch in := req.GetInput().(type) {
-	case *renderv1alpha1.RenderRequest_Composite:
-		return in.Composite.GetFunctions()
-	case *renderv1alpha1.RenderRequest_Operation:
-		return in.Operation.GetFunctions()
-	default:
-		return nil
-	}
 }

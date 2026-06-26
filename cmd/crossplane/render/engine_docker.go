@@ -77,20 +77,26 @@ func (e *dockerRenderEngine) CheckContextSupport() error {
 	return nil
 }
 
-// Setup creates a temporary Docker network, records its name so the render
-// container joins it, and annotates the supplied functions so their
-// containers also join it. The returned cleanup function removes the
-// network.
+// Setup wires the supplied functions into the Docker network the render
+// container joins. On the first call with an unset e.network, it creates a
+// temporary network, records its name, annotates fns to join it, and returns
+// a cleanup that removes the network. On any subsequent call — or on the
+// first call when e.network was already set via --crossplane-docker-network —
+// it only annotates fns with the existing network and returns a no-op
+// cleanup, leaving network ownership to whoever created it. fns whose
+// runtime-docker-network annotation is already set are left untouched.
 func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (func(), error) {
-	var networkID, networkName string
-
 	if e.network != "" {
-		// e.network was pre-configured, we don't own the network, so there is nothing to clean up.
+		// Either the user pre-configured the network via the --crossplane-docker-network flag
+		// (we don't own it), or a prior Setup call on this engine already created one (the
+		// real cleanup belongs to that first call). In both cases we still need to annotate
+		// the supplied fns so their containers join the network — injectNetworkAnnotation
+		// won't overwrite an annotation a fn already carries.
+		injectNetworkAnnotation(fns, e.network)
 		return func() {}, nil
 	}
 
-	var err error
-	networkID, networkName, err = createRenderNetwork(ctx)
+	networkID, networkName, err := createRenderNetwork(ctx)
 	if err != nil {
 		return func() {}, errors.Wrap(err, "cannot create Docker network for rendering")
 	}

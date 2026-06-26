@@ -28,6 +28,8 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+
 	"github.com/crossplane/cli/v2/internal/docker"
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
@@ -207,6 +209,137 @@ func TestDockerRenderEngineRender(t *testing.T) {
 
 			if diff := cmp.Diff(tc.want.rsp, rsp, protocmp.Transform()); diff != "" {
 				t.Errorf("\n%s\nRender(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestDockerRenderEngineSetup(t *testing.T) {
+	// These cases all exercise the early-return branch of Setup — where
+	// e.network is already non-empty, either because NewEngineFromFlags
+	// populated it from --crossplane-docker-network or because a prior Setup
+	// call on the same engine stored its created network there. The branch
+	// must annotate the supplied functions so their containers join the
+	// network, never create a second network, and always return a no-op
+	// cleanup. The create-new-network branch is not covered here because it
+	// depends on a live Docker daemon; the broader render command tests
+	// exercise it integration-style.
+	//
+	// The MultiBatchAnnotatesAdditionalFunctions case simulates the
+	// in-process multi-composition use case from crossplane/cli#96: a
+	// downstream tool (crossplane-diff) calls Setup once per Composition it
+	// encounters. Pre-seeding e.network stands in for the prior Setup call
+	// that would have created the network, keeping the test hermetic.
+	const presetNetwork = "preset-net"
+
+	// batch holds a single Setup invocation: the fns to pass in and the
+	// expected fn state after Setup returns. Multi-call cases provide more
+	// than one batch; the runner invokes Setup once per batch in order.
+	type batch struct {
+		fns     []pkgv1.Function
+		wantFns []pkgv1.Function
+	}
+
+	cases := map[string]struct {
+		reason  string
+		engine  *dockerRenderEngine
+		batches []batch
+	}{
+		"AnnotatesFunctionsWhenNetworkPreset": {
+			reason: "When e.network is set, Setup must inject the network annotation on every fn that does not already carry one, so that crossplane-diff-style multi-batch callers can re-Setup to add new fns to the same network.",
+			engine: &dockerRenderEngine{network: presetNetwork, log: logging.NewNopLogger()},
+			batches: []batch{{
+				fns: []pkgv1.Function{
+					functionWithAnnotations(nil),
+					functionWithAnnotations(nil),
+				},
+				wantFns: []pkgv1.Function{
+					functionWithAnnotations(map[string]string{AnnotationKeyRuntimeDockerNetwork: presetNetwork}),
+					functionWithAnnotations(map[string]string{AnnotationKeyRuntimeDockerNetwork: presetNetwork}),
+				},
+			}},
+		},
+		"PreservesUserSetFunctionAnnotation": {
+			reason: "If a fn already carries a runtime-docker-network annotation, Setup must not overwrite it. This preserves the don't-overwrite contract from PR #65 for users who pin their fns to a specific network.",
+			engine: &dockerRenderEngine{network: presetNetwork, log: logging.NewNopLogger()},
+			batches: []batch{{
+				fns: []pkgv1.Function{
+					functionWithAnnotations(map[string]string{AnnotationKeyRuntimeDockerNetwork: "user-pinned-net"}),
+				},
+				wantFns: []pkgv1.Function{
+					functionWithAnnotations(map[string]string{AnnotationKeyRuntimeDockerNetwork: "user-pinned-net"}),
+				},
+			}},
+		},
+		"NilFunctionsList": {
+			reason: "A nil fns slice is a boundary case: Setup must succeed without panicking on the nil-map guard inside injectNetworkAnnotation.",
+			engine: &dockerRenderEngine{network: presetNetwork, log: logging.NewNopLogger()},
+			batches: []batch{{
+				fns:     nil,
+				wantFns: nil,
+			}},
+		},
+		"EmptyFunctionsList": {
+			reason: "An empty (non-nil) fns slice is the other boundary: Setup must succeed, the slice stays empty, and no spurious entries appear.",
+			engine: &dockerRenderEngine{network: presetNetwork, log: logging.NewNopLogger()},
+			batches: []batch{{
+				fns:     []pkgv1.Function{},
+				wantFns: []pkgv1.Function{},
+			}},
+		},
+		"MultiBatchAnnotatesAdditionalFunctions": {
+			reason: "Two consecutive Setup calls on the same engine — the crossplane/cli#96 in-process multi-composition pattern — must annotate every batch with the same network. Each call returns a no-op cleanup that is safe to defer in LIFO order.",
+			engine: &dockerRenderEngine{network: presetNetwork, log: logging.NewNopLogger()},
+			batches: []batch{
+				{
+					fns: []pkgv1.Function{
+						functionWithAnnotations(nil),
+						functionWithAnnotations(nil),
+					},
+					wantFns: []pkgv1.Function{
+						functionWithAnnotations(map[string]string{AnnotationKeyRuntimeDockerNetwork: presetNetwork}),
+						functionWithAnnotations(map[string]string{AnnotationKeyRuntimeDockerNetwork: presetNetwork}),
+					},
+				},
+				{
+					fns: []pkgv1.Function{
+						functionWithAnnotations(nil),
+					},
+					wantFns: []pkgv1.Function{
+						functionWithAnnotations(map[string]string{AnnotationKeyRuntimeDockerNetwork: presetNetwork}),
+					},
+				},
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cleanups := make([]func(), 0, len(tc.batches))
+			for i, b := range tc.batches {
+				cleanup, err := tc.engine.Setup(context.Background(), b.fns)
+				if err != nil {
+					t.Fatalf("\n%s\nSetup(batch %d): unexpected error: %v", tc.reason, i, err)
+				}
+				if cleanup == nil {
+					t.Fatalf("\n%s\nSetup(batch %d): cleanup is nil, want non-nil", tc.reason, i)
+				}
+				cleanups = append(cleanups, cleanup)
+
+				if diff := cmp.Diff(b.wantFns, b.fns); diff != "" {
+					t.Errorf("\n%s\nSetup(batch %d): fns -want, +got:\n%s", tc.reason, i, diff)
+				}
+			}
+
+			// Defer-LIFO: all cleanups in this test are no-ops (we pre-seed
+			// e.network, so no call took the create-network branch). Calling
+			// them must not panic.
+			for i := len(cleanups) - 1; i >= 0; i-- {
+				cleanups[i]()
+			}
+
+			if tc.engine.network != presetNetwork {
+				t.Errorf("\n%s\nSetup(...): e.network mutated from %q to %q (early-return branch must not change it)", tc.reason, presetNetwork, tc.engine.network)
 			}
 		})
 	}

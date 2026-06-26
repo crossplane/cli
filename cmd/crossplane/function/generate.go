@@ -39,6 +39,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	v1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	"github.com/crossplane/cli/v2/internal/kcl"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
@@ -144,7 +145,7 @@ func functionSchemaLanguage(functionLang string) string {
 }
 
 // Run generates a function scaffold.
-func (c *generateCmd) Run(sp terminal.SpinnerPrinter) error {
+func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	if err := c.validatePaths(); err != nil {
 		return err
 	}

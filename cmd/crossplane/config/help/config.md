@@ -18,3 +18,11 @@ Enable alpha commands:
 ```shell
 crossplane config set features.enableAlpha true
 ```
+
+Generate runtime.Object methods and per-package AddToScheme helpers on generated
+Go models (off by default), so generated types can be registered in a
+runtime.Scheme:
+
+```shell
+crossplane config set features.generateGoRuntimeObjects true
+```

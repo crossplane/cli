@@ -18,3 +18,10 @@ Enable alpha commands:
 ```shell
 crossplane config set features.enableAlpha true
 ```
+
+Generate GetX/SetX accessor methods on generated Go models (off by default), so
+generated resources can be used through interfaces and generics:
+
+```shell
+crossplane config set features.generateGoModelAccessors true
+```

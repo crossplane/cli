@@ -138,14 +138,18 @@ var (
 )
 `
 
-type goGenerator struct{}
+// goGenerator generates Go models. accessors controls whether GetX/SetX
+// accessor methods are emitted for the generated structs.
+type goGenerator struct {
+	accessors bool
+}
 
 func (goGenerator) Language() string {
 	return devv1alpha1.SchemaLanguageGo
 }
 
 // GenerateFromCRD generates Go schemas for the CRDs in the given filesystem.
-func (goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
+func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
 	openAPIs, err := goCollectOpenAPIs(fromFS)
 	if err != nil {
 		return nil, err
@@ -217,7 +221,7 @@ func (goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.
 			refMutator = goReferenceK8sTypesForCRDs
 		}
 
-		code, err := generateGo(pkgSpec, version,
+		code, err := generateGo(pkgSpec, version, g.accessors,
 			goRenameTypes,
 			goRenameEnums,
 			goReplaceNumberWithInt,
@@ -247,7 +251,7 @@ func (goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.
 
 	// Generate models for the non-k8s schemas.
 	for _, oapi := range openAPIs {
-		code, err := generateGo(oapi.spec, oapi.version,
+		code, err := generateGo(oapi.spec, oapi.version, g.accessors,
 			goRenameTypes,
 			goRenameEnums,
 			goReplaceNumberWithInt,
@@ -376,7 +380,7 @@ func goCollectOpenAPIs(fromFS afero.Fs) ([]goOpenAPI, error) { //nolint:gocognit
 // `generateGo`, since `codegen.Generate` is not concurrency safe.
 var generateGoMutex sync.Mutex //nolint:gochecknoglobals // Must be global.
 
-func generateGo(s *spec3.OpenAPI, version string, mutators ...func(*spec3.OpenAPI)) (string, error) {
+func generateGo(s *spec3.OpenAPI, version string, accessors bool, mutators ...func(*spec3.OpenAPI)) (string, error) {
 	// codegen.Generate sets some global state that's used by the utility
 	// functions we call from our mutators. That has two implications for us:
 	//
@@ -436,6 +440,16 @@ func generateGo(s *spec3.OpenAPI, version string, mutators ...func(*spec3.OpenAP
 	goCode, err = fixMissingImports(goCode)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to fix missing imports")
+	}
+
+	// Generate GetX/SetX accessor methods for every struct field, so consumers
+	// can abstract over the models with interfaces and generics. Gated behind
+	// the features.generateGoModelAccessors flag.
+	if accessors {
+		goCode, err = addAccessors(goCode)
+		if err != nil {
+			return "", errors.Wrap(err, "failed to add accessors")
+		}
 	}
 
 	goCodeBytes, err := format.Source([]byte(goCode))
@@ -1088,7 +1102,7 @@ func fixK8sTypeNames(code string) (string, error) {
 }
 
 // GenerateFromOpenAPI generates Go schemas for the OpenAPI docs in the given filesystem.
-func (goGenerator) GenerateFromOpenAPI(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
+func (g goGenerator) GenerateFromOpenAPI(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
 	// Walk through filesystem to collect OpenAPI specs
 	openAPISpecs, err := collectOpenAPISpecs(fromFS)
 	if err != nil {
@@ -1107,12 +1121,12 @@ func (goGenerator) GenerateFromOpenAPI(_ context.Context, fromFS afero.Fs, _ run
 	}
 
 	// Generate K8s shared schemas
-	if err := generateK8sSharedSchemas(openAPISpecs, schemaFS); err != nil {
+	if err := generateK8sSharedSchemas(openAPISpecs, schemaFS, g.accessors); err != nil {
 		return nil, err
 	}
 
 	// Generate models for the rest
-	if err := generateModelsWithGVK(openAPISpecs, schemaFS); err != nil {
+	if err := generateModelsWithGVK(openAPISpecs, schemaFS, g.accessors); err != nil {
 		return nil, err
 	}
 
@@ -1189,7 +1203,7 @@ func initializeSchemaFS() (afero.Fs, error) {
 }
 
 // generateK8sSharedSchemas extracts and generates shared K8s schemas.
-func generateK8sSharedSchemas(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs) error {
+func generateK8sSharedSchemas(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs, accessors bool) error {
 	k8sSchemasByPackage := make(map[string]map[string]*spec.Schema)
 
 	// Collect all K8s schemas from all OpenAPI specs, grouped by package
@@ -1209,7 +1223,7 @@ func generateK8sSharedSchemas(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs) 
 			continue
 		}
 
-		if err := generateK8sPackageCode(pkg, schemas, schemaFS); err != nil {
+		if err := generateK8sPackageCode(pkg, schemas, schemaFS, accessors); err != nil {
 			return err
 		}
 	}
@@ -1218,7 +1232,7 @@ func generateK8sSharedSchemas(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs) 
 }
 
 // generateK8sPackageCode generates code for a single K8s package.
-func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaFS afero.Fs) error {
+func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaFS afero.Fs, accessors bool) error {
 	// Create a spec for this package
 	pkgSpec := &spec3.OpenAPI{
 		Version: "3.0.0",
@@ -1230,7 +1244,7 @@ func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaF
 	// Determine the group, kind, and version from the package name
 	group, kind, version := getK8sPackageInfo(pkg)
 
-	code, err := generateGo(pkgSpec, version,
+	code, err := generateGo(pkgSpec, version, accessors,
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,
@@ -1277,12 +1291,12 @@ func getK8sPackageInfo(pkg string) (group, kind, version string) {
 }
 
 // generateModelsWithGVK generates models for schemas with GVK information.
-func generateModelsWithGVK(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs) error {
+func generateModelsWithGVK(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs, accessors bool) error {
 	for _, openAPISpec := range openAPISpecs {
 		gvkGroups := groupSchemasByGVK(openAPISpec)
 
 		for gvkKey, schemas := range gvkGroups {
-			if err := generateGVKGroupCode(gvkKey, schemas, openAPISpec, schemaFS); err != nil {
+			if err := generateGVKGroupCode(gvkKey, schemas, openAPISpec, schemaFS, accessors); err != nil {
 				return err
 			}
 		}
@@ -1345,7 +1359,7 @@ func extractGVKKey(schema *spec.Schema) string {
 }
 
 // generateGVKGroupCode generates code for a GVK group.
-func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAPISpec *spec3.OpenAPI, schemaFS afero.Fs) error {
+func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAPISpec *spec3.OpenAPI, schemaFS afero.Fs, accessors bool) error {
 	parts := strings.Split(gvkKey, "/")
 	group, version := parts[0], parts[1]
 
@@ -1372,7 +1386,7 @@ func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAP
 	// Add schemas that don't have GVK extensions (supporting types)
 	maps.Copy(groupSpec.Components.Schemas, openAPISpec.Components.Schemas)
 
-	code, err := generateGo(groupSpec, version,
+	code, err := generateGo(groupSpec, version, accessors,
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,

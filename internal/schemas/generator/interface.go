@@ -34,12 +34,32 @@ type Interface interface {
 	GenerateFromOpenAPI(ctx context.Context, fs afero.Fs, runner runner.SchemaRunner) (afero.Fs, error)
 }
 
+// options holds configurable behavior shared across generators.
+type options struct {
+	goRuntimeObjects bool
+}
+
+// Option configures the generators returned by AllLanguages.
+type Option func(*options)
+
+// WithGoRuntimeObjects enables generation of runtime.Object methods (DeepCopy,
+// GetObjectKind, DeepCopyObject) and per-package AddToScheme helpers on the
+// generated Go models. Disabled by default; gated behind the
+// features.generateGoRuntimeObjects config flag.
+func WithGoRuntimeObjects(enabled bool) Option {
+	return func(o *options) { o.goRuntimeObjects = enabled }
+}
+
 // AllLanguages returns generators for all supported languages. The set of
 // supported language identifiers is defined by
 // devv1alpha1.SupportedSchemaLanguages.
-func AllLanguages() []Interface {
+func AllLanguages(opts ...Option) []Interface {
+	o := &options{}
+	for _, opt := range opts {
+		opt(o)
+	}
 	return []Interface{
-		&goGenerator{},
+		&goGenerator{runtimeObjects: o.goRuntimeObjects},
 		&jsonGenerator{},
 		&kclGenerator{},
 		&pythonGenerator{},

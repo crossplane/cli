@@ -42,6 +42,11 @@ type Config struct {
 type Features struct {
 	EnableAlpha bool `json:"enableAlpha,omitempty"`
 	DisableBeta bool `json:"disableBeta,omitempty"`
+
+	// GenerateGoRuntimeObjects enables generation of runtime.Object methods and
+	// per-package AddToScheme helpers on generated Go models. Disabled by
+	// default; opt in to register generated types with a runtime.Scheme.
+	GenerateGoRuntimeObjects bool `json:"generateGoRuntimeObjects,omitempty"`
 }
 
 // Load reads a Config from path. A missing file is not an error; the zero

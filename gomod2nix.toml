@@ -255,8 +255,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v1.11.5"
     hash = "sha256-jN5+2ED+YbIoPIuyJ4Ou5pqJb2w1uNKzp5yTjKY6rEQ="
   [mod."github.com/docker/cli"]
-    version = "v29.6.0+incompatible"
-    hash = "sha256-3PHM9Yqxm6TZ4Uzivbraa+vT9oJiGpeV0Cce/9C23Wk="
+    version = "v29.6.1+incompatible"
+    hash = "sha256-R355dChAa0OU5bV4O+WVnFptQ86pjepPmBW7XLRjLww="
   [mod."github.com/docker/docker"]
     version = "v28.5.2+incompatible"
     hash = "sha256-M8Q4m6vNbxKVpmEyYXwBnGinWvnN2LyH84zH73dDClE="

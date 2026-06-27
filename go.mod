@@ -15,7 +15,7 @@ require (
 	github.com/crossplane/crossplane-runtime/v2 v2.3.3
 	github.com/crossplane/crossplane/apis/v2 v2.3.3
 	github.com/crossplane/function-sdk-go v0.7.1
-	github.com/docker/cli v29.6.0+incompatible
+	github.com/docker/cli v29.6.1+incompatible
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/docker/go-connections v0.7.0
 	github.com/emicklei/dot v1.11.0

@@ -106,6 +106,45 @@ var testCRDWithCEL = &extv1.CustomResourceDefinition{
 	},
 }
 
+// testCRDWithTransition has a CEL transition rule: spec.param is immutable.
+// The rule references oldSelf, so it only fires when a previous state (an old
+// resource) is supplied; on a create (nil old object) it is skipped.
+var testCRDWithTransition = &extv1.CustomResourceDefinition{
+	TypeMeta: metav1.TypeMeta{
+		APIVersion: "apiextensions.k8s.io/v1",
+		Kind:       "CustomResourceDefinition",
+	},
+	ObjectMeta: metav1.ObjectMeta{Name: "test-transition"},
+	Spec: extv1.CustomResourceDefinitionSpec{
+		Group: "test.org",
+		Names: extv1.CustomResourceDefinitionNames{
+			Kind: "TestTransition", ListKind: "TestTransitionList", Plural: "testtransitions", Singular: "testtransition",
+		},
+		Scope: "Cluster",
+		Versions: []extv1.CustomResourceDefinitionVersion{{
+			Name: "v1alpha1", Served: true, Storage: true,
+			Schema: &extv1.CustomResourceValidation{
+				OpenAPIV3Schema: &extv1.JSONSchemaProps{
+					Type: "object",
+					Properties: map[string]extv1.JSONSchemaProps{
+						"spec": {
+							Type: "object",
+							XValidations: extv1.ValidationRules{{
+								Rule:    "self.param == oldSelf.param",
+								Message: "param is immutable",
+							}},
+							Properties: map[string]extv1.JSONSchemaProps{
+								"param": {Type: "string"},
+							},
+							Required: []string{"param"},
+						},
+					},
+				},
+			},
+		}},
+	},
+}
+
 // testCRDNoMatchingVersion is a CRD that shares group+kind with testCRD but
 // only declares v1beta1. When used BEFORE testCRD in the crds slice,
 // applyDefaults matches it first and fails because v1alpha1 is missing.
@@ -181,10 +220,23 @@ func TestSchemaValidate(t *testing.T) {
 		"metadata":   map[string]any{"name": "def-fail"},
 		"spec":       map[string]any{"replicas": int64(1)},
 	}}
+	transitionResource := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "test.org/v1alpha1",
+		"kind":       "TestTransition",
+		"metadata":   map[string]any{"name": "test"},
+		"spec":       map[string]any{"param": "changed-value"},
+	}}
+	transitionOldResource := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "test.org/v1alpha1",
+		"kind":       "TestTransition",
+		"metadata":   map[string]any{"name": "test"},
+		"spec":       map[string]any{"param": "original-value"},
+	}}
 
 	type args struct {
-		resources []*unstructured.Unstructured
-		crds      []*extv1.CustomResourceDefinition
+		resources    []*unstructured.Unstructured
+		oldResources []*unstructured.Unstructured
+		crds         []*extv1.CustomResourceDefinition
 	}
 	// expect declares everything we assert about a single resource's result:
 	// its Status and the exact set of FieldValidationErrors. Message and
@@ -325,6 +377,34 @@ func TestSchemaValidate(t *testing.T) {
 				perRes:  nil,
 			},
 		},
+		"TransitionRuleViolatedWithOldResource": {
+			reason: "When a matching old resource is supplied, an immutability CEL transition rule (self.param == oldSelf.param) fires and the resource is Invalid with a cel-type error.",
+			args: args{
+				resources:    []*unstructured.Unstructured{transitionResource},
+				oldResources: []*unstructured.Unstructured{transitionOldResource},
+				crds:         []*extv1.CustomResourceDefinition{testCRDWithTransition},
+			},
+			want: want{
+				summary: ValidationSummary{Total: 1, Invalid: 1},
+				perRes: []expect{{
+					status: ValidationStatusInvalid,
+					errors: []FieldValidationError{
+						{Type: FieldErrorTypeCEL, Field: "spec"},
+					},
+				}},
+			},
+		},
+		"TransitionRuleSkippedWithoutOldResource": {
+			reason: "Without an old resource, the transition rule references oldSelf and is skipped (as on a create), so the same resource is Valid. Confirms the no-previous-state path leaves behaviour unchanged.",
+			args: args{
+				resources: []*unstructured.Unstructured{transitionResource},
+				crds:      []*extv1.CustomResourceDefinition{testCRDWithTransition},
+			},
+			want: want{
+				summary: ValidationSummary{Total: 1, Valid: 1},
+				perRes:  []expect{{status: ValidationStatusValid}},
+			},
+		},
 		"MixedOrder": {
 			reason: "Resources are returned in input order with their respective statuses.",
 			args: args{
@@ -353,7 +433,7 @@ func TestSchemaValidate(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			result, err := SchemaValidate(t.Context(), tc.args.resources, tc.args.crds)
+			result, err := SchemaValidate(t.Context(), tc.args.resources, tc.args.oldResources, tc.args.crds)
 			if (err != nil) != tc.want.wantErr {
 				t.Fatalf("%s\nSchemaValidate() err = %v, wantErr = %v", tc.reason, err, tc.want.wantErr)
 			}

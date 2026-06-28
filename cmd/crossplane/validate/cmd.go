@@ -25,6 +25,7 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
@@ -80,6 +81,7 @@ type Cmd struct {
 	CleanCache            bool   `help:"Clean the cache directory before downloading package schemas."`
 	CrossplaneImage       string `default:"xpkg.crossplane.io/crossplane/crossplane:stable"            help:"Specify the Crossplane image for validating built-in schemas."`
 	ErrorOnMissingSchemas bool   `default:"false"                                                      help:"Return non zero exit code if missing schemas."`
+	OldResources          string `help:"Previous resource state for evaluating CEL transition rules."`
 	// rendererFlag.Decode rejects unknown formats, which is what Kong's
 	// "enum" tag would normally enforce — but enum doesn't apply to
 	// MapperValue-backed fields. The help text is the user-facing list
@@ -132,6 +134,21 @@ func (c *Cmd) Run(k *kong.Context, _ logging.Logger) error {
 		return errors.Wrapf(err, "cannot load resources from %q", c.Resources)
 	}
 
+	// Load old resources, if provided, so CEL transition rules can compare the
+	// resources under validation against their previous state.
+	var oldResources []*unstructured.Unstructured
+	if c.OldResources != "" {
+		oldResourceLoader, err := load.NewLoader(c.OldResources)
+		if err != nil {
+			return errors.Wrapf(err, "cannot load old resources from %q", c.OldResources)
+		}
+
+		oldResources, err = oldResourceLoader.Load()
+		if err != nil {
+			return errors.Wrapf(err, "cannot load old resources from %q", c.OldResources)
+		}
+	}
+
 	if strings.HasPrefix(c.CacheDir, "~/") {
 		homeDir, _ := os.UserHomeDir()
 		c.CacheDir = filepath.Join(homeDir, c.CacheDir[2:])
@@ -151,7 +168,7 @@ func (c *Cmd) Run(k *kong.Context, _ logging.Logger) error {
 
 	// Validate resources against schemas, render in the requested format,
 	// and return a CLI-shaped error when validation didn't pass.
-	result, err := pkgvalidate.SchemaValidate(context.Background(), resources, m.crds)
+	result, err := pkgvalidate.SchemaValidate(context.Background(), resources, oldResources, m.crds)
 	if err != nil {
 		return errors.Wrapf(err, "cannot validate resources")
 	}

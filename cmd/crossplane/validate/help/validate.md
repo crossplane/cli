@@ -91,6 +91,29 @@ spec:
   #         message: "replicas should be in between minReplicas and maxReplicas."
 ```
 
+### Validate CEL transition rules against previous state
+
+Some CEL rules are *transition rules*: they reference `oldSelf` to compare a
+resource against its previous state, for example to enforce that a field is
+immutable:
+
+```yaml
+# spec.x-kubernetes-validations:
+#   - rule: "self.param == oldSelf.param"
+#     message: "param is immutable"
+```
+
+These rules only fire when a previous state is available. Supply it with
+`--old-resources`, which accepts the same comma-separated list of files or
+directories as the resource argument. Old resources are matched to the
+resources under validation by API version, kind, name, and namespace. A
+resource with no matching old state is validated as a create, so its transition
+rules are skipped:
+
+```shell
+crossplane resource validate extensionsDir/ resourceDir/ --old-resources oldResourceDir/
+```
+
 ## Validate against a directory of schemas
 
 `validate` can also take a directory of schema YAML files to use for
@@ -155,4 +178,11 @@ Use a custom cache directory and clean it before downloading schemas:
 
 ```shell
 crossplane resource validate extensionsDir/ resourceDir/ --cache-dir .cache --clean-cache
+```
+
+Validate resources, using a directory of previous states so CEL rules that
+reference `oldSelf` (such as immutability constraints) can be evaluated:
+
+```shell
+crossplane resource validate extensionsDir/ resourceDir/ --old-resources oldResourceDir/
 ```

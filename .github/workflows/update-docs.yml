@@ -1,0 +1,83 @@
+name: Update CLI Docs
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  update-docs:
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@4e002c8ec80594ecd40e759629461e26c8abed15 # v31
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
+        with:
+          name: crossplane
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build CLI
+        run: |
+          nix build .#crossplane --print-build-logs
+          cp result/bin/crossplane /tmp/crossplane
+
+      - name: Generate Docs
+        run: |
+          mkdir -p generated-docs
+          /tmp/crossplane generate-docs -o generated-docs/command-reference.md
+
+      - name: Checkout Docs
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: crossplane/docs
+          token: ${{ secrets.DOCS_WRITE_TOKEN }}
+          path: docs
+
+      - name: Determine Target Directory
+        id: target
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+            DIR_NAME="${VERSION#v}"
+            echo "dir=content/cli/${DIR_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=content/cli/master" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update Docs
+        run: |
+          mkdir -p docs/${{ steps.target.outputs.dir }}
+          cp generated-docs/command-reference.md docs/${{ steps.target.outputs.dir }}/command-reference.md
+          cd docs
+          if ! git diff --quiet; then
+            echo "docs-changed=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Create Pull Request
+        if: env.docs-changed == 'true'
+        uses: peter-evans/create-pull-request@204220e584d39b97d07e8e00693fe658ea76b09d # v7
+        with:
+          path: docs
+          token: ${{ secrets.DOCS_WRITE_TOKEN }}
+          commit-message: "docs(cli): auto-update command reference"
+          title: "docs(cli): auto-update command reference for ${{ steps.target.outputs.dir }}"
+          body: |
+            Auto-generated CLI command reference update.
+
+            Generated from: `${{ github.sha }}`
+            Trigger: `${{ github.event_name }} ${{ github.ref }}`
+          branch: auto/update-cli-docs
+          delete-branch: true

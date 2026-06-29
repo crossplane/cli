@@ -319,6 +319,7 @@ func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Sourc
 
 	// Run generators on the merged filesystem
 	schemas := make(map[string]afero.Fs)
+	var schemasMu sync.Mutex
 	eg, egCtx := errgroup.WithContext(ctx)
 	for _, gen := range m.generators {
 		eg.Go(func() error {
@@ -338,7 +339,9 @@ func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Sourc
 			}
 
 			if schemaFS != nil {
+				schemasMu.Lock()
 				schemas[gen.Language()] = schemaFS
+				schemasMu.Unlock()
 			}
 
 			return nil

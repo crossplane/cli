@@ -319,12 +319,12 @@ func (m *Manager) addDependencyNoWrite(ctx context.Context, dep *v1alpha1.Depend
 // without generating schemas. This allows the caller to merge sources and
 // generate schemas in a single pass.
 func (m *Manager) CollectSources(ctx context.Context, ch async.EventChannel) ([]smanager.Source, error) {
-	var sources []smanager.Source
-	var mu sync.Mutex
-
 	eg, egCtx := errgroup.WithContext(ctx)
 
+	sourcesByIndex := make([]smanager.Source, len(m.proj.Spec.Dependencies))
+
 	for i := range m.proj.Spec.Dependencies {
+		i := i
 		dep := &m.proj.Spec.Dependencies[i]
 		desc := "Updating dependency " + GetSourceDescription(*dep)
 		eg.Go(func() error {
@@ -337,9 +337,7 @@ func (m *Manager) CollectSources(ctx context.Context, ch async.EventChannel) ([]
 			ch.SendEvent(desc, async.EventStatusSuccess)
 
 			if src != nil {
-				mu.Lock()
-				sources = append(sources, src)
-				mu.Unlock()
+				sourcesByIndex[i] = src
 			}
 			return nil
 		})
@@ -349,15 +347,23 @@ func (m *Manager) CollectSources(ctx context.Context, ch async.EventChannel) ([]
 		return nil, err
 	}
 
+	var sources []smanager.Source
+	for _, src := range sourcesByIndex {
+		if src != nil {
+			sources = append(sources, src)
+		}
+	}
+
 	return sources, nil
 }
 
 // collectSource returns the schema source for a dependency without generating schemas.
 func (m *Manager) collectSource(ctx context.Context, dep *v1alpha1.Dependency) (smanager.Source, error) {
+	desc := GetSourceDescription(*dep)
 	switch {
 	case dep.Type == v1alpha1.DependencyTypeXpkg:
 		if dep.Xpkg == nil {
-			return nil, errors.New("xpkg dependency has no package reference")
+			return nil, errors.Errorf("xpkg dependency %q is missing xpkg.package; set xpkg.package to a valid package reference", desc)
 		}
 
 		// If the version is a digest, format the OCI ref as
@@ -378,7 +384,7 @@ func (m *Manager) collectSource(ctx context.Context, dep *v1alpha1.Dependency) (
 	case dep.K8s != nil:
 		return smanager.NewK8sSource(*dep), nil
 	default:
-		return nil, errors.New("dependency has no source configured")
+		return nil, errors.Errorf("dependency %q has no source configured; set exactly one of xpkg, git, http, or k8s", desc)
 	}
 }
 

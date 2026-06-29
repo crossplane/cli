@@ -256,20 +256,17 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 	// Collect all schema sources (dependencies + local APIs) and generate
 	// schemas in a single pass. This is important for TypeScript generation
 	// where all CRDs should be processed together for proper cross-references.
-	var allSources []manager.Source
-	if b.dependencyManager != nil {
-		depSources, err := b.dependencyManager.CollectSources(ctx, o.eventCh)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to collect dependency sources")
-		}
-		allSources = append(allSources, depSources...)
-	}
-
-	// Add the local APIs source
-	allSources = append(allSources, manager.NewFSSource(project.Spec.Paths.APIs, apisSource))
-
-	// Generate schemas from all sources in a single pass
 	if b.schemaManager != nil {
+		var allSources []manager.Source
+		if b.dependencyManager != nil {
+			depSources, err := b.dependencyManager.CollectSources(ctx, o.eventCh)
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to collect dependency sources")
+			}
+			allSources = append(allSources, depSources...)
+		}
+		allSources = append(allSources, manager.NewFSSource(project.Spec.Paths.APIs, apisSource))
+
 		o.eventCh.SendEvent("Generating schemas", async.EventStatusStarted)
 		if err := b.schemaManager.GenerateFromMultipleSources(ctx, allSources); err != nil {
 			o.eventCh.SendEvent("Generating schemas", async.EventStatusFailure)

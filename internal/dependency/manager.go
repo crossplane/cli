@@ -315,6 +315,101 @@ func (m *Manager) addDependencyNoWrite(ctx context.Context, dep *v1alpha1.Depend
 	}
 }
 
+// CollectSources returns all schema sources from the project's dependencies
+// without generating schemas. This allows the caller to merge sources and
+// generate schemas in a single pass.
+func (m *Manager) CollectSources(ctx context.Context, ch async.EventChannel) ([]smanager.Source, error) {
+	var sources []smanager.Source
+	var mu sync.Mutex
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	for i := range m.proj.Spec.Dependencies {
+		dep := &m.proj.Spec.Dependencies[i]
+		desc := "Updating dependency " + GetSourceDescription(*dep)
+		eg.Go(func() error {
+			ch.SendEvent(desc, async.EventStatusStarted)
+			src, err := m.collectSource(egCtx, dep)
+			if err != nil {
+				ch.SendEvent(desc, async.EventStatusFailure)
+				return err
+			}
+			ch.SendEvent(desc, async.EventStatusSuccess)
+
+			if src != nil {
+				mu.Lock()
+				sources = append(sources, src)
+				mu.Unlock()
+			}
+			return nil
+		})
+	}
+
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
+
+	return sources, nil
+}
+
+// collectSource returns the schema source for a dependency without generating schemas.
+func (m *Manager) collectSource(ctx context.Context, dep *v1alpha1.Dependency) (smanager.Source, error) {
+	switch {
+	case dep.Type == v1alpha1.DependencyTypeXpkg:
+		if dep.Xpkg == nil {
+			return nil, errors.New("xpkg dependency has no package reference")
+		}
+
+		// If the version is a digest, format the OCI ref as
+		// repo@digest. Otherwise, use repo:tag, where tag may be a semver
+		// constraint.
+		ref := dep.Xpkg.Package
+		if _, err := conregv1.NewHash(dep.Xpkg.Version); err == nil {
+			ref = fmt.Sprintf("%s@%s", ref, dep.Xpkg.Version)
+		} else if dep.Xpkg.Version != "" {
+			ref = fmt.Sprintf("%s:%s", ref, dep.Xpkg.Version)
+		}
+
+		return m.collectPackageSource(ctx, ref)
+	case dep.Git != nil:
+		return smanager.NewGitSource(*dep, m.gitCloner, m.gitAuthProvider), nil
+	case dep.HTTP != nil:
+		return smanager.NewHTTPSource(*dep), nil
+	case dep.K8s != nil:
+		return smanager.NewK8sSource(*dep), nil
+	default:
+		return nil, errors.New("dependency has no source configured")
+	}
+}
+
+// collectPackageSource fetches a package and returns its CRD source without generating schemas.
+func (m *Manager) collectPackageSource(ctx context.Context, ref string) (smanager.Source, error) {
+	resolvedRef, version, err := m.resolver.Resolve(ctx, ref)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to resolve %s", ref)
+	}
+
+	pullPolicy := corev1.PullIfNotPresent
+	pkg, err := m.client.Get(ctx, resolvedRef.String(), runtimexpkg.WithPullPolicy(pullPolicy))
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to fetch %s", ref)
+	}
+
+	crdFS, err := clixpkg.CRDFilesystem(pkg.Package)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot extract CRDs from %s", ref)
+	}
+
+	// Use the resolved version so constraint and exact-version inputs
+	// collapse to one schema-lock entry.
+	id := pkg.Source + "@" + pkg.Digest
+	if version != "" {
+		id = pkg.Source + ":" + version
+	}
+
+	return smanager.NewXpkgSource(id, pkg.Digest, crdFS), nil
+}
+
 // Clean removes all generated schemas.
 func (m *Manager) Clean() error {
 	return m.projFS.RemoveAll(m.proj.Spec.Paths.Schemas)

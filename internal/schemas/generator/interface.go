@@ -43,6 +43,7 @@ func AllLanguages() []Interface {
 		&jsonGenerator{},
 		&kclGenerator{},
 		&pythonGenerator{},
+		&typescriptGenerator{},
 	}
 }
 

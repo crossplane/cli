@@ -8,6 +8,21 @@
   // We only want renovate to rebase PRs when they have conflicts, default
   // "auto" mode is not required.
   rebaseWhen: 'conflicted',
+  // Custom managers for non-standard file formats
+  customManagers: [
+    {
+      // Manage npm dependencies in TypeScript function template
+      customType: 'regex',
+      fileMatch: [
+        'cmd/crossplane/function/templates/typescript/package\\.json\\.tmpl$',
+      ],
+      matchStrings: [
+        '"(?<depName>@?[^"]+)":\\s*"\\^(?<currentValue>[^"]+)"',
+      ],
+      datasourceTemplate: 'npm',
+      versioningTemplate: 'npm',
+    },
+  ],
   // The maximum number of PRs to be created in parallel
   prConcurrentLimit: 5,
   // The branches renovate should target

@@ -253,19 +253,25 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 	}
 	o.eventCh.SendEvent("Collecting resources", async.EventStatusSuccess)
 
-	// Generate schemas for declared dependencies. The dependency manager
-	// short-circuits sources whose recorded version still matches, so this is
-	// cheap on the steady-state path.
+	// Collect all schema sources (dependencies + local APIs) and generate
+	// schemas in a single pass. This is important for TypeScript generation
+	// where all CRDs should be processed together for proper cross-references.
+	var allSources []manager.Source
 	if b.dependencyManager != nil {
-		if err := b.dependencyManager.AddAll(ctx, o.eventCh); err != nil {
-			return nil, errors.Wrap(err, "failed to generate dependency schemas")
+		depSources, err := b.dependencyManager.CollectSources(ctx, o.eventCh)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to collect dependency sources")
 		}
+		allSources = append(allSources, depSources...)
 	}
 
-	// Generate language-specific schemas from XRDs.
+	// Add the local APIs source
+	allSources = append(allSources, manager.NewFSSource(project.Spec.Paths.APIs, apisSource))
+
+	// Generate schemas from all sources in a single pass
 	if b.schemaManager != nil {
 		o.eventCh.SendEvent("Generating schemas", async.EventStatusStarted)
-		if _, err := b.schemaManager.Generate(ctx, manager.NewFSSource(project.Spec.Paths.APIs, apisSource)); err != nil {
+		if err := b.schemaManager.GenerateFromMultipleSources(ctx, allSources); err != nil {
 			o.eventCh.SendEvent("Generating schemas", async.EventStatusFailure)
 			return nil, errors.Wrap(err, "failed to generate schemas")
 		}

@@ -51,6 +51,7 @@ func (realIdentifier) Identify(fromFS afero.Fs, imageConfigs []pkgv1beta1.ImageC
 	builders := []Builder{
 		newKCLBuilder(imageConfigs),
 		newPythonBuilder(imageConfigs),
+		newTypescriptBuilder(imageConfigs),
 		newGoBuilder(imageConfigs),
 		newGoTemplatingBuilder(imageConfigs),
 	}

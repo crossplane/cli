@@ -331,6 +331,7 @@ cat > tsconfig.json << 'TSEOF'
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "rootDir": "gen",
     "outDir": "dist"
   },
   "include": ["gen/**/*.ts"]
@@ -343,6 +344,12 @@ npx tsc
 # Copy generated files to models directory for output
 mkdir -p models
 cp -r dist/* models/
+
+# crd-generate emits _schemas/ as pre-compiled JS (not TypeScript), so tsc does
+# not process it and it never appears in dist/. Copy it directly from gen/.
+if [ -d gen/_schemas ]; then
+  cp -r gen/_schemas models/
+fi
 
 # Update package.json for distribution (remove devDependencies and crd-generate config)
 cat > models/package.json << 'DISTEOF'

@@ -161,6 +161,10 @@ func (c *convertCmd) writeOutputs(k *kong.Context, outputs []convertOutput) erro
 		return nil
 	}
 
+	if c.JSONSchema && len(outputs) > 1 {
+		return errors.Errorf("cannot write %d JSON Schemas to a single output; use --output-dir to write one file per schema", len(outputs))
+	}
+
 	var buf bytes.Buffer
 	for _, o := range outputs {
 		buf.Write(o.data)

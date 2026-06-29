@@ -143,16 +143,8 @@ func TestConvertJSONSchema(t *testing.T) {
 			fs := afero.NewMemMapFs()
 			tc.cmd.fs = fs
 
-			buf := &bytes.Buffer{}
-			app, err := kong.New(&struct{}{})
-			if err != nil {
-				t.Fatalf("cannot create kong app: %v", err)
-			}
-			k, err := app.Parse([]string{})
-			if err != nil {
-				t.Fatalf("cannot parse kong: %v", err)
-			}
-			k.Stdout = buf
+			k := newKongContext(t)
+			buf := k.Stdout.(*bytes.Buffer)
 
 			outputs, err := toJSONSchemaOutputs(crds)
 			if err != nil {
@@ -186,6 +178,67 @@ func TestConvertJSONSchema(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConvertJSONSchemaMultiSchema(t *testing.T) {
+	claimNames := &extv1.CustomResourceDefinitionNames{
+		Kind:   "TestApp",
+		Plural: "testapps",
+	}
+	xrd := minimalXRD(apiextensionsv1.CompositeResourceScopeLegacyCluster, claimNames)
+	crds, err := toCRDs(xrd)
+	if err != nil {
+		t.Fatalf("toCRDs(): unexpected error: %v", err)
+	}
+
+	outputs, err := toJSONSchemaOutputs(crds)
+	if err != nil {
+		t.Fatalf("toJSONSchemaOutputs(): unexpected error: %v", err)
+	}
+
+	if len(outputs) < 2 {
+		t.Fatalf("expected at least 2 outputs for legacy XRD with Claim, got %d", len(outputs))
+	}
+
+	// OutputDir should succeed and write each schema to its own file.
+	fs := afero.NewMemMapFs()
+	cmd := convertCmd{JSONSchema: true, OutputDir: "/schemas", fs: fs}
+	k := newKongContext(t)
+	if err := cmd.writeOutputs(k, outputs); err != nil {
+		t.Fatalf("writeOutputs(OutputDir): unexpected error: %v", err)
+	}
+	for _, o := range outputs {
+		if _, err := afero.ReadFile(fs, filepath.Join("/schemas", o.output)); err != nil {
+			t.Errorf("expected file %s to exist: %v", o.output, err)
+		}
+	}
+
+	// Stdout and OutputFile should reject multiple schemas.
+	cmd = convertCmd{JSONSchema: true, fs: afero.NewMemMapFs()}
+	k = newKongContext(t)
+	if err := cmd.writeOutputs(k, outputs); err == nil {
+		t.Error("expected error writing multiple JSON Schemas to stdout")
+	}
+
+	cmd = convertCmd{JSONSchema: true, OutputFile: "/out.json", fs: afero.NewMemMapFs()}
+	k = newKongContext(t)
+	if err := cmd.writeOutputs(k, outputs); err == nil {
+		t.Error("expected error writing multiple JSON Schemas to single file")
+	}
+}
+
+func newKongContext(t *testing.T) *kong.Context {
+	t.Helper()
+	app, err := kong.New(&struct{}{})
+	if err != nil {
+		t.Fatalf("cannot create kong app: %v", err)
+	}
+	k, err := app.Parse([]string{})
+	if err != nil {
+		t.Fatalf("cannot parse kong: %v", err)
+	}
+	k.Stdout = &bytes.Buffer{}
+	return k
 }
 
 // minimalXRD returns a minimal valid XRD with the given scope and (optional)

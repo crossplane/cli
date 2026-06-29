@@ -20,6 +20,7 @@ import (
 	"context"
 	"io/fs"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/afero"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -176,7 +177,7 @@ func (t typescriptGenerator) collectCRDs(fromFS, workFS afero.Fs, crdsDir string
 				if err != nil {
 					return errors.Wrapf(err, "failed to read generated CRD %q", xrPath)
 				}
-				outPath := filepath.Join(crdsDir, filepath.Base(xrPath))
+				outPath := filepath.Join(crdsDir, stagedCRDPath(path, "xrd"))
 				if err := afero.WriteFile(workFS, outPath, crdBS, 0o644); err != nil {
 					return errors.Wrapf(err, "failed to write CRD %q", outPath)
 				}
@@ -187,7 +188,7 @@ func (t typescriptGenerator) collectCRDs(fromFS, workFS afero.Fs, crdsDir string
 				if err != nil {
 					return errors.Wrapf(err, "failed to read generated claim CRD %q", claimPath)
 				}
-				outPath := filepath.Join(crdsDir, filepath.Base(claimPath))
+				outPath := filepath.Join(crdsDir, stagedCRDPath(path, "claim"))
 				if err := afero.WriteFile(workFS, outPath, crdBS, 0o644); err != nil {
 					return errors.Wrapf(err, "failed to write claim CRD %q", outPath)
 				}
@@ -202,7 +203,7 @@ func (t typescriptGenerator) collectCRDs(fromFS, workFS afero.Fs, crdsDir string
 			}
 
 			// Write the CRD to the crds directory
-			outPath := filepath.Join(crdsDir, filepath.Base(path))
+			outPath := filepath.Join(crdsDir, stagedCRDPath(path, ""))
 			if err := afero.WriteFile(workFS, outPath, bs, 0o644); err != nil {
 				return errors.Wrapf(err, "failed to write CRD %q", outPath)
 			}
@@ -213,6 +214,17 @@ func (t typescriptGenerator) collectCRDs(fromFS, workFS afero.Fs, crdsDir string
 	})
 
 	return crdCount, err
+}
+
+func stagedCRDPath(sourcePath, suffix string) string {
+	clean := filepath.ToSlash(filepath.Clean(sourcePath))
+	clean = strings.TrimPrefix(clean, "./")
+	clean = strings.TrimPrefix(clean, "/")
+	if suffix != "" {
+		ext := filepath.Ext(clean)
+		clean = strings.TrimSuffix(clean, ext) + "-" + suffix + ext
+	}
+	return strings.ReplaceAll(clean, "/", "_")
 }
 
 // generateFromCRDFiles runs crd-generate on the collected CRD files and
@@ -301,7 +313,7 @@ cat > package.json << 'PKGEOF'
 PKGEOF
 
 # Install dependencies (including crd-generate)
-npm install 2>/dev/null
+npm install
 
 # Run crd-generate (reads config from package.json)
 npx crd-generate
@@ -359,7 +371,7 @@ DISTEOF
 `,
 		},
 	); err != nil {
-		return nil, errors.Wrap(err, "failed to generate TypeScript schemas")
+		return nil, errors.Wrap(err, "failed to install npm dependencies and generate TypeScript schemas; see npm output above for details")
 	}
 
 	// Create output filesystem and copy the models directory

@@ -43,7 +43,7 @@ import (
 
 const (
 	// typescriptBuildImage is the image in which we build the function.
-	typescriptBuildImage = "docker.io/library/node:25-slim"
+	typescriptBuildImage = "docker.io/library/node:24-slim"
 	// typescriptRuntimeImage is the distroless base used at runtime.
 	typescriptRuntimeImage = "gcr.io/distroless/nodejs24-debian12"
 	// typescriptBuildScript is the shell pipeline that runs in the build
@@ -190,7 +190,7 @@ func (b *typescriptBuilder) buildFunction(ctx context.Context, c BuildContext) (
 	buildScript := `set -eu
 # First, install dependencies for the schemas package so TypeScript can resolve the base types
 if [ -d "/schemas/typescript" ] && [ -f "/schemas/typescript/package.json" ]; then
-    cd /schemas/typescript && npm install --no-fund 2>/dev/null
+    cd /schemas/typescript && npm install --no-fund
     cd -
 fi
 npm install --no-fund
@@ -214,7 +214,7 @@ cp -rL . /function
 		return nil, errors.Wrap(err, "failed to start typescript build container")
 	}
 	defer func() {
-		_ = docker.StopContainerByID(ctx, cid)
+		_ = docker.StopContainerByID(context.Background(), cid)
 	}()
 
 	if err := docker.WaitForContainerByID(ctx, cid); err != nil {

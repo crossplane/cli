@@ -444,7 +444,10 @@ func (c *generateCmd) generateTypescriptFiles(targetFS afero.Fs) error {
 	}
 
 	// Parse top-level templates
-	tmpls := template.Must(template.ParseFS(typescriptTemplates, "templates/typescript/*.*"))
+	tmpls, err := template.ParseFS(typescriptTemplates, "templates/typescript/*.*")
+	if err != nil {
+		return errors.Wrap(err, "cannot parse top-level TypeScript templates")
+	}
 	if err := renderTemplates(targetFS, tmpls, data); err != nil {
 		return err
 	}
@@ -453,7 +456,10 @@ func (c *generateCmd) generateTypescriptFiles(targetFS afero.Fs) error {
 	if err := targetFS.Mkdir("src", 0o755); err != nil {
 		return errors.Wrap(err, "cannot create src directory")
 	}
-	tmpls = template.Must(template.ParseFS(typescriptTemplates, "templates/typescript/src/*.*"))
+	tmpls, err = template.ParseFS(typescriptTemplates, "templates/typescript/src/*.*")
+	if err != nil {
+		return errors.Wrap(err, "cannot parse TypeScript source templates")
+	}
 	return renderTemplates(afero.NewBasePathFs(targetFS, "src"), tmpls, data)
 }
 

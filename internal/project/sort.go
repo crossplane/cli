@@ -30,8 +30,8 @@ import (
 func SortImages(imgMap ImageTagMap, repo string) (cfgImage v1.Image, fnImages map[name.Repository][]v1.Image, err error) {
 	fnImages = make(map[name.Repository][]v1.Image)
 	for tag, image := range imgMap {
-		// Check if this is the configuration image by looking for the configuration tag suffix
-		if tag.TagStr() == ConfigurationTag {
+		// Check if this is the configuration image by matching both repository and tag
+		if tag.Repository.String() == repo && tag.TagStr() == ConfigurationTag {
 			cfgImage = image
 			continue
 		}

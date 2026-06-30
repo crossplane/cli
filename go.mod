@@ -24,7 +24,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/gobuffalo/flect v1.0.3
 	github.com/google/go-cmp v0.7.0
-	github.com/google/go-containerregistry v0.21.2
+	github.com/google/go-containerregistry v0.21.3
 	github.com/google/ko v0.18.1
 	github.com/invopop/jsonschema v0.14.0
 	github.com/kubernetes-sigs/kro v0.9.1
@@ -47,7 +47,7 @@ require (
 	k8s.io/apimachinery v0.35.3
 	k8s.io/apiserver v0.35.1
 	k8s.io/cli-runtime v0.35.1
-	k8s.io/client-go v0.35.1
+	k8s.io/client-go v0.35.3
 	k8s.io/kube-openapi v0.0.0-20260127142750-a19766b6e2d4
 	k8s.io/metrics v0.35.1
 	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5
@@ -224,6 +224,9 @@ require (
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
+	github.com/moby/moby/api v1.54.0 // indirect
+	github.com/moby/moby/client v0.3.0 // indirect
+	github.com/moby/sys/atomicwriter v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
@@ -261,7 +264,7 @@ require (
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/sigstore/cosign/v2 v2.6.3 // indirect
-	github.com/sigstore/cosign/v3 v3.0.5 // indirect
+	github.com/sigstore/cosign/v3 v3.0.6 // indirect
 	github.com/sigstore/protobuf-specs v0.5.1 // indirect
 	github.com/sigstore/rekor v1.5.2 // indirect
 	github.com/sigstore/rekor-tiles/v2 v2.2.1 // indirect

@@ -2,8 +2,6 @@ name: Update CLI Docs
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
 
@@ -12,6 +10,9 @@ permissions:
 
 jobs:
   update-docs:
+    concurrency:
+      group: update-cli-docs
+      cancel-in-progress: true
     permissions:
       contents: write
       pull-requests: write
@@ -49,20 +50,16 @@ jobs:
       - name: Determine Target Directory
         id: target
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="${GITHUB_REF#refs/tags/}"
-            DIR_NAME="${VERSION#v}"
-            echo "dir=content/cli/${DIR_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "dir=content/cli/master" >> "$GITHUB_OUTPUT"
-          fi
+          VERSION="${GITHUB_REF#refs/tags/}"
+          MINOR_VERSION="${VERSION%.*}"
+          echo "dir=content/cli/${MINOR_VERSION#v}" >> "$GITHUB_OUTPUT"
 
       - name: Update Docs
         run: |
           mkdir -p docs/${{ steps.target.outputs.dir }}
           cp generated-docs/command-reference.md docs/${{ steps.target.outputs.dir }}/command-reference.md
           cd docs
-          if ! git diff --quiet; then
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
             echo "docs-changed=true" >> "$GITHUB_ENV"
           fi
 

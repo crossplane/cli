@@ -77,10 +77,10 @@ func AllLanguages(opts ...Option) []Interface {
 
 // Filter returns the subset of generators whose language identifier appears
 // in langs. The order of generators in the result matches the order of all.
-// If langs is empty, all generators are returned unchanged.
+// If langs is empty, the default generators are returned (excluding TypeScript).
 func Filter(all []Interface, langs []string) []Interface {
 	if len(langs) == 0 {
-		return all
+		return DefaultLanguages()
 	}
 	out := make([]Interface, 0, len(all))
 	for _, g := range all {

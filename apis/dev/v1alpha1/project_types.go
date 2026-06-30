@@ -135,8 +135,8 @@ type ProjectPackageMetadata struct {
 // produced both for the project's own XRDs and for its declared dependencies.
 type ProjectSchemas struct {
 	// Languages restricts schema generation to the listed languages.
-	// Supported values are "go", "json", "kcl", "python", and "typescript".
 	// If not specified, schemas are generated for all supported languages.
+	// +kubebuilder:validation:items:Enum=go;json;kcl;python;typescript
 	Languages []string `json:"languages,omitempty"`
 }
 

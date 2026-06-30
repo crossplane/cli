@@ -20,6 +20,7 @@ package manager
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -259,6 +260,8 @@ func (m *Manager) GenerateFromMultipleSources(ctx context.Context, sources []Sou
 			crdSources = append(crdSources, src)
 		case SourceTypeOpenAPI:
 			openAPISources = append(openAPISources, src)
+		default:
+			return errors.Errorf("cannot generate schemas for source %q: source type %q is not supported; use a CRD or OpenAPI source", src.ID(), src.Type())
 		}
 	}
 
@@ -285,7 +288,7 @@ func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Sourc
 	mergedFS := afero.NewMemMapFs()
 	sourceVersions := make(map[string]string)
 
-	for _, src := range sources {
+	for i, src := range sources {
 		version, err := src.Version(ctx)
 		if err != nil {
 			return errors.Wrapf(err, "failed to get version for source %s", src.ID())
@@ -296,10 +299,9 @@ func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Sourc
 		if err != nil {
 			return err
 		}
-		if existing == version {
-			// Source is up to date, but we still need to include its resources
-			// for the merged generation to work correctly
-		}
+		// Note: Even if existing == version, we still need to include the
+		// resources for the merged generation to work correctly.
+		_ = existing
 
 		srcFS, err := src.Resources(ctx)
 		if err != nil {
@@ -308,7 +310,7 @@ func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Sourc
 
 		// Copy resources into merged filesystem under a unique prefix
 		// to avoid file name collisions
-		prefix := sanitizeSourceID(src.ID())
+		prefix := fmt.Sprintf("%04d_%s", i, sanitizeSourceID(src.ID()))
 		prefixedFS := afero.NewBasePathFs(mergedFS, prefix)
 		if err := filesystem.CopyFilesBetweenFs(srcFS, prefixedFS); err != nil {
 			return errors.Wrapf(err, "failed to copy resources from source %s", src.ID())

@@ -51,9 +51,11 @@ func (realIdentifier) Identify(fromFS afero.Fs, imageConfigs []pkgv1beta1.ImageC
 	builders := []Builder{
 		newKCLBuilder(imageConfigs),
 		newPythonBuilder(imageConfigs),
-		newTypescriptBuilder(imageConfigs),
 		newGoBuilder(imageConfigs),
 		newGoTemplatingBuilder(imageConfigs),
+		// TypeScript matcher is broad (package.json + src/), so it must come
+		// after Go builders to avoid misclassifying Go projects with frontend files.
+		newTypescriptBuilder(imageConfigs),
 	}
 	for _, b := range builders {
 		ok, err := b.match(fromFS)

@@ -19,6 +19,7 @@ package functions
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"path"
@@ -45,21 +46,13 @@ const (
 	// typescriptBuildImage is the image in which we build the function.
 	typescriptBuildImage = "docker.io/library/node:24-slim"
 	// typescriptRuntimeImage is the distroless base used at runtime.
-	typescriptRuntimeImage = "gcr.io/distroless/nodejs24-debian12"
-	// typescriptBuildScript is the shell pipeline that runs in the build
-	// container. Installs dependencies and compiles TypeScript using tsgo.
-	// We use npm install instead of npm ci because the schemas package may
-	// be added dynamically and the lock file won't be in sync.
-	typescriptBuildScript = `set -eu
-npm install --no-fund
-npm run build
-`
+	typescriptRuntimeImage = "gcr.io/distroless/nodejs24-debian13"
 )
 
 // typescriptBuilder builds TypeScript composition functions.
 //
 // A TypeScript embedded function is a full function-sdk-typescript project
-// (package.json + src/). We build it by running npm ci and npm run build
+// (package.json + src/). We build it by running npm install and npm run build
 // (which invokes tsgo) in a Node.js build container, then copy the dist/
 // and node_modules/ onto a distroless Node.js base.
 type typescriptBuilder struct {
@@ -151,6 +144,8 @@ func (b *typescriptBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Ima
 // the project's relative layout so that npm resolves the schemas path-dep from
 // package.json. After building, we copy the built artifacts to /function and tar
 // that directory for the runtime layer.
+//
+//nolint:contextcheck // The defer uses context.Background() intentionally for cleanup.
 func (b *typescriptBuilder) buildFunction(ctx context.Context, c BuildContext) ([]byte, error) {
 	fnFS := c.FunctionFS()
 	// Exclude node_modules the user might have created locally.
@@ -165,7 +160,10 @@ func (b *typescriptBuilder) buildFunction(ctx context.Context, c BuildContext) (
 	// the relative path in package.json (e.g., "file:../../schemas/typescript").
 	tsSchemasRel := path.Join(c.SchemasPath, "typescript")
 	tsSchemasFS := afero.NewBasePathFs(c.ProjectFS, tsSchemasRel)
-	hasTSSchemas, _ := afero.DirExists(tsSchemasFS, ".")
+	hasTSSchemas, err := afero.DirExists(tsSchemasFS, ".")
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot check for TypeScript schemas at %q", tsSchemasRel)
+	}
 	var schemasTar []byte
 	if hasTSSchemas {
 		schemasTar, err = filesystem.FSToTar(tsSchemasFS, tsSchemasRel)
@@ -187,10 +185,11 @@ func (b *typescriptBuilder) buildFunction(ctx context.Context, c BuildContext) (
 	// 1. Runs npm install and build in the function's original path (so relative deps resolve)
 	// 2. Copies the built artifacts to /function for the runtime layer
 	fnPath := "/" + filepath.ToSlash(c.FunctionPath)
-	buildScript := `set -eu
+	tsSchemasPath := "/" + filepath.ToSlash(tsSchemasRel)
+	buildScript := fmt.Sprintf(`set -eu
 # First, install dependencies for the schemas package so TypeScript can resolve the base types
-if [ -d "/schemas/typescript" ] && [ -f "/schemas/typescript/package.json" ]; then
-    cd /schemas/typescript && npm install --no-fund
+if [ -d "%s" ] && [ -f "%s/package.json" ]; then
+    cd %s && npm install --no-fund
     cd -
 fi
 npm install --no-fund
@@ -198,7 +197,7 @@ npm run build
 # Use -L to dereference symlinks so file: dependencies (like crossplane-models)
 # are copied as actual files, not symlinks that won't resolve at runtime.
 cp -rL . /function
-`
+`, tsSchemasPath, tsSchemasPath, tsSchemasPath)
 
 	opts := []docker.StartContainerOption{
 		docker.StartWithCopyFiles(fnTar, "/"),
@@ -214,6 +213,7 @@ cp -rL . /function
 		return nil, errors.Wrap(err, "failed to start typescript build container")
 	}
 	defer func() {
+		// Use context.Background() so container cleanup happens even if ctx is cancelled.
 		_ = docker.StopContainerByID(context.Background(), cid)
 	}()
 

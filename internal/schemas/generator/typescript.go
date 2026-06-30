@@ -18,6 +18,8 @@ package generator
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -42,50 +44,6 @@ const (
 	// We use a Node.js image and install the tool at runtime.
 	typescriptImage = "docker.io/library/node:22-slim"
 )
-
-// typescriptPackageJSON is the package.json emitted alongside the generated
-// TypeScript schemas so the directory can be used as an npm package named
-// "crossplane-models".
-const typescriptPackageJSON = `{
-  "name": "crossplane-models",
-  "version": "0.0.0",
-  "type": "module",
-  "main": "index.js",
-  "types": "index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./index.d.ts",
-      "default": "./index.js"
-    },
-    "./*": {
-      "types": "./*.d.ts",
-      "default": "./*.js"
-    }
-  },
-  "dependencies": {
-    "@kubernetes-models/apimachinery": "^3.0.2",
-    "@kubernetes-models/base": "^6.0.1"
-  }
-}
-`
-
-// typescriptTSConfig is the tsconfig.json for compiling the generated TypeScript.
-const typescriptTSConfig = `{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "outDir": "."
-  },
-  "include": ["gen/**/*.ts"]
-}
-`
 
 type typescriptGenerator struct{}
 
@@ -133,14 +91,14 @@ func (t typescriptGenerator) collectCRDs(fromFS, workFS afero.Fs, crdsDir string
 	xrdFS := afero.NewMemMapFs()
 	xrdBaseFolder := "workdir"
 	if err := xrdFS.MkdirAll(xrdBaseFolder, 0o755); err != nil {
-		return 0, err
+		return 0, errors.Wrap(err, "cannot prepare TypeScript schema generation workspace")
 	}
 
 	crdCount := 0
 
 	err := afero.Walk(fromFS, "", func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "cannot read %q while collecting API definitions for TypeScript models", path)
 		}
 
 		if info.IsDir() {
@@ -168,7 +126,7 @@ func (t typescriptGenerator) collectCRDs(fromFS, workFS afero.Fs, crdsDir string
 			// Process the XRD to generate CRDs
 			xrPath, claimPath, err := crd.ProcessXRD(xrdFS, bs, path, xrdBaseFolder)
 			if err != nil {
-				return err
+				return errors.Wrapf(err, "cannot convert XRD %q to CRDs for TypeScript models; check that the XRD is valid", path)
 			}
 
 			// Copy generated CRDs to the crds directory
@@ -220,11 +178,16 @@ func stagedCRDPath(sourcePath, suffix string) string {
 	clean := filepath.ToSlash(filepath.Clean(sourcePath))
 	clean = strings.TrimPrefix(clean, "./")
 	clean = strings.TrimPrefix(clean, "/")
+	// Add a stable hash of the original clean path so flattened names do not collide.
+	sum := sha256.Sum256([]byte(clean))
+	hash := hex.EncodeToString(sum[:])[:12]
 	if suffix != "" {
 		ext := filepath.Ext(clean)
 		clean = strings.TrimSuffix(clean, ext) + "-" + suffix + ext
 	}
-	return strings.ReplaceAll(clean, "/", "_")
+	ext := filepath.Ext(clean)
+	flat := strings.ReplaceAll(strings.TrimSuffix(clean, ext), "/", "_")
+	return flat + "-" + hash + ext
 }
 
 // generateFromCRDFiles runs crd-generate on the collected CRD files and

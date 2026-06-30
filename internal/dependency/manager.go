@@ -324,7 +324,6 @@ func (m *Manager) CollectSources(ctx context.Context, ch async.EventChannel) ([]
 	sourcesByIndex := make([]smanager.Source, len(m.proj.Spec.Dependencies))
 
 	for i := range m.proj.Spec.Dependencies {
-		i := i
 		dep := &m.proj.Spec.Dependencies[i]
 		desc := "Updating dependency " + GetSourceDescription(*dep)
 		eg.Go(func() error {
@@ -362,7 +361,7 @@ func (m *Manager) collectSource(ctx context.Context, dep *v1alpha1.Dependency) (
 	desc := GetSourceDescription(*dep)
 	switch {
 	case dep.Type == v1alpha1.DependencyTypeXpkg:
-		if dep.Xpkg == nil {
+		if dep.Xpkg == nil || dep.Xpkg.Package == "" {
 			return nil, errors.Errorf("xpkg dependency %q is missing xpkg.package; set xpkg.package to a valid package reference", desc)
 		}
 
@@ -392,18 +391,18 @@ func (m *Manager) collectSource(ctx context.Context, dep *v1alpha1.Dependency) (
 func (m *Manager) collectPackageSource(ctx context.Context, ref string) (smanager.Source, error) {
 	resolvedRef, version, err := m.resolver.Resolve(ctx, ref)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to resolve %s", ref)
+		return nil, errors.Wrapf(err, "cannot resolve package %q; check that the package exists and that the version or digest is valid", ref)
 	}
 
 	pullPolicy := corev1.PullIfNotPresent
 	pkg, err := m.client.Get(ctx, resolvedRef.String(), runtimexpkg.WithPullPolicy(pullPolicy))
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to fetch %s", ref)
+		return nil, errors.Wrapf(err, "cannot download package %q; check registry access and credentials", ref)
 	}
 
 	crdFS, err := clixpkg.CRDFilesystem(pkg.Package)
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot extract CRDs from %s", ref)
+		return nil, errors.Wrapf(err, "cannot extract CRDs from package %q; check that it is a valid Crossplane package", ref)
 	}
 
 	// Use the resolved version so constraint and exact-version inputs

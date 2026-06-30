@@ -414,7 +414,10 @@ type typescriptTemplateData struct {
 }
 
 func (c *generateCmd) generateTypescriptFiles(targetFS afero.Fs) error {
-	hasSchemas, _ := afero.DirExists(c.schemasFS, "typescript")
+	hasSchemas, err := afero.DirExists(c.schemasFS, "typescript")
+	if err != nil {
+		return errors.Wrap(err, "cannot inspect typescript schemas directory")
+	}
 	if hasSchemas {
 		entries, err := afero.ReadDir(c.schemasFS, "typescript")
 		if err != nil {

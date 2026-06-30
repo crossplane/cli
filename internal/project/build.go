@@ -261,7 +261,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 		if b.dependencyManager != nil {
 			depSources, err := b.dependencyManager.CollectSources(ctx, o.eventCh)
 			if err != nil {
-				return nil, errors.Wrap(err, "failed to collect dependency sources")
+				return nil, errors.Wrap(err, "cannot load schemas from project dependencies; check that each dependency is reachable and contains valid API definitions")
 			}
 			allSources = append(allSources, depSources...)
 		}

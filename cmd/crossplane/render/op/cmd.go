@@ -216,15 +216,10 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 	}
 	defer render.StopFunctionRuntimes(log, fnAddrs)
 
-	addrs := fnAddrs.Addresses()
-	if ctxHandle != nil {
-		addrs[contextfn.FunctionName] = ctxHandle.Target
-	}
-
 	// Build and execute the render request.
 	in := render.OperationInputs{
 		Operation:           op,
-		FunctionAddrs:       addrs,
+		FunctionAddrs:       fnAddrs.Addresses(),
 		RequiredResources:   rrs,
 		RequiredSchemas:     rsc,
 		FunctionCredentials: fcreds,

@@ -18,8 +18,10 @@ package xrd
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
@@ -34,12 +36,18 @@ import (
 	apiextensionsv2 "github.com/crossplane/crossplane/apis/v2/apiextensions/v2"
 
 	commonIO "github.com/crossplane/cli/v2/cmd/crossplane/convert/io"
+	"github.com/crossplane/cli/v2/internal/schemas/generator"
 
 	_ "embed"
 )
 
 //go:embed help/convert.md
 var convertHelp string
+
+type convertOutput struct {
+	output string
+	data   []byte
+}
 
 type convertCmd struct {
 	// Arguments.
@@ -50,6 +58,9 @@ type convertCmd struct {
 	// YAML stream.
 	OutputFile string `help:"The file to write the generated CRD YAML to. Legacy XRDs produce a multi-doc YAML stream (XR CRD + Claim CRD)." placeholder:"PATH" predictor:"file"      short:"o"   type:"path"  xor:"output"`
 	OutputDir  string `help:"A directory to write the generated CRDs to. Each CRD gets a separate file named after the CRD."                 placeholder:"DIR"  predictor:"directory" type:"path" xor:"output"`
+
+	// Format flags.
+	JSONSchema bool `help:"Write JSON Schema files instead of CRDs. Useful for YAML language server integration." name:"json-schema"`
 
 	fs afero.Fs
 }
@@ -89,67 +100,89 @@ func (c *convertCmd) Run(k *kong.Context) error {
 		return errors.Wrapf(err, "cannot derive CRDs from XRD %q", xrd.GetName())
 	}
 
-	switch {
-	case c.OutputDir != "":
-		if err := c.fs.MkdirAll(c.OutputDir, 0o755); err != nil {
-			return errors.Wrapf(err, "cannot create output directory %q", c.OutputDir)
-		}
-
-		for _, crd := range crds {
-			path := filepath.Join(c.OutputDir, crd.GetName()+".yaml")
-			if err := c.writeFile(path, []*extv1.CustomResourceDefinition{crd}); err != nil {
-				return err
-			}
-		}
-
-		return nil
-
-	case c.OutputFile != "":
-		return c.writeFile(c.OutputFile, crds)
-
-	default:
-		data, err := marshalCRDs(crds)
-		if err != nil {
-			return err
-		}
-
-		if _, err := k.Stdout.Write(data); err != nil {
-			return errors.Wrap(err, "cannot write output")
-		}
-
-		return nil
+	var outputs []convertOutput
+	if c.JSONSchema {
+		outputs, err = toJSONSchemaOutputs(crds)
+	} else {
+		outputs, err = toCRDOutputs(crds)
 	}
-}
-
-// writeFile marshals the given CRDs to a multi-doc YAML stream and writes it to path.
-func (c *convertCmd) writeFile(path string, crds []*extv1.CustomResourceDefinition) error {
-	data, err := marshalCRDs(crds)
 	if err != nil {
 		return err
 	}
 
-	if err := afero.WriteFile(c.fs, path, data, 0o644); err != nil {
-		return errors.Wrapf(err, "cannot write output file %q", path)
-	}
-
-	return nil
+	return c.writeOutputs(k, outputs)
 }
 
-// marshalCRDs returns the multi-doc YAML stream for the given CRDs.
-func marshalCRDs(crds []*extv1.CustomResourceDefinition) ([]byte, error) {
-	var buf bytes.Buffer
-
+func toCRDOutputs(crds []*extv1.CustomResourceDefinition) ([]convertOutput, error) {
+	outputs := make([]convertOutput, 0, len(crds))
 	for _, crd := range crds {
 		b, err := yaml.Marshal(crd)
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot marshal CRD %q", crd.GetName())
 		}
 
-		buf.WriteString("---\n")
-		buf.Write(b)
+		outputs = append(outputs, convertOutput{
+			output: crd.GetName() + ".yaml",
+			data:   append([]byte("---\n"), b...),
+		})
+	}
+	return outputs, nil
+}
+
+func toJSONSchemaOutputs(crds []*extv1.CustomResourceDefinition) ([]convertOutput, error) {
+	schemas, err := generator.CRDsToJSONSchemas(crds)
+	if err != nil {
+		return nil, err
 	}
 
-	return buf.Bytes(), nil
+	outputs := make([]convertOutput, 0, len(schemas))
+	for _, s := range schemas {
+		outputs = append(outputs, convertOutput{
+			output: fmt.Sprintf("%s_%s_%s.json", s.Group, s.Version, strings.ToLower(s.Kind)),
+			data:   s.Data,
+		})
+	}
+	return outputs, nil
+}
+
+func (c *convertCmd) writeOutputs(k *kong.Context, outputs []convertOutput) error {
+	if c.OutputDir != "" {
+		if err := c.fs.MkdirAll(c.OutputDir, 0o755); err != nil {
+			return errors.Wrapf(err, "cannot create output directory %q", c.OutputDir)
+		}
+
+		for _, o := range outputs {
+			path := filepath.Join(c.OutputDir, o.output)
+			if err := afero.WriteFile(c.fs, path, o.data, 0o644); err != nil {
+				return errors.Wrapf(err, "cannot write output file %q", path)
+			}
+		}
+
+		return nil
+	}
+
+	if c.JSONSchema && len(outputs) > 1 {
+		return errors.Errorf("cannot write %d JSON Schemas to a single output; use --output-dir to write one file per schema", len(outputs))
+	}
+
+	var buf bytes.Buffer
+	for _, o := range outputs {
+		buf.Write(o.data)
+	}
+
+	if c.OutputFile != "" {
+		if err := afero.WriteFile(c.fs, c.OutputFile, buf.Bytes(), 0o644); err != nil {
+			return errors.Wrapf(err, "cannot write output file %q", c.OutputFile)
+		}
+
+		return nil
+	}
+
+	if _, err := k.Stdout.Write(buf.Bytes()); err != nil {
+		return errors.Wrap(err, "cannot write output")
+	}
+
+	return nil
 }
 
 // toCRDs converts a Crossplane XRD into the Kubernetes CRDs that describe

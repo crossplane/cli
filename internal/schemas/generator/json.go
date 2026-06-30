@@ -27,6 +27,7 @@ import (
 
 	"github.com/invopop/jsonschema"
 	"github.com/spf13/afero"
+	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	runtimeSchema "k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/kube-openapi/pkg/spec3"
 	"k8s.io/kube-openapi/pkg/validation/spec"
@@ -36,6 +37,14 @@ import (
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 )
+
+// CRDJSONSchema holds a marshaled JSON Schema derived from a single CRD version.
+type CRDJSONSchema struct {
+	Data    []byte
+	Group   string
+	Version string
+	Kind    string
+}
 
 type jsonGenerator struct{}
 
@@ -114,6 +123,43 @@ func ToJSONSchema(s any, gvk runtimeSchema.GroupVersionKind) (*jsonschema.Schema
 	}
 
 	return &conv, nil
+}
+
+// CRDsToJSONSchemas converts CRD OpenAPI v3 schemas to marshaled JSON Schemas.
+func CRDsToJSONSchemas(crds []*extv1.CustomResourceDefinition) ([]CRDJSONSchema, error) {
+	var results []CRDJSONSchema
+
+	for _, crd := range crds {
+		group := crd.Spec.Group
+		kind := crd.Spec.Names.Kind
+
+		for _, ver := range crd.Spec.Versions {
+			if ver.Schema == nil || ver.Schema.OpenAPIV3Schema == nil {
+				continue
+			}
+
+			gvk := runtimeSchema.GroupVersionKind{Group: group, Version: ver.Name, Kind: kind}
+			s, err := ToJSONSchema(ver.Schema.OpenAPIV3Schema, gvk)
+			if err != nil {
+				return nil, errors.Wrapf(err, "cannot convert schema for %s/%s %s", group, ver.Name, kind)
+			}
+
+			data, err := json.MarshalIndent(s, "", "  ")
+			if err != nil {
+				return nil, errors.Wrapf(err, "cannot marshal JSON Schema for %s/%s %s", group, ver.Name, kind)
+			}
+
+			data = append(data, '\n')
+			results = append(results, CRDJSONSchema{
+				Data:    data,
+				Group:   group,
+				Version: ver.Name,
+				Kind:    kind,
+			})
+		}
+	}
+
+	return results, nil
 }
 
 // mutateJSONSchema applies YAML language server compatibility fixes to a JSON

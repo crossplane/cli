@@ -17,7 +17,6 @@ limitations under the License.
 package xpkg
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,7 +25,6 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	runtimeSchema "k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -184,48 +182,29 @@ func (c *getCRDsCmd) outputPath(flatName, group, version, kind, ext string) stri
 // shared schema mutations from internal/schemas/generator for YAML language
 // server compatibility (additionalProperties: false on object types, etc.).
 func (c *getCRDsCmd) writeJSONSchemas(k *kong.Context, crds []*extv1.CustomResourceDefinition) error {
-	count := 0
+	schemas, err := generator.CRDsToJSONSchemas(crds)
+	if err != nil {
+		return err
+	}
 
-	for _, crd := range crds {
-		group := crd.Spec.Group
-		kind := crd.Spec.Names.Kind
+	for _, s := range schemas {
+		flatName := fmt.Sprintf("%s_%s_%s", s.Group, s.Version, strings.ToLower(s.Kind))
+		outPath := c.outputPath(flatName, s.Group, s.Version, s.Kind, ".json")
 
-		for _, ver := range crd.Spec.Versions {
-			if ver.Schema == nil || ver.Schema.OpenAPIV3Schema == nil {
-				continue
-			}
+		if err := c.fs.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+			return errors.Wrapf(err, "cannot create directory for %q", outPath)
+		}
 
-			gvk := runtimeSchema.GroupVersionKind{Group: group, Version: ver.Name, Kind: kind}
-			schema, err := generator.ToJSONSchema(ver.Schema.OpenAPIV3Schema, gvk)
-			if err != nil {
-				return errors.Wrapf(err, "cannot convert schema for %s/%s %s", group, ver.Name, kind)
-			}
+		if err := afero.WriteFile(c.fs, outPath, s.Data, 0o644); err != nil {
+			return errors.Wrapf(err, "cannot write JSON Schema to %q", outPath)
+		}
 
-			data, err := json.MarshalIndent(schema, "", "  ")
-			if err != nil {
-				return errors.Wrapf(err, "cannot marshal JSON Schema for %s/%s %s", group, ver.Name, kind)
-			}
-
-			flatName := fmt.Sprintf("%s_%s_%s", group, ver.Name, strings.ToLower(kind))
-			outPath := c.outputPath(flatName, group, ver.Name, kind, ".json")
-
-			if err := c.fs.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-				return errors.Wrapf(err, "cannot create directory for %q", outPath)
-			}
-
-			if err := afero.WriteFile(c.fs, outPath, data, 0o644); err != nil {
-				return errors.Wrapf(err, "cannot write JSON Schema to %q", outPath)
-			}
-
-			if _, err := fmt.Fprintf(k.Stdout, "wrote %s\n", outPath); err != nil {
-				return errors.Wrap(err, errWriteOutput)
-			}
-
-			count++
+		if _, err := fmt.Fprintf(k.Stdout, "wrote %s\n", outPath); err != nil {
+			return errors.Wrap(err, errWriteOutput)
 		}
 	}
 
-	if _, err := fmt.Fprintf(k.Stdout, "Total %d JSON Schemas written to %s\n", count, c.OutputDir); err != nil {
+	if _, err := fmt.Fprintf(k.Stdout, "Total %d JSON Schemas written to %s\n", len(schemas), c.OutputDir); err != nil {
 		return errors.Wrap(err, errWriteOutput)
 	}
 

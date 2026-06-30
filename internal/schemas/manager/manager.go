@@ -20,8 +20,10 @@ package manager
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/invopop/jsonschema"
@@ -238,6 +240,163 @@ func (m *Manager) updateLock(l *lock) error {
 	}
 
 	return nil
+}
+
+// GenerateFromMultipleSources generates schemas from multiple sources at once.
+// This is important for TypeScript generation where all CRDs should be processed
+// together to generate proper cross-references and a unified index.js.
+// Sources with the same SourceType are merged before generation.
+func (m *Manager) GenerateFromMultipleSources(ctx context.Context, sources []Source) error {
+	if len(sources) == 0 {
+		return nil
+	}
+
+	// Group sources by type
+	crdSources := make([]Source, 0)
+	openAPISources := make([]Source, 0)
+	for _, src := range sources {
+		switch src.Type() {
+		case SourceTypeCRD:
+			crdSources = append(crdSources, src)
+		case SourceTypeOpenAPI:
+			openAPISources = append(openAPISources, src)
+		default:
+			return errors.Errorf("cannot generate schemas for source %q: source type %q is not supported; use a CRD or OpenAPI source", src.ID(), src.Type())
+		}
+	}
+
+	// Generate from CRD sources (merged)
+	if len(crdSources) > 0 {
+		if err := m.generateFromMergedSources(ctx, crdSources, SourceTypeCRD); err != nil {
+			return errors.Wrap(err, "failed to generate schemas from CRD sources")
+		}
+	}
+
+	// Generate from OpenAPI sources (merged)
+	if len(openAPISources) > 0 {
+		if err := m.generateFromMergedSources(ctx, openAPISources, SourceTypeOpenAPI); err != nil {
+			return errors.Wrap(err, "failed to generate schemas from OpenAPI sources")
+		}
+	}
+
+	return nil
+}
+
+// generateFromMergedSources merges all source filesystems and generates schemas once.
+func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Source, sourceType SourceType) error {
+	// Collect all resources into a merged filesystem
+	mergedFS := afero.NewMemMapFs()
+	sourceVersions := make(map[string]string)
+
+	for i, src := range sources {
+		version, err := src.Version(ctx)
+		if err != nil {
+			return errors.Wrapf(err, "failed to get version for source %s", src.ID())
+		}
+
+		// Check if this source is already up to date
+		existing, err := m.currentVersion(src.ID())
+		if err != nil {
+			return err
+		}
+		// Note: Even if existing == version, we still need to include the
+		// resources for the merged generation to work correctly.
+		_ = existing
+
+		srcFS, err := src.Resources(ctx)
+		if err != nil {
+			return errors.Wrapf(err, "failed to get resources for source %s", src.ID())
+		}
+
+		// Copy resources into merged filesystem under a unique prefix
+		// to avoid file name collisions
+		prefix := fmt.Sprintf("%04d_%s", i, sanitizeSourceID(src.ID()))
+		prefixedFS := afero.NewBasePathFs(mergedFS, prefix)
+		if err := filesystem.CopyFilesBetweenFs(srcFS, prefixedFS); err != nil {
+			return errors.Wrapf(err, "failed to copy resources from source %s", src.ID())
+		}
+
+		sourceVersions[src.ID()] = version
+	}
+
+	// Run generators on the merged filesystem
+	schemas := make(map[string]afero.Fs)
+	var schemasMu sync.Mutex
+	eg, egCtx := errgroup.WithContext(ctx)
+	for _, gen := range m.generators {
+		eg.Go(func() error {
+			var schemaFS afero.Fs
+			var err error
+
+			switch sourceType {
+			case SourceTypeCRD:
+				schemaFS, err = gen.GenerateFromCRD(egCtx, mergedFS, m.runner)
+			case SourceTypeOpenAPI:
+				schemaFS, err = gen.GenerateFromOpenAPI(egCtx, mergedFS, m.runner)
+			default:
+				return errors.Errorf("unsupported source type %q", sourceType)
+			}
+			if err != nil {
+				return err
+			}
+
+			if schemaFS != nil {
+				schemasMu.Lock()
+				schemas[gen.Language()] = schemaFS
+				schemasMu.Unlock()
+			}
+
+			return nil
+		})
+	}
+	if err := eg.Wait(); err != nil {
+		return err
+	}
+
+	// Copy generated schemas into our schema repository
+	for lang, genFS := range schemas {
+		langFS := afero.NewBasePathFs(m.fs, lang)
+
+		// Try to copy from models/ subdirectory first (generators put output there)
+		modelsFS := afero.NewBasePathFs(genFS, "models")
+		hasModels := false
+		if fi, err := modelsFS.Stat("."); err == nil && fi.IsDir() {
+			hasModels = true
+		}
+
+		if hasModels {
+			if err := filesystem.CopyFilesBetweenFs(modelsFS, langFS); err != nil {
+				return err
+			}
+		} else {
+			if err := filesystem.CopyFilesBetweenFs(genFS, langFS); err != nil {
+				return err
+			}
+		}
+
+		if err := postProcessForLanguage(lang, langFS); err != nil {
+			return err
+		}
+	}
+
+	// Update version for all sources
+	for id, version := range sourceVersions {
+		if err := m.updateVersion(id, version); err != nil {
+			return errors.Wrapf(err, "failed to update version for source %s", id)
+		}
+	}
+
+	return nil
+}
+
+// sanitizeSourceID converts a source ID to a safe directory name.
+func sanitizeSourceID(id string) string {
+	// Replace characters that are problematic in filesystem paths
+	result := id
+	for _, c := range []string{"://", ":", "/", "@"} {
+		result = strings.ReplaceAll(result, c, "_")
+	}
+	return result
 }
 
 // New returns an initialized manager.

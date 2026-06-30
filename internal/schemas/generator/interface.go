@@ -34,10 +34,11 @@ type Interface interface {
 	GenerateFromOpenAPI(ctx context.Context, fs afero.Fs, runner runner.SchemaRunner) (afero.Fs, error)
 }
 
-// AllLanguages returns generators for all supported languages. The set of
-// supported language identifiers is defined by
-// devv1alpha1.SupportedSchemaLanguages.
-func AllLanguages() []Interface {
+// DefaultLanguages returns generators for the default set of languages.
+// TypeScript is excluded by default because it requires Node.js and npm,
+// which adds significant build time. Users can enable it by explicitly
+// listing "typescript" in schemas.languages.
+func DefaultLanguages() []Interface {
 	return []Interface{
 		&goGenerator{},
 		&jsonGenerator{},
@@ -46,12 +47,25 @@ func AllLanguages() []Interface {
 	}
 }
 
+// AllLanguages returns generators for all supported languages, including
+// those that are not enabled by default. The set of supported language
+// identifiers is defined by devv1alpha1.SupportedSchemaLanguages.
+func AllLanguages() []Interface {
+	return []Interface{
+		&goGenerator{},
+		&jsonGenerator{},
+		&kclGenerator{},
+		&pythonGenerator{},
+		&typescriptGenerator{},
+	}
+}
+
 // Filter returns the subset of generators whose language identifier appears
 // in langs. The order of generators in the result matches the order of all.
-// If langs is empty, all generators are returned unchanged.
+// If langs is empty, the default generators are returned (excluding TypeScript).
 func Filter(all []Interface, langs []string) []Interface {
 	if len(langs) == 0 {
-		return all
+		return DefaultLanguages()
 	}
 	out := make([]Interface, 0, len(all))
 	for _, g := range all {

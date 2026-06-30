@@ -49,8 +49,14 @@ func TestFilter(t *testing.T) {
 		want  []string
 	}{
 		"Empty": {
-			// An empty filter returns all languages unchanged.
-			want: devv1alpha1.SupportedSchemaLanguages(),
+			// An empty filter returns the default languages (excluding TypeScript,
+			// which requires explicit opt-in due to its Node.js dependency).
+			want: []string{
+				devv1alpha1.SchemaLanguageGo,
+				devv1alpha1.SchemaLanguageJSON,
+				devv1alpha1.SchemaLanguageKCL,
+				devv1alpha1.SchemaLanguagePython,
+			},
 		},
 		"SingleLanguage": {
 			langs: []string{devv1alpha1.SchemaLanguagePython},

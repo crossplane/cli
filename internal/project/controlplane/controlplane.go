@@ -114,7 +114,7 @@ func (l *localDevControlPlane) Teardown(ctx context.Context) error {
 }
 
 func (l *localDevControlPlane) Sideload(ctx context.Context, imgMap project.ImageTagMap, tag name.Tag) error {
-	cfgImage, fnImages, err := project.SortImages(imgMap, tag.Repository.Name())
+	cfgImage, fnImages, err := project.SortImages(imgMap, tag.Repository.String())
 	if err != nil {
 		return err
 	}

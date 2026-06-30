@@ -24,10 +24,10 @@ npm run local
 
 ## Testing
 
-Test your function using `crossplane resource render`:
+Test your function using `crossplane composition render`:
 
 ```shell
-crossplane resource render xr.yaml composition.yaml functions.yaml
+crossplane composition render xr.yaml composition.yaml functions.yaml
 ```
 
 ## Learn More

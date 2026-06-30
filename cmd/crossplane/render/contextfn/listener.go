@@ -19,9 +19,8 @@ package contextfn
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -37,16 +36,10 @@ import (
 
 // Handle is the owner of a running in-process context function.
 type Handle struct {
-	// Target is the gRPC target that dials the function. Set this as the
-	// FunctionInput address passed to the render engine.
-	Target string
-
+	target       string
 	srv          *grpc.Server
 	fn           *server
-	socketPath   string
-	dir          string
 	stop         sync.Once
-	log          logging.Logger
 	seedInput    *runtime.RawExtension
 	captureInput *runtime.RawExtension
 }
@@ -58,9 +51,8 @@ func (h *Handle) Captured() *structpb.Struct {
 }
 
 // Start starts an in-process gRPC server that implements the composition
-// function RunFunction RPC for context seeding and capture. The server
-// listens on a unix-domain socket inside a fresh temp directory. Callers
-// must call Handle.Stop when done.
+// function RunFunction RPC for context seeding and capture. Callers must call
+// Handle.Stop when done.
 func Start(ctx context.Context, log logging.Logger, contextData map[string]any) (*Handle, error) {
 	si, err := json.Marshal(input{Mode: modeSeed})
 	if err != nil {
@@ -71,51 +63,24 @@ func Start(ctx context.Context, log logging.Logger, contextData map[string]any) 
 		return nil, errors.Wrap(err, "cannot create capture context function input")
 	}
 
-	dir, err := os.MkdirTemp("", "render-ctx-*")
-	if err != nil {
-		return nil, errors.Wrap(err, "cannot create temp dir for context function socket")
-	}
-
-	cleanup := func() {
-		_ = os.RemoveAll(dir)
-	}
-
-	sockPath := filepath.Join(dir, "s")
 	var lc net.ListenConfig
-	lis, err := lc.Listen(ctx, "unix", sockPath)
+	lis, err := lc.Listen(ctx, "tcp", ":0")
 	if err != nil {
-		cleanup()
-		return nil, errors.Wrapf(err, "cannot listen on %q", sockPath)
-	}
-
-	cleanup = func() {
-		_ = lis.Close()
-		_ = os.RemoveAll(dir)
-	}
-
-	// In order for processes in Docker containers to connect to the socket, the
-	// socket must be world-writeable and its containing directory must be
-	// world-readable.
-	if err := os.Chmod(dir, 0o755); err != nil { //nolint:gosec // Necessary.
-		cleanup()
-		return nil, errors.Wrapf(err, "cannot make socket directory world-readable")
-	}
-	if err := os.Chmod(sockPath, 0o777); err != nil { //nolint:gosec // Necessary.
-		cleanup()
-		return nil, errors.Wrapf(err, "cannot make socket file writeable")
+		return nil, errors.Wrap(err, "cannot create listener for context function")
 	}
 
 	srv := grpc.NewServer(grpc.Creds(insecure.NewCredentials()))
 	fn := newServer(contextData)
 	fnv1.RegisterFunctionRunnerServiceServer(srv, fn)
 
+	addr := lis.Addr().(*net.TCPAddr) //nolint:forcetypeassert // We specified "tcp" above.
+
 	h := &Handle{
-		Target:       "unix://" + sockPath,
+		// Report the target as 127.0.0.1:PORT since the render machinery knows
+		// how to handle functions listening on loopback.
+		target:       fmt.Sprintf("127.0.0.1:%d", addr.Port),
 		srv:          srv,
 		fn:           fn,
-		socketPath:   sockPath,
-		dir:          dir,
-		log:          log,
 		seedInput:    &runtime.RawExtension{Raw: si},
 		captureInput: &runtime.RawExtension{Raw: ci},
 	}
@@ -129,8 +94,8 @@ func Start(ctx context.Context, log logging.Logger, contextData map[string]any) 
 	return h, nil
 }
 
-// Stop gracefully stops the function server and removes the socket directory.
-// Safe to call multiple times.
+// Stop gracefully stops the function server, which closes its listener. Safe to
+// call multiple times.
 func (h *Handle) Stop() {
 	h.stop.Do(func() {
 		done := make(chan struct{})
@@ -142,9 +107,6 @@ func (h *Handle) Stop() {
 		case <-done:
 		case <-time.After(5 * time.Second):
 			h.srv.Stop()
-		}
-		if err := os.RemoveAll(h.dir); err != nil {
-			h.log.Debug("Cannot remove context function socket directory", "dir", h.dir, "error", err)
 		}
 	})
 }

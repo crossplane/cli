@@ -18,7 +18,6 @@ package contextfn
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -42,7 +41,7 @@ func TestListenerRoundTrip(t *testing.T) {
 	}
 	defer h.Stop()
 
-	conn, err := grpc.NewClient(h.Target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(h.target, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
@@ -60,27 +59,4 @@ func TestListenerRoundTrip(t *testing.T) {
 	if diff := cmp.Diff(mustStruct(t, data), rsp.GetContext(), protocmp.Transform()); diff != "" {
 		t.Errorf("context (-want +got):\n%s", diff)
 	}
-}
-
-func TestStopRemovesSocket(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	h, err := Start(ctx, logging.NewNopLogger(), nil)
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-
-	if _, err := os.Stat(h.socketPath); err != nil {
-		t.Fatalf("socket should exist: %v", err)
-	}
-
-	h.Stop()
-
-	if _, err := os.Stat(h.socketPath); !os.IsNotExist(err) {
-		t.Errorf("socket should not exist after Stop, got err=%v", err)
-	}
-
-	// Second Stop is a no-op.
-	h.Stop()
 }

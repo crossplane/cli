@@ -27,8 +27,9 @@ import (
 // Mirror the render package's runtime-selection annotations. Duplicated here
 // rather than importing cmd/crank/render to avoid an import cycle.
 const (
-	annotationKeyRuntime            = "render.crossplane.io/runtime"
-	annotationValueRuntimeInProcess = "InProcess"
+	annotationKeyRuntime                  = "render.crossplane.io/runtime"
+	annotationValueRuntimeDevelopment     = "Development"
+	annotationKeyRuntimeDevelopmentTarget = "render.crossplane.io/runtime-development-target"
 )
 
 // Function returns the Function definition the caller must add to the
@@ -37,8 +38,11 @@ const (
 func (h *Handle) Function() pkgv1.Function {
 	return pkgv1.Function{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        FunctionName,
-			Annotations: map[string]string{annotationKeyRuntime: annotationValueRuntimeInProcess},
+			Name: FunctionName,
+			Annotations: map[string]string{
+				annotationKeyRuntime:                  annotationValueRuntimeDevelopment,
+				annotationKeyRuntimeDevelopmentTarget: h.target,
+			},
 		},
 	}
 }

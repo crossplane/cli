@@ -232,6 +232,40 @@ func TestRun(t *testing.T) {
 				}
 			},
 		},
+		"OldResourcesTransitionViolationExitsNonZero": {
+			reason:     "With --old-resources supplying the previous state, a CEL transition rule (immutable field changed) fires: the resource is Invalid with a CEL error and the command exits non-zero.",
+			extensions: "testdata/cmd/crd_transition.yaml",
+			resources:  "testdata/cmd/resources_transition_new.yaml",
+			extraArgs:  []string{"--output=json", "--old-resources=testdata/cmd/resources_transition_old.yaml"},
+			wantErr:    true,
+			assertJSON: func(t *testing.T, r *pkgvalidate.ValidationResult) {
+				t.Helper()
+				if r.Summary.Invalid != 1 {
+					t.Errorf("Summary.Invalid = %d; want 1", r.Summary.Invalid)
+				}
+				if len(r.Resources) != 1 || r.Resources[0].Status != pkgvalidate.ValidationStatusInvalid {
+					t.Errorf("Resources = %+v; want one Invalid entry", r.Resources)
+				}
+				if len(r.Resources[0].Errors) == 0 || r.Resources[0].Errors[0].Type != pkgvalidate.FieldErrorTypeCEL {
+					t.Errorf("Resources[0].Errors = %+v; want a CEL error", r.Resources[0].Errors)
+				}
+			},
+		},
+		"OldResourcesTransitionSkippedWithoutFlag": {
+			reason:     "Without --old-resources the same resource is Valid: the transition rule references oldSelf and is skipped, exactly as on a create.",
+			extensions: "testdata/cmd/crd_transition.yaml",
+			resources:  "testdata/cmd/resources_transition_new.yaml",
+			extraArgs:  []string{"--output=json"},
+			assertJSON: func(t *testing.T, r *pkgvalidate.ValidationResult) {
+				t.Helper()
+				if r.Summary.Total != 1 || r.Summary.Valid != 1 {
+					t.Errorf("Summary = %+v; want Total=1 Valid=1", r.Summary)
+				}
+				if len(r.Resources) != 1 || r.Resources[0].Status != pkgvalidate.ValidationStatusValid {
+					t.Errorf("Resources = %+v; want one Valid entry", r.Resources)
+				}
+			},
+		},
 	}
 
 	for name, tc := range cases {

@@ -30,6 +30,7 @@ import (
 	apiextv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
 	v1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
@@ -324,7 +325,7 @@ func TestRunErrors(t *testing.T) {
 			case "afterApply":
 				err = c.AfterApply()
 			case "run":
-				err = c.Run(terminal.NewSpinnerPrinter(io.Discard, false))
+				err = c.Run(terminal.NewSpinnerPrinter(io.Discard, false), &config.Config{})
 			}
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrSubstring)

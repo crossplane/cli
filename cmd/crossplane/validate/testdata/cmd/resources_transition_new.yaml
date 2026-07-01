@@ -1,0 +1,6 @@
+apiVersion: cmd.example.org/v1alpha1
+kind: Immutable
+metadata:
+  name: immutable-instance
+spec:
+  param: changed-value

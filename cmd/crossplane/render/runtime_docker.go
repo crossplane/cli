@@ -39,8 +39,12 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 )
 
-// FunctionPort is the port that Composition Functions listen on inside their container.
-const FunctionPort = 9443
+const (
+	// FunctionPort is the port that Composition Functions listen on inside their container.
+	FunctionPort = 9443
+	// defaultBindAddress is the default address for Docker containers.
+	defaultBindAddress = "127.0.0.1"
+)
 
 // Annotations that can be used to configure the Docker runtime.
 const (
@@ -211,7 +215,7 @@ func GetRuntimeDocker(fn pkgv1.Function, log logging.Logger) (*RuntimeDocker, er
 		PullPolicy:  pullPolicy,
 		Keychain:    authn.DefaultKeychain,
 		log:         log,
-		BindAddress: "127.0.0.1", // Default to localhost for security
+		BindAddress: defaultBindAddress, // Default to localhost for security
 	}
 
 	if i := fn.GetAnnotations()[AnnotationKeyRuntimeDockerImage]; i != "" {

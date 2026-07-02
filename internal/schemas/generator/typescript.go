@@ -89,7 +89,7 @@ func (t typescriptGenerator) GenerateFromOpenAPI(_ context.Context, _ afero.Fs, 
 func (t typescriptGenerator) collectCRDs(fromFS, workFS afero.Fs, crdsDir string) (int, error) {
 	// Temporary filesystem for XRD processing
 	xrdFS := afero.NewMemMapFs()
-	xrdBaseFolder := "workdir"
+	xrdBaseFolder := workDir
 	if err := xrdFS.MkdirAll(xrdBaseFolder, 0o755); err != nil {
 		return 0, errors.Wrap(err, "cannot prepare TypeScript schema generation workspace")
 	}
@@ -107,7 +107,7 @@ func (t typescriptGenerator) collectCRDs(fromFS, workFS afero.Fs, crdsDir string
 
 		// Only process YAML files
 		ext := filepath.Ext(path)
-		if ext != ".yaml" && ext != ".yml" {
+		if ext != extYAML && ext != extYML {
 			return nil
 		}
 
@@ -123,47 +123,15 @@ func (t typescriptGenerator) collectCRDs(fromFS, workFS afero.Fs, crdsDir string
 
 		switch u.GroupVersionKind().Kind {
 		case xpv1.CompositeResourceDefinitionKind:
-			// Process the XRD to generate CRDs
-			xrPath, claimPath, err := crd.ProcessXRD(xrdFS, bs, path, xrdBaseFolder)
+			n, err := t.processXRDFile(xrdFS, workFS, bs, path, xrdBaseFolder, crdsDir)
 			if err != nil {
-				return errors.Wrapf(err, "cannot convert XRD %q to CRDs for TypeScript models; check that the XRD is valid", path)
+				return err
 			}
-
-			// Copy generated CRDs to the crds directory
-			if xrPath != "" {
-				crdBS, err := afero.ReadFile(xrdFS, xrPath)
-				if err != nil {
-					return errors.Wrapf(err, "failed to read generated CRD %q", xrPath)
-				}
-				outPath := filepath.Join(crdsDir, stagedCRDPath(path, "xrd"))
-				if err := afero.WriteFile(workFS, outPath, crdBS, 0o644); err != nil {
-					return errors.Wrapf(err, "failed to write CRD %q", outPath)
-				}
-				crdCount++
-			}
-			if claimPath != "" {
-				crdBS, err := afero.ReadFile(xrdFS, claimPath)
-				if err != nil {
-					return errors.Wrapf(err, "failed to read generated claim CRD %q", claimPath)
-				}
-				outPath := filepath.Join(crdsDir, stagedCRDPath(path, "claim"))
-				if err := afero.WriteFile(workFS, outPath, crdBS, 0o644); err != nil {
-					return errors.Wrapf(err, "failed to write claim CRD %q", outPath)
-				}
-				crdCount++
-			}
+			crdCount += n
 
 		case "CustomResourceDefinition":
-			// Validate it's a proper CRD before copying
-			var c extv1.CustomResourceDefinition
-			if err := yaml.Unmarshal(bs, &c); err != nil {
-				return errors.Wrapf(err, "failed to unmarshal CRD file %q", path)
-			}
-
-			// Write the CRD to the crds directory
-			outPath := filepath.Join(crdsDir, stagedCRDPath(path, ""))
-			if err := afero.WriteFile(workFS, outPath, bs, 0o644); err != nil {
-				return errors.Wrapf(err, "failed to write CRD %q", outPath)
+			if err := t.processCRDFile(workFS, bs, path, crdsDir); err != nil {
+				return err
 			}
 			crdCount++
 		}
@@ -172,6 +140,62 @@ func (t typescriptGenerator) collectCRDs(fromFS, workFS afero.Fs, crdsDir string
 	})
 
 	return crdCount, err
+}
+
+// processXRDFile converts an XRD to CRDs and writes them to the working filesystem.
+// Returns the number of CRDs written.
+func (t typescriptGenerator) processXRDFile(xrdFS, workFS afero.Fs, bs []byte, path, xrdBaseFolder, crdsDir string) (int, error) {
+	xrPath, claimPath, err := crd.ProcessXRD(xrdFS, bs, path, xrdBaseFolder)
+	if err != nil {
+		return 0, errors.Wrapf(err, "cannot convert XRD %q to CRDs for TypeScript models; check that the XRD is valid", path)
+	}
+
+	count := 0
+
+	if xrPath != "" {
+		if err := copyGeneratedCRD(xrdFS, workFS, xrPath, crdsDir, path, "xrd"); err != nil {
+			return 0, err
+		}
+		count++
+	}
+
+	if claimPath != "" {
+		if err := copyGeneratedCRD(xrdFS, workFS, claimPath, crdsDir, path, "claim"); err != nil {
+			return 0, err
+		}
+		count++
+	}
+
+	return count, nil
+}
+
+// copyGeneratedCRD copies a generated CRD file from the XRD filesystem to the working filesystem.
+func copyGeneratedCRD(xrdFS, workFS afero.Fs, srcPath, crdsDir, origPath, suffix string) error {
+	crdBS, err := afero.ReadFile(xrdFS, srcPath)
+	if err != nil {
+		return errors.Wrapf(err, "failed to read generated CRD %q", srcPath)
+	}
+	outPath := filepath.Join(crdsDir, stagedCRDPath(origPath, suffix))
+	if err := afero.WriteFile(workFS, outPath, crdBS, 0o644); err != nil {
+		return errors.Wrapf(err, "failed to write CRD %q", outPath)
+	}
+	return nil
+}
+
+// processCRDFile validates and writes a CRD file to the working filesystem.
+func (t typescriptGenerator) processCRDFile(workFS afero.Fs, bs []byte, path, crdsDir string) error {
+	// Validate it's a proper CRD before copying
+	var c extv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(bs, &c); err != nil {
+		return errors.Wrapf(err, "failed to unmarshal CRD file %q", path)
+	}
+
+	// Write the CRD to the crds directory
+	outPath := filepath.Join(crdsDir, stagedCRDPath(path, ""))
+	if err := afero.WriteFile(workFS, outPath, bs, 0o644); err != nil {
+		return errors.Wrapf(err, "failed to write CRD %q", outPath)
+	}
+	return nil
 }
 
 func stagedCRDPath(sourcePath, suffix string) string {
@@ -206,7 +230,7 @@ func (t typescriptGenerator) generateFromCRDFiles(ctx context.Context, workFS af
 			return nil
 		}
 		ext := filepath.Ext(path)
-		if ext != ".yaml" && ext != ".yml" {
+		if ext != extYAML && ext != extYML {
 			return nil
 		}
 		content, err := afero.ReadFile(workFS, path)

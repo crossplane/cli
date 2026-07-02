@@ -33,6 +33,9 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
 
+// typeObject is the JSON Schema type for object types.
+const typeObject = "object"
+
 // ToOpenAPI converts the storage version of a CRD to an OpenAPI spec. The
 // version is returned along with the OpenAPI spec.
 func ToOpenAPI(crd *extv1.CustomResourceDefinition) (map[string]*spec3.OpenAPI, error) {
@@ -152,7 +155,7 @@ func updateSchemaPropertiesXEmbeddedResource(s *extv1.JSONSchemaProps) {
 	if s.XEmbeddedResource && s.XPreserveUnknownFields != nil && *s.XPreserveUnknownFields {
 		s.XEmbeddedResource = false
 		s.XPreserveUnknownFields = nil
-		s.Type = "object"
+		s.Type = typeObject
 		s.AdditionalProperties = &extv1.JSONSchemaPropsOrBool{
 			Allows: true,
 			Schema: nil,

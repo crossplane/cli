@@ -48,6 +48,12 @@ import (
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
+// Function language constants.
+const (
+	langGoTemplating = "go-templating"
+	langPython       = "python"
+)
+
 //go:embed help/generate.md
 var generateHelp string
 
@@ -139,7 +145,7 @@ func validateLanguageAgainstSchemas(functionLang string, schemaLangs []string) e
 // the given function language consumes. Most function languages map to a
 // like-named schema language; go-templating consumes the JSON schema.
 func functionSchemaLanguage(functionLang string) string {
-	if functionLang == "go-templating" {
+	if functionLang == langGoTemplating {
 		return v1alpha1.SchemaLanguageJSON
 	}
 	return functionLang
@@ -171,11 +177,11 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter) error {
 
 	type generatorFunc func(afero.Fs) error
 	generators := map[string]generatorFunc{
-		"go":            c.generateGoFiles,
-		"go-templating": c.generateGoTemplatingFiles,
-		"kcl":           c.generateKCLFiles,
-		"python":        c.generatePythonFiles,
-		"typescript":    c.generateTypescriptFiles,
+		"go":             c.generateGoFiles,
+		langGoTemplating: c.generateGoTemplatingFiles,
+		"kcl":            c.generateKCLFiles,
+		langPython:       c.generatePythonFiles,
+		"typescript":     c.generateTypescriptFiles,
 	}
 
 	generator, ok := generators[c.Language]

@@ -54,6 +54,8 @@ const (
 	errAddingPodMetrics       = "error adding metrics to pod, check if metrics-server is running or wait until metrics are available for the pod"
 	errWriteHeader            = "cannot write header"
 	errWriteRow               = "cannot write row"
+
+	labelCrossplane = "crossplane"
 )
 
 // Cmd represents the top command.
@@ -270,8 +272,8 @@ func getCrossplanePods(pods []v1.Pod) []topMetrics {
 				if podType != "revision" {
 					isCrossplanePod = true
 				}
-			case labelKey == "app.kubernetes.io/part-of" && labelValue == "crossplane":
-				podType = "crossplane"
+			case labelKey == "app.kubernetes.io/part-of" && labelValue == labelCrossplane:
+				podType = labelCrossplane
 				isCrossplanePod = true
 			}
 

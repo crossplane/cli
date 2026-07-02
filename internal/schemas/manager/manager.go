@@ -285,19 +285,47 @@ func (m *Manager) GenerateFromMultipleSources(ctx context.Context, sources []Sou
 // generateFromMergedSources merges all source filesystems and generates schemas once.
 func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Source, sourceType SourceType) error {
 	// Collect all resources into a merged filesystem
+	mergedFS, sourceVersions, err := m.collectSourceResources(ctx, sources)
+	if err != nil {
+		return err
+	}
+
+	// Run generators on the merged filesystem
+	schemas, err := m.runGenerators(ctx, mergedFS, sourceType)
+	if err != nil {
+		return err
+	}
+
+	// Copy generated schemas into our schema repository
+	if err := m.copyGeneratedSchemas(schemas); err != nil {
+		return err
+	}
+
+	// Update version for all sources
+	for id, version := range sourceVersions {
+		if err := m.updateVersion(id, version); err != nil {
+			return errors.Wrapf(err, "failed to update version for source %s", id)
+		}
+	}
+
+	return nil
+}
+
+// collectSourceResources merges resources from all sources into a single filesystem.
+func (m *Manager) collectSourceResources(ctx context.Context, sources []Source) (afero.Fs, map[string]string, error) {
 	mergedFS := afero.NewMemMapFs()
 	sourceVersions := make(map[string]string)
 
 	for i, src := range sources {
 		version, err := src.Version(ctx)
 		if err != nil {
-			return errors.Wrapf(err, "failed to get version for source %s", src.ID())
+			return nil, nil, errors.Wrapf(err, "failed to get version for source %s", src.ID())
 		}
 
 		// Check if this source is already up to date
 		existing, err := m.currentVersion(src.ID())
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		// Note: Even if existing == version, we still need to include the
 		// resources for the merged generation to work correctly.
@@ -305,7 +333,7 @@ func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Sourc
 
 		srcFS, err := src.Resources(ctx)
 		if err != nil {
-			return errors.Wrapf(err, "failed to get resources for source %s", src.ID())
+			return nil, nil, errors.Wrapf(err, "failed to get resources for source %s", src.ID())
 		}
 
 		// Copy resources into merged filesystem under a unique prefix
@@ -313,47 +341,57 @@ func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Sourc
 		prefix := fmt.Sprintf("%04d_%s", i, sanitizeSourceID(src.ID()))
 		prefixedFS := afero.NewBasePathFs(mergedFS, prefix)
 		if err := filesystem.CopyFilesBetweenFs(srcFS, prefixedFS); err != nil {
-			return errors.Wrapf(err, "failed to copy resources from source %s", src.ID())
+			return nil, nil, errors.Wrapf(err, "failed to copy resources from source %s", src.ID())
 		}
 
 		sourceVersions[src.ID()] = version
 	}
 
-	// Run generators on the merged filesystem
+	return mergedFS, sourceVersions, nil
+}
+
+// runGenerators runs all generators on the merged filesystem and returns the generated schemas.
+func (m *Manager) runGenerators(ctx context.Context, mergedFS afero.Fs, sourceType SourceType) (map[string]afero.Fs, error) {
 	schemas := make(map[string]afero.Fs)
 	var schemasMu sync.Mutex
 	eg, egCtx := errgroup.WithContext(ctx)
+
 	for _, gen := range m.generators {
 		eg.Go(func() error {
-			var schemaFS afero.Fs
-			var err error
-
-			switch sourceType {
-			case SourceTypeCRD:
-				schemaFS, err = gen.GenerateFromCRD(egCtx, mergedFS, m.runner)
-			case SourceTypeOpenAPI:
-				schemaFS, err = gen.GenerateFromOpenAPI(egCtx, mergedFS, m.runner)
-			default:
-				return errors.Errorf("unsupported source type %q", sourceType)
-			}
+			schemaFS, err := m.runGenerator(egCtx, gen, mergedFS, sourceType)
 			if err != nil {
 				return err
 			}
-
 			if schemaFS != nil {
 				schemasMu.Lock()
 				schemas[gen.Language()] = schemaFS
 				schemasMu.Unlock()
 			}
-
 			return nil
 		})
 	}
+
 	if err := eg.Wait(); err != nil {
-		return err
+		return nil, err
 	}
 
-	// Copy generated schemas into our schema repository
+	return schemas, nil
+}
+
+// runGenerator runs a single generator on the merged filesystem.
+func (m *Manager) runGenerator(ctx context.Context, gen generator.Interface, mergedFS afero.Fs, sourceType SourceType) (afero.Fs, error) {
+	switch sourceType {
+	case SourceTypeCRD:
+		return gen.GenerateFromCRD(ctx, mergedFS, m.runner)
+	case SourceTypeOpenAPI:
+		return gen.GenerateFromOpenAPI(ctx, mergedFS, m.runner)
+	default:
+		return nil, errors.Errorf("unsupported source type %q", sourceType)
+	}
+}
+
+// copyGeneratedSchemas copies generated schemas to the schema repository.
+func (m *Manager) copyGeneratedSchemas(schemas map[string]afero.Fs) error {
 	for lang, genFS := range schemas {
 		langFS := afero.NewBasePathFs(m.fs, lang)
 
@@ -378,14 +416,6 @@ func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Sourc
 			return err
 		}
 	}
-
-	// Update version for all sources
-	for id, version := range sourceVersions {
-		if err := m.updateVersion(id, version); err != nil {
-			return errors.Wrapf(err, "failed to update version for source %s", id)
-		}
-	}
-
 	return nil
 }
 

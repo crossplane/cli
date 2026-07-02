@@ -44,6 +44,15 @@ import (
 	_ "embed"
 )
 
+// Common field and value constants.
+const (
+	fieldSpec   = "spec"
+	fieldStatus = "status"
+	typeObject  = "object"
+
+	categoryCrossplane = "crossplane"
+)
+
 //go:embed help/generate.md
 var generateHelp string
 
@@ -191,7 +200,7 @@ func replaceCELWithPlaceholder(data map[string]any) map[string]any {
 
 	for key, value := range data {
 		if isCELExpression(value) {
-			result[key] = "object"
+			result[key] = typeObject
 		} else if nestedMap, ok := value.(map[string]any); ok {
 			result[key] = replaceCELWithPlaceholder(nestedMap)
 		} else {
@@ -254,7 +263,7 @@ func newXRDFromSimpleSchema(yamlData []byte, customPlural string) (*v2.Composite
 		return nil, errors.Wrap(err, "failed to convert spec to OpenAPI schema")
 	}
 
-	statusSchema := &extv1.JSONSchemaProps{Type: "object", Properties: map[string]extv1.JSONSchemaProps{}}
+	statusSchema := &extv1.JSONSchemaProps{Type: typeObject, Properties: map[string]extv1.JSONSchemaProps{}}
 	if len(simpleInput.Status) > 0 {
 		celPaths := findCELFields(simpleInput.Status, nil)
 		processedStatus := replaceCELWithPlaceholder(simpleInput.Status)
@@ -269,12 +278,12 @@ func newXRDFromSimpleSchema(yamlData []byte, customPlural string) (*v2.Composite
 
 	openAPIV3Schema := &extv1.JSONSchemaProps{
 		Description: fmt.Sprintf("%s is the Schema for the %s API.", kind, kind),
-		Type:        "object",
+		Type:        typeObject,
 		Properties: map[string]extv1.JSONSchemaProps{
-			"spec":   *specSchema,
-			"status": *statusSchema,
+			fieldSpec:   *specSchema,
+			fieldStatus: *statusSchema,
 		},
-		Required: []string{"spec"},
+		Required: []string{fieldSpec},
 	}
 
 	schemaBytes, err := json.Marshal(openAPIV3Schema)
@@ -294,7 +303,7 @@ func newXRDFromSimpleSchema(yamlData []byte, customPlural string) (*v2.Composite
 			Group: gv.Group,
 			Scope: v2.CompositeResourceScopeNamespaced,
 			Names: extv1.CustomResourceDefinitionNames{
-				Categories: []string{"crossplane"},
+				Categories: []string{categoryCrossplane},
 				Kind:       flect.Capitalize(kind),
 				Plural:     strings.ToLower(plural),
 			},
@@ -330,7 +339,7 @@ func newXRDFromExample(yamlData []byte, customPlural string) (*v2.CompositeResou
 		return nil, errors.Wrap(err, "failed to unmarshal YAML to check top-level keys")
 	}
 	for key := range topLevelKeys {
-		allowedKeys := []string{"apiVersion", "kind", "metadata", "spec", "status", "additionalPrinterColumns"}
+		allowedKeys := []string{"apiVersion", "kind", "metadata", fieldSpec, fieldStatus, "additionalPrinterColumns"}
 		if !slices.Contains(allowedKeys, key) {
 			return nil, errors.Errorf("invalid manifest: valid top-level keys are: %v", allowedKeys)
 		}
@@ -399,20 +408,20 @@ func newXRDFromExample(yamlData []byte, customPlural string) (*v2.CompositeResou
 
 	openAPIV3Schema := &extv1.JSONSchemaProps{
 		Description: description,
-		Type:        "object",
+		Type:        typeObject,
 		Properties: map[string]extv1.JSONSchemaProps{
-			"spec": {
+			fieldSpec: {
 				Description: fmt.Sprintf("%sSpec defines the desired state of %s.", kind, kind),
-				Type:        "object",
+				Type:        typeObject,
 				Properties:  specProps,
 			},
-			"status": {
+			fieldStatus: {
 				Description: fmt.Sprintf("%sStatus defines the observed state of %s.", kind, kind),
-				Type:        "object",
+				Type:        typeObject,
 				Properties:  statusProps,
 			},
 		},
-		Required: []string{"spec"},
+		Required: []string{fieldSpec},
 	}
 
 	schemaBytes, err := json.Marshal(openAPIV3Schema)
@@ -437,7 +446,7 @@ func newXRDFromExample(yamlData []byte, customPlural string) (*v2.CompositeResou
 			Group: gv.Group,
 			Scope: scope,
 			Names: extv1.CustomResourceDefinitionNames{
-				Categories: []string{"crossplane"},
+				Categories: []string{categoryCrossplane},
 				Kind:       flect.Capitalize(kind),
 				Plural:     strings.ToLower(plural),
 			},

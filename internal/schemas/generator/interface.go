@@ -27,6 +27,16 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 )
 
+// Common constants used across generators.
+const (
+	// workDir is the base directory name used for processing XRDs and CRDs.
+	workDir = "workdir"
+	// extYAML is the .yaml file extension.
+	extYAML = ".yaml"
+	// extYML is the .yml file extension.
+	extYML = ".yml"
+)
+
 // Interface generates schemas for a specific language.
 type Interface interface {
 	Language() string

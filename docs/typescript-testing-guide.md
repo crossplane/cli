@@ -29,6 +29,8 @@ go build -o crossplane ./cmd/crossplane
 ./crossplane version
 ```
 
+All subsequent commands should use this locally-compiled version of crossplane.
+
 ## Step 2: Create a New Project
 
 ```bash
@@ -363,7 +365,52 @@ This will:
 
 The output will be in `_output/configuration-aws-network-ts.xpkg`.
 
-## Step 12: Test Locally with a Dev Cluster
+## Step 12: Test with Composition Render
+
+Before deploying to a cluster, you can test your composition function locally using `crossplane composition render`. This renders the composition pipeline and shows you what resources would be created without needing a Kubernetes cluster.
+
+```bash
+# Render the composition with a 5 minute timeout (recommended for TypeScript builds)
+crossplane composition render \
+  examples/network/example.yaml \
+  apis/xnetwork/composition.yaml \
+  --timeout=5m
+```
+
+The first run may take several minutes as it:
+
+1. Pulls the Node.js build image
+2. Runs `npm install` to fetch dependencies
+3. Compiles the TypeScript function
+4. Executes the function pipeline
+
+Subsequent runs will be faster due to Docker and npm caching.
+
+The output shows the rendered XR and all composed resources as YAML:
+
+```bash
+# Include function results (informational messages)
+crossplane composition render \
+  examples/network/example.yaml \
+  apis/xnetwork/composition.yaml \
+  --timeout=5m \
+  --include-function-results
+
+# Include the full XR with spec and metadata
+crossplane composition render \
+  examples/network/example.yaml \
+  apis/xnetwork/composition.yaml \
+  --timeout=5m \
+  --include-full-xr
+```
+
+This is useful for:
+
+- Validating your function logic before deployment
+- Debugging composition issues
+- Testing changes quickly without a cluster
+
+## Step 13: Test with a Local Dev Cluster
 
 For quick local testing, use `crossplane project run` to spin up a local Kubernetes cluster with Crossplane and your configuration automatically deployed:
 
@@ -433,7 +480,7 @@ When you're done testing, tear down the local cluster:
 crossplane project stop
 ```
 
-## Step 13: Push and Install (Production)
+## Step 14: Push and Install (Production)
 
 For deploying to a production cluster, push the package to a registry:
 
@@ -496,6 +543,28 @@ If the function fails at runtime with "Cannot find package 'crossplane-models'":
 
 1. Ensure the `file:` dependency path in `package.json` is correct
 2. The CLI automatically dereferences symlinks during build - check that the function image includes the actual files
+
+### Build timeout during render
+
+If you see an error like:
+
+```text
+crossplane: error: cannot build embedded functions: failed to build function "network": failed to build runtime images: typescript build container failed: container unknown failure: context deadline exceeded
+```
+
+This means the TypeScript build (including `npm install` and `npm run build`) exceeded the default 1 minute timeout. This commonly happens on the first build when Docker images and npm packages need to be downloaded.
+
+Increase the timeout using the `--timeout` flag:
+
+```bash
+# Use a 5 minute timeout
+crossplane composition render examples/network/example.yaml apis/xnetwork/composition.yaml --timeout=5m
+
+# Or for larger projects with many dependencies
+crossplane composition render examples/network/example.yaml apis/xnetwork/composition.yaml --timeout=10m
+```
+
+Subsequent builds will be faster as Docker images and npm packages are cached.
 
 ## Reference Project
 

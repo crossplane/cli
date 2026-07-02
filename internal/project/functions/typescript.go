@@ -52,7 +52,7 @@ const (
 // typescriptBuilder builds TypeScript composition functions.
 //
 // A TypeScript embedded function is a full function-sdk-typescript project
-// (package.json + src/). We build it by running npm install and npm run build
+// (package.json + tsconfig.json). We build it by running npm install and npm run build
 // (which invokes tsgo) in a Node.js build container, then copy the dist/
 // and node_modules/ onto a distroless Node.js base.
 type typescriptBuilder struct {
@@ -71,11 +71,11 @@ func (b *typescriptBuilder) match(fromFS afero.Fs) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	hasSrcDir, err := afero.DirExists(fromFS, "src")
+	hasTSConfig, err := afero.Exists(fromFS, "tsconfig.json")
 	if err != nil {
 		return false, err
 	}
-	return hasPackageJSON && hasSrcDir, nil
+	return hasPackageJSON && hasTSConfig, nil
 }
 
 func (b *typescriptBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, error) {

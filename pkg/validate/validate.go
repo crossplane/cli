@@ -18,7 +18,6 @@ package validate
 
 import (
 	"context"
-	"fmt"
 
 	ext "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -60,39 +59,27 @@ func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured,
 		return nil, errors.Wrap(err, "cannot create schema validators")
 	}
 
-	// Index old resources by GVK+name+namespace so each resource can be paired
-	// with its previous state. On duplicate keys the last entry wins.
-	oldByKey := make(map[string]*unstructured.Unstructured, len(oldResources))
-	for _, o := range oldResources {
-		oldByKey[resourceKey(o)] = o
-	}
-
 	result := &ValidationResult{
 		Resources: make([]ResourceValidationResult, 0, len(resources)),
 	}
 	for _, r := range resources {
-		result.Resources = append(result.Resources, validateResource(ctx, r, objectOf(oldByKey[resourceKey(r)]), schemaValidators, structurals, crds))
+		// Find this resource's previous state, if supplied, so CEL transition
+		// rules (those referencing oldSelf) can be evaluated. A resource is
+		// matched to its old state by GroupVersionKind, namespace, and name;
+		// with no match oldObject stays nil and transition rules are skipped,
+		// exactly as on a Kubernetes create.
+		gvk, namespace, name := r.GroupVersionKind(), r.GetNamespace(), getResourceName(r)
+		var oldObject map[string]any
+		for _, o := range oldResources {
+			if o.GroupVersionKind() == gvk && o.GetNamespace() == namespace && getResourceName(o) == name {
+				oldObject = o.Object
+				break
+			}
+		}
+		result.Resources = append(result.Resources, validateResource(ctx, r, oldObject, schemaValidators, structurals, crds))
 	}
 	result.Summary = computeSummary(result.Resources)
 	return result, nil
-}
-
-// resourceKey identifies a resource by GroupVersionKind, name, and namespace.
-// It is used to match a resource under validation to its previous state so CEL
-// transition rules see the right old object.
-func resourceKey(r *unstructured.Unstructured) string {
-	gvk := r.GetObjectKind().GroupVersionKind()
-	return fmt.Sprintf("%s-%s-%s", gvk.String(), getResourceName(r), r.GetNamespace())
-}
-
-// objectOf returns the unstructured content of u, or nil when u is nil. It
-// keeps the nil check for an unmatched old resource in one place so callers can
-// pass the result straight to the CEL validator's oldObject argument.
-func objectOf(u *unstructured.Unstructured) map[string]any {
-	if u == nil {
-		return nil
-	}
-	return u.Object
 }
 
 // validateResource runs every check (schema, CEL, unknown fields, defaulting)

@@ -77,11 +77,11 @@ type Cmd struct {
 	Resources  string `arg:"" help:"Resource sources as a comma-separated list of files, directories, or '-' for standard input."`
 
 	// Flags. Keep them in alphabetical order.
-	CacheDir              string `default:"~/.crossplane/cache"                                        help:"Absolute path to the cache directory for downloaded schemas."  predictor:"directory"`
+	CacheDir              string `default:"~/.crossplane/cache"                                                                                                        help:"Absolute path to the cache directory for downloaded schemas."  predictor:"directory"`
 	CleanCache            bool   `help:"Clean the cache directory before downloading package schemas."`
-	CrossplaneImage       string `default:"xpkg.crossplane.io/crossplane/crossplane:stable"            help:"Specify the Crossplane image for validating built-in schemas."`
-	ErrorOnMissingSchemas bool   `default:"false"                                                      help:"Return non zero exit code if missing schemas."`
-	OldResources          string `help:"Previous resource state for evaluating CEL transition rules."`
+	CrossplaneImage       string `default:"xpkg.crossplane.io/crossplane/crossplane:stable"                                                                            help:"Specify the Crossplane image for validating built-in schemas."`
+	ErrorOnMissingSchemas bool   `default:"false"                                                                                                                      help:"Return non zero exit code if missing schemas."`
+	OldResources          string `help:"Previous resource state for CEL transition rules, as a comma-separated list of files, directories, or '-' for standard input."`
 	// rendererFlag.Decode rejects unknown formats, which is what Kong's
 	// "enum" tag would normally enforce — but enum doesn't apply to
 	// MapperValue-backed fields. The help text is the user-facing list
@@ -108,8 +108,15 @@ func (c *Cmd) AfterApply() error {
 
 // Run validate.
 func (c *Cmd) Run(k *kong.Context, _ logging.Logger) error {
-	if c.Resources == "-" && c.Extensions == "-" {
-		return errors.New("cannot use stdin for both extensions and resources")
+	// stdin can only be consumed once, so at most one input may be "-".
+	stdinCount := 0
+	for _, in := range []string{c.Extensions, c.Resources, c.OldResources} {
+		if in == "-" {
+			stdinCount++
+		}
+	}
+	if stdinCount > 1 {
+		return errors.New("cannot use stdin for more than one input")
 	}
 
 	// Load all extensions

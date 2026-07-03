@@ -180,56 +180,6 @@ var testCRDNoMatchingVersion = &extv1.CustomResourceDefinition{
 	},
 }
 
-// TestSchemaValidateDistinguishesAmbiguousKeys is a regression test for
-// old-resource matching. A naive "<gvk>-<name>-<namespace>" string key collides
-// whenever a name or namespace contains the "-" separator: (name=app,
-// namespace=test-1) and (name=app-test, namespace=1) both render as
-// "<gvk>-app-test-1". Under such a collision a resource gets matched to the
-// WRONG previous state and its CEL transition rule is evaluated against the
-// wrong old object. SchemaValidate matches on GroupVersionKind, namespace, and
-// name as separate values, which keeps these two resources distinct.
-func TestSchemaValidateDistinguishesAmbiguousKeys(t *testing.T) {
-	mk := func(name, namespace, param string) *unstructured.Unstructured {
-		return &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "test.org/v1alpha1",
-			"kind":       "TestTransition",
-			"metadata":   map[string]any{"name": name, "namespace": namespace},
-			"spec":       map[string]any{"param": param},
-		}}
-	}
-
-	// newA and newB collide to "<gvk>-app-test-1" under a naive string key, as
-	// do their matching old resources.
-	newA := mk("app", "test-1", "keep")    // unchanged vs oldA -> should be Valid
-	newB := mk("app-test", "1", "changed") // changed vs oldB   -> should be Invalid
-	oldA := mk("app", "test-1", "keep")
-	oldB := mk("app-test", "1", "original")
-
-	result, err := SchemaValidate(
-		t.Context(),
-		[]*unstructured.Unstructured{newA, newB},
-		[]*unstructured.Unstructured{oldA, oldB},
-		[]*extv1.CustomResourceDefinition{testCRDWithTransition},
-	)
-	if err != nil {
-		t.Fatalf("SchemaValidate() unexpected error: %v", err)
-	}
-
-	// Matching on separate fields, each resource sees its own old state. A naive
-	// string key would map both to the last old resource (oldB), wrongly
-	// flipping newA to Invalid and yielding Valid=0, Invalid=2.
-	want := ValidationSummary{Total: 2, Valid: 1, Invalid: 1}
-	if diff := cmp.Diff(want, result.Summary); diff != "" {
-		t.Errorf("Summary mismatch (-want +got):\n%s", diff)
-	}
-	if result.Resources[0].Status != ValidationStatusValid {
-		t.Errorf("newA (app/test-1) Status = %q; want Valid — matched to the wrong old resource?", result.Resources[0].Status)
-	}
-	if result.Resources[1].Status != ValidationStatusInvalid {
-		t.Errorf("newB (app-test/1) Status = %q; want Invalid", result.Resources[1].Status)
-	}
-}
-
 func TestSchemaValidate(t *testing.T) {
 	validResource := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "test.org/v1alpha1",
@@ -281,6 +231,34 @@ func TestSchemaValidate(t *testing.T) {
 		"kind":       "TestTransition",
 		"metadata":   map[string]any{"name": "test"},
 		"spec":       map[string]any{"param": "original-value"},
+	}}
+	// ambiguousA and ambiguousB collide under a naive "<gvk>-<name>-<namespace>"
+	// string key: (name=app, namespace=test-1) and (name=app-test, namespace=1)
+	// both render as "<gvk>-app-test-1". Matching on separate fields keeps them
+	// distinct, so each is paired with its own old state below.
+	ambiguousA := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "test.org/v1alpha1",
+		"kind":       "TestTransition",
+		"metadata":   map[string]any{"name": "app", "namespace": "test-1"},
+		"spec":       map[string]any{"param": "keep"},
+	}}
+	ambiguousB := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "test.org/v1alpha1",
+		"kind":       "TestTransition",
+		"metadata":   map[string]any{"name": "app-test", "namespace": "1"},
+		"spec":       map[string]any{"param": "changed"},
+	}}
+	ambiguousOldA := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "test.org/v1alpha1",
+		"kind":       "TestTransition",
+		"metadata":   map[string]any{"name": "app", "namespace": "test-1"},
+		"spec":       map[string]any{"param": "keep"},
+	}}
+	ambiguousOldB := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "test.org/v1alpha1",
+		"kind":       "TestTransition",
+		"metadata":   map[string]any{"name": "app-test", "namespace": "1"},
+		"spec":       map[string]any{"param": "original"},
 	}}
 
 	type args struct {
@@ -472,6 +450,33 @@ func TestSchemaValidate(t *testing.T) {
 						},
 					},
 					{status: ValidationStatusMissingSchema},
+				},
+			},
+		},
+		"AmbiguousKeysMatchedByIdentity": {
+			// Regression guard: a naive "<gvk>-<name>-<namespace>" string key
+			// collides for these two resources ((app, test-1) and (app-test, 1)
+			// both render as "<gvk>-app-test-1"), which would pair a resource
+			// with the wrong old state. Matching on GVK, namespace, and name as
+			// separate values keeps them distinct: ambiguousA is unchanged
+			// (Valid) while ambiguousB changed its immutable param (Invalid). A
+			// string key would instead yield Valid=0, Invalid=2.
+			reason: "Resources whose naive string keys collide are matched to their own old state by GVK+namespace+name.",
+			args: args{
+				resources:    []*unstructured.Unstructured{ambiguousA, ambiguousB},
+				oldResources: []*unstructured.Unstructured{ambiguousOldA, ambiguousOldB},
+				crds:         []*extv1.CustomResourceDefinition{testCRDWithTransition},
+			},
+			want: want{
+				summary: ValidationSummary{Total: 2, Valid: 1, Invalid: 1},
+				perRes: []expect{
+					{status: ValidationStatusValid},
+					{
+						status: ValidationStatusInvalid,
+						errors: []FieldValidationError{
+							{Type: FieldErrorTypeCEL, Field: "spec"},
+						},
+					},
 				},
 			},
 		},

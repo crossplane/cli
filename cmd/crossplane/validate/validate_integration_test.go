@@ -85,6 +85,25 @@ func TestParseRejectsUnknownOutputFormat(t *testing.T) {
 	}
 }
 
+// TestRunRejectsMultipleStdinInputs asserts the guard in Run: stdin can only be
+// consumed once, so at most one of extensions, resources, or --old-resources may
+// be "-". The guard runs before any loader, so the file paths need not exist.
+func TestRunRejectsMultipleStdinInputs(t *testing.T) {
+	cases := map[string][]string{
+		"ExtensionsAndResources":    {"-", "-"},
+		"ResourcesAndOldResources":  {"extensions.yaml", "-", "--old-resources=-"},
+		"ExtensionsAndOldResources": {"-", "resources.yaml", "--old-resources=-"},
+	}
+	for name, argv := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := runCmd(t, append(argv, commonArgs...)...)
+			if err == nil || !strings.Contains(err.Error(), "stdin") {
+				t.Errorf("expected a stdin error, got: %v", err)
+			}
+		})
+	}
+}
+
 // TestRun drives the validate command end-to-end through Kong, against
 // real fixture files and a pre-populated cache directory that keeps the
 // run offline. Nothing is mocked; the case table covers

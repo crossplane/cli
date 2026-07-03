@@ -27,6 +27,7 @@ import (
 	"k8s.io/apiextensions-apiserver/pkg/apiserver/validation"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	celconfig "k8s.io/apiserver/pkg/apis/cel"
 
@@ -59,27 +60,50 @@ func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured,
 		return nil, errors.Wrap(err, "cannot create schema validators")
 	}
 
+	// Index old resources by identity so each resource can be paired with its
+	// previous state in O(1). On duplicate keys the last entry wins.
+	oldByKey := make(map[oldResourceKey]*unstructured.Unstructured, len(oldResources))
+	for _, o := range oldResources {
+		oldByKey[keyOf(o)] = o
+	}
+
 	result := &ValidationResult{
 		Resources: make([]ResourceValidationResult, 0, len(resources)),
 	}
 	for _, r := range resources {
-		// Find this resource's previous state, if supplied, so CEL transition
-		// rules (those referencing oldSelf) can be evaluated. A resource is
-		// matched to its old state by GroupVersionKind, namespace, and name;
-		// with no match oldObject stays nil and transition rules are skipped,
-		// exactly as on a Kubernetes create.
-		gvk, namespace, name := r.GroupVersionKind(), r.GetNamespace(), getResourceName(r)
+		// Look up this resource's previous state, if supplied, so CEL transition
+		// rules (those referencing oldSelf) can be evaluated. With no match
+		// oldObject stays nil and transition rules are skipped, exactly as on a
+		// Kubernetes create.
 		var oldObject map[string]any
-		for _, o := range oldResources {
-			if o.GroupVersionKind() == gvk && o.GetNamespace() == namespace && getResourceName(o) == name {
-				oldObject = o.Object
-				break
-			}
+		if old, ok := oldByKey[keyOf(r)]; ok {
+			oldObject = old.Object
 		}
 		result.Resources = append(result.Resources, validateResource(ctx, r, oldObject, schemaValidators, structurals, crds))
 	}
 	result.Summary = computeSummary(result.Resources)
 	return result, nil
+}
+
+// oldResourceKey identifies a resource for matching it to its previous state. It
+// composes two native, comparable Kubernetes value types — a GroupVersionKind
+// and a NamespacedName — so the key is unambiguous (unlike a joined string,
+// where a name or namespace containing the separator could collide) and usable
+// directly as a Go map key.
+type oldResourceKey struct {
+	gvk  runtimeschema.GroupVersionKind
+	name types.NamespacedName
+}
+
+// keyOf derives the oldResourceKey for a resource. Name resolution goes through
+// getResourceName so the match is consistent with how validateResource reports
+// the resource name, including its composition-resource-name annotation
+// fallback.
+func keyOf(r *unstructured.Unstructured) oldResourceKey {
+	return oldResourceKey{
+		gvk:  r.GroupVersionKind(),
+		name: types.NamespacedName{Namespace: r.GetNamespace(), Name: getResourceName(r)},
+	}
 }
 
 // validateResource runs every check (schema, CEL, unknown fields, defaulting)

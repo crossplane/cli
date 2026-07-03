@@ -12,7 +12,7 @@ jobs:
   update-docs:
     concurrency:
       group: update-cli-docs
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
@@ -55,9 +55,11 @@ jobs:
           echo "dir=content/cli/${MINOR_VERSION#v}" >> "$GITHUB_OUTPUT"
 
       - name: Update Docs
+        env:
+          TARGET_DIR: ${{ steps.target.outputs.dir }}
         run: |
-          mkdir -p docs/${{ steps.target.outputs.dir }}
-          cp generated-docs/command-reference.md docs/${{ steps.target.outputs.dir }}/command-reference.md
+          mkdir -p "docs/${TARGET_DIR}"
+          cp generated-docs/command-reference.md "docs/${TARGET_DIR}/command-reference.md"
           cd docs
           if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
             echo "docs-changed=true" >> "$GITHUB_ENV"

@@ -16,36 +16,36 @@ destructive?*
 
 That question has two layers, and today's tooling answers at most one.
 
-The first layer is **what changes in the cluster**: which composed resources
-a change adds, modifies, or removes. `crossplane composition render` answers "what does
-this composition produce", and since the CLI moved to the high-fidelity
+The first layer is **what changes in the cluster**: which composed resources a
+change adds, modifies, or removes. `crossplane composition render` answers "what
+does this composition produce", and since the CLI moved to the high-fidelity
 render engine ([one-pager-render-engine]) it produces exactly what the real
 reconciler would. But render alone is not a preview: it does not know what is on
 the cluster now, so it cannot tell you what would *change*.
-[crossplane-diff][crossplane-diff] closes that gap. It renders XRs through
-the same engine the CLI uses, resolves the extra resources functions require
-by iterating renders against the live cluster, dry-run-applies the results
-server-side to capture defaulting and webhook mutation, and diffs against
-live state, including composition impact analysis (`crossplane-diff comp`:
-find every XR using a changed Composition and diff them all). It is good,
-proven work. It is also a separate binary in crossplane-contrib, with its own
-release train and CI, that most Crossplane users never discover.
+[crossplane-diff][crossplane-diff] closes that gap. It renders XRs through the
+same engine the CLI uses, resolves the extra resources functions require by
+iterating renders against the live cluster, dry-run-applies the results
+server-side to capture defaulting and webhook mutation, and diffs against live
+state, including composition impact analysis (`crossplane-diff comp`: find every
+XR using a changed Composition and diff them all). It is good, proven work. It
+is also a separate binary in crossplane-contrib, with its own release train and
+CI, that most Crossplane users never discover.
 
 The second layer is **what changes in the cloud**. A cluster-layer diff shows
 that `spec.forProvider.engineVersion` changed; it cannot show that Terraform
 could only make that change by *destroying and recreating the database*. In
 Crossplane that case is worse than it sounds: providers never destroy an
 external resource to update it, so applying such a change does not recreate
-anything, it wedges. The provider refuses the update, the MR sits unsynced,
-and a human has to intervene. Replacement, computed values, provider
-defaults, and custom diff logic are provider knowledge. A companion one-pager in crossplane/upjet proposes
-exposing that knowledge: a `PlanService` gRPC protocol that upjet providers
-serve from an `internal plan-server` subcommand, computing the provider's own Terraform
-diff from a desired resource and its live state, statelessly, with no cloud
-credentials and no cluster access. What that proposal deliberately leaves to
-the client is orchestration: something has to figure out which providers a
-change involves, run their plan servers, route resources to them, and render
-the results.
+anything, it wedges. The provider refuses the update, the MR sits unsynced, and
+a human has to intervene. Replacement, computed values, provider defaults, and
+custom diff logic are provider knowledge. A companion one-pager in
+crossplane/upjet proposes exposing that knowledge: a `PlanService` gRPC protocol
+that upjet providers serve from an `internal plan-server` subcommand, computing
+the provider's own Terraform diff from a desired resource and its live state,
+statelessly, with no cloud credentials and no cluster access. What that proposal
+deliberately leaves to the client is orchestration: something has to figure out
+which providers a change involves, run their plan servers, route resources to
+them, and render the results.
 
 The CLI is that client. It already does exactly this dance for functions:
 `crossplane composition render` pulls function packages, runs them as local Docker

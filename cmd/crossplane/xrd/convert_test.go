@@ -266,4 +266,3 @@ func minimalXRD(scope apiextensionsv1.CompositeResourceScope, claimNames *extv1.
 		},
 	}
 }
-

@@ -63,7 +63,12 @@ python3 -m venv /build
 /build/bin/hatch build -t wheel /whl
 for arch in $ARCHS ; do
   python3 -m venv /fn_$arch
-  /fn_$arch/bin/pip install --platform=manylinux2014_$arch \
+  /fn_$arch/bin/pip install \
+    --platform=manylinux2014_$arch \
+    --platform=manylinux_2_28_$arch \
+    --platform=manylinux_2_34_$arch \
+    --platform=manylinux_2_39_$arch \
+    --platform=manylinux_1_2_$arch \
     --only-binary=:all: \
     --target=/fn_$arch/lib/python3.13/site-packages \
     /whl/*.whl

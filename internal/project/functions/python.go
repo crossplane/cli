@@ -44,8 +44,11 @@ import (
 )
 
 const (
-	// pythonBuildImage is the image in which we build the function. Its python
-	// version must match the python version of pythonRuntimeImage.
+	// pythonVersion is the Python version we use. Both the build image and the
+	// runtime image must have this version of Python installed.
+	pythonVersion = "3.13"
+
+	// pythonBuildImage is the image in which we build the function.
 	pythonBuildImage = "docker.io/library/debian:13-slim"
 	// pythonRuntimeImage is the distroless base used at runtime.
 	pythonRuntimeImage = "gcr.io/distroless/python3-debian13:nonroot"
@@ -70,7 +73,7 @@ for arch in $ARCHS ; do
     --platform=manylinux_2_39_$arch \
     --platform=manylinux_1_2_$arch \
     --only-binary=:all: \
-    --target=/fn_$arch/lib/python3.13/site-packages \
+    --target=/fn_$arch/lib/python$PY_VERSION/site-packages \
     /whl/*.whl
 done
 `
@@ -210,7 +213,10 @@ func (b *pythonBuilder) buildVenv(ctx context.Context, c BuildContext) (map[stri
 
 	opts := []docker.StartContainerOption{
 		docker.StartWithCopyFiles(fnTar, "/"),
-		docker.StartWithEnv("ARCHS=" + strings.Join(pyArchitectures, " ")),
+		docker.StartWithEnv(
+			"ARCHS="+strings.Join(pyArchitectures, " "),
+			"PY_VERSION="+pythonVersion,
+		),
 		docker.StartWithCommand([]string{"sh", "-c", pythonBuildScript}),
 		docker.StartWithWorkingDirectory("/" + filepath.ToSlash(c.FunctionPath)),
 	}
@@ -267,7 +273,7 @@ func configurePythonImage(img v1.Image, arch string) (v1.Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg.Entrypoint = []string{fmt.Sprintf("/fn_%s/lib/python3.13/site-packages/bin/function", pyArch)}
+	cfg.Entrypoint = []string{fmt.Sprintf("/fn_%s/lib/python%s/site-packages/bin/function", pyArch, pythonVersion)}
 	cfg.Cmd = nil
 	cfg.WorkingDir = "/"
 	cfg.User = "nonroot:nonroot"

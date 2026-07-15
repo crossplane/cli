@@ -123,17 +123,17 @@ func TestConvertJSONSchema(t *testing.T) {
 	}{
 		"Stdout": {
 			reason:    "With no output flags, JSON Schema should be written to stdout.",
-			cmd:       convertCmd{JSONSchema: true},
+			cmd:       convertCmd{Format: "jsonschema"},
 			wantStdio: true,
 		},
 		"OutputFile": {
 			reason:   "With -o, JSON Schema should be written to the specified file.",
-			cmd:      convertCmd{JSONSchema: true, OutputFile: "/out/schema.json"},
+			cmd:      convertCmd{Format: "jsonschema", OutputFile: "/out/schema.json"},
 			wantFile: "/out/schema.json",
 		},
 		"OutputDir": {
 			reason:   "With --output-dir, JSON Schema should be written as a named file in the directory.",
-			cmd:      convertCmd{JSONSchema: true, OutputDir: "/schemas"},
+			cmd:      convertCmd{Format: "jsonschema", OutputDir: "/schemas"},
 			wantFile: filepath.Join("/schemas", wantFile),
 		},
 	}
@@ -202,7 +202,7 @@ func TestConvertJSONSchemaMultiSchema(t *testing.T) {
 
 	// OutputDir should succeed and write each schema to its own file.
 	fs := afero.NewMemMapFs()
-	cmd := convertCmd{JSONSchema: true, OutputDir: "/schemas", fs: fs}
+	cmd := convertCmd{Format: "jsonschema", OutputDir: "/schemas", fs: fs}
 	k := newKongContext(t)
 	if err := cmd.writeOutputs(k, outputs); err != nil {
 		t.Fatalf("writeOutputs(OutputDir): unexpected error: %v", err)
@@ -214,13 +214,13 @@ func TestConvertJSONSchemaMultiSchema(t *testing.T) {
 	}
 
 	// Stdout and OutputFile should reject multiple schemas.
-	cmd = convertCmd{JSONSchema: true, fs: afero.NewMemMapFs()}
+	cmd = convertCmd{Format: "jsonschema", fs: afero.NewMemMapFs()}
 	k = newKongContext(t)
 	if err := cmd.writeOutputs(k, outputs); err == nil {
 		t.Error("expected error writing multiple JSON Schemas to stdout")
 	}
 
-	cmd = convertCmd{JSONSchema: true, OutputFile: "/out.json", fs: afero.NewMemMapFs()}
+	cmd = convertCmd{Format: "jsonschema", OutputFile: "/out.json", fs: afero.NewMemMapFs()}
 	k = newKongContext(t)
 	if err := cmd.writeOutputs(k, outputs); err == nil {
 		t.Error("expected error writing multiple JSON Schemas to single file")

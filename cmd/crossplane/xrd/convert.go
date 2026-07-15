@@ -56,11 +56,9 @@ type convertCmd struct {
 	// Output flags. OutputFile and OutputDir are mutually exclusive; when
 	// neither is set the converted CRDs are emitted on stdout as a multi-doc
 	// YAML stream.
-	OutputFile string `help:"The file to write the generated CRD YAML to. Legacy XRDs produce a multi-doc YAML stream (XR CRD + Claim CRD)." placeholder:"PATH" predictor:"file"      short:"o"   type:"path"  xor:"output"`
-	OutputDir  string `help:"A directory to write the generated CRDs to. Each CRD gets a separate file named after the CRD."                 placeholder:"DIR"  predictor:"directory" type:"path" xor:"output"`
-
-	// Format flags.
-	JSONSchema bool `help:"Write JSON Schema files instead of CRDs. Useful for YAML language server integration." name:"json-schema"`
+	OutputFile string `help:"The file to write the generated CRD YAML to. Legacy XRDs produce a multi-doc YAML stream (XR CRD + Claim CRD)." placeholder:"PATH"    predictor:"file"                                                                             short:"o"   type:"path"  xor:"output"`
+	OutputDir  string `help:"A directory to write the generated CRDs to. Each CRD gets a separate file named after the CRD."                 placeholder:"DIR"     predictor:"directory"                                                                        type:"path" xor:"output"`
+	Format     string `default:"crd"                                                                                                         enum:"crd,jsonschema" help:"Write JSON Schema files instead of CRDs. Useful for YAML language server integration."`
 
 	fs afero.Fs
 }
@@ -101,10 +99,10 @@ func (c *convertCmd) Run(k *kong.Context) error {
 	}
 
 	var outputs []convertOutput
-	if c.JSONSchema {
-		outputs, err = toJSONSchemaOutputs(crds)
-	} else {
+	if c.Format == "crd" {
 		outputs, err = toCRDOutputs(crds)
+	} else {
+		outputs, err = toJSONSchemaOutputs(crds)
 	}
 	if err != nil {
 		return err
@@ -161,7 +159,7 @@ func (c *convertCmd) writeOutputs(k *kong.Context, outputs []convertOutput) erro
 		return nil
 	}
 
-	if c.JSONSchema && len(outputs) > 1 {
+	if c.Format == "jsonschema" && len(outputs) > 1 {
 		return errors.Errorf("cannot write %d JSON Schemas to a single output; use --output-dir to write one file per schema", len(outputs))
 	}
 

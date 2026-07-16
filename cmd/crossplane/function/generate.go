@@ -48,6 +48,12 @@ import (
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
+// Function language constants.
+const (
+	langGoTemplating = "go-templating"
+	langPython       = "python"
+)
+
 //go:embed help/generate.md
 var generateHelp string
 
@@ -58,6 +64,8 @@ var (
 	pythonTemplates embed.FS
 	//go:embed templates/go-templating/*
 	goTemplatingTemplates embed.FS
+	//go:embed all:templates/typescript
+	typescriptTemplates embed.FS
 
 	// The go template contains a go.mod, so we can't embed it as an
 	// embed.FS. Instead we have to embed it as a tar archive and extract it
@@ -69,7 +77,7 @@ var (
 type generateCmd struct {
 	Name         string `arg:""                            help:"Name of the function to generate. Must be a valid DNS-1035 label."`
 	PipelinePath string `arg:""                            help:"Path to a Composition YAML file to add a pipeline step to."        optional:""`
-	Language     string `default:"go-templating"           enum:"go,go-templating,kcl,python"                                       help:"Language to use for the function." short:"l"`
+	Language     string `default:"go-templating"           enum:"go,go-templating,kcl,python,typescript"                            help:"Language to use for the function." short:"l"`
 	ProjectFile  string `default:"crossplane-project.yaml" help:"Path to project definition file."                                  short:"f"`
 
 	projFS            afero.Fs
@@ -137,7 +145,7 @@ func validateLanguageAgainstSchemas(functionLang string, schemaLangs []string) e
 // the given function language consumes. Most function languages map to a
 // like-named schema language; go-templating consumes the JSON schema.
 func functionSchemaLanguage(functionLang string) string {
-	if functionLang == "go-templating" {
+	if functionLang == langGoTemplating {
 		return v1alpha1.SchemaLanguageJSON
 	}
 	return functionLang
@@ -169,10 +177,11 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter) error {
 
 	type generatorFunc func(afero.Fs) error
 	generators := map[string]generatorFunc{
-		"go":            c.generateGoFiles,
-		"go-templating": c.generateGoTemplatingFiles,
-		"kcl":           c.generateKCLFiles,
-		"python":        c.generatePythonFiles,
+		"go":             c.generateGoFiles,
+		langGoTemplating: c.generateGoTemplatingFiles,
+		"kcl":            c.generateKCLFiles,
+		langPython:       c.generatePythonFiles,
+		"typescript":     c.generateTypescriptFiles,
 	}
 
 	generator, ok := generators[c.Language]
@@ -403,6 +412,57 @@ func (c *generateCmd) generateGoTemplatingFiles(fs afero.Fs) error {
 	}
 
 	return renderTemplates(fs, tmpls, tmplData)
+}
+
+type typescriptTemplateData struct {
+	HasSchemas  bool
+	SchemasPath string
+}
+
+func (c *generateCmd) generateTypescriptFiles(targetFS afero.Fs) error {
+	hasSchemas, err := afero.DirExists(c.schemasFS, "typescript")
+	if err != nil {
+		return errors.Wrap(err, "cannot inspect typescript schemas directory")
+	}
+	if hasSchemas {
+		entries, err := afero.ReadDir(c.schemasFS, "typescript")
+		if err != nil {
+			return errors.Wrap(err, "cannot read typescript schemas directory")
+		}
+		hasSchemas = len(entries) > 0
+	}
+
+	// Compute the relative path from the function dir to schemas/typescript/.
+	fnDir := filepath.Join("/", c.proj.Spec.Paths.Functions, c.Name)
+	relRoot, err := filepath.Rel(fnDir, "/")
+	if err != nil {
+		return errors.Wrap(err, "cannot determine path to schemas directory")
+	}
+	schemasPath := filepath.ToSlash(filepath.Join(relRoot, c.proj.Spec.Paths.Schemas, "typescript"))
+
+	data := typescriptTemplateData{
+		HasSchemas:  hasSchemas,
+		SchemasPath: schemasPath,
+	}
+
+	// Parse top-level templates
+	tmpls, err := template.ParseFS(typescriptTemplates, "templates/typescript/*.*")
+	if err != nil {
+		return errors.Wrap(err, "cannot parse top-level TypeScript templates")
+	}
+	if err := renderTemplates(targetFS, tmpls, data); err != nil {
+		return err
+	}
+
+	// Create src directory and parse src templates
+	if err := targetFS.Mkdir("src", 0o755); err != nil {
+		return errors.Wrap(err, "cannot create src directory")
+	}
+	tmpls, err = template.ParseFS(typescriptTemplates, "templates/typescript/src/*.*")
+	if err != nil {
+		return errors.Wrap(err, "cannot parse TypeScript source templates")
+	}
+	return renderTemplates(afero.NewBasePathFs(targetFS, "src"), tmpls, data)
 }
 
 func renderTemplates(targetFS afero.Fs, tmpls *template.Template, data any) error {

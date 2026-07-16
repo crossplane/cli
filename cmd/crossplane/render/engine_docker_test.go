@@ -18,6 +18,7 @@ package render
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -334,8 +335,8 @@ func TestDockerRenderEngineSetup(t *testing.T) {
 			// Defer-LIFO: all cleanups in this test are no-ops (we pre-seed
 			// e.network, so no call took the create-network branch). Calling
 			// them must not panic.
-			for i := len(cleanups) - 1; i >= 0; i-- {
-				cleanups[i]()
+			for _, v := range slices.Backward(cleanups) {
+				v()
 			}
 
 			if tc.engine.network != presetNetwork {

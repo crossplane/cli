@@ -167,6 +167,16 @@ func TestSchemaValidate(t *testing.T) {
 		"kind":       "Unknown",
 		"metadata":   map[string]any{"name": "no-crd"},
 	}}
+	kubernetesCoreResource := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata":   map[string]any{"name": "connection-details"},
+	}}
+	kubernetesGroupedResource := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "workload"},
+	}}
 	unknownFieldResource := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "test.org/v1alpha1",
 		"kind":       "Test",
@@ -258,6 +268,19 @@ func TestSchemaValidate(t *testing.T) {
 			want: want{
 				summary: ValidationSummary{Total: 1, MissingSchemas: 1},
 				perRes:  []expect{{status: ValidationStatusMissingSchema}},
+			},
+		},
+		"KubernetesBuiltIn": {
+			reason: "Built-in Kubernetes resources should not require CRD schemas.",
+			args: args{
+				resources: []*unstructured.Unstructured{kubernetesCoreResource, kubernetesGroupedResource},
+			},
+			want: want{
+				summary: ValidationSummary{Total: 2, Valid: 2},
+				perRes: []expect{
+					{status: ValidationStatusValid},
+					{status: ValidationStatusValid},
+				},
 			},
 		},
 		"UnknownField": {

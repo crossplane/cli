@@ -29,6 +29,7 @@ import (
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	celconfig "k8s.io/apiserver/pkg/apis/cel"
+	kubescheme "k8s.io/client-go/kubernetes/scheme"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
@@ -86,6 +87,10 @@ func validateResource(
 
 	sv, ok := schemaValidators[gvk]
 	if !ok {
+		if kubescheme.Scheme.Recognizes(gvk) {
+			rvr.Status = ValidationStatusValid
+			return rvr
+		}
 		rvr.Status = ValidationStatusMissingSchema
 		return rvr
 	}

@@ -185,72 +185,7 @@ func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 
 	// Generate separate files for each K8s package
 	for pkg, schemas := range k8sSchemasByPackage {
-		if len(schemas) == 0 {
-			continue
-		}
-
-		// Create a spec for this package
-		pkgSpec := &spec3.OpenAPI{
-			Version: "3.0.0",
-			Components: &spec3.Components{
-				Schemas: schemas,
-			},
-		}
-
-		// Determine the group, kind, and version from the package name
-		var group, kind, version string
-		switch pkg {
-		case k8sPkgMetaV1:
-			group = "meta.k8s.io"
-			kind = "meta"
-			version = "v1"
-		case k8sPkgAutoscalingV1:
-			group = k8sPkgNameAutoscaling
-			kind = k8sPkgNameAutoscaling
-			version = "v1"
-		}
-
-		// For K8s packages that reference meta.v1, we need to use the correct
-		// meta import path. The meta.v1 package uses goReferenceK8sTypes (core
-		// path) because self-references get stripped. Other packages like
-		// autoscaling use goReferenceK8sTypesForCRDs (non-core path) to
-		// reference the CRD meta.v1 package at
-		// dev.crossplane.io/models/io/k8s/meta/v1.
-		refMutator := goReferenceK8sTypes
-		if pkg != k8sPkgMetaV1 {
-			refMutator = goReferenceK8sTypesForCRDs
-		}
-
-		code, err := generateGo(pkgSpec, version,
-			goRenameTypes,
-			goRenameEnums,
-			goReplaceNumberWithInt,
-			goRemoveRequired,
-			refMutator,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		// shorten the auto‑generated K8s type names
-		code, err = fixK8sTypeNames(code)
-		if err != nil {
-			return nil, err
-		}
-
-		// remove the self‑import (e.g. meta/v1 importing itself)
-		code, err = removeSelfImports(code, pkg)
-		if err != nil {
-			return nil, err
-		}
-
-		// Add GetX/SetX accessors last, so they see the final type names.
-		code, err = applyAccessors(code, g.accessors)
-		if err != nil {
-			return nil, err
-		}
-
-		if err := writeGoCode(schemaFS, group, kind, version, code); err != nil {
+		if err := g.generateSharedK8sPackage(schemaFS, pkg, schemas); err != nil {
 			return nil, err
 		}
 	}
@@ -282,6 +217,77 @@ func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 	}
 
 	return schemaFS, nil
+}
+
+// generateSharedK8sPackage generates the Go model file for a single shared K8s
+// package (e.g. meta/v1) into schemaFS.
+func (g goGenerator) generateSharedK8sPackage(schemaFS afero.Fs, pkg string, schemas map[string]*spec.Schema) error {
+	if len(schemas) == 0 {
+		return nil
+	}
+
+	// Create a spec for this package
+	pkgSpec := &spec3.OpenAPI{
+		Version: "3.0.0",
+		Components: &spec3.Components{
+			Schemas: schemas,
+		},
+	}
+
+	// Determine the group, kind, and version from the package name
+	var group, kind, version string
+	switch pkg {
+	case k8sPkgMetaV1:
+		group = "meta.k8s.io"
+		kind = "meta"
+		version = "v1"
+	case k8sPkgAutoscalingV1:
+		group = k8sPkgNameAutoscaling
+		kind = k8sPkgNameAutoscaling
+		version = "v1"
+	}
+
+	// For K8s packages that reference meta.v1, we need to use the correct
+	// meta import path. The meta.v1 package uses goReferenceK8sTypes (core
+	// path) because self-references get stripped. Other packages like
+	// autoscaling use goReferenceK8sTypesForCRDs (non-core path) to
+	// reference the CRD meta.v1 package at
+	// dev.crossplane.io/models/io/k8s/meta/v1.
+	refMutator := goReferenceK8sTypes
+	if pkg != k8sPkgMetaV1 {
+		refMutator = goReferenceK8sTypesForCRDs
+	}
+
+	code, err := generateGo(pkgSpec, version,
+		goRenameTypes,
+		goRenameEnums,
+		goReplaceNumberWithInt,
+		goRemoveRequired,
+		refMutator,
+	)
+	if err != nil {
+		return err
+	}
+
+	// shorten the auto‑generated K8s type names
+	code, err = fixK8sTypeNames(code)
+	if err != nil {
+		return err
+	}
+
+	// remove the self‑import (e.g. meta/v1 importing itself)
+	code, err = removeSelfImports(code, pkg)
+	if err != nil {
+		return err
+	}
+
+	// Add GetX/SetX accessors last, so they see the final type names.
+	code, err = applyAccessors(code, g.accessors)
+	if err != nil {
+		return err
+	}
+
+	return writeGoCode(schemaFS, group, kind, version, code)
 }
 
 type goOpenAPI struct {

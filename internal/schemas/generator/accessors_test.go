@@ -45,7 +45,7 @@ func collectMethods(t *testing.T, src string) map[string]string {
 		if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 {
 			continue
 		}
-		recv := renderRecv(fn.Recv.List[0].Type)
+		recv := receiverTypeName(fn.Recv.List[0].Type)
 		var typ string
 		switch {
 		case fn.Type.Results != nil && len(fn.Type.Results.List) == 1:
@@ -56,18 +56,6 @@ func collectMethods(t *testing.T, src string) map[string]string {
 		out[recv+"."+fn.Name.Name] = typ
 	}
 	return out
-}
-
-func renderRecv(e ast.Expr) string {
-	if star, ok := e.(*ast.StarExpr); ok {
-		if id, ok := star.X.(*ast.Ident); ok {
-			return id.Name
-		}
-	}
-	if id, ok := e.(*ast.Ident); ok {
-		return id.Name
-	}
-	return ""
 }
 
 func renderExpr(t *testing.T, e ast.Expr) string {
@@ -102,7 +90,7 @@ func hasMethod(t *testing.T, src []byte, recv, name string) bool {
 		if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 {
 			continue
 		}
-		if renderRecv(fn.Recv.List[0].Type) == recv && fn.Name.Name == name {
+		if receiverTypeName(fn.Recv.List[0].Type) == recv && fn.Name.Name == name {
 			return true
 		}
 	}
@@ -353,7 +341,7 @@ func countMethods(t *testing.T, src string, recv, name string) int {
 		if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 {
 			continue
 		}
-		if renderRecv(fn.Recv.List[0].Type) == recv && fn.Name.Name == name {
+		if receiverTypeName(fn.Recv.List[0].Type) == recv && fn.Name.Name == name {
 			n++
 		}
 	}

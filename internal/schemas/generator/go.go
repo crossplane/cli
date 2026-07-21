@@ -221,7 +221,7 @@ func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 			refMutator = goReferenceK8sTypesForCRDs
 		}
 
-		code, err := generateGo(pkgSpec, version, g.accessors,
+		code, err := generateGo(pkgSpec, version,
 			goRenameTypes,
 			goRenameEnums,
 			goReplaceNumberWithInt,
@@ -244,6 +244,12 @@ func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 			return nil, err
 		}
 
+		// Add GetX/SetX accessors last, so they see the final type names.
+		code, err = applyAccessors(code, g.accessors)
+		if err != nil {
+			return nil, err
+		}
+
 		if err := writeGoCode(schemaFS, group, kind, version, code); err != nil {
 			return nil, err
 		}
@@ -251,7 +257,7 @@ func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 
 	// Generate models for the non-k8s schemas.
 	for _, oapi := range openAPIs {
-		code, err := generateGo(oapi.spec, oapi.version, g.accessors,
+		code, err := generateGo(oapi.spec, oapi.version,
 			goRenameTypes,
 			goRenameEnums,
 			goReplaceNumberWithInt,
@@ -260,6 +266,12 @@ func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 			goRemoveK8s,
 			goKeepOnlyComponents,
 		)
+		if err != nil {
+			return nil, err
+		}
+
+		// Add GetX/SetX accessors last, so they see the final type names.
+		code, err = applyAccessors(code, g.accessors)
 		if err != nil {
 			return nil, err
 		}
@@ -380,7 +392,7 @@ func goCollectOpenAPIs(fromFS afero.Fs) ([]goOpenAPI, error) { //nolint:gocognit
 // `generateGo`, since `codegen.Generate` is not concurrency safe.
 var generateGoMutex sync.Mutex //nolint:gochecknoglobals // Must be global.
 
-func generateGo(s *spec3.OpenAPI, version string, accessors bool, mutators ...func(*spec3.OpenAPI)) (string, error) {
+func generateGo(s *spec3.OpenAPI, version string, mutators ...func(*spec3.OpenAPI)) (string, error) {
 	// codegen.Generate sets some global state that's used by the utility
 	// functions we call from our mutators. That has two implications for us:
 	//
@@ -440,16 +452,6 @@ func generateGo(s *spec3.OpenAPI, version string, accessors bool, mutators ...fu
 	goCode, err = fixMissingImports(goCode)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to fix missing imports")
-	}
-
-	// Generate GetX/SetX accessor methods for every struct field, so consumers
-	// can abstract over the models with interfaces and generics. Gated behind
-	// the features.generateGoModelAccessors flag.
-	if accessors {
-		goCode, err = addAccessors(goCode)
-		if err != nil {
-			return "", errors.Wrap(err, "failed to add accessors")
-		}
 	}
 
 	goCodeBytes, err := format.Source([]byte(goCode))
@@ -1244,7 +1246,7 @@ func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaF
 	// Determine the group, kind, and version from the package name
 	group, kind, version := getK8sPackageInfo(pkg)
 
-	code, err := generateGo(pkgSpec, version, accessors,
+	code, err := generateGo(pkgSpec, version,
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,
@@ -1265,6 +1267,12 @@ func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaF
 	code, err = removeSelfImports(code, pkg)
 	if err != nil {
 		return errors.Wrap(err, "failed to remove self imports")
+	}
+
+	// Add GetX/SetX accessors last, so they see the final type names.
+	code, err = applyAccessors(code, accessors)
+	if err != nil {
+		return errors.Wrap(err, "failed to add accessors")
 	}
 
 	return writeGoCode(schemaFS, group, kind, version, code)
@@ -1386,7 +1394,7 @@ func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAP
 	// Add schemas that don't have GVK extensions (supporting types)
 	maps.Copy(groupSpec.Components.Schemas, openAPISpec.Components.Schemas)
 
-	code, err := generateGo(groupSpec, version, accessors,
+	code, err := generateGo(groupSpec, version,
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,
@@ -1398,6 +1406,12 @@ func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAP
 	)
 	if err != nil {
 		return err
+	}
+
+	// Add GetX/SetX accessors last, so they see the final type names.
+	code, err = applyAccessors(code, accessors)
+	if err != nil {
+		return errors.Wrap(err, "failed to add accessors")
 	}
 
 	return writeGoCode(schemaFS, group, kind, version, code)

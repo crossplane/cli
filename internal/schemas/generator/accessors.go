@@ -31,6 +31,16 @@ import (
 // alias, which are all multi-letter.
 const accessorReceiver = "o"
 
+// applyAccessors runs addAccessors when enabled. It is called by the generation
+// loops after all other Go post-processing, so the accessors reference the
+// final, fixed-up type names.
+func applyAccessors(code string, enabled bool) (string, error) {
+	if !enabled {
+		return code, nil
+	}
+	return addAccessors(code)
+}
+
 // addAccessors generates GetX/SetX accessor methods for every field of every
 // struct type declared in the given Go source. Getters return the field's
 // (pointer) type as-is and setters take the same type, so the generated methods
@@ -139,6 +149,13 @@ func writeStructAccessors(b *strings.Builder, fset *token.FileSet, typeName stri
 		fieldType := typ.String()
 
 		for _, name := range field.Names {
+			// Skip unexported fields: an accessor for them would be useless to
+			// external consumers and could produce oddly-cased method names.
+			// Generated models don't currently have any, but guard defensively.
+			if !name.IsExported() {
+				continue
+			}
+
 			fieldName := name.Name
 
 			// Getter.

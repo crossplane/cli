@@ -19,10 +19,12 @@ package functions
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -42,15 +44,16 @@ import (
 )
 
 const (
-	// pythonBuildImage is the image in which we build the function. Its python
-	// version must match the python version of pythonRuntimeImage.
+	// pythonVersion is the Python version we use. Both the build image and the
+	// runtime image must have this version of Python installed.
+	pythonVersion = "3.13"
+
+	// pythonBuildImage is the image in which we build the function.
 	pythonBuildImage = "docker.io/library/debian:13-slim"
 	// pythonRuntimeImage is the distroless base used at runtime.
 	pythonRuntimeImage = "gcr.io/distroless/python3-debian13:nonroot"
 	// pythonBuildScript is the shell pipeline that runs in the build
-	// container. Mirrors function-template-python's Dockerfile: install hatch
-	// in a throwaway venv, build a wheel, install the wheel into a fresh venv
-	// at /fn.
+	// container.
 	//
 	// TODO(adamwg): We should build an image with python3 and python3-venv
 	// pre-installed so we don't have to install them for every build.
@@ -61,8 +64,18 @@ apt-get install -y --no-install-recommends python3 python3-venv
 python3 -m venv /build
 /build/bin/pip install --quiet hatch
 /build/bin/hatch build -t wheel /whl
-python3 -m venv /fn
-/fn/bin/pip install --quiet /whl/*.whl
+for arch in $ARCHS ; do
+  python3 -m venv /fn_$arch
+  /fn_$arch/bin/pip install \
+    --platform=manylinux2014_$arch \
+    --platform=manylinux_2_28_$arch \
+    --platform=manylinux_2_34_$arch \
+    --platform=manylinux_2_39_$arch \
+    --platform=manylinux_1_2_$arch \
+    --only-binary=:all: \
+    --target=/fn_$arch/lib/python$PY_VERSION/site-packages \
+    /whl/*.whl
+done
 `
 )
 
@@ -101,7 +114,7 @@ func (b *pythonBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, 
 		return nil, errors.Wrap(err, "python builds require a Docker-compatible container runtime")
 	}
 
-	venvTar, err := b.buildVenv(ctx, c)
+	venvTars, err := b.buildVenv(ctx, c)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +143,7 @@ func (b *pythonBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, 
 			}
 
 			venvLayer, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) {
-				return io.NopCloser(bytes.NewReader(venvTar)), nil
+				return io.NopCloser(bytes.NewReader(venvTars[arch])), nil
 			})
 			if err != nil {
 				return errors.Wrap(err, "failed to create venv layer")
@@ -141,7 +154,7 @@ func (b *pythonBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, 
 				return errors.Wrap(err, "failed to append venv layer")
 			}
 
-			img, err = configurePythonImage(img)
+			img, err = configurePythonImage(img, arch)
 			if err != nil {
 				return errors.Wrap(err, "failed to configure python image")
 			}
@@ -154,14 +167,13 @@ func (b *pythonBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, 
 	return images, eg.Wait()
 }
 
-// buildVenv runs the build container against the function source and returns a
-// tar of /fn suitable for use as an image layer (entries are rooted at
-// /fn/...).
+// buildVenv runs the build container against the function source and returns
+// tars of /fn_<arch> for each architecture, suitable for use as an image layer.
 //
 // The function source is staged at /<FunctionPath> and, if a python schemas
 // tree exists, /<SchemasPath>/python/ — preserving the project's relative
 // layout so that pip resolves the schemas path-dep from pyproject.toml.
-func (b *pythonBuilder) buildVenv(ctx context.Context, c BuildContext) ([]byte, error) {
+func (b *pythonBuilder) buildVenv(ctx context.Context, c BuildContext) (map[string][]byte, error) {
 	fnFS := c.FunctionFS()
 	// Exclude any venv the user might have created in the function directory
 	// for local development, since (a) we don't need it, and (b) it will
@@ -191,8 +203,20 @@ func (b *pythonBuilder) buildVenv(ctx context.Context, c BuildContext) ([]byte, 
 		buildImage = rewritten
 	}
 
+	pyArchitectures := make([]string, len(c.Architectures))
+	for i, a := range c.Architectures {
+		pyArchitectures[i], err = pythonArchitecture(a)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	opts := []docker.StartContainerOption{
 		docker.StartWithCopyFiles(fnTar, "/"),
+		docker.StartWithEnv(
+			"ARCHS="+strings.Join(pyArchitectures, " "),
+			"PY_VERSION="+pythonVersion,
+		),
 		docker.StartWithCommand([]string{"sh", "-c", pythonBuildScript}),
 		docker.StartWithWorkingDirectory("/" + filepath.ToSlash(c.FunctionPath)),
 	}
@@ -212,20 +236,44 @@ func (b *pythonBuilder) buildVenv(ctx context.Context, c BuildContext) ([]byte, 
 		return nil, errors.Wrap(err, "python build container failed")
 	}
 
-	return docker.TarFromContainer(ctx, cid, "/fn")
+	ret := make(map[string][]byte)
+	for _, arch := range c.Architectures {
+		pyArch, _ := pythonArchitecture(arch) // Ignore the error since we already did this once.
+		ret[arch], err = docker.TarFromContainer(ctx, cid, fmt.Sprintf("/fn_%s", pyArch))
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to retrieve built function for architecture %s", arch)
+		}
+	}
+
+	return ret, nil
+}
+
+func pythonArchitecture(a string) (string, error) {
+	switch a {
+	case "amd64":
+		return "x86_64", nil
+	case "arm64":
+		return "aarch64", nil
+	default:
+		return "", errors.Errorf("unable to determine python architecture for architecture %s", a)
+	}
 }
 
 // configurePythonImage sets the runtime configuration on the final image to
 // match function-template-python: nonroot user, the function entrypoint, and
 // the gRPC port.
-func configurePythonImage(img v1.Image) (v1.Image, error) {
+func configurePythonImage(img v1.Image, arch string) (v1.Image, error) {
 	cfgFile, err := img.ConfigFile()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get config file")
 	}
 	cfg := cfgFile.Config
 
-	cfg.Entrypoint = []string{"/fn/bin/function"}
+	pyArch, err := pythonArchitecture(arch)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Entrypoint = []string{fmt.Sprintf("/fn_%s/lib/python%s/site-packages/bin/function", pyArch, pythonVersion)}
 	cfg.Cmd = nil
 	cfg.WorkingDir = "/"
 	cfg.User = "nonroot:nonroot"

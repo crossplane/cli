@@ -157,7 +157,10 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 	}
 	schemaMgr := manager.New(
 		c.schemasFS,
-		generator.Filter(generator.AllLanguages(), c.proj.Spec.Schemas.GetLanguages()),
+		generator.Filter(
+			generator.AllLanguages(generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects)),
+			c.proj.Spec.Schemas.GetLanguages(),
+		),
 		runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs)),
 	)
 

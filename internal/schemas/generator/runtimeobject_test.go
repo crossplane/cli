@@ -50,8 +50,17 @@ func roMethods(t *testing.T, src string) map[string]bool {
 	return out
 }
 
-func TestAddRuntimeObjectsDeepCopy(t *testing.T) {
-	input := `package v1alpha1
+func TestAddRuntimeObjects(t *testing.T) {
+	cases := map[string]struct {
+		reason       string
+		input        string
+		wantHasRoots bool
+		wantMethods  []string
+		notMethods   []string
+	}{
+		"DeepCopyOnly": {
+			reason: "non-root structs get DeepCopy methods but not runtime.Object methods",
+			input: `package v1alpha1
 
 type Bar struct {
 	Count *int64 ` + "`json:\"count,omitempty\"`" + `
@@ -64,35 +73,20 @@ type Foo struct {
 	Labels *map[string]string  ` + "`json:\"labels,omitempty\"`" + `
 	Bar    *Bar                ` + "`json:\"bar,omitempty\"`" + `
 }
-`
-	got, _, err := addRuntimeObjects(input)
-	if err != nil {
-		t.Fatalf("addRuntimeObjects returned error: %v", err)
-	}
-
-	methods := roMethods(t, got)
-	for _, m := range []string{
-		"Foo.DeepCopyInto", "Foo.DeepCopy",
-		"Bar.DeepCopyInto", "Bar.DeepCopy",
-	} {
-		if !methods[m] {
-			t.Errorf("expected method %s to be generated", m)
-		}
-	}
-
-	// Non-root structs must NOT get runtime.Object methods.
-	for _, m := range []string{
-		"Foo.DeepCopyObject", "Foo.GetObjectKind",
-		"Bar.DeepCopyObject", "Bar.GetObjectKind",
-	} {
-		if methods[m] {
-			t.Errorf("non-root struct should not declare %s", m)
-		}
-	}
-}
-
-func TestAddRuntimeObjectsRootType(t *testing.T) {
-	input := `package v1alpha1
+`,
+			wantHasRoots: false,
+			wantMethods: []string{
+				"Foo.DeepCopyInto", "Foo.DeepCopy",
+				"Bar.DeepCopyInto", "Bar.DeepCopy",
+			},
+			notMethods: []string{
+				"Foo.DeepCopyObject", "Foo.GetObjectKind",
+				"Bar.DeepCopyObject", "Bar.GetObjectKind",
+			},
+		},
+		"RootType": {
+			reason: "structs with APIVersion+Kind+Metadata get runtime.Object methods; supporting structs do not",
+			input: `package v1alpha1
 
 type FooAPIVersion string
 type FooKind string
@@ -118,26 +112,39 @@ type FooList struct {
 	Metadata   *ObjectMeta  ` + "`json:\"metadata,omitempty\"`" + `
 	Items      *[]Foo       ` + "`json:\"items,omitempty\"`" + `
 }
-`
-	got, hasRoots, err := addRuntimeObjects(input)
-	if err != nil {
-		t.Fatalf("addRuntimeObjects returned error: %v", err)
-	}
-	if !hasRoots {
-		t.Error("expected addRuntimeObjects to report root types present")
+`,
+			wantHasRoots: true,
+			wantMethods: []string{
+				"Foo.DeepCopyObject", "Foo.GetObjectKind", "Foo.GroupVersionKind", "Foo.SetGroupVersionKind",
+				"FooList.DeepCopyObject", "FooList.GetObjectKind", "FooList.GroupVersionKind", "FooList.SetGroupVersionKind",
+			},
+			notMethods: []string{
+				"FooSpec.DeepCopyObject",
+			},
+		},
 	}
 
-	methods := roMethods(t, got)
-	for _, m := range []string{
-		"Foo.DeepCopyObject", "Foo.GetObjectKind", "Foo.GroupVersionKind", "Foo.SetGroupVersionKind",
-		"FooList.DeepCopyObject", "FooList.GetObjectKind", "FooList.GroupVersionKind", "FooList.SetGroupVersionKind",
-	} {
-		if !methods[m] {
-			t.Errorf("expected root-type method %s to be generated", m)
-		}
-	}
-	// FooSpec is not a root type.
-	if methods["FooSpec.DeepCopyObject"] {
-		t.Error("FooSpec should not be a runtime.Object")
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, hasRoots, err := addRuntimeObjects(tc.input)
+			if err != nil {
+				t.Fatalf("addRuntimeObjects returned error: %v", err)
+			}
+			if hasRoots != tc.wantHasRoots {
+				t.Errorf("hasRoots = %v, want %v (%s)", hasRoots, tc.wantHasRoots, tc.reason)
+			}
+
+			methods := roMethods(t, got)
+			for _, m := range tc.wantMethods {
+				if !methods[m] {
+					t.Errorf("expected method %s to be generated (%s)", m, tc.reason)
+				}
+			}
+			for _, m := range tc.notMethods {
+				if methods[m] {
+					t.Errorf("did not expect method %s (%s)", m, tc.reason)
+				}
+			}
+		})
 	}
 }

@@ -72,7 +72,6 @@ func addRuntimeObjects(code string) (string, bool, error) {
 	}
 
 	structs := collectStructTypes(f)
-	scalars := collectScalarTypes(f)
 	aliases := collectCollectionAliases(f)
 
 	// Deterministic order: walk declarations in source order.
@@ -93,7 +92,7 @@ func addRuntimeObjects(code string) (string, bool, error) {
 				continue
 			}
 			name := ts.Name.Name
-			writeDeepCopy(&b, fset, name, st, structs, scalars, aliases)
+			writeDeepCopy(&b, fset, name, st, structs, aliases)
 			if isRootStruct(st) {
 				hasRoots = true
 				writeRuntimeObject(&b, name, st)
@@ -140,31 +139,6 @@ func collectStructTypes(f *ast.File) map[string]bool {
 				continue
 			}
 			if _, ok := ts.Type.(*ast.StructType); ok {
-				out[ts.Name.Name] = true
-			}
-		}
-	}
-	return out
-}
-
-// collectScalarTypes returns the set of named non-struct type definitions in the
-// file (e.g. `type FooKind string`). These are copied by value.
-func collectScalarTypes(f *ast.File) map[string]bool {
-	out := map[string]bool{}
-	for _, decl := range f.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.TYPE {
-			continue
-		}
-		for _, spec := range gen.Specs {
-			ts, ok := spec.(*ast.TypeSpec)
-			if !ok || ts.Assign.IsValid() {
-				continue
-			}
-			switch ts.Type.(type) {
-			case *ast.StructType:
-				// not a scalar
-			default:
 				out[ts.Name.Name] = true
 			}
 		}
@@ -230,7 +204,7 @@ const (
 
 // classifyElem classifies the element type expr (the type with any leading
 // pointer/slice/map already stripped) as scalar or struct.
-func classifyElem(e ast.Expr, structs, scalars map[string]bool) fieldKind {
+func classifyElem(e ast.Expr, structs map[string]bool) fieldKind {
 	switch x := e.(type) {
 	case *ast.Ident:
 		if structs[x.Name] {
@@ -255,7 +229,7 @@ func classifyElem(e ast.Expr, structs, scalars map[string]bool) fieldKind {
 }
 
 // writeDeepCopy appends DeepCopyInto and DeepCopy methods for the struct.
-func writeDeepCopy(b *strings.Builder, fset *token.FileSet, name string, st *ast.StructType, structs, scalars map[string]bool, aliases map[string]ast.Expr) {
+func writeDeepCopy(b *strings.Builder, fset *token.FileSet, name string, st *ast.StructType, structs map[string]bool, aliases map[string]ast.Expr) {
 	fmt.Fprintf(b, "\n// DeepCopyInto copies the receiver into out.\n")
 	fmt.Fprintf(b, "func (in *%s) DeepCopyInto(out *%s) {\n", name, name)
 	b.WriteString("\t*out = *in\n")
@@ -264,7 +238,7 @@ func writeDeepCopy(b *strings.Builder, fset *token.FileSet, name string, st *ast
 			continue
 		}
 		for _, n := range field.Names {
-			writeFieldCopy(b, fset, n.Name, field.Type, structs, scalars, aliases)
+			writeFieldCopy(b, fset, n.Name, field.Type, structs, aliases)
 		}
 	}
 	b.WriteString("}\n")
@@ -280,7 +254,7 @@ func writeDeepCopy(b *strings.Builder, fset *token.FileSet, name string, st *ast
 // fields are pointers; the leading pointer is handled here, then the pointee
 // (scalar, struct, slice or map) is copied appropriately. Named aliases to a
 // map or slice are deep-copied like their literal form.
-func writeFieldCopy(b *strings.Builder, fset *token.FileSet, field string, typ ast.Expr, structs, scalars map[string]bool, aliases map[string]ast.Expr) {
+func writeFieldCopy(b *strings.Builder, fset *token.FileSet, field string, typ ast.Expr, structs map[string]bool, aliases map[string]ast.Expr) {
 	star, ok := typ.(*ast.StarExpr)
 	if !ok {
 		// Non-pointer fields are copied by the `*out = *in` shallow assignment.
@@ -303,12 +277,12 @@ func writeFieldCopy(b *strings.Builder, fset *token.FileSet, field string, typ a
 
 	switch p := pointee.(type) {
 	case *ast.ArrayType:
-		writeSliceCopy(b, fset, declType, p, structs, scalars)
+		writeSliceCopy(b, declType, p, structs)
 	case *ast.MapType:
-		writeMapCopy(b, fset, declType, p, structs, scalars)
+		writeMapCopy(b, fset, declType, p, structs)
 	default:
 		fmt.Fprintf(b, "\t\t*out = new(%s)\n", declType)
-		if classifyElem(pointee, structs, scalars) == fkStruct {
+		if classifyElem(pointee, structs) == fkStruct {
 			b.WriteString("\t\t(*in).DeepCopyInto(*out)\n")
 		} else {
 			b.WriteString("\t\t**out = **in\n")
@@ -320,12 +294,12 @@ func writeFieldCopy(b *strings.Builder, fset *token.FileSet, field string, typ a
 
 // writeSliceCopy handles a *[]Elem field. declType is the type to allocate (the
 // literal slice type or a named alias). On entry in/out are *(*declType).
-func writeSliceCopy(b *strings.Builder, fset *token.FileSet, declType string, arr *ast.ArrayType, structs, scalars map[string]bool) {
+func writeSliceCopy(b *strings.Builder, declType string, arr *ast.ArrayType, structs map[string]bool) {
 	fmt.Fprintf(b, "\t\t*out = new(%s)\n", declType)
 	b.WriteString("\t\tif *in != nil {\n")
 	b.WriteString("\t\t\tin, out := *in, *out\n")
 	fmt.Fprintf(b, "\t\t\t*out = make(%s, len(*in))\n", declType)
-	if classifyElem(arr.Elt, structs, scalars) == fkStruct {
+	if classifyElem(arr.Elt, structs) == fkStruct {
 		b.WriteString("\t\t\tfor i := range *in {\n")
 		b.WriteString("\t\t\t\t(*in)[i].DeepCopyInto(&(*out)[i])\n")
 		b.WriteString("\t\t\t}\n")
@@ -337,13 +311,13 @@ func writeSliceCopy(b *strings.Builder, fset *token.FileSet, declType string, ar
 
 // writeMapCopy handles a *map[K]V field. declType is the type to allocate (the
 // literal map type or a named alias). On entry in/out are *(*declType).
-func writeMapCopy(b *strings.Builder, fset *token.FileSet, declType string, m *ast.MapType, structs, scalars map[string]bool) {
+func writeMapCopy(b *strings.Builder, fset *token.FileSet, declType string, m *ast.MapType, structs map[string]bool) {
 	valType := renderType(fset, m.Value)
 	fmt.Fprintf(b, "\t\t*out = new(%s)\n", declType)
 	b.WriteString("\t\tif *in != nil {\n")
 	b.WriteString("\t\t\tin, out := *in, *out\n")
 	fmt.Fprintf(b, "\t\t\t*out = make(%s, len(*in))\n", declType)
-	if classifyElem(m.Value, structs, scalars) == fkStruct {
+	if classifyElem(m.Value, structs) == fkStruct {
 		fmt.Fprintf(b, "\t\t\tfor key, val := range *in {\n")
 		fmt.Fprintf(b, "\t\t\t\tvar v %s\n", valType)
 		b.WriteString("\t\t\t\tval.DeepCopyInto(&v)\n")

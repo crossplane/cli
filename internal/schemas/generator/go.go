@@ -1278,7 +1278,7 @@ func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaF
 	// Add GetX/SetX accessors last, so they see the final type names.
 	code, err = applyAccessors(code, accessors)
 	if err != nil {
-		return errors.Wrap(err, "failed to add accessors")
+		return errors.Wrap(err, "failed to generate Go model accessors")
 	}
 
 	return writeGoCode(schemaFS, group, kind, version, code)
@@ -1417,7 +1417,7 @@ func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAP
 	// Add GetX/SetX accessors last, so they see the final type names.
 	code, err = applyAccessors(code, accessors)
 	if err != nil {
-		return errors.Wrap(err, "failed to add accessors")
+		return errors.Wrap(err, "failed to generate Go model accessors")
 	}
 
 	return writeGoCode(schemaFS, group, kind, version, code)

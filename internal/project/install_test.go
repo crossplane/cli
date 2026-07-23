@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -103,15 +104,38 @@ func TestApplyResources(t *testing.T) {
 		}
 	})
 
-	t.Run("EmptyRawErrors", func(t *testing.T) {
-		t.Parallel()
+	// Empty documents (e.g. a leading comment block before the first "---")
+	// unmarshal to an empty RawExtension. They must be skipped rather than
+	// rejected, and resources alongside them still applied.
+	skipCases := map[string]struct {
+		reason    string
+		resources []runtime.RawExtension
+		wantErr   error
+		wantName  string
+	}{
+		"SkipsEmptyDocumentAndAppliesRest": {
+			reason:    "An empty document alongside a real resource is skipped, and the real resource is still applied.",
+			resources: []runtime.RawExtension{{}, {Raw: configMapJSON("real")}},
+			wantErr:   nil,
+			wantName:  "real",
+		},
+	}
+	for name, tc := range skipCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-		cl := newFakeClient(t)
-		err := ApplyResources(t.Context(), cl, []runtime.RawExtension{{}})
-		if err == nil {
-			t.Fatal("expected error for empty raw, got nil")
-		}
-	})
+			cl := newFakeClient(t)
+			err := ApplyResources(t.Context(), cl, tc.resources)
+			if diff := cmp.Diff(tc.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("%s\nApplyResources(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+
+			var got corev1.ConfigMap
+			if err := cl.Get(t.Context(), types.NamespacedName{Name: tc.wantName, Namespace: "default"}, &got); err != nil {
+				t.Errorf("%s\nconfigmap %q not found: %v", tc.reason, tc.wantName, err)
+			}
+		})
+	}
 }
 
 func TestLookupLockPackage(t *testing.T) {

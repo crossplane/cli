@@ -27,6 +27,7 @@ import (
 	"k8s.io/apiextensions-apiserver/pkg/apiserver/validation"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	celconfig "k8s.io/apiserver/pkg/apis/cel"
 
@@ -45,20 +46,64 @@ import (
 // Caller-owned resources are not mutated. SchemaValidate operates on a deep
 // copy of each input, so the structural defaulting and unknown-field pruning
 // it performs internally are not visible after the call returns.
-func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured, crds []*extv1.CustomResourceDefinition) (*ValidationResult, error) {
+//
+// oldResources holds the previous state of the resources under validation so
+// that CEL transition rules — those referencing oldSelf, such as immutability
+// constraints — can be evaluated. They are matched to resources by
+// GroupVersionKind, name, and namespace; a resource with no matching old state
+// is validated with a nil old object, so its transition rules are skipped
+// exactly as they are on a Kubernetes create. Pass nil when there is no
+// previous state.
+func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured, oldResources []*unstructured.Unstructured, crds []*extv1.CustomResourceDefinition) (*ValidationResult, error) {
 	schemaValidators, structurals, err := newValidatorsAndStructurals(crds)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create schema validators")
+	}
+
+	// Index old resources by identity so each resource can be paired with its
+	// previous state in O(1). On duplicate keys the last entry wins.
+	oldByKey := make(map[oldResourceKey]*unstructured.Unstructured, len(oldResources))
+	for _, o := range oldResources {
+		oldByKey[keyOf(o)] = o
 	}
 
 	result := &ValidationResult{
 		Resources: make([]ResourceValidationResult, 0, len(resources)),
 	}
 	for _, r := range resources {
-		result.Resources = append(result.Resources, validateResource(ctx, r, schemaValidators, structurals, crds))
+		// Look up this resource's previous state, if supplied, so CEL transition
+		// rules (those referencing oldSelf) can be evaluated. With no match
+		// oldObject stays nil and transition rules are skipped, exactly as on a
+		// Kubernetes create.
+		var oldObject map[string]any
+		if old, ok := oldByKey[keyOf(r)]; ok {
+			oldObject = old.Object
+		}
+		result.Resources = append(result.Resources, validateResource(ctx, r, oldObject, schemaValidators, structurals, crds))
 	}
 	result.Summary = computeSummary(result.Resources)
 	return result, nil
+}
+
+// oldResourceKey identifies a resource for matching it to its previous state. It
+// composes two native, comparable Kubernetes value types — a GroupVersionKind
+// and a NamespacedName — so the key is unambiguous (unlike a joined string,
+// where a name or namespace containing the separator could collide) and usable
+// directly as a Go map key.
+type oldResourceKey struct {
+	gvk  runtimeschema.GroupVersionKind
+	name types.NamespacedName
+}
+
+// keyOf derives the oldResourceKey for a resource. Name resolution goes through
+// getResourceName so the match is consistent with how validateResource reports
+// the resource name, including its composition-resource-name annotation
+// fallback.
+func keyOf(r *unstructured.Unstructured) oldResourceKey {
+	return oldResourceKey{
+		gvk:  r.GroupVersionKind(),
+		name: types.NamespacedName{Namespace: r.GetNamespace(), Name: getResourceName(r)},
+	}
 }
 
 // validateResource runs every check (schema, CEL, unknown fields, defaulting)
@@ -72,6 +117,7 @@ func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured,
 func validateResource(
 	ctx context.Context,
 	in *unstructured.Unstructured,
+	oldObject map[string]any,
 	schemaValidators map[runtimeschema.GroupVersionKind]*validation.SchemaValidator,
 	structurals map[runtimeschema.GroupVersionKind]*schema.Structural,
 	crds []*extv1.CustomResourceDefinition,
@@ -117,8 +163,11 @@ func validateResource(
 		rvr.Errors = append(rvr.Errors, fieldErrorToFieldValidationError(e, FieldErrorTypeUnknownField))
 	}
 
+	// oldObject feeds CEL transition rules (those referencing oldSelf). It is
+	// nil when no previous state was supplied for this resource, in which case
+	// the CEL validator skips transition rules — matching a Kubernetes create.
 	celValidator := cel.NewValidator(s, true, celconfig.PerCallLimit)
-	celErrs, _ := celValidator.Validate(ctx, nil, s, r.Object, nil, celconfig.PerCallLimit)
+	celErrs, _ := celValidator.Validate(ctx, nil, s, r.Object, oldObject, celconfig.PerCallLimit)
 	for _, e := range celErrs {
 		rvr.Errors = append(rvr.Errors, fieldErrorToFieldValidationError(e, FieldErrorTypeCEL))
 	}

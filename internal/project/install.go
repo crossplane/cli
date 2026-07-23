@@ -276,8 +276,13 @@ func packageHasHealthyConditions(pkg xpkgv1.PackageRevision) bool {
 // ApplyResources installs arbitrary resources to the target control plane.
 func ApplyResources(ctx context.Context, cl client.Client, resources []runtime.RawExtension) error {
 	for _, raw := range resources {
+		// Skip empty documents. A YAML manifest can contain documents that hold
+		// no resource — e.g. a leading comment block before the first "---"
+		// separator, or "---\n---" between two resources — which unmarshal to an
+		// empty RawExtension. kubectl skips these; do the same rather than
+		// rejecting an otherwise valid manifest.
 		if len(raw.Raw) == 0 {
-			return errors.New("encountered an invalid or empty raw resource")
+			continue
 		}
 
 		obj := &unstructured.Unstructured{}

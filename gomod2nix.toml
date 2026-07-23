@@ -792,8 +792,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v0.0.0-20220910002029-abceb7e1c41e"
     hash = "sha256-GyCDxxMQhXA3Pi/TsWXpA8cX5akEoZV7CFx4RO3rARU="
   [mod."github.com/yuin/goldmark"]
-    version = "v1.7.13"
-    hash = "sha256-vBCxZrPYPc8x/nvAAv3Au59dCCyfS80Vw3/a9EXK7TE="
+    version = "v1.7.17"
+    hash = "sha256-QC6s1ai8rS/oOn/U9lQQEDTNUExdpn+diKPNdUi7k74="
   [mod."github.com/yuin/goldmark-emoji"]
     version = "v1.0.6"
     hash = "sha256-+d6bZzOPE+JSFsZbQNZMCWE+n3jgcQnkPETVk47mxSY="

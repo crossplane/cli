@@ -225,8 +225,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v2.3.3"
     hash = "sha256-EV8OVPduo12izMXcPySnNvMble5cyZc1sS+zsljdWgU="
   [mod."github.com/crossplane/crossplane/apis/v2"]
-    version = "v2.3.3"
-    hash = "sha256-mRQAdTjq/hKxrvbdG80M+QoTibJI3XO287ICx70feYY="
+    version = "v2.3.4"
+    hash = "sha256-hzqPKmqnfeJOqXadKGCkdpU4QCJxtC0xO+Uy4uGDsgw="
   [mod."github.com/crossplane/function-sdk-go"]
     version = "v0.7.1"
     hash = "sha256-BHAKkiae8CzWuP7G0EORhu7jmIqQnepzMfqOhEJtrTo="
@@ -867,14 +867,14 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v0.44.0"
     hash = "sha256-nzbvOgvGRbx1qpq1rbk7b6zNsNeNj8mOGoyZLtnzq3w="
   [mod."golang.org/x/text"]
-    version = "v0.38.0"
-    hash = "sha256-PzREcn7yzTAJ0WBvyYL/2/r+tfoeKTY/E5HVXi/CJsU="
+    version = "v0.39.0"
+    hash = "sha256-jQR8eNeC6HIFxRdEbF3EAUcoCOvpSJ/latXSqt5w0YA="
   [mod."golang.org/x/time"]
     version = "v0.15.0"
     hash = "sha256-5D24A65wn7k93Jj3+918UKjB9ccmGHPBEqjD2XDB92E="
   [mod."golang.org/x/tools"]
-    version = "v0.46.0"
-    hash = "sha256-LSnQtAn+uTFGoYvaDT7UII4uOL/XvaNRIt9tR5MSeBU="
+    version = "v0.47.0"
+    hash = "sha256-LyCNqEb/Jm94O6gaM01vXSHP9Yw/Cw0qVWXGxhCgwzo="
   [mod."gomodules.xyz/jsonpatch/v2"]
     version = "v2.5.0"
     hash = "sha256-L3Xy24GTtcDHmMgc9rlgUm3GrxFO7XQKJhfYIr3li1s="

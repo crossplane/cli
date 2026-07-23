@@ -138,14 +138,18 @@ var (
 )
 `
 
-type goGenerator struct{}
+// goGenerator generates Go models. accessors controls whether GetX/SetX
+// accessor methods are emitted for the generated structs.
+type goGenerator struct {
+	accessors bool
+}
 
 func (goGenerator) Language() string {
 	return devv1alpha1.SchemaLanguageGo
 }
 
 // GenerateFromCRD generates Go schemas for the CRDs in the given filesystem.
-func (goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
+func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
 	openAPIs, err := goCollectOpenAPIs(fromFS)
 	if err != nil {
 		return nil, err
@@ -181,66 +185,7 @@ func (goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.
 
 	// Generate separate files for each K8s package
 	for pkg, schemas := range k8sSchemasByPackage {
-		if len(schemas) == 0 {
-			continue
-		}
-
-		// Create a spec for this package
-		pkgSpec := &spec3.OpenAPI{
-			Version: "3.0.0",
-			Components: &spec3.Components{
-				Schemas: schemas,
-			},
-		}
-
-		// Determine the group, kind, and version from the package name
-		var group, kind, version string
-		switch pkg {
-		case k8sPkgMetaV1:
-			group = "meta.k8s.io"
-			kind = "meta"
-			version = "v1"
-		case k8sPkgAutoscalingV1:
-			group = k8sPkgNameAutoscaling
-			kind = k8sPkgNameAutoscaling
-			version = "v1"
-		}
-
-		// For K8s packages that reference meta.v1, we need to use the correct
-		// meta import path. The meta.v1 package uses goReferenceK8sTypes (core
-		// path) because self-references get stripped. Other packages like
-		// autoscaling use goReferenceK8sTypesForCRDs (non-core path) to
-		// reference the CRD meta.v1 package at
-		// dev.crossplane.io/models/io/k8s/meta/v1.
-		refMutator := goReferenceK8sTypes
-		if pkg != k8sPkgMetaV1 {
-			refMutator = goReferenceK8sTypesForCRDs
-		}
-
-		code, err := generateGo(pkgSpec, version,
-			goRenameTypes,
-			goRenameEnums,
-			goReplaceNumberWithInt,
-			goRemoveRequired,
-			refMutator,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		// shorten the auto‑generated K8s type names
-		code, err = fixK8sTypeNames(code)
-		if err != nil {
-			return nil, err
-		}
-
-		// remove the self‑import (e.g. meta/v1 importing itself)
-		code, err = removeSelfImports(code, pkg)
-		if err != nil {
-			return nil, err
-		}
-
-		if err := writeGoCode(schemaFS, group, kind, version, code); err != nil {
+		if err := g.generateSharedK8sPackage(schemaFS, pkg, schemas); err != nil {
 			return nil, err
 		}
 	}
@@ -260,12 +205,89 @@ func (goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.
 			return nil, err
 		}
 
+		// Add GetX/SetX accessors last, so they see the final type names.
+		code, err = applyAccessors(code, g.accessors)
+		if err != nil {
+			return nil, err
+		}
+
 		if err := writeGoCode(schemaFS, oapi.crd.Spec.Group, oapi.crd.Spec.Names.Kind, oapi.version, code); err != nil {
 			return nil, err
 		}
 	}
 
 	return schemaFS, nil
+}
+
+// generateSharedK8sPackage generates the Go model file for a single shared K8s
+// package (e.g. meta/v1) into schemaFS.
+func (g goGenerator) generateSharedK8sPackage(schemaFS afero.Fs, pkg string, schemas map[string]*spec.Schema) error {
+	if len(schemas) == 0 {
+		return nil
+	}
+
+	// Create a spec for this package
+	pkgSpec := &spec3.OpenAPI{
+		Version: "3.0.0",
+		Components: &spec3.Components{
+			Schemas: schemas,
+		},
+	}
+
+	// Determine the group, kind, and version from the package name
+	var group, kind, version string
+	switch pkg {
+	case k8sPkgMetaV1:
+		group = "meta.k8s.io"
+		kind = "meta"
+		version = "v1"
+	case k8sPkgAutoscalingV1:
+		group = k8sPkgNameAutoscaling
+		kind = k8sPkgNameAutoscaling
+		version = "v1"
+	}
+
+	// For K8s packages that reference meta.v1, we need to use the correct
+	// meta import path. The meta.v1 package uses goReferenceK8sTypes (core
+	// path) because self-references get stripped. Other packages like
+	// autoscaling use goReferenceK8sTypesForCRDs (non-core path) to
+	// reference the CRD meta.v1 package at
+	// dev.crossplane.io/models/io/k8s/meta/v1.
+	refMutator := goReferenceK8sTypes
+	if pkg != k8sPkgMetaV1 {
+		refMutator = goReferenceK8sTypesForCRDs
+	}
+
+	code, err := generateGo(pkgSpec, version,
+		goRenameTypes,
+		goRenameEnums,
+		goReplaceNumberWithInt,
+		goRemoveRequired,
+		refMutator,
+	)
+	if err != nil {
+		return err
+	}
+
+	// shorten the auto‑generated K8s type names
+	code, err = fixK8sTypeNames(code)
+	if err != nil {
+		return err
+	}
+
+	// remove the self‑import (e.g. meta/v1 importing itself)
+	code, err = removeSelfImports(code, pkg)
+	if err != nil {
+		return err
+	}
+
+	// Add GetX/SetX accessors last, so they see the final type names.
+	code, err = applyAccessors(code, g.accessors)
+	if err != nil {
+		return err
+	}
+
+	return writeGoCode(schemaFS, group, kind, version, code)
 }
 
 type goOpenAPI struct {
@@ -1088,7 +1110,7 @@ func fixK8sTypeNames(code string) (string, error) {
 }
 
 // GenerateFromOpenAPI generates Go schemas for the OpenAPI docs in the given filesystem.
-func (goGenerator) GenerateFromOpenAPI(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
+func (g goGenerator) GenerateFromOpenAPI(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
 	// Walk through filesystem to collect OpenAPI specs
 	openAPISpecs, err := collectOpenAPISpecs(fromFS)
 	if err != nil {
@@ -1107,12 +1129,12 @@ func (goGenerator) GenerateFromOpenAPI(_ context.Context, fromFS afero.Fs, _ run
 	}
 
 	// Generate K8s shared schemas
-	if err := generateK8sSharedSchemas(openAPISpecs, schemaFS); err != nil {
+	if err := generateK8sSharedSchemas(openAPISpecs, schemaFS, g.accessors); err != nil {
 		return nil, err
 	}
 
 	// Generate models for the rest
-	if err := generateModelsWithGVK(openAPISpecs, schemaFS); err != nil {
+	if err := generateModelsWithGVK(openAPISpecs, schemaFS, g.accessors); err != nil {
 		return nil, err
 	}
 
@@ -1189,7 +1211,7 @@ func initializeSchemaFS() (afero.Fs, error) {
 }
 
 // generateK8sSharedSchemas extracts and generates shared K8s schemas.
-func generateK8sSharedSchemas(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs) error {
+func generateK8sSharedSchemas(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs, accessors bool) error {
 	k8sSchemasByPackage := make(map[string]map[string]*spec.Schema)
 
 	// Collect all K8s schemas from all OpenAPI specs, grouped by package
@@ -1209,7 +1231,7 @@ func generateK8sSharedSchemas(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs) 
 			continue
 		}
 
-		if err := generateK8sPackageCode(pkg, schemas, schemaFS); err != nil {
+		if err := generateK8sPackageCode(pkg, schemas, schemaFS, accessors); err != nil {
 			return err
 		}
 	}
@@ -1218,7 +1240,7 @@ func generateK8sSharedSchemas(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs) 
 }
 
 // generateK8sPackageCode generates code for a single K8s package.
-func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaFS afero.Fs) error {
+func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaFS afero.Fs, accessors bool) error {
 	// Create a spec for this package
 	pkgSpec := &spec3.OpenAPI{
 		Version: "3.0.0",
@@ -1253,6 +1275,12 @@ func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaF
 		return errors.Wrap(err, "failed to remove self imports")
 	}
 
+	// Add GetX/SetX accessors last, so they see the final type names.
+	code, err = applyAccessors(code, accessors)
+	if err != nil {
+		return errors.Wrap(err, "failed to generate Go model accessors")
+	}
+
 	return writeGoCode(schemaFS, group, kind, version, code)
 }
 
@@ -1277,12 +1305,12 @@ func getK8sPackageInfo(pkg string) (group, kind, version string) {
 }
 
 // generateModelsWithGVK generates models for schemas with GVK information.
-func generateModelsWithGVK(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs) error {
+func generateModelsWithGVK(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs, accessors bool) error {
 	for _, openAPISpec := range openAPISpecs {
 		gvkGroups := groupSchemasByGVK(openAPISpec)
 
 		for gvkKey, schemas := range gvkGroups {
-			if err := generateGVKGroupCode(gvkKey, schemas, openAPISpec, schemaFS); err != nil {
+			if err := generateGVKGroupCode(gvkKey, schemas, openAPISpec, schemaFS, accessors); err != nil {
 				return err
 			}
 		}
@@ -1345,7 +1373,7 @@ func extractGVKKey(schema *spec.Schema) string {
 }
 
 // generateGVKGroupCode generates code for a GVK group.
-func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAPISpec *spec3.OpenAPI, schemaFS afero.Fs) error {
+func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAPISpec *spec3.OpenAPI, schemaFS afero.Fs, accessors bool) error {
 	parts := strings.Split(gvkKey, "/")
 	group, version := parts[0], parts[1]
 
@@ -1384,6 +1412,12 @@ func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAP
 	)
 	if err != nil {
 		return err
+	}
+
+	// Add GetX/SetX accessors last, so they see the final type names.
+	code, err = applyAccessors(code, accessors)
+	if err != nil {
+		return errors.Wrap(err, "failed to generate Go model accessors")
 	}
 
 	return writeGoCode(schemaFS, group, kind, version, code)

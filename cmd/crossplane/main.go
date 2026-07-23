@@ -126,6 +126,8 @@ func main() {
 		// at runtime.
 		kong.BindTo(logger, (*logging.Logger)(nil)),
 		kong.BindTo(configcmd.ConfigPath(cfgPath), (*configcmd.ConfigPath)(nil)),
+		// Bind the loaded config so commands can read feature flags at runtime.
+		kong.Bind(cfg),
 		kong.Help(helpPrinter),
 		kong.UsageOnError())
 

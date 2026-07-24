@@ -177,6 +177,28 @@ func TestSchemaValidate(t *testing.T) {
 		"kind":       "Deployment",
 		"metadata":   map[string]any{"name": "workload"},
 	}}
+	kubernetesCRDResource := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apiextensions.k8s.io/v1",
+		"kind":       "CustomResourceDefinition",
+		"metadata":   map[string]any{"name": "widgets.example.org"},
+	}}
+	kubernetesAPIServiceResource := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apiregistration.k8s.io/v1",
+		"kind":       "APIService",
+		"metadata":   map[string]any{"name": "v1.example.org"},
+	}}
+	invalidKubernetesUnknownFieldResource := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata":   map[string]any{"name": "bad-field"},
+		"spec":       map[string]any{"unexpected": true},
+	}}
+	invalidKubernetesTypeResource := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "bad-type"},
+		"spec":       map[string]any{"replicas": "many"},
+	}}
 	unknownFieldResource := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "test.org/v1alpha1",
 		"kind":       "Test",
@@ -271,15 +293,44 @@ func TestSchemaValidate(t *testing.T) {
 			},
 		},
 		"KubernetesBuiltIn": {
-			reason: "Built-in Kubernetes resources should not require CRD schemas.",
+			reason: "Built-in Kubernetes, CRD, and APIService resources should be strictly decoded without requiring user-supplied CRD schemas.",
 			args: args{
-				resources: []*unstructured.Unstructured{kubernetesCoreResource, kubernetesGroupedResource},
+				resources: []*unstructured.Unstructured{
+					kubernetesCoreResource,
+					kubernetesGroupedResource,
+					kubernetesCRDResource,
+					kubernetesAPIServiceResource,
+				},
 			},
 			want: want{
-				summary: ValidationSummary{Total: 2, Valid: 2},
+				summary: ValidationSummary{Total: 4, Valid: 4},
 				perRes: []expect{
 					{status: ValidationStatusValid},
 					{status: ValidationStatusValid},
+					{status: ValidationStatusValid},
+					{status: ValidationStatusValid},
+				},
+			},
+		},
+		"KubernetesBuiltInInvalid": {
+			reason: "Built-in Kubernetes resources with unknown fields or mistyped values should be Invalid instead of bypassing validation.",
+			args: args{
+				resources: []*unstructured.Unstructured{
+					invalidKubernetesUnknownFieldResource,
+					invalidKubernetesTypeResource,
+				},
+			},
+			want: want{
+				summary: ValidationSummary{Total: 2, Invalid: 2},
+				perRes: []expect{
+					{
+						status: ValidationStatusInvalid,
+						errors: []FieldValidationError{{Type: FieldErrorTypeSchema}},
+					},
+					{
+						status: ValidationStatusInvalid,
+						errors: []FieldValidationError{{Type: FieldErrorTypeSchema}},
+					},
 				},
 			},
 		},

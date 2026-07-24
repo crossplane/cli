@@ -34,7 +34,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -278,7 +280,9 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 		return nil, errors.Wrap(err, "cannot get rest config")
 	}
 
-	cl, err := client.New(restConfig, client.Options{})
+	cl, err := client.New(restConfig, client.Options{
+		Scheme: newScheme(),
+	})
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot construct control plane client")
 	}
@@ -332,6 +336,12 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 		registryContainerID: cid,
 		registryHostname:    regName + ":5000",
 	}, nil
+}
+
+func newScheme() *runtime.Scheme {
+	sch := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(sch)
+	return sch
 }
 
 // TeardownLocalDevControlPlane tears down a local dev control plane by name.

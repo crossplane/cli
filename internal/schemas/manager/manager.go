@@ -79,6 +79,7 @@ func (m *Manager) Generate(ctx context.Context, source Source) (map[string]afero
 		return nil, err
 	}
 
+	var schemasMu sync.Mutex
 	schemas := make(map[string]afero.Fs)
 	eg, egCtx := errgroup.WithContext(ctx)
 	sourceType := source.Type()
@@ -100,7 +101,9 @@ func (m *Manager) Generate(ctx context.Context, source Source) (map[string]afero
 			}
 
 			if schemaFS != nil {
+				schemasMu.Lock()
 				schemas[gen.Language()] = schemaFS
+				schemasMu.Unlock()
 			}
 
 			return nil

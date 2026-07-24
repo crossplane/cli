@@ -1,0 +1,30 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: immutables.cmd.example.org
+spec:
+  group: cmd.example.org
+  names:
+    kind: Immutable
+    listKind: ImmutableList
+    plural: immutables
+    singular: immutable
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - param
+              properties:
+                param:
+                  type: string
+              x-kubernetes-validations:
+                - rule: "self.param == oldSelf.param"
+                  message: "param is immutable"

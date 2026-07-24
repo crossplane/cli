@@ -13,7 +13,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/crossplane/crossplane-runtime/v2 v2.3.3
-	github.com/crossplane/crossplane/apis/v2 v2.3.3
+	github.com/crossplane/crossplane/apis/v2 v2.3.4
 	github.com/crossplane/function-sdk-go v0.7.1
 	github.com/docker/cli v29.5.3+incompatible
 	github.com/docker/docker v28.5.2+incompatible

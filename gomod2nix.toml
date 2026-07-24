@@ -225,8 +225,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v2.3.3"
     hash = "sha256-EV8OVPduo12izMXcPySnNvMble5cyZc1sS+zsljdWgU="
   [mod."github.com/crossplane/crossplane/apis/v2"]
-    version = "v2.3.3"
-    hash = "sha256-mRQAdTjq/hKxrvbdG80M+QoTibJI3XO287ICx70feYY="
+    version = "v2.3.4"
+    hash = "sha256-hzqPKmqnfeJOqXadKGCkdpU4QCJxtC0xO+Uy4uGDsgw="
   [mod."github.com/crossplane/function-sdk-go"]
     version = "v0.7.1"
     hash = "sha256-BHAKkiae8CzWuP7G0EORhu7jmIqQnepzMfqOhEJtrTo="

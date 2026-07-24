@@ -203,11 +203,12 @@ func (l *localDevControlPlane) Sideload(ctx context.Context, imgMap project.Imag
 type Option func(*config)
 
 type config struct {
-	name              string
-	crossplaneVersion string
-	registryDir       string
-	clusterAdmin      bool
-	log               logging.Logger
+	name               string
+	crossplaneVersion  string
+	registryDir        string
+	containerdCertsDir string
+	clusterAdmin       bool
+	log                logging.Logger
 }
 
 // WithName sets the name of the local dev control plane.
@@ -228,6 +229,14 @@ func WithCrossplaneVersion(v string) Option {
 func WithRegistryDir(d string) Option {
 	return func(c *config) {
 		c.registryDir = d
+	}
+}
+
+// WithContainerdCertsDir sets a host directory mounted into the control-plane node at
+// /etc/containerd/certs.d.
+func WithContainerdCertsDir(d string) Option {
+	return func(c *config) {
+		c.containerdCertsDir = d
 	}
 }
 
@@ -268,7 +277,7 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	cfg.name = cfg.name[:nameLen]
 
 	cfg.log.Debug("Ensuring kind cluster", "name", cfg.name)
-	kubeconfig, err := ensureKindCluster(cfg.name)
+	kubeconfig, err := ensureKindCluster(cfg.name, cfg.containerdCertsDir)
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +388,7 @@ func TeardownLocalDevControlPlane(ctx context.Context, name string, registryDir 
 	return nil
 }
 
-func ensureKindCluster(clusterName string) (clientcmd.ClientConfig, error) {
+func ensureKindCluster(clusterName, certsDir string) (clientcmd.ClientConfig, error) {
 	provider := kind.NewProvider()
 
 	kubeconfigFile, err := os.CreateTemp("", "crossplane-*.kubeconfig")
@@ -399,7 +408,7 @@ func ensureKindCluster(clusterName string) (clientcmd.ClientConfig, error) {
 			return nil, errors.Wrap(err, "failed to get kubeconfig for kind cluster")
 		}
 	} else {
-		if err := createNewKindCluster(provider, clusterName, kubeconfigFile.Name()); err != nil {
+		if err := createNewKindCluster(provider, clusterName, kubeconfigFile.Name(), certsDir); err != nil {
 			return nil, err
 		}
 	}
@@ -417,8 +426,8 @@ func ensureKindCluster(clusterName string) (clientcmd.ClientConfig, error) {
 	return kubeconfig, nil
 }
 
-func createNewKindCluster(provider *kind.Provider, clusterName, kubeconfigPath string) error {
-	cfg := createKindClusterConfig()
+func createNewKindCluster(provider *kind.Provider, clusterName, kubeconfigPath, certsDir string) error {
+	cfg := createKindClusterConfig(certsDir)
 
 	cfgBytes, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -439,15 +448,21 @@ func createNewKindCluster(provider *kind.Provider, clusterName, kubeconfigPath s
 	return nil
 }
 
-func createKindClusterConfig() *v1alpha4.Cluster {
+func createKindClusterConfig(certsDir string) *v1alpha4.Cluster {
+	node := v1alpha4.Node{Role: v1alpha4.ControlPlaneRole}
+	if certsDir != "" {
+		node.ExtraMounts = append(node.ExtraMounts, v1alpha4.Mount{
+			ContainerPath: "/etc/containerd/certs.d",
+			HostPath:      certsDir,
+		})
+	}
+
 	return &v1alpha4.Cluster{
 		TypeMeta: v1alpha4.TypeMeta{
 			APIVersion: "kind.x-k8s.io/v1alpha4",
 			Kind:       "Cluster",
 		},
-		Nodes: []v1alpha4.Node{{
-			Role: v1alpha4.ControlPlaneRole,
-		}},
+		Nodes: []v1alpha4.Node{node},
 		ContainerdConfigPatches: []string{
 			"[plugins.\"io.containerd.grpc.v1.cri\".registry]\nconfig_path = \"/etc/containerd/certs.d\"\n",
 		},

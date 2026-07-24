@@ -18,6 +18,7 @@ package validate
 
 import (
 	"context"
+	"encoding/json"
 
 	ext "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -26,13 +27,45 @@ import (
 	structuraldefaulting "k8s.io/apiextensions-apiserver/pkg/apiserver/schema/defaulting"
 	"k8s.io/apiextensions-apiserver/pkg/apiserver/validation"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
+	serializerjson "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	celconfig "k8s.io/apiserver/pkg/apis/cel"
+	kubescheme "k8s.io/client-go/kubernetes/scheme"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 )
+
+type kubernetesResourceValidator struct {
+	scheme     *runtime.Scheme
+	serializer *serializerjson.Serializer
+}
+
+func newKubernetesResourceValidator() (*kubernetesResourceValidator, error) {
+	s := runtime.NewScheme()
+	if err := kubescheme.AddToScheme(s); err != nil {
+		return nil, errors.Wrap(err, "cannot register Kubernetes types")
+	}
+	if err := extv1.AddToScheme(s); err != nil {
+		return nil, errors.Wrap(err, "cannot register apiextensions types")
+	}
+	if err := apiregistrationv1.AddToScheme(s); err != nil {
+		return nil, errors.Wrap(err, "cannot register API registration types")
+	}
+
+	return &kubernetesResourceValidator{
+		scheme: s,
+		serializer: serializerjson.NewSerializerWithOptions(
+			serializerjson.DefaultMetaFactory,
+			s,
+			s,
+			serializerjson.SerializerOptions{Strict: true},
+		),
+	}, nil
+}
 
 // SchemaValidate performs schema validation and returns structured results.
 //
@@ -50,12 +83,16 @@ func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured,
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create schema validators")
 	}
+	kubernetesValidator, err := newKubernetesResourceValidator()
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot create Kubernetes resource validator")
+	}
 
 	result := &ValidationResult{
 		Resources: make([]ResourceValidationResult, 0, len(resources)),
 	}
 	for _, r := range resources {
-		result.Resources = append(result.Resources, validateResource(ctx, r, schemaValidators, structurals, crds))
+		result.Resources = append(result.Resources, validateResource(ctx, r, schemaValidators, structurals, crds, kubernetesValidator))
 	}
 	result.Summary = computeSummary(result.Resources)
 	return result, nil
@@ -75,6 +112,7 @@ func validateResource(
 	schemaValidators map[runtimeschema.GroupVersionKind]*validation.SchemaValidator,
 	structurals map[runtimeschema.GroupVersionKind]*schema.Structural,
 	crds []*extv1.CustomResourceDefinition,
+	kubernetesValidator *kubernetesResourceValidator,
 ) ResourceValidationResult {
 	gvk := in.GetObjectKind().GroupVersionKind()
 	rvr := ResourceValidationResult{
@@ -86,6 +124,11 @@ func validateResource(
 
 	sv, ok := schemaValidators[gvk]
 	if !ok {
+		if validationErrors, recognized := kubernetesValidator.validate(in); recognized {
+			rvr.Errors = validationErrors
+			rvr.Status = statusFromErrors(validationErrors)
+			return rvr
+		}
 		rvr.Status = ValidationStatusMissingSchema
 		return rvr
 	}
@@ -125,6 +168,40 @@ func validateResource(
 
 	rvr.Status = statusFromErrors(rvr.Errors)
 	return rvr
+}
+
+// validate strictly decodes resources registered in the
+// Kubernetes, apiextensions, and API registration schemes. Strict decoding
+// catches unknown fields and JSON values that cannot populate their typed Go
+// fields. It does not perform API-server admission or semantic validation.
+func (v *kubernetesResourceValidator) validate(in *unstructured.Unstructured) ([]FieldValidationError, bool) {
+	gvk := in.GroupVersionKind()
+	obj, err := v.scheme.New(gvk)
+	if err != nil {
+		return nil, false
+	}
+
+	data, err := json.Marshal(in.Object)
+	if err == nil {
+		_, _, err = v.serializer.Decode(data, &gvk, obj)
+	}
+	if err == nil {
+		return nil, true
+	}
+
+	decodeErrors := []error{err}
+	if strictErr, ok := runtime.AsStrictDecodingError(err); ok {
+		decodeErrors = strictErr.Errors()
+	}
+
+	validationErrors := make([]FieldValidationError, 0, len(decodeErrors))
+	for _, decodeErr := range decodeErrors {
+		validationErrors = append(validationErrors, FieldValidationError{
+			Type:    FieldErrorTypeSchema,
+			Message: decodeErr.Error(),
+		})
+	}
+	return validationErrors, true
 }
 
 // ResultError returns an error summarizing the outcome of validation, or nil

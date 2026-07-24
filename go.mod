@@ -48,6 +48,7 @@ require (
 	k8s.io/apiserver v0.35.1
 	k8s.io/cli-runtime v0.35.1
 	k8s.io/client-go v0.35.3
+	k8s.io/kube-aggregator v0.35.1
 	k8s.io/kube-openapi v0.0.0-20260127142750-a19766b6e2d4
 	k8s.io/metrics v0.35.1
 	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5

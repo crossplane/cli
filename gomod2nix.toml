@@ -432,8 +432,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v1.1.3"
     hash = "sha256-/6Us2eNRFi2IIp7p5uPUXLridilAdk4SmZhcTYR0csw="
   [mod."github.com/google/cel-go"]
-    version = "v0.27.0"
-    hash = "sha256-ECoJqNV108IURzaxtaznDajf1yw3jvQPjZi0dQHSIBY="
+    version = "v0.29.0"
+    hash = "sha256-j+zKJBywrA2UKzB/TAElEHwKsCa39+iEmzcbvsws3d4="
   [mod."github.com/google/certificate-transparency-go"]
     version = "v1.3.3"
     hash = "sha256-CdAOfBmZ7xs51YUxLhg5edjxeCQqE2Kw0jOe+jHgvfA="

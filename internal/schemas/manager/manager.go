@@ -231,10 +231,13 @@ func (m *Manager) updateLock(l *lock) error {
 		return errors.Wrap(err, "failed to ensure schema directory exists")
 	}
 
-	bs, err := json.Marshal(l)
+	bs, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
 		return errors.Wrap(err, "failed to serialize schema lock")
 	}
+	// Append a trailing newline so the file ends cleanly and edits to the last
+	// entry produce minimal diffs.
+	bs = append(bs, '\n')
 
 	if err := afero.WriteFile(m.fs, lockFileName, bs, 0o600); err != nil {
 		return errors.Wrap(err, "failed to write schema lock file")

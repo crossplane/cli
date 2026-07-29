@@ -103,7 +103,7 @@ spec:
 EOF
 ```
 
-Then generate the XRD from the example:
+Then generate the XRD from the example. This will be our Platform API:
 
 ```bash
 # Generate an XRD from the example XR
@@ -168,6 +168,7 @@ crossplane function generate network apis/xnetwork/composition.yaml --language t
 ```
 
 This creates `functions/network/` with:
+
 - `package.json` - Dependencies including `@crossplane-org/function-sdk-typescript`
 - `tsconfig.json` - TypeScript configuration
 - `src/main.ts` - Entry point
@@ -265,7 +266,7 @@ The generated `package.json` already includes the `crossplane-models` dependency
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsgo",
+    "build": "tsc",
     "local": "node dist/main.js --insecure --debug"
   },
   "dependencies": {
@@ -277,8 +278,7 @@ The generated `package.json` already includes the `crossplane-models` dependency
     "pino": "^10.3.0"
   },
   "devDependencies": {
-    "@typescript/native-preview": "^7.0.0-dev.20260627.1",
-    "typescript": "^6.0.0"
+    "typescript": "^7.0.0"
   }
 }
 ```

@@ -53,7 +53,7 @@ const (
 //
 // A TypeScript embedded function is a full function-sdk-typescript project
 // (package.json + tsconfig.json). We build it by running npm install and npm run build
-// (which invokes tsgo) in a Node.js build container, then copy the dist/
+// (which invokes tsc) in a Node.js build container, then copy the dist/
 // and node_modules/ onto a distroless Node.js base.
 type typescriptBuilder struct {
 	buildImage   string

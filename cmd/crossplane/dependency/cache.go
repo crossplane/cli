@@ -27,6 +27,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/internal/async"
+	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
@@ -52,7 +53,7 @@ func (c *updateCacheCmd) Help() string {
 }
 
 // Run executes the update-cache command.
-func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
+func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
 	projFilePath, err := filepath.Abs(c.ProjectFile)
@@ -84,7 +85,10 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) 
 
 	opts := []dependency.ManagerOption{
 		dependency.WithProjectFile(c.ProjectFile),
-		dependency.WithSchemaGenerators(generator.Filter(generator.AllLanguages(), proj.Spec.Schemas.GetLanguages())),
+		dependency.WithSchemaGenerators(generator.Filter(
+			generator.AllLanguages(generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors)),
+			proj.Spec.Schemas.GetLanguages(),
+		)),
 		dependency.WithXpkgClient(client),
 		dependency.WithResolver(resolver),
 	}

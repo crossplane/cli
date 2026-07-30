@@ -36,6 +36,7 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
+	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 
@@ -425,7 +426,7 @@ func TestCmdRun(t *testing.T) {
 			buf := &bytes.Buffer{}
 			kctx := &kong.Context{Kong: &kong.Kong{Stdout: buf, Stderr: io.Discard}}
 
-			err := tc.args.cmd.Run(kctx, logging.NewNopLogger(), terminal.NewSpinnerPrinter(io.Discard, false))
+			err := tc.args.cmd.Run(kctx, logging.NewNopLogger(), terminal.NewSpinnerPrinter(io.Discard, false), &config.Config{})
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nRun(...): -want error, +got error:\n%s", tc.reason, diff)
 			}

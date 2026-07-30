@@ -125,7 +125,10 @@ func WithResolver(r *clixpkg.Resolver) ManagerOption {
 	}
 }
 
-// NewManager returns an initialized dependency manager.
+// NewManager returns an initialized dependency manager. The default schema
+// generators are configured with every generator option off, so a caller that
+// generates schemas must pass WithSchemaGenerators to honor the feature flags
+// in the user's config.
 func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) *Manager {
 	options := &managerOptions{
 		projFile:         "crossplane-project.yaml",

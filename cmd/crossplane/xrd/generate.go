@@ -48,11 +48,12 @@ import (
 var generateHelp string
 
 type generateCmd struct {
-	File        string `arg:""                                 help:"Path to the XR or XRC YAML file."`
-	From        string `default:"xr"                           enum:"xr,simpleschema"                  help:"Input format: xr or simpleschema."`
-	Path        string `help:"Output path."                    optional:""`
-	Plural      string `help:"Custom plural form for the XRD." optional:""`
-	ProjectFile string `default:"crossplane-project.yaml"      help:"Path to project definition."      short:"f"`
+	File        string `arg:""                                       help:"Path to the XR or XRC YAML file."`
+	From        string `default:"xr"                                 enum:"xr,simpleschema"                  help:"Input format: xr or simpleschema."`
+	Path        string `help:"Output path."                          optional:""`
+	Replace     bool   `help:"Replaces the existing definition file" optional:""`
+	Plural      string `help:"Custom plural form for the XRD."       optional:""`
+	ProjectFile string `default:"crossplane-project.yaml"            help:"Path to project definition."      short:"f"`
 
 	projFS  afero.Fs
 	apisFS  afero.Fs
@@ -127,8 +128,8 @@ func (c *generateCmd) Run(k *kong.Context) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to check if file exists")
 	}
-	if exists {
-		return errors.Errorf("file %q already exists, use --path to specify a different output path or delete the existing file", filePath)
+	if exists && !c.Replace {
+		return errors.Errorf("file %q already exists, use --path to specify a different output path or --replace to replace the existing file", filePath)
 	}
 
 	if err := c.apisFS.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {

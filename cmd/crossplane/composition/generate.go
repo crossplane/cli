@@ -106,7 +106,10 @@ func (c *generateCmd) AfterApply(cfg *config.Config) error {
 	c.depManager = dependency.NewManager(proj, c.projFS,
 		dependency.WithProjectFile(filepath.Base(c.ProjectFile)),
 		dependency.WithSchemaGenerators(generator.Filter(
-			generator.AllLanguages(generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors)),
+			generator.AllLanguages(
+				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+				generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+			),
 			proj.Spec.Schemas.GetLanguages(),
 		)),
 		dependency.WithXpkgClient(client),

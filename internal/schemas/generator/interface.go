@@ -37,6 +37,7 @@ type Interface interface {
 // options holds configurable behavior shared across generators.
 type options struct {
 	goModelAccessors bool
+	goRuntimeObjects bool
 }
 
 // Option configures the generators returned by AllLanguages.
@@ -49,6 +50,14 @@ func WithGoModelAccessors(enabled bool) Option {
 	return func(o *options) { o.goModelAccessors = enabled }
 }
 
+// WithGoRuntimeObjects enables generation of runtime.Object methods (DeepCopy,
+// GetObjectKind, DeepCopyObject) and per-package AddToScheme helpers on the
+// generated Go models. Disabled by default; gated behind the
+// features.generateGoRuntimeObjects config flag.
+func WithGoRuntimeObjects(enabled bool) Option {
+	return func(o *options) { o.goRuntimeObjects = enabled }
+}
+
 // AllLanguages returns generators for all supported languages. The set of
 // supported language identifiers is defined by
 // devv1alpha1.SupportedSchemaLanguages.
@@ -58,7 +67,7 @@ func AllLanguages(opts ...Option) []Interface {
 		opt(o)
 	}
 	return []Interface{
-		&goGenerator{accessors: o.goModelAccessors},
+		&goGenerator{accessors: o.goModelAccessors, runtimeObjects: o.goRuntimeObjects},
 		&jsonGenerator{},
 		&kclGenerator{},
 		&pythonGenerator{},

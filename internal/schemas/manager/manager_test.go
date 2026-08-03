@@ -171,6 +171,38 @@ func TestManager_Add(t *testing.T) {
 	}
 }
 
+func TestUpdateLockIsIndented(t *testing.T) {
+	// The lock file must be written with one entry per line (indented) so it is
+	// human-readable and avoids spurious merge conflicts. See issue #168.
+	fs := afero.NewMemMapFs()
+	m := New(fs, nil, nil)
+
+	l := newLock()
+	l.Packages["xpkg://pkg.example/bar:v1.0.0"] = "sha256:bbb"
+	l.Packages["xpkg://pkg.example/foo:v0.5.2"] = "sha256:aaa"
+
+	if err := m.updateLock(l); err != nil {
+		t.Fatalf("updateLock: %v", err)
+	}
+
+	got, err := afero.ReadFile(fs, lockFileName)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+
+	// Map keys are marshalled in sorted order, so this golden is deterministic.
+	want := `{
+  "packages": {
+    "xpkg://pkg.example/bar:v1.0.0": "sha256:bbb",
+    "xpkg://pkg.example/foo:v0.5.2": "sha256:aaa"
+  }
+}
+`
+	if diff := cmp.Diff(want, string(got)); diff != "" {
+		t.Errorf("lock file is not indented as expected (-want +got):\n%s", diff)
+	}
+}
+
 type mockGenerator struct {
 	files map[string]string
 }

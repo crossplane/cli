@@ -733,6 +733,87 @@ spec:
 				},
 			},
 		},
+		"SimpleSchemaWithCustomTypes": {
+			args: args{
+				inputYAML: `
+apiVersion: aws.u5d.io/v1
+kind: XEKS
+metadata:
+  name: test
+spec:
+  request: myType
+status:
+  result: myType
+customTypes:
+  myType:
+    value1: string | required=true
+    value2: integer | default=42
+`,
+				customPlural: "xeks",
+			},
+			want: want{
+				xrd: &v2.CompositeResourceDefinition{
+					TypeMeta: metav1.TypeMeta{
+						APIVersion: "apiextensions.crossplane.io/v2",
+						Kind:       "CompositeResourceDefinition",
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "xeks.aws.u5d.io",
+					},
+					Spec: v2.CompositeResourceDefinitionSpec{
+						Group: "aws.u5d.io",
+						Scope: v2.CompositeResourceScopeNamespaced,
+						Names: extv1.CustomResourceDefinitionNames{
+							Categories: []string{"crossplane"},
+							Kind:       "XEKS",
+							Plural:     "xeks",
+						},
+						Versions: []v2.CompositeResourceDefinitionVersion{
+							{
+								Name:          "v1",
+								Referenceable: true,
+								Served:        true,
+								Schema: &v2.CompositeResourceValidation{
+									OpenAPIV3Schema: jsonSchemaPropsToRawExtension(&extv1.JSONSchemaProps{
+										Description: "XEKS is the Schema for the XEKS API.",
+										Type:        "object",
+										Properties: map[string]extv1.JSONSchemaProps{
+											"spec": {
+												Type: "object",
+												Properties: map[string]extv1.JSONSchemaProps{
+													"request": {
+														Type:     "object",
+														Required: []string{"value1"},
+														Properties: map[string]extv1.JSONSchemaProps{
+															"value1": {Type: "string"},
+															"value2": {Type: "integer", Default: &extv1.JSON{Raw: []byte("42")}},
+														},
+													},
+												},
+											},
+											"status": {
+												Type: "object",
+												Properties: map[string]extv1.JSONSchemaProps{
+													"result": {
+														Type:     "object",
+														Required: []string{"value1"},
+														Properties: map[string]extv1.JSONSchemaProps{
+															"value1": {Type: "string"},
+															"value2": {Type: "integer", Default: &extv1.JSON{Raw: []byte("42")}},
+														},
+													},
+												},
+											},
+										},
+										Required: []string{"spec"},
+									}),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for name, tc := range cases {

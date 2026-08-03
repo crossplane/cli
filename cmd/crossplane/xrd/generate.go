@@ -249,7 +249,7 @@ func newXRDFromSimpleSchema(yamlData []byte, customPlural string) (*v2.Composite
 		plural = flect.Pluralize(kind)
 	}
 
-	specSchema, err := simpleschema.ToOpenAPISpec(simpleInput.Spec, nil)
+	specSchema, err := simpleschema.ToOpenAPISpec(simpleInput.Spec, simpleInput.CustomTypes)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to convert spec to OpenAPI schema")
 	}
@@ -259,7 +259,7 @@ func newXRDFromSimpleSchema(yamlData []byte, customPlural string) (*v2.Composite
 		celPaths := findCELFields(simpleInput.Status, nil)
 		processedStatus := replaceCELWithPlaceholder(simpleInput.Status)
 
-		statusSchema, err = simpleschema.ToOpenAPISpec(processedStatus, nil)
+		statusSchema, err = simpleschema.ToOpenAPISpec(processedStatus, simpleInput.CustomTypes)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to convert status to OpenAPI schema")
 		}
@@ -320,6 +320,7 @@ type inputXR struct {
 	Spec                     map[string]any                         `json:"spec"`
 	Status                   map[string]any                         `json:"status"`
 	AdditionalPrinterColumns []extv1.CustomResourceColumnDefinition `json:"additionalPrinterColumns"`
+	CustomTypes              map[string]any                         `json:"customTypes"`
 }
 
 // newXRDFromExample creates an XRD based on an example XR, ineferring property types

@@ -19,6 +19,7 @@ package printer
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -259,9 +260,9 @@ func (p *DefaultPrinter) printResourceTree(tw *tabwriter.Writer, root *resource.
 		// Enqueue the children of the current node in reverse order to ensure
 		// that they are dequeued from the LIFO queue in the same order w.r.t.
 		// the way they are defined by the resources.
-		for idx := len(item.resource.Children) - 1; idx >= 0; idx-- {
+		for idx, v := range slices.Backward(item.resource.Children) {
 			isLast := idx == len(item.resource.Children)-1
-			queue = append(queue, &queueItem{resource: item.resource.Children[idx], depth: item.depth + 1, isLast: isLast, prefix: childPrefix})
+			queue = append(queue, &queueItem{resource: v, depth: item.depth + 1, isLast: isLast, prefix: childPrefix})
 		}
 	}
 	return nil

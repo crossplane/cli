@@ -276,7 +276,7 @@ type goOpenAPI struct {
 
 func goCollectOpenAPIs(fromFS afero.Fs) ([]goOpenAPI, error) { //nolint:gocognit // Hard to split this up, and it's not too long to read.
 	crdFS := afero.NewMemMapFs()
-	baseFolder := "workdir"
+	baseFolder := workDir
 
 	if err := crdFS.MkdirAll(baseFolder, 0o755); err != nil {
 		return nil, err
@@ -293,7 +293,7 @@ func goCollectOpenAPIs(fromFS afero.Fs) ([]goOpenAPI, error) { //nolint:gocognit
 		}
 		// Ignore files without yaml extensions.
 		ext := filepath.Ext(path)
-		if ext != ".yaml" && ext != ".yml" {
+		if ext != extYAML && ext != extYML {
 			return nil
 		}
 

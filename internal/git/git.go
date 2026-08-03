@@ -32,6 +32,9 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
 
+// defaultBranch is the default branch name for git repositories.
+const defaultBranch = "main"
+
 // CloneOptions configure for git actions.
 type CloneOptions struct {
 	Repo      string
@@ -147,7 +150,7 @@ func extractBranchName(ref string) string {
 	if ref != "" && !strings.HasPrefix(ref, "refs/") {
 		return ref
 	}
-	return "main"
+	return defaultBranch
 }
 
 func handleSHACheckout(repoObj *git.Repository, authMethod transport.AuthMethod, sha string, sparsePath string) error {

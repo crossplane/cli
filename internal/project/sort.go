@@ -17,8 +17,6 @@ limitations under the License.
 package project
 
 import (
-	"fmt"
-
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
@@ -30,14 +28,10 @@ import (
 // grouped together by function, so that multi-arch indexes can be produced
 // based on the returned map.
 func SortImages(imgMap ImageTagMap, repo string) (cfgImage v1.Image, fnImages map[name.Repository][]v1.Image, err error) {
-	cfgTag, err := name.NewTag(fmt.Sprintf("%s:%s", repo, ConfigurationTag), name.StrictValidation)
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "failed to construct configuration tag")
-	}
-
 	fnImages = make(map[name.Repository][]v1.Image)
 	for tag, image := range imgMap {
-		if tag == cfgTag {
+		// Check if this is the configuration image by matching both repository and tag
+		if tag.Repository.String() == repo && tag.TagStr() == ConfigurationTag {
 			cfgImage = image
 			continue
 		}

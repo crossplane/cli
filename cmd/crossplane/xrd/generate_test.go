@@ -18,13 +18,16 @@ package xrd
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/spf13/afero"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
@@ -750,10 +753,125 @@ spec:
 	}
 }
 
+func TestGenerateCmdRun(t *testing.T) {
+	const inputYAML = `
+apiVersion: aws.u5d.io/v1
+kind: XEKS
+metadata:
+  name: test
+spec:
+  parameters:
+    id: test
+    region: eu-central-1
+`
+
+	type args struct {
+		preExisting string
+		replace     bool
+	}
+
+	type want struct {
+		errSubstring string
+	}
+
+	cases := map[string]struct {
+		args args
+		want want
+	}{
+		"NoExistingFileWritesDefinition": {
+			args: args{replace: false},
+		},
+		"ExistingFileWithoutReplaceErrors": {
+			args: args{preExisting: "old content", replace: false},
+			want: want{errSubstring: "already exists"},
+		},
+		"ExistingFileWithReplaceOverwrites": {
+			args: args{preExisting: "old content", replace: true},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			projFS, apisFS := setupGenerateCmdTestFS(t, tc.args.preExisting)
+			if err := afero.WriteFile(projFS, "input.yaml", []byte(inputYAML), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := &generateCmd{
+				File:    "input.yaml",
+				From:    "xr",
+				Path:    "xeks/definition.yaml",
+				Replace: tc.args.replace,
+				projFS:  projFS,
+				apisFS:  apisFS,
+				relFile: "input.yaml",
+			}
+
+			err := cmd.Run(newKongContext(t))
+
+			if tc.want.errSubstring != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.want.errSubstring)
+				}
+				if !strings.Contains(err.Error(), tc.want.errSubstring) {
+					t.Errorf("error = %q, want substring %q", err.Error(), tc.want.errSubstring)
+				}
+
+				data, readErr := afero.ReadFile(apisFS, "xeks/definition.yaml")
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if diff := cmp.Diff(tc.args.preExisting, string(data)); diff != "" {
+					t.Errorf("file content changed unexpectedly (-want +got):\n%s", diff)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			data, err := afero.ReadFile(apisFS, "xeks/definition.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if tc.args.preExisting != "" && string(data) == tc.args.preExisting {
+				t.Fatalf("expected existing file content to be replaced, but it is unchanged")
+			}
+
+			var xrdObj v2.CompositeResourceDefinition
+			if err := yaml.Unmarshal(data, &xrdObj); err != nil {
+				t.Fatalf("failed to unmarshal generated XRD: %v", err)
+			}
+			if diff := cmp.Diff("xekses.aws.u5d.io", xrdObj.Name); diff != "" {
+				t.Errorf("XRD name mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func jsonSchemaPropsToRawExtension(schema *extv1.JSONSchemaProps) runtime.RawExtension {
 	schemaBytes, err := json.Marshal(schema)
 	if err != nil {
 		panic(err)
 	}
 	return runtime.RawExtension{Raw: schemaBytes}
+}
+
+func setupGenerateCmdTestFS(t *testing.T, preExisting string) (afero.Fs, afero.Fs) {
+	t.Helper()
+	projFS := afero.NewMemMapFs()
+	apisFS := afero.NewBasePathFs(projFS, "apis")
+
+	if preExisting != "" {
+		if err := apisFS.MkdirAll("xeks", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := afero.WriteFile(apisFS, "xeks/definition.yaml", []byte(preExisting), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	return projFS, apisFS
 }

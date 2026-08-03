@@ -47,6 +47,11 @@ type Features struct {
 	// on generated Go models. Disabled by default; opt in to use generics and
 	// interfaces over generated resources.
 	GenerateGoModelAccessors bool `json:"generateGoModelAccessors,omitempty"`
+
+	// GenerateGoRuntimeObjects enables generation of runtime.Object methods and
+	// per-package AddToScheme helpers on generated Go models. Disabled by
+	// default; opt in to register generated types with a runtime.Scheme.
+	GenerateGoRuntimeObjects bool `json:"generateGoRuntimeObjects,omitempty"`
 }
 
 // Load reads a Config from path. A missing file is not an error; the zero

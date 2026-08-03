@@ -39,6 +39,63 @@ func TestAllLanguagesMatchesAPI(t *testing.T) {
 	}
 }
 
+func TestAllLanguagesGoOptions(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		reason             string
+		opts               []Option
+		wantRuntimeObjects bool
+		wantAccessors      bool
+	}{
+		"OffByDefault": {
+			reason: "both Go generator features are opt-in",
+		},
+		"Disabled": {
+			reason: "explicitly disabled flags leave the Go generator alone",
+			opts:   []Option{WithGoRuntimeObjects(false), WithGoModelAccessors(false)},
+		},
+		"RuntimeObjectsOnly": {
+			reason:             "the option reaches the Go generator, which is what emits the code",
+			opts:               []Option{WithGoRuntimeObjects(true)},
+			wantRuntimeObjects: true,
+		},
+		"AccessorsOnly": {
+			reason:        "the two options are independent",
+			opts:          []Option{WithGoModelAccessors(true)},
+			wantAccessors: true,
+		},
+		"Both": {
+			reason:             "neither option clobbers the other",
+			opts:               []Option{WithGoModelAccessors(true), WithGoRuntimeObjects(true)},
+			wantRuntimeObjects: true,
+			wantAccessors:      true,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var got *goGenerator
+			for _, g := range AllLanguages(tc.opts...) {
+				if gg, ok := g.(*goGenerator); ok {
+					got = gg
+				}
+			}
+			if got == nil {
+				t.Fatal("AllLanguages did not return a Go generator")
+			}
+			if got.runtimeObjects != tc.wantRuntimeObjects {
+				t.Errorf("runtimeObjects = %v, want %v (%s)", got.runtimeObjects, tc.wantRuntimeObjects, tc.reason)
+			}
+			if got.accessors != tc.wantAccessors {
+				t.Errorf("accessors = %v, want %v (%s)", got.accessors, tc.wantAccessors, tc.reason)
+			}
+		})
+	}
+}
+
 func TestFilter(t *testing.T) {
 	t.Parallel()
 

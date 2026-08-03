@@ -91,7 +91,10 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	m := dependency.NewManager(proj, projFS,
 		dependency.WithProjectFile(c.ProjectFile),
 		dependency.WithSchemaGenerators(generator.Filter(
-			generator.AllLanguages(generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors)),
+			generator.AllLanguages(
+				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+				generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+			),
 			proj.Spec.Schemas.GetLanguages(),
 		)),
 		dependency.WithXpkgClient(client),

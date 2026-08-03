@@ -25,3 +25,11 @@ you can reach generated resources through interfaces and generics:
 ```shell
 crossplane config set features.generateGoModelAccessors true
 ```
+
+Generate `runtime.Object` methods and per-package `AddToScheme` helpers on
+generated Go models (off by default), so you can register generated types with a
+`runtime.Scheme`:
+
+```shell
+crossplane config set features.generateGoRuntimeObjects true
+```

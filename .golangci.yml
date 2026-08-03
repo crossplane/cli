@@ -1,5 +1,12 @@
 version: "2"
 
+run:
+  # Tests behind the compilegate tag shell out to the Go toolchain to build the
+  # generated models module, so they can't run in the hermetic Nix sandbox that
+  # runs our unit tests. Lint them anyway, so they don't rot.
+  build-tags:
+    - compilegate
+
 output:
   formats:
     text:

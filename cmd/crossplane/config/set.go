@@ -45,6 +45,7 @@ var boolKeys = map[string]boolSetter{
 	"features.enableAlpha":              func(c *config.Config, v bool) { c.Features.EnableAlpha = v },
 	"features.disableBeta":              func(c *config.Config, v bool) { c.Features.DisableBeta = v },
 	"features.generateGoModelAccessors": func(c *config.Config, v bool) { c.Features.GenerateGoModelAccessors = v },
+	"features.generateGoRuntimeObjects": func(c *config.Config, v bool) { c.Features.GenerateGoRuntimeObjects = v },
 }
 
 func (c *setCmd) AfterApply() error {

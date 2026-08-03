@@ -86,7 +86,10 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 	opts := []dependency.ManagerOption{
 		dependency.WithProjectFile(c.ProjectFile),
 		dependency.WithSchemaGenerators(generator.Filter(
-			generator.AllLanguages(generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors)),
+			generator.AllLanguages(
+				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+				generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+			),
 			proj.Spec.Schemas.GetLanguages(),
 		)),
 		dependency.WithXpkgClient(client),

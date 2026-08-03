@@ -293,6 +293,7 @@ func TestRunErrors(t *testing.T) {
 		name             string
 		language         string
 		seedFunctionsFS  map[string][]byte
+		cfg              *config.Config
 		stage            string // "afterApply" or "run"
 		wantErrSubstring string
 	}{
@@ -310,6 +311,22 @@ func TestRunErrors(t *testing.T) {
 			stage:            "run",
 			wantErrSubstring: "already exists and is not empty",
 		},
+		"DirectoryNotEmptyWithGoRuntimeObjects": {
+			// Run reads the feature flag out of the config it's handed, so
+			// exercise the flag-on path too. Asserting on the generated
+			// artifacts isn't possible here: that needs the real schema
+			// runner, which runs a container.
+			name:     "my-func",
+			language: "go-templating",
+			seedFunctionsFS: map[string][]byte{
+				"my-func/existing.txt": []byte("data"),
+			},
+			cfg: &config.Config{
+				Features: config.Features{GenerateGoRuntimeObjects: true},
+			},
+			stage:            "run",
+			wantErrSubstring: "already exists and is not empty",
+		},
 	}
 
 	for name, tc := range cases {
@@ -320,12 +337,16 @@ func TestRunErrors(t *testing.T) {
 				functionsFS: seedFS(t, tc.seedFunctionsFS),
 				projFS:      afero.NewMemMapFs(),
 			}
+			cfg := tc.cfg
+			if cfg == nil {
+				cfg = &config.Config{}
+			}
 			var err error
 			switch tc.stage {
 			case "afterApply":
 				err = c.AfterApply()
 			case "run":
-				err = c.Run(terminal.NewSpinnerPrinter(io.Discard, false), &config.Config{})
+				err = c.Run(terminal.NewSpinnerPrinter(io.Discard, false), cfg)
 			}
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrSubstring)

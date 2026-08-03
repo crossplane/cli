@@ -495,6 +495,15 @@ spec:
 				resources: []*unstructured.Unstructured{},
 			},
 		},
+		"SkipDocumentsWithCommentOnly": {
+			reason: "Skip documents with only comments",
+			args: args{
+				stream: [][]byte{[]byte("# comment only\n")},
+			},
+			want: want{
+				resources: []*unstructured.Unstructured{},
+			},
+		},
 	}
 
 	for name, tc := range cases {

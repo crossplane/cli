@@ -486,6 +486,24 @@ spec:
 				err: nil,
 			},
 		},
+		"SkipEmptyDocuments": {
+			reason: "Return empty unstructured array for empty documents",
+			args: args{
+				stream: [][]byte{{}},
+			},
+			want: want{
+				resources: []*unstructured.Unstructured{},
+			},
+		},
+		"SkipDocumentsWithCommentOnly": {
+			reason: "Skip documents with only comments",
+			args: args{
+				stream: [][]byte{[]byte("# comment only\n")},
+			},
+			want: want{
+				resources: []*unstructured.Unstructured{},
+			},
+		},
 	}
 
 	for name, tc := range cases {

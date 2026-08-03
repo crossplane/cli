@@ -31,6 +31,7 @@ import (
 
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/async"
+	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/functions"
@@ -83,7 +84,7 @@ func (c *buildCmd) AfterApply() error {
 }
 
 // Run executes the build command.
-func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
+func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
 	if c.Repository != "" {
@@ -97,7 +98,7 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error 
 	concurrency := max(1, c.MaxConcurrency)
 
 	schemasFS := afero.NewBasePathFs(c.projFS, c.proj.Spec.Paths.Schemas)
-	generators := generator.Filter(generator.AllLanguages(), c.proj.Spec.Schemas.GetLanguages())
+	generators := generator.Filter(generator.AllLanguages(generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors)), c.proj.Spec.Schemas.GetLanguages())
 	schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs))
 	schemaMgr := manager.New(schemasFS, generators, schemaRunner)
 	cacheDir := c.CacheDir

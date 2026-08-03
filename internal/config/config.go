@@ -42,6 +42,11 @@ type Config struct {
 type Features struct {
 	EnableAlpha bool `json:"enableAlpha,omitempty"`
 	DisableBeta bool `json:"disableBeta,omitempty"`
+
+	// GenerateGoModelAccessors enables generation of GetX/SetX accessor methods
+	// on generated Go models. Disabled by default; opt in to use generics and
+	// interfaces over generated resources.
+	GenerateGoModelAccessors bool `json:"generateGoModelAccessors,omitempty"`
 }
 
 // Load reads a Config from path. A missing file is not an error; the zero

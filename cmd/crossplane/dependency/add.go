@@ -28,8 +28,10 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
+	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
@@ -56,7 +58,7 @@ func (c *addCmd) Help() string {
 }
 
 // Run executes the add command.
-func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
+func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
 	projFilePath, err := filepath.Abs(c.ProjectFile)
@@ -88,6 +90,10 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
 
 	m := dependency.NewManager(proj, projFS,
 		dependency.WithProjectFile(c.ProjectFile),
+		dependency.WithSchemaGenerators(generator.Filter(
+			generator.AllLanguages(generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors)),
+			proj.Spec.Schemas.GetLanguages(),
+		)),
 		dependency.WithXpkgClient(client),
 		dependency.WithResolver(resolver),
 	)

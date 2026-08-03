@@ -42,8 +42,9 @@ type boolSetter func(c *config.Config, v bool)
 //
 //nolint:gochecknoglobals // This is a constant.
 var boolKeys = map[string]boolSetter{
-	"features.enableAlpha": func(c *config.Config, v bool) { c.Features.EnableAlpha = v },
-	"features.disableBeta": func(c *config.Config, v bool) { c.Features.DisableBeta = v },
+	"features.enableAlpha":              func(c *config.Config, v bool) { c.Features.EnableAlpha = v },
+	"features.disableBeta":              func(c *config.Config, v bool) { c.Features.DisableBeta = v },
+	"features.generateGoModelAccessors": func(c *config.Config, v bool) { c.Features.GenerateGoModelAccessors = v },
 }
 
 func (c *setCmd) AfterApply() error {

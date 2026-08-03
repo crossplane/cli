@@ -46,6 +46,7 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
 	"github.com/crossplane/cli/v2/internal/async"
+	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/functions"
@@ -111,7 +112,7 @@ func (c *Cmd) AfterApply() error {
 }
 
 // Run render.
-func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinter) error { //nolint:gocognit // Orchestration is inherently complex.
+func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocognit // Orchestration is inherently complex.
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
@@ -157,7 +158,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		return errors.Errorf("render only supports Composition Function pipelines: Composition %q must use spec.mode: Pipeline", comp.GetName())
 	}
 
-	fns, err := c.loadFunctions(ctx, log, sp)
+	fns, err := c.loadFunctions(ctx, log, sp, cfg)
 	if err != nil {
 		return err
 	}
@@ -388,7 +389,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 	return nil
 }
 
-func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter) ([]pkgv1.Function, error) {
+func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) ([]pkgv1.Function, error) {
 	if c.Functions != "" {
 		fns, err := render.LoadFunctions(c.fs, c.Functions)
 		if err != nil {
@@ -430,8 +431,13 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 	}
 	resolver := clixpkg.NewResolver(xpkgClient)
 
+	// Built here rather than alongside the schema manager below so the
+	// dependency manager generates dependency schemas the same way.
+	generators := generator.AllLanguages(generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors))
+
 	depMgr := dependency.NewManager(proj, projFS,
 		dependency.WithProjectFile(filepath.Base(projFilePath)),
+		dependency.WithSchemaGenerators(generators),
 		dependency.WithXpkgClient(xpkgClient),
 		dependency.WithResolver(resolver),
 	)
@@ -447,7 +453,6 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 
 	if err := sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
 		schemasFS := afero.NewBasePathFs(projFS, proj.Spec.Paths.Schemas)
-		generators := generator.AllLanguages()
 		schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(proj.Spec.ImageConfigs))
 		schemaMgr := manager.New(schemasFS, generators, schemaRunner)
 

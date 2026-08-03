@@ -34,12 +34,31 @@ type Interface interface {
 	GenerateFromOpenAPI(ctx context.Context, fs afero.Fs, runner runner.SchemaRunner) (afero.Fs, error)
 }
 
+// options holds configurable behavior shared across generators.
+type options struct {
+	goModelAccessors bool
+}
+
+// Option configures the generators returned by AllLanguages.
+type Option func(*options)
+
+// WithGoModelAccessors enables generation of GetX/SetX accessor methods on the
+// generated Go models. It is disabled by default and gated behind the
+// features.generateGoModelAccessors config flag.
+func WithGoModelAccessors(enabled bool) Option {
+	return func(o *options) { o.goModelAccessors = enabled }
+}
+
 // AllLanguages returns generators for all supported languages. The set of
 // supported language identifiers is defined by
 // devv1alpha1.SupportedSchemaLanguages.
-func AllLanguages() []Interface {
+func AllLanguages(opts ...Option) []Interface {
+	o := &options{}
+	for _, opt := range opts {
+		opt(o)
+	}
 	return []Interface{
-		&goGenerator{},
+		&goGenerator{accessors: o.goModelAccessors},
 		&jsonGenerator{},
 		&kclGenerator{},
 		&pythonGenerator{},

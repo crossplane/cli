@@ -324,8 +324,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v5.9.1"
     hash = "sha256-VW8mfdLjvAuiooR2WV7P0IoOosAvtDZvFWcGQJJVSSY="
   [mod."github.com/go-git/go-git/v5"]
-    version = "v5.19.1"
-    hash = "sha256-C0e3oOXYRgLUhm1TQk9mBwRwwj6iusxFAt5U9vqWz8A="
+    version = "v5.19.2"
+    hash = "sha256-2du2hn5JDTEEYTWuGX+heSftkmd7HoaJXyWJG4bZeSM="
   [mod."github.com/go-gorp/gorp/v3"]
     version = "v3.1.0"
     hash = "sha256-z8AJoWp3fDJMNMYAi8kJdtzXDv8QyAd6bPYE58b2urs="

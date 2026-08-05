@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -251,6 +252,12 @@ func useAccessors(a specAccessor) *v1alpha1.XAccountScaffoldSpec {
 }
 
 var _ = useAccessors
+
+// ChainOnEmpty walks nested getters on a resource whose intermediate structs are
+// all nil. It must return the zero value rather than panicking.
+func ChainOnEmpty() *string {
+	return (&v1alpha1.XAccountScaffold{}).GetSpec().GetParameters().GetName()
+}
 `
 	consumerDir := filepath.Join(dir, "models", "consumer")
 	if err := os.MkdirAll(consumerDir, 0o755); err != nil {
@@ -279,6 +286,28 @@ var _ = useAccessors
 	cmd.Dir = modelsDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated models failed to compile: %v\n%s", err, out)
+	}
+
+	// Compiling proves the chain typechecks; running it proves the nil guards
+	// actually hold. Without them ChainOnEmpty panics on the first hop.
+	consumerTest := `package consumer
+
+import "testing"
+
+func TestChainOnEmptyDoesNotPanic(t *testing.T) {
+	if got := ChainOnEmpty(); got != nil {
+		t.Errorf("expected nil from a chain over an empty resource, got %v", *got)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(consumerDir, "consumer_test.go"), []byte(consumerTest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd = exec.CommandContext(t.Context(), "go", "test", "./consumer/...")
+	cmd.Dir = modelsDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("chained getters panicked on an empty resource: %v\n%s", err, out)
 	}
 }
 
@@ -324,6 +353,87 @@ type FooAlias = Foo
 
 	if diff := cmp.Diff(want, collectMethods(t, got)); diff != "" {
 		t.Errorf("generated accessors (-want +got):\n%s", diff)
+	}
+}
+
+// guardsNilReceiver reports whether the body of method recv.name opens with an
+// `if <receiver> == nil` guard.
+func guardsNilReceiver(t *testing.T, src, recv, name string) bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("failed to parse source: %v\n%s", err, src)
+	}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 {
+			continue
+		}
+		if receiverTypeName(fn.Recv.List[0].Type) != recv || fn.Name.Name != name {
+			continue
+		}
+		if fn.Body == nil || len(fn.Body.List) == 0 {
+			return false
+		}
+		ifs, ok := fn.Body.List[0].(*ast.IfStmt)
+		if !ok {
+			return false
+		}
+		bin, ok := ifs.Cond.(*ast.BinaryExpr)
+		if !ok || bin.Op != token.EQL {
+			return false
+		}
+		x, okX := bin.X.(*ast.Ident)
+		y, okY := bin.Y.(*ast.Ident)
+		return okX && okY && x.Name == accessorReceiver && y.Name == "nil"
+	}
+	t.Fatalf("method %s.%s not found", recv, name)
+	return false
+}
+
+// TestAddAccessorsGuardsNilReceiver verifies that getters tolerate a nil
+// receiver, which is what makes chained getters safe on partially-populated
+// resources. Setters are deliberately left unguarded: a set on a nil receiver
+// has nowhere to store the value, so panicking is the honest behaviour.
+func TestAddAccessorsGuardsNilReceiver(t *testing.T) {
+	input := `package v1alpha1
+
+type Foo struct {
+	Bar   *Bar    ` + "`json:\"bar,omitempty\"`" + `
+	Name  *string ` + "`json:\"name,omitempty\"`" + `
+	Count int64   ` + "`json:\"count\"`" + `
+	Fixed [2]byte ` + "`json:\"fixed\"`" + `
+}
+
+type Bar struct {
+	Count *int64 ` + "`json:\"count,omitempty\"`" + `
+}
+`
+
+	got, err := addAccessors(input)
+	if err != nil {
+		t.Fatalf("addAccessors returned error: %v", err)
+	}
+
+	for _, name := range []string{"GetBar", "GetName", "GetCount", "GetFixed"} {
+		if !guardsNilReceiver(t, got, "Foo", name) {
+			t.Errorf("Foo.%s must guard against a nil receiver", name)
+		}
+	}
+	if guardsNilReceiver(t, got, "Foo", "SetBar") {
+		t.Error("Foo.SetBar must not silently swallow a nil receiver")
+	}
+
+	// Nilable types return nil directly; non-nilable types need a zero value.
+	if !strings.Contains(got, "func (o *Foo) GetBar() *Bar {\n\tif o == nil {\n\t\treturn nil\n\t}") {
+		t.Errorf("GetBar should return nil for a nilable field, got:\n%s", got)
+	}
+	if !strings.Contains(got, "var zero int64") {
+		t.Errorf("GetCount should declare a zero value for a non-nilable field, got:\n%s", got)
+	}
+	if !strings.Contains(got, "var zero [2]byte") {
+		t.Errorf("GetFixed should treat a fixed-size array as non-nilable, got:\n%s", got)
 	}
 }
 

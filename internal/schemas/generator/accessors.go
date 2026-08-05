@@ -130,6 +130,22 @@ func receiverTypeName(e ast.Expr) string {
 	return ""
 }
 
+// isNilable reports whether a zero value of the given type is spelled `nil`,
+// letting the generated getter return nil directly instead of declaring a zero
+// variable. Generated models use pointers throughout, so this is the common
+// case; the zero-variable form covers everything else.
+func isNilable(e ast.Expr) bool {
+	switch t := e.(type) {
+	case *ast.StarExpr, *ast.MapType, *ast.InterfaceType, *ast.ChanType, *ast.FuncType:
+		return true
+	case *ast.ArrayType:
+		// Slices are nilable; fixed-size arrays are not.
+		return t.Len == nil
+	default:
+		return false
+	}
+}
+
 // writeStructAccessors appends a getter and setter for each named field of the
 // given struct to b. Any accessor whose name already exists in skip is omitted
 // to avoid colliding with methods oapi-codegen already generated.
@@ -158,10 +174,20 @@ func writeStructAccessors(b *strings.Builder, fset *token.FileSet, typeName stri
 
 			fieldName := name.Name
 
-			// Getter.
+			// Getter. It tolerates a nil receiver so that chained getters are
+			// safe on partially-populated resources.
 			if !skip["Get"+fieldName] {
 				b.WriteString("\n// Get" + fieldName + " returns the " + fieldName + " field.\n")
+				b.WriteString("// It returns the zero value if the receiver is nil.\n")
 				b.WriteString("func (" + accessorReceiver + " *" + typeName + ") Get" + fieldName + "() " + fieldType + " {\n")
+				b.WriteString("\tif " + accessorReceiver + " == nil {\n")
+				if isNilable(field.Type) {
+					b.WriteString("\t\treturn nil\n")
+				} else {
+					b.WriteString("\t\tvar zero " + fieldType + "\n")
+					b.WriteString("\t\treturn zero\n")
+				}
+				b.WriteString("\t}\n")
 				b.WriteString("\treturn " + accessorReceiver + "." + fieldName + "\n")
 				b.WriteString("}\n")
 			}

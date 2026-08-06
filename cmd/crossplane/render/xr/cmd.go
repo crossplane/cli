@@ -86,11 +86,12 @@ type Cmd struct {
 	FunctionCredentials    string            `help:"A YAML file or directory of YAML files specifying credentials to use for Functions to render the XR."                                                           placeholder:"PATH"      predictor:"yaml_file_or_directory" type:"path"`
 	FunctionAnnotations    []string          `help:"Override function annotations for all functions. Provide multiple annotations by repeating the argument."                                                       placeholder:"KEY=VALUE" short:"a"`
 
-	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                      help:"Directory for cached xpkg package contents."          name:"cache-dir"`
+	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                      help:"Directory for cached xpkg package contents."                                                            name:"cache-dir"`
 	MaxConcurrency uint          `default:"8"                                                                                                      help:"Maximum concurrency for building embedded functions."`
-	ProjectFile    string        `default:"crossplane-project.yaml"                                                                                help:"Path to the project file. Optional."                  optional:""        predictor:"yaml_file" short:"f" type:"path"`
+	PkgMetaFile    string        `default:"crossplane.yaml"                                                                                        help:"Path to a package metadata file (crossplane.yaml). Used as fallback when no project file is found."     name:"pkg-meta-file" optional:""          predictor:"yaml_file" type:"path"`
+	ProjectFile    string        `default:"crossplane-project.yaml"                                                                                help:"Path to the project file. Optional."                                                                    optional:""          predictor:"yaml_file" short:"f"             type:"path"`
 	Timeout        time.Duration `default:"1m"                                                                                                     help:"How long to run before timing out."`
-	XRD            string        `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that defines the XR's schema and properties." optional:""                                                 placeholder:"PATH" type:"existingfile"`
+	XRD            string        `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that defines the XR's schema and properties." optional:""                                                                                                   placeholder:"PATH"   type:"existingfile"`
 
 	fs afero.Fs
 
@@ -405,7 +406,7 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 	projDir := filepath.Dir(projFilePath)
 
 	if _, err := os.Stat(projFilePath); err != nil {
-		return nil, errors.New("functions argument is required when not in a project")
+		return c.loadFunctionsFromConfiguration(ctx, log)
 	}
 
 	log.Debug("Loading functions from project", "project-file", projFilePath)
@@ -489,6 +490,48 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		return err
 	}); err != nil {
 		return nil, errors.Wrap(err, "cannot build embedded functions")
+	}
+
+	return fns, nil
+}
+
+func (c *Cmd) loadFunctionsFromConfiguration(ctx context.Context, log logging.Logger) ([]pkgv1.Function, error) {
+	cfgFilePath, err := filepath.Abs(c.PkgMetaFile)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot determine configuration file path")
+	}
+
+	if _, err := os.Stat(cfgFilePath); err != nil {
+		return nil, errors.New("functions argument is required when not in a project or configuration")
+	}
+
+	log.Debug("Loading functions from configuration file", "configuration-file", cfgFilePath)
+
+	cfgDir := filepath.Dir(cfgFilePath)
+	cfgFS := afero.NewBasePathFs(afero.NewOsFs(), cfgDir)
+
+	cfg, err := clixpkg.ParseConfiguration(cfgFS, filepath.Base(cfgFilePath))
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot parse configuration file %q", cfgFilePath)
+	}
+
+	cacheDir := c.CacheDir
+	if cacheDir == "" {
+		cacheDir = dependency.DefaultCacheDir()
+	}
+
+	xpkgClient, err := clixpkg.NewClient(
+		clixpkg.NewRemoteFetcher(),
+		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
+	)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot create xpkg client")
+	}
+	resolver := clixpkg.NewResolver(xpkgClient)
+
+	fns, err := clixpkg.ResolveConfigurationFunctions(ctx, cfg, resolver)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot resolve function dependencies from configuration file")
 	}
 
 	return fns, nil

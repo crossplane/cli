@@ -41,6 +41,17 @@ When running `render` in a Crossplane Project (any directory containing a
 file argument in favor of using function dependencies defined in the project
 metadata and embedded functions from the project.
 
+## Configuration package support
+
+When no project file is found, `render` looks for a Configuration package
+metadata file (`crossplane.yaml` by default). If found, it extracts function
+dependencies from the `spec.dependsOn` list and resolves their version
+constraints to concrete OCI references. This lets you omit the functions file
+argument in directories that contain a `crossplane.yaml` with
+`kind: Configuration`.
+
+Use `--pkg-meta-file` to specify a custom path to the package metadata file.
+
 ## Function context
 
 The `--context-files` and `--context-values` flags pass data to each Function's
@@ -154,4 +165,11 @@ Force all functions to use development runtime:
 crossplane composition render xr.yaml composition.yaml functions.yaml \
   -a render.crossplane.io/runtime=Development \
   -a render.crossplane.io/runtime-development-target=localhost:9444
+```
+
+Render using functions from a Configuration package metadata file:
+
+```shell
+crossplane composition render xr.yaml composition.yaml \
+  --pkg-meta-file=crossplane.yaml
 ```

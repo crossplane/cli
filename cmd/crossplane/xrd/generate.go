@@ -47,6 +47,13 @@ import (
 //go:embed help/generate.md
 var generateHelp string
 
+const (
+	schemaTypeObject = "object"
+
+	schemaFieldSpec   = "spec"
+	schemaFieldStatus = "status"
+)
+
 type generateCmd struct {
 	File        string `arg:""                                 help:"Path to the XR or XRC YAML file."`
 	From        string `default:"xr"                           enum:"xr,simpleschema"                  help:"Input format: xr or simpleschema."`
@@ -191,7 +198,7 @@ func replaceCELWithPlaceholder(data map[string]any) map[string]any {
 
 	for key, value := range data {
 		if isCELExpression(value) {
-			result[key] = "object"
+			result[key] = schemaTypeObject
 		} else if nestedMap, ok := value.(map[string]any); ok {
 			result[key] = replaceCELWithPlaceholder(nestedMap)
 		} else {
@@ -254,7 +261,7 @@ func newXRDFromSimpleSchema(yamlData []byte, customPlural string) (*v2.Composite
 		return nil, errors.Wrap(err, "failed to convert spec to OpenAPI schema")
 	}
 
-	statusSchema := &extv1.JSONSchemaProps{Type: "object", Properties: map[string]extv1.JSONSchemaProps{}}
+	statusSchema := &extv1.JSONSchemaProps{Type: schemaTypeObject, Properties: map[string]extv1.JSONSchemaProps{}}
 	if len(simpleInput.Status) > 0 {
 		celPaths := findCELFields(simpleInput.Status, nil)
 		processedStatus := replaceCELWithPlaceholder(simpleInput.Status)
@@ -269,12 +276,12 @@ func newXRDFromSimpleSchema(yamlData []byte, customPlural string) (*v2.Composite
 
 	openAPIV3Schema := &extv1.JSONSchemaProps{
 		Description: fmt.Sprintf("%s is the Schema for the %s API.", kind, kind),
-		Type:        "object",
+		Type:        schemaTypeObject,
 		Properties: map[string]extv1.JSONSchemaProps{
-			"spec":   *specSchema,
-			"status": *statusSchema,
+			schemaFieldSpec:   *specSchema,
+			schemaFieldStatus: *statusSchema,
 		},
-		Required: []string{"spec"},
+		Required: []string{schemaFieldSpec},
 	}
 
 	schemaBytes, err := json.Marshal(openAPIV3Schema)
@@ -399,20 +406,20 @@ func newXRDFromExample(yamlData []byte, customPlural string) (*v2.CompositeResou
 
 	openAPIV3Schema := &extv1.JSONSchemaProps{
 		Description: description,
-		Type:        "object",
+		Type:        schemaTypeObject,
 		Properties: map[string]extv1.JSONSchemaProps{
-			"spec": {
+			schemaFieldSpec: {
 				Description: fmt.Sprintf("%sSpec defines the desired state of %s.", kind, kind),
-				Type:        "object",
+				Type:        schemaTypeObject,
 				Properties:  specProps,
 			},
-			"status": {
+			schemaFieldStatus: {
 				Description: fmt.Sprintf("%sStatus defines the observed state of %s.", kind, kind),
-				Type:        "object",
+				Type:        schemaTypeObject,
 				Properties:  statusProps,
 			},
 		},
-		Required: []string{"spec"},
+		Required: []string{schemaFieldSpec},
 	}
 
 	schemaBytes, err := json.Marshal(openAPIV3Schema)

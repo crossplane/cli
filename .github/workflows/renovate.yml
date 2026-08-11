@@ -16,6 +16,10 @@ permissions:
 
 env:
   LOG_LEVEL: "info"
+  # The Renovate version, used by both the config validator and the bot itself
+  # (see renovate-version below), so validation can't disagree with what runs.
+  # Renovate keeps this current - see the customManager in renovate.json5.
+  RENOVATE_VERSION: "44.23.0"
 
 jobs:
   renovate:
@@ -29,7 +33,7 @@ jobs:
 
       # Don't waste time starting Renovate if JSON is invalid
       - name: Validate Renovate JSON
-        run:  npx --yes --package renovate -- renovate-config-validator
+        run:  npx --yes --package "renovate@${RENOVATE_VERSION}" -- renovate-config-validator
 
       - name: Get token
         id: get-github-app-token
@@ -45,9 +49,10 @@ jobs:
           # Use GitHub API to create commits
           RENOVATE_PLATFORM_COMMIT: "true"
           LOG_LEVEL: ${{ github.event.inputs.logLevel || env.LOG_LEVEL }}
-          RENOVATE_ALLOWED_COMMANDS: '["^nix .+"]'
+          RENOVATE_ALLOWED_COMMANDS: '["^crossplane-nix .+"]'
         with:
           configurationFile: .github/renovate.json5
+          renovate-version: ${{ env.RENOVATE_VERSION }}
           token: '${{ steps.get-github-app-token.outputs.token }}'
           mount-docker-socket: true
           docker-user: root

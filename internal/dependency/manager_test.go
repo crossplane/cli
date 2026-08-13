@@ -19,10 +19,12 @@ package dependency
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -35,6 +37,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/parser"
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
@@ -86,6 +89,36 @@ spec:
     version: ">=v1.14.0"
 `
 
+// providerDependsOnPackageYAML is a provider meta with a new-style dependsOn
+// entry; fill in the dependency repo and version.
+const providerDependsOnPackageYAML = `apiVersion: meta.pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: example
+spec:
+  crossplane:
+    version: ">=v1.14.0"
+  dependsOn:
+  - apiVersion: pkg.crossplane.io/v1
+    kind: Provider
+    package: %s
+    version: %q
+`
+
+// providerDependsOnProviderYAML is a provider meta with a deprecated-style
+// dependsOn entry; fill in the dependency repo and version.
+const providerDependsOnProviderYAML = `apiVersion: meta.pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: example
+spec:
+  crossplane:
+    version: ">=v1.14.0"
+  dependsOn:
+  - provider: %s
+    version: %q
+`
+
 // parsedPackage parses the given package YAML into a *parser.Package that the
 // fake client can hand back from Get.
 func parsedPackage(t *testing.T, body string) *parser.Package {
@@ -113,14 +146,25 @@ func parsedTestPackage(t *testing.T) *parser.Package {
 }
 
 // fakeClient is a fake xpkg.Client. Get returns a pre-canned Package per ref;
-// ListVersions returns a fixed tag list, so a real Resolver can be wired on
-// top.
+// ListVersions returns the tags for the requested repo, falling back to a
+// fixed tag list, so a real Resolver can be wired on top.
 type fakeClient struct {
-	packages map[string]*runtimexpkg.Package
-	tags     []string
+	packages   map[string]*runtimexpkg.Package
+	tags       []string
+	tagsByRepo map[string][]string
+
+	mu   sync.Mutex
+	gets map[string]int
 }
 
 func (f *fakeClient) Get(_ context.Context, ref string, _ ...runtimexpkg.GetOption) (*runtimexpkg.Package, error) {
+	f.mu.Lock()
+	if f.gets == nil {
+		f.gets = make(map[string]int)
+	}
+	f.gets[ref]++
+	f.mu.Unlock()
+
 	pkg, ok := f.packages[ref]
 	if !ok {
 		return nil, errors.New("not found")
@@ -128,8 +172,17 @@ func (f *fakeClient) Get(_ context.Context, ref string, _ ...runtimexpkg.GetOpti
 	return pkg, nil
 }
 
-func (f *fakeClient) ListVersions(_ context.Context, _ string, _ ...runtimexpkg.GetOption) ([]string, error) {
+func (f *fakeClient) ListVersions(_ context.Context, repo string, _ ...runtimexpkg.GetOption) ([]string, error) {
+	if tags, ok := f.tagsByRepo[repo]; ok {
+		return tags, nil
+	}
 	return f.tags, nil
+}
+
+func (f *fakeClient) getCount(ref string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gets[ref]
 }
 
 func makePackage(t *testing.T, source, digest, version string) *runtimexpkg.Package {
@@ -548,5 +601,349 @@ func TestManager_AddPackage(t *testing.T) {
 				t.Errorf("lock packages = %d, want 1; got %v", len(got.Packages), got.Packages)
 			}
 		})
+	}
+}
+
+// refRepo returns the repository portion of an OCI ref, stripping a digest or
+// tag suffix.
+func refRepo(ref string) string {
+	if repo, _, ok := strings.Cut(ref, "@"); ok {
+		return repo
+	}
+	if i := strings.LastIndex(ref, ":"); i >= 0 {
+		return ref[:i]
+	}
+	return ref
+}
+
+// readLockKeys returns the package keys recorded in the schema lock file.
+func readLockKeys(t *testing.T, schemaFS afero.Fs) []string {
+	t.Helper()
+	bs, err := afero.ReadFile(schemaFS, ".lock.json")
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	var lock struct {
+		Packages map[string]string `json:"packages"`
+	}
+	if err := json.Unmarshal(bs, &lock); err != nil {
+		t.Fatalf("unmarshal lock: %v", err)
+	}
+	keys := slices.Collect(maps.Keys(lock.Packages))
+	slices.Sort(keys)
+	return keys
+}
+
+func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
+	const (
+		provA     = "xpkg.example/prov-a"
+		provB     = "xpkg.example/prov-b"
+		family    = "xpkg.example/family"
+		digestVal = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+
+	type pkgFixture struct {
+		ref  string // exact ref the fake client serves.
+		body string
+	}
+
+	tests := map[string]struct {
+		packages     []pkgFixture
+		tagsByRepo   map[string][]string
+		addRefs      []string
+		wantLockKeys []string
+		wantErr      string
+		wantGets     map[string]int
+	}{
+		"TransitiveDepGeneratesSchemas": {
+			packages: []pkgFixture{
+				{ref: provA + ":v0.1.0", body: fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")},
+				{ref: family + ":v1.0.0", body: providerPackageYAML},
+			},
+			tagsByRepo: map[string][]string{
+				provA:  {"v0.1.0"},
+				family: {"v1.0.0"},
+			},
+			addRefs: []string{provA + ":v0.1.0"},
+			wantLockKeys: []string{
+				"xpkg://" + family + ":v1.0.0",
+				"xpkg://" + provA + ":v0.1.0",
+			},
+		},
+		"TransitiveDepWithConstraint": {
+			packages: []pkgFixture{
+				{ref: provA + ":v0.1.0", body: fmt.Sprintf(providerDependsOnPackageYAML, family, ">=v1.0.0")},
+				{ref: family + ":v1.2.3", body: providerPackageYAML},
+			},
+			tagsByRepo: map[string][]string{
+				provA:  {"v0.1.0"},
+				family: {"v1.2.3"},
+			},
+			addRefs: []string{provA + ":v0.1.0"},
+			wantLockKeys: []string{
+				"xpkg://" + family + ":v1.2.3",
+				"xpkg://" + provA + ":v0.1.0",
+			},
+		},
+		"TransitiveDepByDigest": {
+			packages: []pkgFixture{
+				{ref: provA + ":v0.1.0", body: fmt.Sprintf(providerDependsOnPackageYAML, family, digestVal)},
+				{ref: family + "@" + digestVal, body: providerPackageYAML},
+			},
+			tagsByRepo: map[string][]string{
+				provA: {"v0.1.0"},
+			},
+			addRefs: []string{provA + ":v0.1.0"},
+			wantLockKeys: []string{
+				"xpkg://" + family + "@" + digestVal,
+				"xpkg://" + provA + ":v0.1.0",
+			},
+		},
+		"DeprecatedProviderField": {
+			packages: []pkgFixture{
+				{ref: provA + ":v0.1.0", body: fmt.Sprintf(providerDependsOnProviderYAML, family, "v1.0.0")},
+				{ref: family + ":v1.0.0", body: providerPackageYAML},
+			},
+			tagsByRepo: map[string][]string{
+				provA:  {"v0.1.0"},
+				family: {"v1.0.0"},
+			},
+			addRefs: []string{provA + ":v0.1.0"},
+			wantLockKeys: []string{
+				"xpkg://" + family + ":v1.0.0",
+				"xpkg://" + provA + ":v0.1.0",
+			},
+		},
+		"DiamondSharedDepFetchedOnce": {
+			packages: []pkgFixture{
+				{ref: provA + ":v0.1.0", body: fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")},
+				{ref: provB + ":v0.2.0", body: fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")},
+				{ref: family + ":v1.0.0", body: providerPackageYAML},
+			},
+			tagsByRepo: map[string][]string{
+				provA:  {"v0.1.0"},
+				provB:  {"v0.2.0"},
+				family: {"v1.0.0"},
+			},
+			addRefs: []string{provA + ":v0.1.0", provB + ":v0.2.0"},
+			wantLockKeys: []string{
+				"xpkg://" + family + ":v1.0.0",
+				"xpkg://" + provA + ":v0.1.0",
+				"xpkg://" + provB + ":v0.2.0",
+			},
+			wantGets: map[string]int{
+				family + ":v1.0.0": 1,
+			},
+		},
+		"CycleTerminates": {
+			packages: []pkgFixture{
+				{ref: provA + ":v0.1.0", body: fmt.Sprintf(providerDependsOnPackageYAML, provB, "v0.2.0")},
+				{ref: provB + ":v0.2.0", body: fmt.Sprintf(providerDependsOnPackageYAML, provA, "v0.1.0")},
+			},
+			tagsByRepo: map[string][]string{
+				provA: {"v0.1.0"},
+				provB: {"v0.2.0"},
+			},
+			addRefs: []string{provA + ":v0.1.0"},
+			wantLockKeys: []string{
+				"xpkg://" + provA + ":v0.1.0",
+				"xpkg://" + provB + ":v0.2.0",
+			},
+		},
+		"TransitiveFetchFailure": {
+			packages: []pkgFixture{
+				{ref: provA + ":v0.1.0", body: fmt.Sprintf(providerDependsOnPackageYAML, family, "v9.9.9")},
+			},
+			tagsByRepo: map[string][]string{
+				provA:  {"v0.1.0"},
+				family: {},
+			},
+			addRefs: []string{provA + ":v0.1.0"},
+			wantErr: family + ":v9.9.9",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			fc := &fakeClient{
+				packages:   map[string]*runtimexpkg.Package{},
+				tagsByRepo: tc.tagsByRepo,
+			}
+			for _, p := range tc.packages {
+				fc.packages[p.ref] = makePackageWithBody(t, refRepo(p.ref), "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03", "", p.body)
+			}
+			m, schemaFS := newTestManager(t, fc)
+
+			var err error
+			for _, ref := range tc.addRefs {
+				if _, err = m.AddPackage(context.Background(), ref, false); err != nil {
+					break
+				}
+			}
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("AddPackage: %v", err)
+			}
+
+			want := slices.Clone(tc.wantLockKeys)
+			slices.Sort(want)
+			if diff := cmp.Diff(want, readLockKeys(t, schemaFS)); diff != "" {
+				t.Errorf("lock keys (-want +got):\n%s", diff)
+			}
+
+			for ref, wantCount := range tc.wantGets {
+				if got := fc.getCount(ref); got != wantCount {
+					t.Errorf("fetch count for %s = %d, want %d", ref, got, wantCount)
+				}
+			}
+		})
+	}
+}
+
+func TestManager_AddAll_SharedTransitiveDep(t *testing.T) {
+	const (
+		provA  = "xpkg.example/prov-a"
+		provB  = "xpkg.example/prov-b"
+		family = "xpkg.example/family"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			provA + ":v0.1.0":  makePackageWithBody(t, provA, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			provB + ":v0.2.0":  makePackageWithBody(t, provB, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			family + ":v1.0.0": makePackageWithBody(t, family, digest, "", providerPackageYAML),
+		},
+		tagsByRepo: map[string][]string{
+			provA:  {"v0.1.0"},
+			provB:  {"v0.2.0"},
+			family: {"v1.0.0"},
+		},
+	}
+
+	schemaFS := afero.NewMemMapFs()
+	m := NewManager(
+		&v1alpha1.Project{
+			Spec: v1alpha1.ProjectSpec{
+				Dependencies: []v1alpha1.Dependency{
+					*xpkgDep(provA, "v0.1.0"),
+					*xpkgDep(provB, "v0.2.0"),
+				},
+				Paths: &v1alpha1.ProjectPaths{Schemas: "schemas"},
+			},
+		},
+		afero.NewMemMapFs(),
+		WithSchemaFS(schemaFS),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+	)
+
+	var ch async.EventChannel // nil channel; SendEvent is a no-op.
+	if err := m.AddAll(context.Background(), ch); err != nil {
+		t.Fatalf("AddAll: %v", err)
+	}
+
+	want := []string{
+		"xpkg://" + family + ":v1.0.0",
+		"xpkg://" + provA + ":v0.1.0",
+		"xpkg://" + provB + ":v0.2.0",
+	}
+	if diff := cmp.Diff(want, readLockKeys(t, schemaFS)); diff != "" {
+		t.Errorf("lock keys (-want +got):\n%s", diff)
+	}
+	if got := fc.getCount(family + ":v1.0.0"); got != 1 {
+		t.Errorf("fetch count for %s = %d, want 1", family+":v1.0.0", got)
+	}
+}
+
+func TestManager_AddDependency_TransitiveNotPersisted(t *testing.T) {
+	const (
+		provA  = "xpkg.example/prov-a"
+		family = "xpkg.example/family"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			provA + ":v0.1.0":  makePackageWithBody(t, provA, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			family + ":v1.0.0": makePackageWithBody(t, family, digest, "", providerPackageYAML),
+		},
+		tagsByRepo: map[string][]string{
+			provA:  {"v0.1.0"},
+			family: {"v1.0.0"},
+		},
+	}
+
+	projFS := afero.NewMemMapFs()
+	proj := &v1alpha1.Project{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dev.crossplane.io/v1alpha1",
+			Kind:       "Project",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+		Spec: v1alpha1.ProjectSpec{
+			Repository: "xpkg.crossplane.io/test/test",
+			Paths:      &v1alpha1.ProjectPaths{Schemas: "schemas"},
+		},
+	}
+	bs, err := yaml.Marshal(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := afero.WriteFile(projFS, "crossplane-project.yaml", bs, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	schemaFS := afero.NewMemMapFs()
+	m := NewManager(proj, projFS,
+		WithProjectFile("crossplane-project.yaml"),
+		WithSchemaFS(schemaFS),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+	)
+
+	if err := m.AddDependency(context.Background(), xpkgDep(provA, "v0.1.0")); err != nil {
+		t.Fatalf("AddDependency: %v", err)
+	}
+
+	// Schemas were generated for both the declared and the transitive package.
+	wantKeys := []string{
+		"xpkg://" + family + ":v1.0.0",
+		"xpkg://" + provA + ":v0.1.0",
+	}
+	if diff := cmp.Diff(wantKeys, readLockKeys(t, schemaFS)); diff != "" {
+		t.Errorf("lock keys (-want +got):\n%s", diff)
+	}
+
+	// Only the declared dependency is persisted to the project file.
+	wantDeps := []v1alpha1.Dependency{{
+		Type: v1alpha1.DependencyTypeXpkg,
+		Xpkg: &v1alpha1.XpkgDependency{
+			APIVersion: "pkg.crossplane.io/v1",
+			Kind:       "Provider",
+			Package:    provA,
+			Version:    "v0.1.0",
+		},
+	}}
+	if diff := cmp.Diff(wantDeps, proj.Spec.Dependencies); diff != "" {
+		t.Errorf("project deps (-want +got):\n%s", diff)
+	}
+	gotBytes, err := afero.ReadFile(projFS, "crossplane-project.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotProj v1alpha1.Project
+	if err := yaml.Unmarshal(gotBytes, &gotProj); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(wantDeps, gotProj.Spec.Dependencies); diff != "" {
+		t.Errorf("on-disk project deps (-want +got):\n%s", diff)
 	}
 }

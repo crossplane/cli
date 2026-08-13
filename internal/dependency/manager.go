@@ -34,6 +34,8 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
+	pkgmetav1 "github.com/crossplane/crossplane/apis/v2/pkg/meta/v1"
+
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/git"
@@ -59,6 +61,11 @@ type Manager struct {
 	resolver *clixpkg.Resolver
 
 	updateMutex sync.Mutex
+
+	// visited tracks package refs already processed during this invocation,
+	// deduplicating shared transitive dependencies and breaking cycles.
+	visited   map[string]struct{}
+	visitedMu sync.Mutex
 }
 
 // ManagerOption configures the dependency manager.
@@ -159,6 +166,7 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 		gitAuthProvider: options.gitAuthProvider,
 		client:          options.client,
 		resolver:        options.resolver,
+		visited:         make(map[string]struct{}),
 	}
 }
 
@@ -172,11 +180,18 @@ func (m *Manager) ResolveRef(ref string) (name.Reference, error) {
 
 // AddPackage adds a package to the dependency manager. If refresh is set, the
 // package's ref will be re-resolved regardless of whether it is cached.
+// Schemas are also generated recursively for the dependencies declared in the
+// package's metadata.
 func (m *Manager) AddPackage(ctx context.Context, ref string, refresh bool) (*schema.GroupVersionKind, error) {
 	return m.addPackage(ctx, ref, refresh)
 }
 
 func (m *Manager) addPackage(ctx context.Context, ref string, refresh bool) (*schema.GroupVersionKind, error) {
+	// Record the ref unconditionally: top-level calls must always fully
+	// process the package so callers get its GVK, while transitive walks
+	// consult the visited set before recursing.
+	m.claim(ref)
+
 	resolvedRef, version, err := m.resolver.Resolve(ctx, ref)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot resolve %s", ref)
@@ -211,7 +226,70 @@ func (m *Manager) addPackage(ctx context.Context, ref string, refresh bool) (*sc
 	if err := m.schemas.Add(ctx, src); err != nil {
 		return nil, err
 	}
+	if err := m.addTransitiveDeps(ctx, pkg, refresh); err != nil {
+		return nil, err
+	}
 	return gvk, nil
+}
+
+// addTransitiveDeps generates schemas for the dependencies declared in the
+// package's metadata. Transitive dependencies are not added to the project
+// file.
+func (m *Manager) addTransitiveDeps(ctx context.Context, pkg *runtimexpkg.Package, refresh bool) error {
+	for _, dep := range pkg.GetDependencies() {
+		repo := dependencyRepo(dep)
+		if repo == "" {
+			continue
+		}
+		ref := xpkgRef(repo, dep.Version)
+		if !m.claim(ref) {
+			continue // Already processed (or in progress) this invocation.
+		}
+		if _, err := m.addPackage(ctx, ref, refresh); err != nil {
+			return errors.Wrapf(err, "cannot add transitive dependency %s of %s", ref, pkg.Source)
+		}
+	}
+	return nil
+}
+
+// claim records ref as processed and reports whether it was newly claimed.
+func (m *Manager) claim(ref string) bool {
+	m.visitedMu.Lock()
+	defer m.visitedMu.Unlock()
+	if _, ok := m.visited[ref]; ok {
+		return false
+	}
+	m.visited[ref] = struct{}{}
+	return true
+}
+
+// dependencyRepo returns the OCI repository of a package metadata dependency,
+// or "" if none is set.
+func dependencyRepo(dep pkgmetav1.Dependency) string {
+	switch {
+	case dep.Package != nil:
+		return *dep.Package
+	case dep.Configuration != nil:
+		return *dep.Configuration
+	case dep.Provider != nil:
+		return *dep.Provider
+	case dep.Function != nil:
+		return *dep.Function
+	}
+	return ""
+}
+
+// xpkgRef formats an OCI reference from a repository and a version that may be
+// a digest, an exact tag, or a semver constraint (resolved later by the
+// resolver).
+func xpkgRef(repo, version string) string {
+	if _, err := conregv1.NewHash(version); err == nil {
+		return fmt.Sprintf("%s@%s", repo, version)
+	}
+	if version != "" {
+		return fmt.Sprintf("%s:%s", repo, version)
+	}
+	return repo
 }
 
 func runtimeGVKForPackage(pkg *runtimexpkg.Package) (*schema.GroupVersionKind, error) {
@@ -296,17 +374,7 @@ func (m *Manager) addDependencyNoWrite(ctx context.Context, dep *v1alpha1.Depend
 			return nil, errors.New("xpkg dependency has no package reference")
 		}
 
-		// If the version is a digest, format the OCI ref as
-		// repo@digest. Otherwise, use repo:tag, where tag may be a semver
-		// constraint.
-		ref := dep.Xpkg.Package
-		if _, err := conregv1.NewHash(dep.Xpkg.Version); err == nil {
-			ref = fmt.Sprintf("%s@%s", ref, dep.Xpkg.Version)
-		} else if dep.Xpkg.Version != "" {
-			ref = fmt.Sprintf("%s:%s", ref, dep.Xpkg.Version)
-		}
-
-		return m.addPackage(ctx, ref, refresh)
+		return m.addPackage(ctx, xpkgRef(dep.Xpkg.Package, dep.Xpkg.Version), refresh)
 	case dep.Git != nil:
 		return nil, m.schemas.Add(ctx, smanager.NewGitSource(*dep, m.gitCloner, m.gitAuthProvider))
 	case dep.HTTP != nil:

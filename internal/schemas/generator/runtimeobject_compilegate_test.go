@@ -242,7 +242,8 @@ func TestBuiltInGroupVersions(t *testing.T) {
 	}{
 		"CoreV1":      {obj: &corev1.Pod{}, want: schema.GroupVersionKind{Version: "v1", Kind: "Pod"}},
 		"MetaV1":      {obj: &metav1.Status{}, want: schema.GroupVersionKind{Version: "v1", Kind: "Status"}},
-		"Autoscaling": {obj: &autoscalingv1.TokenRequest{}, want: schema.GroupVersionKind{Group: "autoscaling", Version: "v1", Kind: "TokenRequest"}},
+		"Autoscaling": {obj: &autoscalingv1.Scale{}, want: schema.GroupVersionKind{Group: "autoscaling", Version: "v1", Kind: "Scale"}},
+		"Authn":       {obj: &authnv1.TokenRequest{}, want: schema.GroupVersionKind{Group: "authentication.k8s.io", Version: "v1", Kind: "TokenRequest"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

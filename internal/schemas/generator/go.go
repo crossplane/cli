@@ -290,6 +290,7 @@ func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 	// Generate models for the non-k8s schemas.
 	for _, oapi := range openAPIs {
 		code, err := generateGo(oapi.spec, oapi.version,
+			goRemoveValidationOnlyCombinators,
 			goRenameTypes,
 			goRenameEnums,
 			goReplaceNumberWithInt,
@@ -369,6 +370,7 @@ func (g goGenerator) generateSharedK8sPackage(schemaFS afero.Fs, pkg string, sch
 	}
 
 	code, err := generateGo(pkgSpec, goPkg.version,
+		goRemoveValidationOnlyCombinators,
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,
@@ -739,6 +741,16 @@ func goSchemaPath(group, kind, version string) string {
 	switch group {
 	case "apps", k8sPkgNameAutoscaling, "batch", "policy":
 		return filepath.Join("io", "k8s", group, version, strings.ToLower(kind)+".go")
+	case "resource.k8s.io":
+		// The resource.k8s.io group (dynamic resource allocation) would
+		// collide with the shared apimachinery Quantity package at
+		// io/k8s/resource/v1, so it lives under io/k8s/api/resource instead,
+		// mirroring the upstream k8s.io/api/resource layout.
+		return filepath.Join("io", "k8s", "api", "resource", version, strings.ToLower(kind)+".go")
+	case "resource.apimachinery.k8s.io":
+		// Pseudo-group for the shared apimachinery Quantity package; it keeps
+		// its historical path at io/k8s/resource/v1.
+		return filepath.Join("io", "k8s", "resource", version, strings.ToLower(kind)+".go")
 	}
 
 	path := strings.Split(group, ".")
@@ -866,6 +878,85 @@ func goRetypeSchema(schema *spec.Schema, oldType, newType string) {
 	if schema.Type.Contains(oldType) {
 		schema.AddExtension("x-go-type", newType)
 	}
+}
+
+// goRemoveValidationOnlyCombinators removes anyOf/oneOf combinators that carry
+// no structural type information. Kubernetes structural schemas allow these
+// junctors only for validation (e.g. "exactly one of endpointSelector and
+// nodeSelector must be set"), where each variant contains only `required`
+// constraints and empty property schemas. oapi-codegen generates a union
+// member type named <TypeName><index> for each variant, so a schema with both
+// anyOf and oneOf produces colliding type names (two <TypeName>0). The
+// variants don't affect the generated Go structs, so we drop them.
+// Combinators with typed variants (e.g. x-kubernetes-int-or-string's
+// anyOf: [{type: integer}, {type: string}]) are kept.
+func goRemoveValidationOnlyCombinators(s *spec3.OpenAPI) {
+	for _, schema := range s.Components.Schemas {
+		goRemoveSchemaValidationOnlyCombinators(schema)
+	}
+}
+
+func goRemoveSchemaValidationOnlyCombinators(schema *spec.Schema) {
+	if schema == nil {
+		return
+	}
+
+	if goCombinatorIsValidationOnly(schema.AnyOf) {
+		schema.AnyOf = nil
+	}
+	if goCombinatorIsValidationOnly(schema.OneOf) {
+		schema.OneOf = nil
+	}
+
+	for i := range schema.AllOf {
+		goRemoveSchemaValidationOnlyCombinators(&schema.AllOf[i])
+	}
+	for i := range schema.AnyOf {
+		goRemoveSchemaValidationOnlyCombinators(&schema.AnyOf[i])
+	}
+	for i := range schema.OneOf {
+		goRemoveSchemaValidationOnlyCombinators(&schema.OneOf[i])
+	}
+	for name, prop := range schema.Properties {
+		goRemoveSchemaValidationOnlyCombinators(&prop)
+		schema.Properties[name] = prop
+	}
+	if schema.Items != nil && schema.Items.Schema != nil {
+		goRemoveSchemaValidationOnlyCombinators(schema.Items.Schema)
+	}
+	if schema.AdditionalProperties != nil && schema.AdditionalProperties.Schema != nil {
+		goRemoveSchemaValidationOnlyCombinators(schema.AdditionalProperties.Schema)
+	}
+}
+
+// goCombinatorIsValidationOnly returns true if all the given anyOf/oneOf
+// variants constrain validation without describing any structure.
+func goCombinatorIsValidationOnly(variants []spec.Schema) bool {
+	if len(variants) == 0 {
+		return false
+	}
+	for i := range variants {
+		if !goSchemaIsValidationOnly(&variants[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func goSchemaIsValidationOnly(s *spec.Schema) bool {
+	if len(s.Type) > 0 || s.Ref.String() != "" || s.Format != "" ||
+		s.Items != nil || s.AdditionalProperties != nil ||
+		len(s.Enum) > 0 || s.Default != nil ||
+		len(s.AllOf) > 0 || len(s.AnyOf) > 0 || len(s.OneOf) > 0 || s.Not != nil {
+		return false
+	}
+	for name := range s.Properties {
+		prop := s.Properties[name]
+		if !goSchemaIsValidationOnly(&prop) {
+			return false
+		}
+	}
+	return true
 }
 
 // goRemoveRequired removes the required fields from schemas. We want all fields
@@ -1052,17 +1143,23 @@ func tryReplaceK8sTypeWithMetaPath(schema *spec.Schema, ref string, useCorePath 
 	}
 }
 
+// isSharedK8sSchema returns true if the named schema belongs to one of the
+// k8s packages we generate as shared models for all other models to reference.
+func isSharedK8sSchema(name string) bool {
+	return strings.HasPrefix(name, k8sPkgMetaV1) ||
+		strings.HasPrefix(name, k8sPkgRuntime) ||
+		strings.HasPrefix(name, k8sPkgCoreV1) ||
+		strings.HasPrefix(name, k8sPkgIntStr) ||
+		strings.HasPrefix(name, k8sPkgResource) ||
+		strings.HasPrefix(name, k8sPkgAutoscalingV1)
+}
+
 // goRemoveK8s removes all k8s schemas from the given OpenAPI spec, so
 // that we can generate models for them separately and share them across all our
 // other generated models.
 func goRemoveK8s(s *spec3.OpenAPI) {
 	for name := range s.Components.Schemas {
-		if strings.HasPrefix(name, k8sPkgMetaV1) ||
-			strings.HasPrefix(name, k8sPkgRuntime) ||
-			strings.HasPrefix(name, k8sPkgCoreV1) ||
-			strings.HasPrefix(name, k8sPkgIntStr) ||
-			strings.HasPrefix(name, k8sPkgResource) ||
-			strings.HasPrefix(name, k8sPkgAutoscalingV1) {
+		if isSharedK8sSchema(name) {
 			delete(s.Components.Schemas, name)
 		}
 	}
@@ -1451,6 +1548,7 @@ func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaF
 	goPkg := getK8sPackageInfo(pkg)
 
 	code, err := generateGo(pkgSpec, goPkg.version,
+		goRemoveValidationOnlyCombinators,
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,
@@ -1506,7 +1604,10 @@ func getK8sPackageInfo(pkg string) goPackage {
 	case k8sPkgIntStr:
 		return goPackage{group: "util.k8s.io", kind: "intstr", version: "v1"}
 	case k8sPkgResource:
-		return goPackage{group: "resource.k8s.io", kind: "resource", version: "v1"}
+		// Pseudo-group to distinguish the shared apimachinery Quantity
+		// package from the real resource.k8s.io API group (dynamic resource
+		// allocation); see goSchemaPath.
+		return goPackage{group: "resource.apimachinery.k8s.io", kind: "resource", version: "v1"}
 	case k8sPkgAutoscalingV1:
 		return goPackage{
 			group:    k8sPkgNameAutoscaling,
@@ -1525,6 +1626,21 @@ func generateModelsWithGVK(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs, g g
 		gvkGroups := groupSchemasByGVK(openAPISpec)
 
 		for gvkKey, schemas := range gvkGroups {
+			// Skip groups whose schemas are all shared k8s package schemas
+			// (e.g. autoscaling/v1's Scale). They're generated by
+			// generateK8sSharedSchemas, and goRemoveK8s would leave this group
+			// empty, overwriting the shared package file with an empty one.
+			shared := true
+			for name := range schemas {
+				if !isSharedK8sSchema(name) {
+					shared = false
+					break
+				}
+			}
+			if shared {
+				continue
+			}
+
 			if err := generateGVKGroupCode(gvkKey, schemas, openAPISpec, schemaFS, g); err != nil {
 				return err
 			}
@@ -1616,6 +1732,7 @@ func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAP
 	maps.Copy(groupSpec.Components.Schemas, openAPISpec.Components.Schemas)
 
 	code, err := generateGo(groupSpec, version,
+		goRemoveValidationOnlyCombinators,
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,

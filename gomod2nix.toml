@@ -2200,8 +2200,8 @@ cachePackages = [
     hash = 'sha256-JbxZFBFGCh/Rj5XZ1vG94V2x7c18L8XKB0N9ZD5F2rM='
 
   [mod.'github.com/google/go-containerregistry']
-    version = 'v0.21.7'
-    hash = 'sha256-LyHukzZEVrcQSjprkakCi9Wg0DzFlP5QP9Cl7N8iydU='
+    version = 'v0.21.9'
+    hash = 'sha256-BY9E1Gd4eKSEZn256+MWbYvnYJQzDGijr0f6PECBi5I='
 
   [mod.'github.com/google/go-containerregistry/pkg/authn/k8schain']
     version = 'v0.0.0-20260312205200-e9163014982e'
@@ -2292,8 +2292,8 @@ cachePackages = [
     hash = 'sha256-Ta7ZOmyX8gG5tzWbY2oES70EJPfI90U7CIJS9EAce0s='
 
   [mod.'github.com/klauspost/compress']
-    version = 'v1.18.7'
-    hash = 'sha256-W7VJ7+Ybm8u3LCYNKlTFY6FNp5qK4ipS2+W5sZ/OCbU='
+    version = 'v1.19.1'
+    hash = 'sha256-7aDl/b+nSvtpJDsi69itGEut75PiYekrkVxz1IqnzPk='
 
   [mod.'github.com/klauspost/cpuid/v2']
     version = 'v2.3.0'
@@ -2368,12 +2368,12 @@ cachePackages = [
     hash = 'sha256-xwSNLmMagzywdGJIuhrWl1r7cIWBYCOMNYbuDDT6Jhs='
 
   [mod.'github.com/moby/moby/api']
-    version = 'v1.54.2'
-    hash = 'sha256-JKAoP3YqK/w90hrkNtHl8RGKvs+Quf3XFQ2gUS37ONM='
+    version = 'v1.55.0'
+    hash = 'sha256-D2gQFKJgoNDcFzcMp+3iWMJK7w6QakqA5RMrcXbZWBw='
 
   [mod.'github.com/moby/moby/client']
-    version = 'v0.4.1'
-    hash = 'sha256-G49VpC6ykDsC9ackHwQ3voF+CYzCX1UTmhtWBMCaZSc='
+    version = 'v0.5.1'
+    hash = 'sha256-0Uj7VPVisEFRJJf2S7a14t0u9LjjBLh36Nhc3NYigN4='
 
   [mod.'github.com/moby/sys/atomicwriter']
     version = 'v0.1.0'

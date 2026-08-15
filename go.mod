@@ -25,7 +25,7 @@ require (
 	github.com/gobuffalo/flect v1.0.3
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-containerregistry v0.21.7
-	github.com/google/ko v0.18.1
+	github.com/google/ko v0.19.1
 	github.com/invopop/jsonschema v0.14.0
 	github.com/kubernetes-sigs/kro v0.9.2
 	github.com/muesli/termenv v0.16.0

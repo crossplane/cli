@@ -19,7 +19,7 @@ env:
   # The Renovate version, used by both the config validator and the bot itself
   # (see renovate-version below), so validation can't disagree with what runs.
   # Renovate keeps this current - see the customManager in renovate.json5.
-  RENOVATE_VERSION: "44.27.0"
+  RENOVATE_VERSION: "44.33.2"
 
 jobs:
   renovate:

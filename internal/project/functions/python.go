@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
@@ -90,6 +91,7 @@ type pythonBuilder struct {
 	buildImage   string
 	runtimeImage string
 	transport    http.RoundTripper
+	keychain     authn.Keychain
 	configStore  xpkg.ConfigStore
 }
 
@@ -137,7 +139,7 @@ func (b *pythonBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, 
 	eg, _ := errgroup.WithContext(ctx)
 	for i, arch := range c.Architectures {
 		eg.Go(func() error {
-			baseImg, err := baseImageForArch(runtimeRef, arch, b.transport)
+			baseImg, err := baseImageForArch(runtimeRef, arch, b.transport, b.keychain)
 			if err != nil {
 				return errors.Wrap(err, "failed to fetch python runtime base image")
 			}
@@ -290,6 +292,7 @@ func newPythonBuilder(imageConfigs []pkgv1beta1.ImageConfig) *pythonBuilder {
 		buildImage:   pythonBuildImage,
 		runtimeImage: pythonRuntimeImage,
 		transport:    http.DefaultTransport,
+		keychain:     authn.DefaultKeychain,
 		configStore:  clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

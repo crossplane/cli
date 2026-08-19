@@ -21,8 +21,33 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
+
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/crane"
 )
+
+// anonymousKeychain returns authn.Anonymous for every request, and records that
+// it was asked. The default keychain would consult the host's docker config: if
+// that sets a credsStore, resolving credentials shells out to
+// docker-credential-<store>, which is not on PATH under `nix run .#test`
+// (nix/apps.nix sets inheritPath = false), so the tag lookup fails on a
+// developer machine while passing in CI. internal/project/push_test.go carries
+// the same helper for the push path.
+//
+// The used flag is what keeps this honest: if the option stops being threaded
+// through to crane, this keychain is never consulted and the test fails on any
+// host, with or without a docker config.
+type anonymousKeychain struct {
+	used atomic.Bool
+}
+
+func (k *anonymousKeychain) Resolve(authn.Resource) (authn.Authenticator, error) {
+	k.used.Store(true)
+
+	return authn.Anonymous, nil
+}
 
 func TestFindImageTagForVersionConstraint(t *testing.T) {
 	repoName := "ubuntu"
@@ -77,6 +102,8 @@ func TestFindImageTagForVersionConstraint(t *testing.T) {
 		},
 	}
 
+	keychain := &anonymousKeychain{}
+
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			tagsPath := fmt.Sprintf("/v2/%s/tags/list", repoName)
@@ -107,19 +134,32 @@ func TestFindImageTagForVersionConstraint(t *testing.T) {
 				host = tc.host
 			}
 
-			image, err := findImageTagForVersionConstraint(fmt.Sprintf("%s/%s:%s", host, repoName, tc.constraint))
+			image, err := findImageTagForVersionConstraint(
+				fmt.Sprintf("%s/%s:%s", host, repoName, tc.constraint),
+				crane.WithAuthFromKeychain(keychain),
+			)
 
 			expectedImage := ""
 			if !tc.expectError {
 				expectedImage = fmt.Sprintf("%s/%s", host, tc.expectedImage)
 			}
 
-			if tc.expectError && err == nil {
+			switch {
+			case tc.expectError && err == nil:
 				t.Errorf("[%s] expected: error\n", name)
-			} else if expectedImage != image {
+			case !tc.expectError && err != nil:
+				// Report the error rather than only the empty result: a
+				// credential lookup that never reached the registry used to
+				// read here as an unreachable registry.
+				t.Errorf("[%s] unexpected error: %v\n", name, err)
+			case expectedImage != image:
 				t.Errorf("[%s] expected: %s, got: %s\n", name, expectedImage, image)
 			}
 		})
+	}
+
+	if !keychain.used.Load() {
+		t.Error("tags were listed without the injected keychain; the lookup fell back to the host's docker config")
 	}
 }
 

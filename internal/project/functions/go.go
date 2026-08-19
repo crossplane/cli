@@ -41,6 +41,7 @@ import (
 type goBuilder struct {
 	baseImage   string
 	transport   http.RoundTripper
+	keychain    authn.Keychain
 	configStore xpkg.ConfigStore
 }
 
@@ -79,7 +80,7 @@ func (b *goBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, erro
 			if err != nil {
 				return nil, nil, err
 			}
-			img, err := remote.Index(ref, remote.WithTransport(b.transport), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+			img, err := remote.Index(ref, remote.WithTransport(b.transport), remote.WithAuthFromKeychain(b.keychain))
 			return ref, img, err
 		}),
 		build.WithPlatforms(platforms...),
@@ -133,6 +134,7 @@ func newGoBuilder(imageConfigs []pkgv1beta1.ImageConfig) *goBuilder {
 	return &goBuilder{
 		baseImage:   "gcr.io/distroless/static-debian12@sha256:a9329520abc449e3b14d5bc3a6ffae065bdde0f02667fa10880c49b35c109fd1",
 		transport:   http.DefaultTransport,
+		keychain:    authn.DefaultKeychain,
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

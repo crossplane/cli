@@ -2020,8 +2020,8 @@ cachePackages = [
     hash = 'sha256-/IZK76MRCrz9XCiilieH5tKaLnIWyPJhwxDoVKB8dFc='
 
   [mod.'github.com/getkin/kin-openapi']
-    version = 'v0.144.0'
-    hash = 'sha256-/9yTwCC8SLEHKHbiot+a5aaaktf7ONf01VUNMOjg4PI='
+    version = 'v0.147.0'
+    hash = 'sha256-wZHKFtUlr55O7V5F+DiN1Q18Zsknpfu+AEMNt12NKTw='
 
   [mod.'github.com/go-chi/chi/v5']
     version = 'v5.3.0'

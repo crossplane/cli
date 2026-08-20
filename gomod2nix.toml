@@ -1681,8 +1681,8 @@ cachePackages = [
     hash = 'sha256-MEvA5e099GUllILa5EXxa6toQexU1sz6eDZt2tiqpCY='
 
   [mod.'github.com/Masterminds/semver/v3']
-    version = 'v3.4.0'
-    hash = 'sha256-75kRraVwYVjYLWZvuSlts4Iu28Eh3SpiF0GHc7vCYHI='
+    version = 'v3.5.0'
+    hash = 'sha256-Ps7gEw0nkHDZO/iDru/s+X8rMaUkNmiZ7id1GsIKlDU='
 
   [mod.'github.com/Masterminds/sprig/v3']
     version = 'v3.3.0'

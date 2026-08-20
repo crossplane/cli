@@ -2425,8 +2425,8 @@ cachePackages = [
     hash = 'sha256-pufLisYZW//uJXtCkobaU0Etnu+ZPQCqaRzRItx65hk='
 
   [mod.'github.com/oapi-codegen/oapi-codegen/v2']
-    version = 'v2.7.1'
-    hash = 'sha256-OkHJUdSchSTOuIhgIpr2gXKyRbGbABVY44X1A2OyI18='
+    version = 'v2.8.0'
+    hash = 'sha256-5wUFk0eN8S+gWGNLuJKnJDyCa4YDRvh77cQTiSlJE8I='
 
   [mod.'github.com/oasdiff/yaml']
     version = 'v0.1.1'
@@ -2581,8 +2581,8 @@ cachePackages = [
     hash = 'sha256-p9s0Ya/+C+wqTOhM9ulf4moroRtF4+MLdYJvn21Ad88='
 
   [mod.'github.com/speakeasy-api/openapi']
-    version = 'v1.19.2'
-    hash = 'sha256-6jaHjxI2A1hIliKLX/L+p9gavu6s7YipDv2qAGk+JJ8='
+    version = 'v1.24.0'
+    hash = 'sha256-42zfrGD18BhGsn50HBgIzqM8Q3VrICSlnb1tCg09HLY='
 
   [mod.'github.com/spf13/afero']
     version = 'v1.15.0'

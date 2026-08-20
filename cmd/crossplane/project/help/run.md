@@ -24,6 +24,40 @@ You can provide resources to apply around the project install:
 - `--extra-resources` applies one or more files *after* installing the
   Configuration and its dependencies (useful for things like `ProviderConfig`).
 
+If your environment requires private CA trust for image pulls, you can mount a
+host directory that contains containerd registry certs using
+`--containerd-certs-dir`. The directory is mounted at `/etc/containerd/certs.d`
+in the control-plane node.
+
+The certificates must already be present on your host before running this
+command, and `--containerd-certs-dir` must point to a directory tree that
+follows the containerd `certs.d` layout expected by the Kind node.
+
+`hosts.toml` is optional. Use it when you need custom registry host behavior
+(for example mirrors or explicit endpoint/capability settings). For CA-only
+trust, `ca.crt` is often sufficient.
+
+See containerd registry host configuration documentation:
+https://github.com/containerd/containerd/blob/main/docs/hosts.md
+
+Example host directory structure:
+
+```text
+/certs/containerd-certs/
+  _default/
+    hosts.toml (optional)
+    ca.crt
+  registry-1.docker.io/
+    hosts.toml (optional)
+    ca.crt
+  ghcr.io/
+    hosts.toml (optional)
+    ca.crt
+```
+
+Use `_default` for fallback trust/rules that should apply when a registry-
+specific directory is not present.
+
 ## Examples
 
 Build and run the project on the default local development control plane:
@@ -49,4 +83,10 @@ Apply `imageconfig.yaml` before installing the Configuration, and
 
 ```shell
 crossplane project run --init-resources=imageconfig.yaml --extra-resources=providerconfig.yaml
+```
+
+Run with private CA trust material mounted into the control-plane node:
+
+```shell
+crossplane project run --containerd-certs-dir=/certs/containerd-certs
 ```

@@ -1961,8 +1961,8 @@ cachePackages = [
     hash = 'sha256-0UYcZJqcNL06pC+CFyz8cmnTG27nipXHnEPhJDhtN+o='
 
   [mod.'github.com/docker/go-connections']
-    version = 'v0.7.0'
-    hash = 'sha256-J+3epfT+oKV2Q8ELESsPyBFIzgnXfITH1GlgbDSkRwg='
+    version = 'v0.8.1'
+    hash = 'sha256-rL4pL7wCdQCo6mMScwCb1P5amJEj7glJrjEork0DmXE='
 
   [mod.'github.com/docker/go-units']
     version = 'v0.5.0'

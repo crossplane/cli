@@ -63,7 +63,7 @@ func (pythonGenerator) Language() string {
 func (p pythonGenerator) GenerateFromCRD(ctx context.Context, fromFS afero.Fs, generator runner.SchemaRunner) (afero.Fs, error) { //nolint:gocognit // generation of schemas for python
 	crdFS := afero.NewMemMapFs()
 	schemaFS := afero.NewMemMapFs()
-	baseFolder := "workdir"
+	baseFolder := workDir
 
 	if err := crdFS.MkdirAll(baseFolder, 0o755); err != nil {
 		return nil, err
@@ -80,7 +80,7 @@ func (p pythonGenerator) GenerateFromCRD(ctx context.Context, fromFS afero.Fs, g
 			return nil
 		}
 		ext := filepath.Ext(path)
-		if ext != ".yaml" && ext != ".yml" {
+		if ext != extYAML && ext != extYML {
 			return nil
 		}
 
@@ -163,7 +163,7 @@ func (p pythonGenerator) GenerateFromCRD(ctx context.Context, fromFS afero.Fs, g
 func (p pythonGenerator) GenerateFromOpenAPI(ctx context.Context, fromFS afero.Fs, generator runner.SchemaRunner) (afero.Fs, error) { //nolint:gocognit // generation of schemas for python
 	openapiFS := afero.NewMemMapFs()
 	schemaFS := afero.NewMemMapFs()
-	baseFolder := "workdir"
+	baseFolder := workDir
 
 	if err := openapiFS.MkdirAll(baseFolder, 0o755); err != nil {
 		return nil, err

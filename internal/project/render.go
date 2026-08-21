@@ -37,6 +37,12 @@ import (
 	"github.com/crossplane/cli/v2/internal/docker"
 )
 
+// Architecture constants for Go's GOARCH format.
+const (
+	archAMD64 = "amd64"
+	archARM64 = "arm64"
+)
+
 // A Resolver resolves a CLI-style package reference to an OCI reference.
 type Resolver interface {
 	ResolveRef(ref string) (name.Reference, error)
@@ -143,9 +149,9 @@ func getDockerDaemonArchitecture(ctx context.Context) string {
 func normalizeArchitecture(dockerArch string) string {
 	switch dockerArch {
 	case "x86_64":
-		return "amd64"
+		return archAMD64
 	case "aarch64":
-		return "arm64"
+		return archARM64
 	default:
 		return dockerArch
 	}

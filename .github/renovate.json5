@@ -19,8 +19,8 @@
   // PLEASE UPDATE THIS WHEN RELEASING.
   baseBranches: [
     'main',
-    'release-2.3',
     'release-2.4',
+    'release-2.5',
   ],
   ignorePaths: [],
   postUpdateOptions: [

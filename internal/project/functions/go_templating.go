@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
@@ -46,6 +47,7 @@ import (
 type goTemplatingBuilder struct {
 	baseImage   string
 	transport   http.RoundTripper
+	keychain    authn.Keychain
 	configStore xpkg.ConfigStore
 }
 
@@ -111,7 +113,7 @@ func (b *goTemplatingBuilder) Build(ctx context.Context, c BuildContext) ([]v1.I
 	eg, _ := errgroup.WithContext(ctx)
 	for i, arch := range c.Architectures {
 		eg.Go(func() error {
-			baseImg, err := baseImageForArch(baseRef, arch, b.transport)
+			baseImg, err := baseImageForArch(baseRef, arch, b.transport, b.keychain)
 			if err != nil {
 				return errors.Wrap(err, "failed to fetch go-templating base image")
 			}
@@ -153,6 +155,7 @@ func (b *goTemplatingBuilder) Build(ctx context.Context, c BuildContext) ([]v1.I
 func newGoTemplatingBuilder(imageConfigs []pkgv1beta1.ImageConfig) *goTemplatingBuilder {
 	return &goTemplatingBuilder{
 		transport:   http.DefaultTransport,
+		keychain:    authn.DefaultKeychain,
 		baseImage:   "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.12.0",
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}

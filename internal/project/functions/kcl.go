@@ -53,6 +53,7 @@ const (
 type kclBuilder struct {
 	baseImage   string
 	transport   http.RoundTripper
+	keychain    authn.Keychain
 	configStore xpkg.ConfigStore
 }
 
@@ -85,7 +86,7 @@ func (b *kclBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, err
 	eg, _ := errgroup.WithContext(ctx)
 	for i, arch := range c.Architectures {
 		eg.Go(func() error {
-			baseImg, err := baseImageForArch(baseRef, arch, b.transport)
+			baseImg, err := baseImageForArch(baseRef, arch, b.transport, b.keychain)
 			if err != nil {
 				return errors.Wrap(err, "failed to fetch KCL base image")
 			}
@@ -129,12 +130,14 @@ func (b *kclBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, err
 
 // baseImageForArch pulls the image with the given ref, and returns a version of
 // it suitable for use as a function base image. Package and examples layers
-// will be removed if present.
-func baseImageForArch(ref name.Reference, arch string, transport http.RoundTripper) (v1.Image, error) {
+// will be removed if present. The keychain is supplied by the caller so that
+// tests can pull from a local registry without consulting the host's docker
+// config.
+func baseImageForArch(ref name.Reference, arch string, transport http.RoundTripper, keychain authn.Keychain) (v1.Image, error) {
 	img, err := remote.Image(ref, remote.WithPlatform(v1.Platform{
 		OS:           "linux",
 		Architecture: arch,
-	}), remote.WithTransport(transport), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	}), remote.WithTransport(transport), remote.WithAuthFromKeychain(keychain))
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to pull image")
 	}
@@ -208,6 +211,7 @@ func newKCLBuilder(imageConfigs []v1beta1.ImageConfig) *kclBuilder {
 	return &kclBuilder{
 		baseImage:   "xpkg.crossplane.io/crossplane-contrib/function-kcl:v0.12.1",
 		transport:   http.DefaultTransport,
+		keychain:    authn.DefaultKeychain,
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

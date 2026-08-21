@@ -168,10 +168,12 @@ func convertToSemver(tags []string) []*semver.Version {
 }
 
 // findImageTagForVersionConstraint fetches the latest tag for an image with a version constraint.
+// Callers may pass crane options; tests use this to supply an anonymous
+// keychain so the lookup does not consult the host's docker config.
 // image should be a validated image name with the format: <registry>/<image>:<tag>.
 // where <tag> can be a version constraint.
 // if <tag> is already an exact version, the same image string is returned back.
-func findImageTagForVersionConstraint(image string) (string, error) {
+func findImageTagForVersionConstraint(image string, opts ...crane.Option) (string, error) {
 	imageBase, imageTag := separateImageTag(image)
 
 	// Check if the tag is a constraint or already a valid semantic version
@@ -194,7 +196,7 @@ func findImageTagForVersionConstraint(image string) (string, error) {
 	}
 
 	// Fetch all image tags
-	tags, err := crane.ListTags(imageBase)
+	tags, err := crane.ListTags(imageBase, opts...)
 	if err != nil {
 		return "", errors.Wrapf(err, "cannot fetch tags for the image %s", imageBase)
 	}

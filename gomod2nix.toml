@@ -27,6 +27,7 @@ cachePackages = [
   'github.com/ProtonMail/go-crypto/openpgp',
   'github.com/ProtonMail/go-crypto/openpgp/aes/keywrap',
   'github.com/ProtonMail/go-crypto/openpgp/armor',
+  'github.com/ProtonMail/go-crypto/openpgp/clearsign',
   'github.com/ProtonMail/go-crypto/openpgp/ecdh',
   'github.com/ProtonMail/go-crypto/openpgp/ecdsa',
   'github.com/ProtonMail/go-crypto/openpgp/ed25519',
@@ -149,18 +150,8 @@ cachePackages = [
   'github.com/cloudflare/circl/sign',
   'github.com/cloudflare/circl/sign/ed25519',
   'github.com/cloudflare/circl/sign/ed448',
-  'github.com/containerd/containerd/archive/compression',
-  'github.com/containerd/containerd/content',
-  'github.com/containerd/containerd/errdefs',
-  'github.com/containerd/containerd/filters',
-  'github.com/containerd/containerd/images',
-  'github.com/containerd/containerd/labels',
-  'github.com/containerd/containerd/pkg/randutil',
-  'github.com/containerd/containerd/remotes',
   'github.com/containerd/errdefs',
   'github.com/containerd/errdefs/pkg/errhttp',
-  'github.com/containerd/log',
-  'github.com/containerd/platforms',
   'github.com/coreos/go-oidc/v3/oidc',
   'github.com/crossplane/crossplane-runtime/v2/pkg/errors',
   'github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath',
@@ -449,7 +440,6 @@ cachePackages = [
   'github.com/gosuri/uitable',
   'github.com/gosuri/uitable/util/strutil',
   'github.com/gosuri/uitable/util/wordwrap',
-  'github.com/gregjones/httpcache',
   'github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options',
   'github.com/grpc-ecosystem/grpc-gateway/v2/runtime',
   'github.com/grpc-ecosystem/grpc-gateway/v2/utilities',
@@ -491,6 +481,7 @@ cachePackages = [
   'github.com/letsencrypt/boulder/revocation',
   'github.com/lib/pq',
   'github.com/lib/pq/oid',
+  'github.com/lib/pq/pqerror',
   'github.com/lib/pq/scram',
   'github.com/liggitt/tabwriter',
   'github.com/lucasb-eyer/go-colorful',
@@ -747,9 +738,9 @@ cachePackages = [
   'go.opentelemetry.io/otel/sdk/trace',
   'go.opentelemetry.io/otel/semconv/v1.17.0',
   'go.opentelemetry.io/otel/semconv/v1.37.0',
-  'go.opentelemetry.io/otel/semconv/v1.37.0/otelconv',
   'go.opentelemetry.io/otel/semconv/v1.40.0',
   'go.opentelemetry.io/otel/semconv/v1.40.0/httpconv',
+  'go.opentelemetry.io/otel/semconv/v1.40.0/otelconv',
   'go.opentelemetry.io/otel/semconv/v1.41.0',
   'go.opentelemetry.io/otel/semconv/v1.41.0/otelconv',
   'go.opentelemetry.io/otel/trace',
@@ -781,7 +772,6 @@ cachePackages = [
   'golang.org/x/crypto/ocsp',
   'golang.org/x/crypto/openpgp',
   'golang.org/x/crypto/openpgp/armor',
-  'golang.org/x/crypto/openpgp/clearsign',
   'golang.org/x/crypto/openpgp/elgamal',
   'golang.org/x/crypto/openpgp/errors',
   'golang.org/x/crypto/openpgp/packet',
@@ -955,8 +945,6 @@ cachePackages = [
   'k8s.io/api/authorization/v1beta1',
   'k8s.io/api/autoscaling/v1',
   'k8s.io/api/autoscaling/v2',
-  'k8s.io/api/autoscaling/v2beta1',
-  'k8s.io/api/autoscaling/v2beta2',
   'k8s.io/api/batch/v1',
   'k8s.io/api/batch/v1beta1',
   'k8s.io/api/certificates/v1',
@@ -991,7 +979,7 @@ cachePackages = [
   'k8s.io/api/resource/v1beta1',
   'k8s.io/api/resource/v1beta2',
   'k8s.io/api/scheduling/v1',
-  'k8s.io/api/scheduling/v1alpha1',
+  'k8s.io/api/scheduling/v1alpha2',
   'k8s.io/api/scheduling/v1beta1',
   'k8s.io/api/storage/v1',
   'k8s.io/api/storage/v1alpha1',
@@ -1024,7 +1012,6 @@ cachePackages = [
   'k8s.io/apimachinery/pkg/api/validate/constraints',
   'k8s.io/apimachinery/pkg/api/validate/content',
   'k8s.io/apimachinery/pkg/api/validation',
-  'k8s.io/apimachinery/pkg/api/validation/path',
   'k8s.io/apimachinery/pkg/apis/meta/v1',
   'k8s.io/apimachinery/pkg/apis/meta/v1/unstructured',
   'k8s.io/apimachinery/pkg/apis/meta/v1/unstructured/unstructuredscheme',
@@ -1046,15 +1033,13 @@ cachePackages = [
   'k8s.io/apimachinery/pkg/runtime/serializer/streaming',
   'k8s.io/apimachinery/pkg/runtime/serializer/versioning',
   'k8s.io/apimachinery/pkg/selection',
+  'k8s.io/apimachinery/pkg/sharding',
   'k8s.io/apimachinery/pkg/types',
   'k8s.io/apimachinery/pkg/util/cache',
   'k8s.io/apimachinery/pkg/util/diff',
-  'k8s.io/apimachinery/pkg/util/dump',
   'k8s.io/apimachinery/pkg/util/duration',
   'k8s.io/apimachinery/pkg/util/errors',
   'k8s.io/apimachinery/pkg/util/framer',
-  'k8s.io/apimachinery/pkg/util/httpstream',
-  'k8s.io/apimachinery/pkg/util/httpstream/wsstream',
   'k8s.io/apimachinery/pkg/util/intstr',
   'k8s.io/apimachinery/pkg/util/json',
   'k8s.io/apimachinery/pkg/util/jsonmergepatch',
@@ -1062,9 +1047,7 @@ cachePackages = [
   'k8s.io/apimachinery/pkg/util/mergepatch',
   'k8s.io/apimachinery/pkg/util/naming',
   'k8s.io/apimachinery/pkg/util/net',
-  'k8s.io/apimachinery/pkg/util/portforward',
   'k8s.io/apimachinery/pkg/util/rand',
-  'k8s.io/apimachinery/pkg/util/remotecommand',
   'k8s.io/apimachinery/pkg/util/runtime',
   'k8s.io/apimachinery/pkg/util/sets',
   'k8s.io/apimachinery/pkg/util/strategicpatch',
@@ -1115,6 +1098,7 @@ cachePackages = [
   'k8s.io/apiserver/pkg/registry/rest',
   'k8s.io/apiserver/pkg/server/egressselector',
   'k8s.io/apiserver/pkg/server/egressselector/metrics',
+  'k8s.io/apiserver/pkg/server/httplog',
   'k8s.io/apiserver/pkg/server/routine',
   'k8s.io/apiserver/pkg/storage',
   'k8s.io/apiserver/pkg/storage/names',
@@ -1143,8 +1127,6 @@ cachePackages = [
   'k8s.io/client-go/applyconfigurations/apps/v1beta2',
   'k8s.io/client-go/applyconfigurations/autoscaling/v1',
   'k8s.io/client-go/applyconfigurations/autoscaling/v2',
-  'k8s.io/client-go/applyconfigurations/autoscaling/v2beta1',
-  'k8s.io/client-go/applyconfigurations/autoscaling/v2beta2',
   'k8s.io/client-go/applyconfigurations/batch/v1',
   'k8s.io/client-go/applyconfigurations/batch/v1beta1',
   'k8s.io/client-go/applyconfigurations/certificates/v1',
@@ -1180,7 +1162,7 @@ cachePackages = [
   'k8s.io/client-go/applyconfigurations/resource/v1beta1',
   'k8s.io/client-go/applyconfigurations/resource/v1beta2',
   'k8s.io/client-go/applyconfigurations/scheduling/v1',
-  'k8s.io/client-go/applyconfigurations/scheduling/v1alpha1',
+  'k8s.io/client-go/applyconfigurations/scheduling/v1alpha2',
   'k8s.io/client-go/applyconfigurations/scheduling/v1beta1',
   'k8s.io/client-go/applyconfigurations/storage/v1',
   'k8s.io/client-go/applyconfigurations/storage/v1alpha1',
@@ -1206,8 +1188,6 @@ cachePackages = [
   'k8s.io/client-go/informers/autoscaling',
   'k8s.io/client-go/informers/autoscaling/v1',
   'k8s.io/client-go/informers/autoscaling/v2',
-  'k8s.io/client-go/informers/autoscaling/v2beta1',
-  'k8s.io/client-go/informers/autoscaling/v2beta2',
   'k8s.io/client-go/informers/batch',
   'k8s.io/client-go/informers/batch/v1',
   'k8s.io/client-go/informers/batch/v1beta1',
@@ -1255,7 +1235,7 @@ cachePackages = [
   'k8s.io/client-go/informers/resource/v1beta2',
   'k8s.io/client-go/informers/scheduling',
   'k8s.io/client-go/informers/scheduling/v1',
-  'k8s.io/client-go/informers/scheduling/v1alpha1',
+  'k8s.io/client-go/informers/scheduling/v1alpha2',
   'k8s.io/client-go/informers/scheduling/v1beta1',
   'k8s.io/client-go/informers/storage',
   'k8s.io/client-go/informers/storage/v1',
@@ -1279,8 +1259,6 @@ cachePackages = [
   'k8s.io/client-go/kubernetes/typed/authorization/v1beta1',
   'k8s.io/client-go/kubernetes/typed/autoscaling/v1',
   'k8s.io/client-go/kubernetes/typed/autoscaling/v2',
-  'k8s.io/client-go/kubernetes/typed/autoscaling/v2beta1',
-  'k8s.io/client-go/kubernetes/typed/autoscaling/v2beta2',
   'k8s.io/client-go/kubernetes/typed/batch/v1',
   'k8s.io/client-go/kubernetes/typed/batch/v1beta1',
   'k8s.io/client-go/kubernetes/typed/certificates/v1',
@@ -1314,7 +1292,7 @@ cachePackages = [
   'k8s.io/client-go/kubernetes/typed/resource/v1beta1',
   'k8s.io/client-go/kubernetes/typed/resource/v1beta2',
   'k8s.io/client-go/kubernetes/typed/scheduling/v1',
-  'k8s.io/client-go/kubernetes/typed/scheduling/v1alpha1',
+  'k8s.io/client-go/kubernetes/typed/scheduling/v1alpha2',
   'k8s.io/client-go/kubernetes/typed/scheduling/v1beta1',
   'k8s.io/client-go/kubernetes/typed/storage/v1',
   'k8s.io/client-go/kubernetes/typed/storage/v1alpha1',
@@ -1330,8 +1308,6 @@ cachePackages = [
   'k8s.io/client-go/listers/apps/v1beta2',
   'k8s.io/client-go/listers/autoscaling/v1',
   'k8s.io/client-go/listers/autoscaling/v2',
-  'k8s.io/client-go/listers/autoscaling/v2beta1',
-  'k8s.io/client-go/listers/autoscaling/v2beta2',
   'k8s.io/client-go/listers/batch/v1',
   'k8s.io/client-go/listers/batch/v1beta1',
   'k8s.io/client-go/listers/certificates/v1',
@@ -1365,7 +1341,7 @@ cachePackages = [
   'k8s.io/client-go/listers/resource/v1beta1',
   'k8s.io/client-go/listers/resource/v1beta2',
   'k8s.io/client-go/listers/scheduling/v1',
-  'k8s.io/client-go/listers/scheduling/v1alpha1',
+  'k8s.io/client-go/listers/scheduling/v1alpha2',
   'k8s.io/client-go/listers/scheduling/v1beta1',
   'k8s.io/client-go/listers/storage/v1',
   'k8s.io/client-go/listers/storage/v1alpha1',
@@ -1398,6 +1374,7 @@ cachePackages = [
   'k8s.io/client-go/scale/scheme/extensionsv1beta1',
   'k8s.io/client-go/testing',
   'k8s.io/client-go/third_party/forked/golang/template',
+  'k8s.io/client-go/third_party/forked/httpcache',
   'k8s.io/client-go/tools/auth',
   'k8s.io/client-go/tools/cache',
   'k8s.io/client-go/tools/cache/synctrack',
@@ -1430,6 +1407,7 @@ cachePackages = [
   'k8s.io/component-base/compatibility',
   'k8s.io/component-base/featuregate',
   'k8s.io/component-base/metrics',
+  'k8s.io/component-base/metrics/api/v1',
   'k8s.io/component-base/metrics/legacyregistry',
   'k8s.io/component-base/metrics/prometheus/compatversion',
   'k8s.io/component-base/metrics/prometheus/feature',
@@ -1440,6 +1418,7 @@ cachePackages = [
   'k8s.io/component-base/version',
   'k8s.io/component-base/zpages/features',
   'k8s.io/klog/v2',
+  'k8s.io/klog/v2/textlogger',
   'k8s.io/kube-aggregator/pkg/apis/apiregistration',
   'k8s.io/kube-aggregator/pkg/apis/apiregistration/v1',
   'k8s.io/kube-openapi/pkg/aggregator',
@@ -1476,8 +1455,12 @@ cachePackages = [
   'k8s.io/metrics/pkg/client/clientset/versioned/scheme',
   'k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1alpha1',
   'k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1',
+  'k8s.io/streaming/pkg/httpstream',
+  'k8s.io/streaming/pkg/httpstream/wsstream',
+  'k8s.io/streaming/pkg/runtime',
   'k8s.io/utils/buffer',
   'k8s.io/utils/clock',
+  'k8s.io/utils/dump',
   'k8s.io/utils/exec',
   'k8s.io/utils/lru',
   'k8s.io/utils/net',
@@ -1681,8 +1664,8 @@ cachePackages = [
     hash = 'sha256-MEvA5e099GUllILa5EXxa6toQexU1sz6eDZt2tiqpCY='
 
   [mod.'github.com/Masterminds/semver/v3']
-    version = 'v3.4.0'
-    hash = 'sha256-75kRraVwYVjYLWZvuSlts4Iu28Eh3SpiF0GHc7vCYHI='
+    version = 'v3.5.0'
+    hash = 'sha256-Ps7gEw0nkHDZO/iDru/s+X8rMaUkNmiZ7id1GsIKlDU='
 
   [mod.'github.com/Masterminds/sprig/v3']
     version = 'v3.3.0'
@@ -1697,8 +1680,8 @@ cachePackages = [
     hash = 'sha256-tVNWDUMILZbJvarcl/E7tpSnkn7urqgSHa2Eaka5vSU='
 
   [mod.'github.com/ProtonMail/go-crypto']
-    version = 'v1.1.6'
-    hash = 'sha256-XlFT3uxgpPYFTND54uO8fH33jtQqAHWa7zrv24nw/PE='
+    version = 'v1.4.1'
+    hash = 'sha256-6iGAFCjoNveY+ipbKqq2gt+RXpi2eQyPXAY01rxPcWc='
 
   [mod.'github.com/alecthomas/chroma/v2']
     version = 'v2.20.0'
@@ -1880,10 +1863,6 @@ cachePackages = [
     version = 'v1.6.3'
     hash = 'sha256-XZm4EastgX67Dgm5BpOEW/PY4aLcHM/O8+Xbz26PuTY='
 
-  [mod.'github.com/containerd/containerd']
-    version = 'v1.7.33'
-    hash = 'sha256-5hXYyZJcXZiS0kTlcIgEfUwIZj/E++BOC7zI2tn3/Wg='
-
   [mod.'github.com/containerd/errdefs']
     version = 'v1.0.0'
     hash = 'sha256-wMZGoeqvRhuovYCJx0Js4P3qFCNTZ/6Atea/kNYoPMI='
@@ -1895,10 +1874,6 @@ cachePackages = [
   [mod.'github.com/containerd/log']
     version = 'v0.1.0'
     hash = 'sha256-vuE6Mie2gSxiN3jTKTZovjcbdBd1YEExb7IBe3GM+9s='
-
-  [mod.'github.com/containerd/platforms']
-    version = 'v0.2.1'
-    hash = 'sha256-XQdg/tnn5uKNzUc/dMmoIS9wgarx7SxaqZ5uJ9ZglA0='
 
   [mod.'github.com/coreos/go-oidc/v3']
     version = 'v3.17.0'
@@ -1921,8 +1896,8 @@ cachePackages = [
     hash = 'sha256-eqH3UKAZ9eOlZjYdN7nWuJ1hFm2JAP1PVbJInQk6OLw='
 
   [mod.'github.com/cyphar/filepath-securejoin']
-    version = 'v0.6.1'
-    hash = 'sha256-obqip8c1c9mjXFznyXF8aDnpcMw7ttzv+e28anCa/v0='
+    version = 'v0.7.0'
+    hash = 'sha256-LMTkRIE3ZkhYDxfDt/l8EZugyoyji1u620BYzo8dd9E='
 
   [mod.'github.com/davecgh/go-spew']
     version = 'v1.1.2-0.20180830191138-d8f796af33cc'
@@ -2228,10 +2203,6 @@ cachePackages = [
     version = 'v0.0.4'
     hash = 'sha256-/SpsQ7j+3dEDC0UX9C+ZjQ8zY7taoqIOQspTqRb8oLk='
 
-  [mod.'github.com/gregjones/httpcache']
-    version = 'v0.0.0-20190611155906-901d90724c79'
-    hash = 'sha256-AEfenLNBYwZjwHsMG48bpwUyUtjx1BBiK2W5HQruIBc='
-
   [mod.'github.com/grpc-ecosystem/grpc-gateway/v2']
     version = 'v2.29.0'
     hash = 'sha256-a/J/iffTIqbKXIBGGKfPIjgfyb2F05jw3Au8f1q6yEk='
@@ -2317,8 +2288,8 @@ cachePackages = [
     hash = 'sha256-uqkYtnaoghoqVv4QbInTLZBCD6uS95pQM0Q0fm5Kgm4='
 
   [mod.'github.com/lib/pq']
-    version = 'v1.10.9'
-    hash = 'sha256-Gl6dLtL+yk6UrTTWfas43aM4lP/pNa2l7+ITXnjQyKs='
+    version = 'v1.12.3'
+    hash = 'sha256-tJO991B11vUvoWnGvyF8j0Dp89V/3WYCcYRcY5XuwKc='
 
   [mod.'github.com/liggitt/tabwriter']
     version = 'v0.0.0-20181228230101-89fcab3d43de'
@@ -2677,12 +2648,8 @@ cachePackages = [
     hash = 'sha256-caYRUaQ4DZGYtcUtH5kEkWXezDI4/vZRpUXpet3tQlg='
 
   [mod.'go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc']
-    version = 'v1.39.0'
-    hash = 'sha256-7pfSAaoIS1fbtVd9CCx6J4/DHBsmReon6r9Hocb2CCU='
-
-  [mod.'go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp']
     version = 'v1.43.0'
-    hash = 'sha256-wvXfMOb3dIVtNDrsxO+wlH3BJwN70t3p0X2EV/ubPjQ='
+    hash = 'sha256-eb10xx3JrjEG+A6S0QUtS9/LKQm/HeJIjy4TippGiOM='
 
   [mod.'go.opentelemetry.io/otel/metric']
     version = 'v1.44.0'
@@ -2805,40 +2772,40 @@ cachePackages = [
     hash = 'sha256-FqL9TKYJ0XkNwJFnq9j0VvJ5ZUU1RvH/52h/f5bkYAU='
 
   [mod.'helm.sh/helm/v3']
-    version = 'v3.20.2'
-    hash = 'sha256-w06PoPmwmlP0eK8zdqH/0DQi7Mqps/hEi70qkVfKeok='
+    version = 'v3.21.4'
+    hash = 'sha256-QX59cW/vsz2W9AFkx5466LAfIMzYiKq7tpOF0l9Yz1I='
 
   [mod.'k8s.io/api']
-    version = 'v0.35.3'
-    hash = 'sha256-MIl5MB5b6QsV/VSWoDDmqx8GdNnfNmAnXIe0DRKo5vI='
+    version = 'v0.36.2'
+    hash = 'sha256-8beHLme8JvMDSKcGgbsVJY3UurJXfXHs9a7qPe/rQFs='
 
   [mod.'k8s.io/apiextensions-apiserver']
-    version = 'v0.35.1'
-    hash = 'sha256-RlbBmU7OkKflSQilfQcE1g6/vKweIbdwwfV5QT5fIKI='
+    version = 'v0.36.2'
+    hash = 'sha256-lFrzbrCPIDU/B238ge+k0jd3sbEhVzQmOxLgjzZoZ1g='
 
   [mod.'k8s.io/apimachinery']
-    version = 'v0.35.3'
-    hash = 'sha256-+dplbHUOfaCaD2E9IS4F3lnjSCr/a4LjTgdB9de92Pw='
+    version = 'v0.36.2'
+    hash = 'sha256-dhmV5ngN9ksQFhTsevdsznjXnoHt+9UY3n4BzEMYpwQ='
 
   [mod.'k8s.io/apiserver']
-    version = 'v0.35.1'
-    hash = 'sha256-9re1BalM9qOSQCKyXvkm8AgaY0f2RIMvFi5ft6CW8sU='
+    version = 'v0.36.2'
+    hash = 'sha256-r2+ScZ0YhhVQ1QlBrRaVz4JDRYbyTZ1cyWiVayT3oFA='
 
   [mod.'k8s.io/cli-runtime']
-    version = 'v0.35.1'
-    hash = 'sha256-vr050jxzAe3UuK1KICq5uF7gJVlRGEVoWJ6HBWF6Lx4='
+    version = 'v0.36.2'
+    hash = 'sha256-ugZC2yjHrYn11jO+jXNuj7h7rGzRLupLTyqK926D34w='
 
   [mod.'k8s.io/client-go']
-    version = 'v0.35.3'
-    hash = 'sha256-AO5PGH8y95OOb3wInCHDgyxerbFmo7DBTyc1c8DImSk='
+    version = 'v0.36.2'
+    hash = 'sha256-nKdnLcJ3ERWGHBLfBl0DPoOmnZ204SD5rAWRwS00y2M='
 
   [mod.'k8s.io/code-generator']
-    version = 'v0.35.1'
-    hash = 'sha256-O4YtWkH+QY1IBbib1WKO2IeXx8C9oHd3o1gF4U8VE+M='
+    version = 'v0.36.2'
+    hash = 'sha256-wj12hfYo8aJsAJOieyAqGt9y9LrjxDbU6/n3MP0vIog='
 
   [mod.'k8s.io/component-base']
-    version = 'v0.35.1'
-    hash = 'sha256-Jh5pJRXV7v2GaWQmEJeOOlDTs7j4HzGqR/6bKLtOxHc='
+    version = 'v0.36.2'
+    hash = 'sha256-YkK9HpiIZUa6YiIQocHpF58chywLBr3UmScH4OZsurU='
 
   [mod.'k8s.io/gengo/v2']
     version = 'v2.0.0-20251215205346-5ee0d033ba5b'
@@ -2853,16 +2820,20 @@ cachePackages = [
     hash = 'sha256-KiwvhTLjyV5evEldLfAuuOGu8+2PqK91zgRw8nFYapw='
 
   [mod.'k8s.io/kube-openapi']
-    version = 'v0.0.0-20260127142750-a19766b6e2d4'
-    hash = 'sha256-NS8NvGTX3Ycoc4JU/jwLgtNlD5OOQ5zk2hzvFFSD/jM='
+    version = 'v0.0.0-20260317180543-43fb72c5454a'
+    hash = 'sha256-tcNu4BjJxxWFlbe2BuicgVNxwmD78JCbv4o9Bgc1tO0='
 
   [mod.'k8s.io/kubectl']
-    version = 'v0.35.1'
-    hash = 'sha256-SpY1TRpPXcQGkl9+UZTMRSctKP0P7aPckmLpWJIArTk='
+    version = 'v0.36.2'
+    hash = 'sha256-tT2clnd+fUyHTGtXa7O2pCAC26lQ2lZLITMLO9vIG4M='
 
   [mod.'k8s.io/metrics']
-    version = 'v0.35.1'
-    hash = 'sha256-dA5IXkJbAirrvLxnARPLvauNg7LhVy7iODhN1VDT3iI='
+    version = 'v0.36.2'
+    hash = 'sha256-201Qn/fkHlO1HGzwjBh7AP4c9t+/MTsw6ncLj0RAWf4='
+
+  [mod.'k8s.io/streaming']
+    version = 'v0.36.2'
+    hash = 'sha256-gU+vH3cDGdCgmGnvByP99quR6okpRlNfsvOafU9UJyA='
 
   [mod.'k8s.io/utils']
     version = 'v0.0.0-20260319190234-28399d86e0b5'
@@ -2893,19 +2864,19 @@ cachePackages = [
     hash = 'sha256-BHwrJ6qW4KA8UfM99GBHigM+fk+nxbeM7RoHHztU3cE='
 
   [mod.'sigs.k8s.io/kustomize/api']
-    version = 'v0.20.1'
-    hash = 'sha256-kcZREdlFsFC7xaMRzvwkE+93lQJBTanImDJjgYMyzRU='
+    version = 'v0.21.1'
+    hash = 'sha256-g5DO6rs//ITGA+pleWYO0N03SZGpyqRsiDR+toKILtM='
 
   [mod.'sigs.k8s.io/kustomize/kyaml']
-    version = 'v0.20.1'
-    hash = 'sha256-k87zgSRMFVcph06vqMd4KG9kE1GzllxKu36mWKdSisY='
+    version = 'v0.21.1'
+    hash = 'sha256-9CoO6DK0x1+l9ILmkyrvCIstubJY17dWe2nvM7IqKnY='
 
   [mod.'sigs.k8s.io/randfill']
     version = 'v1.0.0'
     hash = 'sha256-xldQxDwW84hmlihdSOFfjXyauhxEWV9KmIDLZMTcYNo='
 
   [mod.'sigs.k8s.io/structured-merge-diff/v6']
-    version = 'v6.3.2-0.20260122202528-d9cc6641c482'
+    version = 'v6.3.2'
     hash = 'sha256-4ZUkeHKvdhsZmFSSZKAL/1GZdPO6735BY6FqRc+8tog='
 
   [mod.'sigs.k8s.io/yaml']

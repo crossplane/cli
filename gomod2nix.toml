@@ -1617,8 +1617,8 @@ cachePackages = [
     hash = 'sha256-dra32NY6DuVXLr7SblL0kF0S6e/Tea5jayWEMaj7K3E='
 
   [mod.'cel.dev/expr']
-    version = 'v0.25.1'
-    hash = 'sha256-TEdMxFUPK7IZuCXMufwCkbN+ZZIXSQclljIybFZcByo='
+    version = 'v0.25.2'
+    hash = 'sha256-J8C2tbW9PcXA71UhcEdyXPR8vmqkEiapZk/RnZz3qyo='
 
   [mod.'cloud.google.com/go/compute/metadata']
     version = 'v0.9.0'
@@ -2773,12 +2773,12 @@ cachePackages = [
     hash = 'sha256-XwBCYWKK47hTvTNUl8HenRcbzU5xIYhRfPfNypUU1Ps='
 
   [mod.'google.golang.org/genproto/googleapis/rpc']
-    version = 'v0.0.0-20260523011958-0a33c5d7ca68'
+    version = 'v0.0.0-20260526163538-3dc84a4a5aaa'
     hash = 'sha256-ldJTTb7hhj1mdmzTn9IEkQVwCoj3KRlENZtUSEKHABU='
 
   [mod.'google.golang.org/grpc']
-    version = 'v1.82.1'
-    hash = 'sha256-5Q85pZWiKulJSGRAjYcVrlBe7y4tfa9gsjCqYiBhLUU='
+    version = 'v1.83.2'
+    hash = 'sha256-q5VtdeJvWM7kbIvui8ncNV/+Rm+d0y/b6XkNN0/u1is='
 
   [mod.'google.golang.org/protobuf']
     version = 'v1.36.12'

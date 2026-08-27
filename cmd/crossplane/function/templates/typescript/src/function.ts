@@ -26,9 +26,16 @@ export class Function implements FunctionHandler {
     logger?.debug({ desiredComposed }, 'Desired composed resources');
 
     // TODO: Add your function logic here.
-    // Use desiredComposed to add, modify, or remove composed resources.
-    // Example:
-    //   desiredComposed['my-resource'] = { resource: { ... } };
+    // Use desiredComposed to add, modify, or remove composed resources. Each
+    // entry is a Resource, so a kubernetes-models object such as one of the
+    // generated crossplane-models classes has to be converted first:
+    //
+    //   import { Resource } from '@crossplane-org/function-sdk-typescript';
+    //   import { VPC } from 'crossplane-models/ec2.aws.m.upbound.io/v1beta1';
+    //
+    //   const vpc = new VPC({ spec: { forProvider: { region: 'us-west-2' } } });
+    //   vpc.validate();
+    //   desiredComposed['my-resource'] = Resource.fromJSON({ resource: vpc.toJSON() });
 
     // Update the response with the desired composed resources.
     rsp = setDesiredComposedResources(rsp, desiredComposed);

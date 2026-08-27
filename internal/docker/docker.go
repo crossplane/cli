@@ -313,8 +313,14 @@ func WaitForContainerByID(ctx context.Context, cid string) error {
 				return errors.Wrapf(err, "failed to get container logs")
 			}
 
+			defer out.Close() //nolint:errcheck // Nothing useful to do with a close error here.
+
+			// Container logs arrive as a multiplexed stream that frames stdout
+			// and stderr with an 8-byte header. Demultiplex both into the same
+			// builder so the header bytes don't end up interleaved in the
+			// error message.
 			logs := new(strings.Builder)
-			if _, err := io.Copy(logs, out); err != nil {
+			if _, err := stdcopy.StdCopy(logs, logs, out); err != nil {
 				return errors.Wrapf(err, "failed to read container logs")
 			}
 

@@ -305,7 +305,10 @@ npm install
 # Run crd-generate (reads config from package.json)
 npx crd-generate
 
-# Create tsconfig.json for compilation
+# Create tsconfig.json for compilation. We deliberately don't emit sourceMap or
+# declarationMap: only dist/ ships in the models package, so every map would
+# point at a gen/*.ts source that isn't there, and tools that read maps (test
+# runners, bundlers) would warn once per generated type.
 cat > tsconfig.json << 'TSEOF'
 {
   "compilerOptions": {
@@ -313,8 +316,6 @@ cat > tsconfig.json << 'TSEOF'
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

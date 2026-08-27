@@ -7,19 +7,29 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc",
+    "typecheck:legacy": "tsc6 --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "local": "node dist/main.js --insecure --debug"
   },
   "dependencies": {
-    "@crossplane-org/function-sdk-typescript": "^0.5.0",
+    "@crossplane-org/function-sdk-typescript": "^0.6.0",
     "@types/node": "^26.0.0",
     "commander": "^15.0.0",
 {{- if .HasSchemas }}
     "crossplane-models": "file:{{ .SchemasPath }}",
 {{- end }}
-    "kubernetes-models": "^4.5.1",
+    "kubernetes-models": "^5.0.0",
     "pino": "^10.3.0"
   },
   "devDependencies": {
-    "typescript": "^7.0.0"
+    "@eslint/js": "^10.0.1",
+    "@typescript/native": "npm:typescript@^7.0.0",
+    "eslint": "^10.9.1",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-eslint": "^8.68.0",
+    "vitest": "^4.1.11"
   }
 }

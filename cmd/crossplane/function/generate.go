@@ -430,6 +430,7 @@ func (c *generateCmd) generateGoTemplatingFiles(fs afero.Fs) error {
 }
 
 type typescriptTemplateData struct {
+	Name        string
 	HasSchemas  bool
 	SchemasPath string
 }
@@ -456,6 +457,7 @@ func (c *generateCmd) generateTypescriptFiles(targetFS afero.Fs) error {
 	schemasPath := filepath.ToSlash(filepath.Join(relRoot, c.proj.Spec.Paths.Schemas, "typescript"))
 
 	data := typescriptTemplateData{
+		Name:        c.Name,
 		HasSchemas:  hasSchemas,
 		SchemasPath: schemasPath,
 	}

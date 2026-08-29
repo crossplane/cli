@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { RunFunctionRequest } from '@crossplane-org/function-sdk-typescript';
-import { Function } from './function.js';
+import { fromCompose, RunFunctionRequest } from '@crossplane-org/function-sdk-typescript';
+import { compose } from './function.js';
 
-describe('Function', () => {
+describe('compose', () => {
+  const func = fromCompose(compose);
+
   it('composes a response from an observed composite resource', async () => {
     const req = RunFunctionRequest.fromJSON({
       observed: {
@@ -17,7 +19,7 @@ describe('Function', () => {
       },
     });
 
-    const rsp = await new Function().RunFunction(req);
+    const rsp = await func.RunFunction(req);
 
     expect(rsp.desired).toBeDefined();
     expect(rsp.results.map((r) => r.message)).toContain('Function completed successfully');

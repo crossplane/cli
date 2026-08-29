@@ -1,46 +1,45 @@
 import {
-  type RunFunctionRequest,
-  type RunFunctionResponse,
-  type FunctionHandler,
-  type Logger,
-  to,
-  normal,
+  type ComposeFunction,
+  fatal,
   getObservedCompositeResource,
-  getDesiredComposedResources,
-  setDesiredComposedResources,
+  normal,
 } from '@crossplane-org/function-sdk-typescript';
 
 /**
- * Function is a Crossplane composition function.
+ * compose is a Crossplane composition function.
+ *
+ * serve() hands us a response already built from the request, so there is no
+ * to(req) here, and rsp.desired is guaranteed to be present.
  */
-export class Function implements FunctionHandler {
-  async RunFunction(req: RunFunctionRequest, logger?: Logger): Promise<RunFunctionResponse> {
-    let rsp = to(req);
-
+export const compose: ComposeFunction = async (req, rsp, logger) => {
+  try {
     // Get the observed composite resource (XR).
     const observedComposite = getObservedCompositeResource(req);
     logger?.debug({ observedComposite }, 'Observed composite resource');
 
-    // Get the desired composed resources from previous functions in the pipeline.
-    const desiredComposed = getDesiredComposedResources(req);
-    logger?.debug({ desiredComposed }, 'Desired composed resources');
-
     // TODO: Add your function logic here.
-    // Use desiredComposed to add, modify, or remove composed resources. Each
-    // entry is a Resource, so a kubernetes-models object such as one of the
-    // generated crossplane-models classes has to be converted first:
     //
-    //   import { Resource } from '@crossplane-org/function-sdk-typescript';
+    // Write composed resources straight onto the response. ComposeResponse
+    // narrows desired to non-optional, so there is no need for rsp.desired!.
+    // fromModel converts a kubernetes-models object — such as one of the
+    // classes generated from your XRDs — into a Resource:
+    //
+    //   import { fromModel } from '@crossplane-org/function-sdk-typescript';
     //   import { VPC } from 'crossplane-models/ec2.aws.m.upbound.io/v1beta1';
     //
     //   const vpc = new VPC({ spec: { forProvider: { region: 'us-west-2' } } });
     //   vpc.validate();
-    //   desiredComposed['my-resource'] = Resource.fromJSON({ resource: vpc.toJSON() });
-
-    // Update the response with the desired composed resources.
-    rsp = setDesiredComposedResources(rsp, desiredComposed);
+    //   rsp.desired.resources['my-resource'] = fromModel(vpc);
 
     normal(rsp, 'Function completed successfully');
     return rsp;
+  } catch (error) {
+    logger?.error(
+      { error: error instanceof Error ? error.message : String(error) },
+      'Function invocation failed'
+    );
+
+    fatal(rsp, error instanceof Error ? error.message : String(error));
+    return rsp;
   }
-}
+};

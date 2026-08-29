@@ -2,6 +2,44 @@
 
 This is a [Crossplane](https://crossplane.io) composition function written in TypeScript.
 
+## How it works
+
+`src/function.ts` exports a `compose` function, and `src/main.ts` hands it to the SDK's
+`serve`:
+
+```ts
+serve(compose, { name: 'my-function' });
+```
+
+`serve` parses the standard function flags, builds a logger from `--debug`, starts the
+gRPC server, and shuts down cleanly on `SIGINT` and `SIGTERM`, so the entrypoint needs
+nothing else.
+
+Your `compose` receives the request and a response already built from it, so there is no
+`to(req)` call to make. The response type narrows `desired` to non-optional, which means
+composed resources are written straight to `rsp.desired.resources` with no `!`:
+
+```ts
+export const compose: ComposeFunction = async (req, rsp, logger) => {
+  rsp.desired.resources['my-resource'] = /* ... */;
+  return rsp;
+};
+```
+
+Returning the response is required, so forgetting it is a compile error rather than an
+empty response at runtime.
+
+To add a composed resource, build a `kubernetes-models` object — including the
+`crossplane-models` classes generated from your XRDs — and convert it with `fromModel`:
+
+```ts
+import { VPC } from 'crossplane-models/ec2.aws.m.upbound.io/v1beta1';
+
+const vpc = new VPC({ spec: { forProvider: { region: 'us-west-2' } } });
+vpc.validate();
+rsp.desired.resources['my-resource'] = fromModel(vpc);
+```
+
 ## Development
 
 Install dependencies:
@@ -28,6 +66,13 @@ Unit tests run with [Vitest](https://vitest.dev), alongside the code in `src/`:
 
 ```shell
 npm test
+```
+
+Use `fromCompose` to wrap `compose` into a handler the test can call directly:
+
+```ts
+const func = fromCompose(compose);
+const rsp = await func.RunFunction(req);
 ```
 
 End to end, render the composition against an example XR:

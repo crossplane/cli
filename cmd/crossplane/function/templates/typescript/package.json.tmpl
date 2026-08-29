@@ -15,14 +15,12 @@
     "local": "node dist/main.js --insecure --debug"
   },
   "dependencies": {
-    "@crossplane-org/function-sdk-typescript": "^0.6.0",
+    "@crossplane-org/function-sdk-typescript": "^0.7.0",
     "@types/node": "^26.0.0",
-    "commander": "^15.0.0",
 {{- if .HasSchemas }}
     "crossplane-models": "file:{{ .SchemasPath }}",
 {{- end }}
-    "kubernetes-models": "^5.0.0",
-    "pino": "^10.3.0"
+    "kubernetes-models": "^5.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

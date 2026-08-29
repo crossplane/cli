@@ -17,6 +17,19 @@ The build reuses the dependency cache populated by `crossplane dependency add`
 and `crossplane dependency update-cache`. Override the cache location with
 `--cache-dir` or the `CROSSPLANE_XPKG_CACHE` environment variable.
 
+Embedded functions are built onto a runtime base image pulled from a registry.
+Those base image layers are cached on disk, under `crossplane/base-images` in
+your user cache directory, so that repeat builds read them locally instead of
+downloading them again. The first build of a project fills the cache and is
+correspondingly slower than the ones after it.
+
+Cached layers are addressed by their content digest, so a cached layer is never
+stale and the cache never needs invalidating. It does grow, though: nothing
+prunes it today, so each new base image version adds to it rather than
+replacing what came before. Expect tens of megabytes per base image, per
+architecture. Delete the directory to reclaim the space; the next build
+refills what it needs.
+
 ## Examples
 
 Build the project in the current directory:

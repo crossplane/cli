@@ -25,6 +25,14 @@ import (
 // function runtime base image layers. It sits beside the xpkg cache rather
 // than inside it, since the two hold different kinds of artifact and are
 // pruned on different terms.
+//
+// Nothing prunes this directory. Layers are keyed by content digest, so
+// entries are never stale, but they are also never replaced: every base image
+// version a user builds against accumulates, at tens of megabytes per image
+// per architecture. Users can delete the directory safely — the next build
+// refetches what it needs — but the CLI should grow a retention policy or a
+// prune command before this becomes the kind of thing people discover by
+// running out of disk.
 func DefaultBaseImageCacheDir() string {
 	base, err := os.UserCacheDir()
 	if err != nil {

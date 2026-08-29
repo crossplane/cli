@@ -150,10 +150,11 @@ func baseImageForArch(ref name.Reference, arch string, transport http.RoundTripp
 	}
 
 	if cacheDir != "" {
-		// Layers are addressed by digest, so a cache hit cannot be stale. A
-		// failure to write the cache is not fatal: the library falls back to
-		// the remote layer.
-		img = cache.Image(img, cache.NewFilesystemCache(cacheDir))
+		// Layers are addressed by digest, so a cache hit cannot be stale.
+		// tolerantCache keeps a cache that cannot be read or written from
+		// failing the build; see its doc comment for the one case it cannot
+		// recover from.
+		img = cache.Image(img, tolerantCache{cache.NewFilesystemCache(cacheDir)})
 	}
 
 	cfg, err := img.ConfigFile()

@@ -17,8 +17,14 @@ limitations under the License.
 package functions
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/cache"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
 
 // DefaultBaseImageCacheDir returns the default per-user cache directory for
@@ -39,4 +45,69 @@ func DefaultBaseImageCacheDir() string {
 		base = os.TempDir()
 	}
 	return filepath.Join(base, "crossplane", "base-images")
+}
+
+// tolerantCache degrades to the registry instead of failing the build when the
+// cache itself cannot be used.
+//
+// go-containerregistry's cache is not forgiving on its own. A read error that
+// is not ErrNotFound propagates out of Compressed, and the filesystem cache
+// creates its backing file lazily, so an unwritable or full cache directory
+// surfaces as an error from the layer rather than a cache miss. Neither should
+// break a build that could have fetched the layer remotely — especially since
+// nothing prunes this cache, which makes a full disk a plausible way to reach
+// it. See DefaultBaseImageCacheDir.
+//
+// One case is not recoverable here: if the directory is writable but fills up
+// partway through a layer, the write error surfaces mid-stream, after the
+// reader has been handed to the caller. Restarting from the remote layer at
+// that point would mean re-reading bytes the caller already consumed.
+type tolerantCache struct {
+	cache.Cache
+}
+
+// Get reports any failure other than a genuine miss as a miss, so that an
+// unreadable or corrupt entry sends the caller to the registry.
+func (c tolerantCache) Get(h v1.Hash) (v1.Layer, error) {
+	l, err := c.Cache.Get(h)
+	if err != nil && !errors.Is(err, cache.ErrNotFound) {
+		return nil, cache.ErrNotFound
+	}
+	return l, err
+}
+
+// Put keeps the original layer alongside the caching one so that a layer which
+// cannot be written still reads.
+func (c tolerantCache) Put(l v1.Layer) (v1.Layer, error) {
+	cached, err := c.Cache.Put(l)
+	if err != nil {
+		// Deliberate: a cache that cannot store the layer is not a reason to
+		// fail. Hand back the uncached layer and carry on.
+		return l, nil //nolint:nilerr // Cache failures degrade to no caching.
+	}
+	return tolerantLayer{Layer: cached, uncached: l}, nil
+}
+
+// tolerantLayer reads through to an uncached layer when the caching layer
+// cannot open its backing file.
+type tolerantLayer struct {
+	v1.Layer
+
+	uncached v1.Layer
+}
+
+func (l tolerantLayer) Compressed() (io.ReadCloser, error) {
+	rc, err := l.Layer.Compressed()
+	if err != nil {
+		return l.uncached.Compressed()
+	}
+	return rc, nil
+}
+
+func (l tolerantLayer) Uncompressed() (io.ReadCloser, error) {
+	rc, err := l.Layer.Uncompressed()
+	if err != nil {
+		return l.uncached.Uncompressed()
+	}
+	return rc, nil
 }

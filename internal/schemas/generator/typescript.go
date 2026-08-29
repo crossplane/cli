@@ -36,14 +36,28 @@ import (
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/crd"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
+
+	_ "embed"
 )
 
 const (
 	typescriptModelsFolder = "models"
-	// typescriptImage is the Docker image used to run crd-generate.
-	// We use a Node.js image and install the tool at runtime.
-	typescriptImage = "docker.io/library/node:22-slim"
+	// typescriptImage is the Docker image used to run crd-generate. Pinned to
+	// an exact tag: the toolchain is installed from a lockfile, so a floating
+	// Node would leave generated output dependent on when it was generated.
+	typescriptImage = "docker.io/library/node:22.22.1-slim"
 )
+
+// The toolchain that turns CRDs into TypeScript models is pinned by a
+// committed package.json and package-lock.json rather than resolved at
+// generation time, so the same CLI produces the same models. Renovate keeps
+// the pair current; see the typescript-toolchain rule in renovate.json5.
+//
+//go:embed typescript-toolchain/package.json
+var typescriptToolchainPackageJSON []byte
+
+//go:embed typescript-toolchain/package-lock.json
+var typescriptToolchainPackageLock []byte
 
 type typescriptGenerator struct{}
 
@@ -250,12 +264,20 @@ func (t typescriptGenerator) generateFromCRDFiles(ctx context.Context, workFS af
 		return nil, errors.Wrap(err, "failed to write combined CRD file")
 	}
 
+	// Stage the pinned toolchain manifest and lockfile so the container can
+	// install with npm ci rather than resolving version ranges at runtime.
+	if err := afero.WriteFile(workFS, "package.json", typescriptToolchainPackageJSON, 0o644); err != nil {
+		return nil, errors.Wrap(err, "failed to write toolchain package.json")
+	}
+	if err := afero.WriteFile(workFS, "package-lock.json", typescriptToolchainPackageLock, 0o644); err != nil {
+		return nil, errors.Wrap(err, "failed to write toolchain package-lock.json")
+	}
+
 	// Run crd-generate in a container.
 	// The script:
-	// 1. Creates package.json with crd-generate config
-	// 2. Installs crd-generate and dependencies
-	// 3. Runs crd-generate to produce TypeScript source
-	// 4. Compiles TypeScript to JavaScript
+	// 1. Installs the pinned toolchain from the staged lockfile
+	// 2. Runs crd-generate to produce TypeScript source
+	// 3. Compiles TypeScript to JavaScript
 	if err := r.Generate(
 		ctx,
 		workFS,
@@ -266,41 +288,10 @@ func (t typescriptGenerator) generateFromCRDFiles(ctx context.Context, workFS af
 			"sh", "-c",
 			`set -eu
 
-# Create package.json with crd-generate config and dependencies
-cat > package.json << 'PKGEOF'
-{
-  "name": "crossplane-models",
-  "version": "0.0.0",
-  "type": "module",
-  "main": "index.js",
-  "types": "index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./index.d.ts",
-      "default": "./index.js"
-    },
-    "./*": {
-      "types": "./*/index.d.ts",
-      "default": "./*/index.js"
-    }
-  },
-  "dependencies": {
-    "@kubernetes-models/apimachinery": "^3.0.2",
-    "@kubernetes-models/base": "^6.0.1"
-  },
-  "devDependencies": {
-    "@kubernetes-models/crd-generate": "^6.1.0",
-    "typescript": "^5.0.0"
-  },
-  "crd-generate": {
-    "input": ["./all-crds.yaml"],
-    "output": "./gen"
-  }
-}
-PKGEOF
-
-# Install dependencies (including crd-generate)
-npm install
+# Install the pinned toolchain. package.json and package-lock.json are staged
+# by the generator, so npm ci installs exactly the locked tree and fails if the
+# two ever disagree.
+npm ci --no-audit --no-fund
 
 # Run crd-generate (reads config from package.json)
 npx crd-generate

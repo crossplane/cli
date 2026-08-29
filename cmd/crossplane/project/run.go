@@ -200,6 +200,7 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 		project.BuildWithSchemaManager(schemaMgr),
 		project.BuildWithDependencyManager(depMgr),
 		project.BuildWithTempDir(tempDir),
+		project.BuildWithBaseImageCacheDir(functions.DefaultBaseImageCacheDir()),
 	)
 
 	var (

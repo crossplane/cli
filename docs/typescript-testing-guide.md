@@ -223,17 +223,11 @@ Edit the `function.ts` to create a VPC:
 
 ```typescript
 import {
-  type RunFunctionRequest,
-  type RunFunctionResponse,
-  type FunctionHandler,
-  type Logger,
-  to,
-  normal,
+  type ComposeFunction,
   fatal,
+  fromModel,
   getObservedCompositeResource,
-  getDesiredComposedResources,
-  setDesiredComposedResources,
-  Resource,
+  normal,
 } from '@crossplane-org/function-sdk-typescript';
 
 // Import the generated types from crossplane-models. This is the cluster-scoped
@@ -242,79 +236,84 @@ import {
 import { VPC } from 'crossplane-models/ec2.aws.upbound.io/v1beta1';
 
 /**
- * Function is a Crossplane composition function that creates a VPC.
+ * compose is a Crossplane composition function that creates a VPC.
+ *
+ * serve() hands us a response already built from the request, so there is no
+ * to(req) here, and rsp.desired is guaranteed to be present.
  */
-export class Function implements FunctionHandler {
-  async RunFunction(req: RunFunctionRequest, logger?: Logger): Promise<RunFunctionResponse> {
-    let rsp = to(req);
-
-    // Get the observed composite resource (XR).
-    const observedComposite = getObservedCompositeResource(req);
-    if (!observedComposite) {
-      fatal(rsp, 'No composite resource found');
-      return rsp;
-    }
-    logger?.debug({ observedComposite }, 'Observed composite resource');
-
-    // Extract spec values from the XR
-    const spec = observedComposite.resource?.spec as { region?: string; cidrBlock?: string };
-    const region = spec?.region || 'us-west-2';
-    const cidrBlock = spec?.cidrBlock || '10.0.0.0/16';
-    const xrName = observedComposite.resource?.metadata?.name || 'unknown';
-
-    // Get the desired composed resources from previous functions in the pipeline.
-    const desiredComposed = getDesiredComposedResources(req);
-
-    // Create a VPC using the generated TypeScript class.
-    //
-    // Do NOT set crossplane.io/external-name here. For a VPC the external name
-    // is the AWS-assigned ID, which the provider writes back after creation.
-    // Setting it yourself makes the provider look for a VPC by that name
-    // forever, so the resource stays Ready=False/Creating even though the VPC
-    // exists in AWS. Only set it when you genuinely control the external
-    // identifier, and use tags for human-readable names.
-    const vpc = new VPC({
-      metadata: {
-        name: `${xrName}-vpc`,
-      },
-      spec: {
-        forProvider: {
-          region: region,
-          cidrBlock: cidrBlock,
-          enableDnsHostnames: true,
-          enableDnsSupport: true,
-          tags: {
-            Name: `${xrName}-vpc`,
-            'managed-by': 'crossplane',
-          },
-        },
-      },
-    });
-
-    // Validate the model against the CRD schema before composing it.
-    vpc.validate();
-
-    // Add the VPC to desired resources. The map holds protobuf Resource values,
-    // not kubernetes-models objects, so convert first — assigning
-    // `{ resource: vpc }` fails to compile with TS2739.
-    desiredComposed['vpc'] = Resource.fromJSON({ resource: vpc.toJSON() });
-
-    // Update the response with the desired composed resources.
-    rsp = setDesiredComposedResources(rsp, desiredComposed);
-
-    normal(rsp, 'Successfully composed VPC resource');
+export const compose: ComposeFunction = async (req, rsp, logger) => {
+  // Get the observed composite resource (XR).
+  const observedComposite = getObservedCompositeResource(req);
+  if (!observedComposite) {
+    fatal(rsp, 'No composite resource found');
     return rsp;
   }
-}
+  logger?.debug({ observedComposite }, 'Observed composite resource');
+
+  // Extract spec values from the XR
+  const spec = observedComposite.resource?.spec as { region?: string; cidrBlock?: string };
+  const region = spec?.region || 'us-west-2';
+  const cidrBlock = spec?.cidrBlock || '10.0.0.0/16';
+  const xrName = observedComposite.resource?.metadata?.name || 'unknown';
+
+  // Create a VPC using the generated TypeScript class.
+  //
+  // Do NOT set crossplane.io/external-name here. For a VPC the external name
+  // is the AWS-assigned ID, which the provider writes back after creation.
+  // Setting it yourself makes the provider look for a VPC by that name
+  // forever, so the resource stays Ready=False/Creating even though the VPC
+  // exists in AWS. Only set it when you genuinely control the external
+  // identifier, and use tags for human-readable names.
+  const vpc = new VPC({
+    metadata: {
+      name: `${xrName}-vpc`,
+    },
+    spec: {
+      forProvider: {
+        region: region,
+        cidrBlock: cidrBlock,
+        enableDnsHostnames: true,
+        enableDnsSupport: true,
+        tags: {
+          Name: `${xrName}-vpc`,
+          'managed-by': 'crossplane',
+        },
+      },
+    },
+  });
+
+  // Validate the model against the CRD schema before composing it.
+  vpc.validate();
+
+  // Write the VPC straight onto the response. ComposeResponse narrows desired
+  // to non-optional, so there is no need for rsp.desired!. The map holds
+  // protobuf Resource values rather than kubernetes-models objects, so convert
+  // with fromModel — assigning the model directly fails to compile with TS2739.
+  rsp.desired.resources['vpc'] = fromModel(vpc);
+
+  normal(rsp, 'Successfully composed VPC resource');
+  return rsp;
+};
 ```
 
-**On `fromModel`**: the SDK also offers `fromModel(vpc)` as a shorthand for the conversion
-above, and from `@crossplane-org/function-sdk-typescript@0.6.0` it accepts the generated models.
-Earlier versions required `toJSON(): Record<string, unknown>` while `@kubernetes-models/base`
-declares `toJSON(): unknown` from v6 onward, so the call failed with TS2345
+The generated `src/main.ts` hands this to the SDK and needs no edits:
+
+```typescript
+serve(compose, { name: 'network' });
+```
+
+`serve` parses the standard function flags, builds a logger from `--debug`, starts the gRPC
+server, and shuts down cleanly on `SIGINT` and `SIGTERM`.
+
+**On older SDK versions**: `fromModel` accepts the generated models from
+`@crossplane-org/function-sdk-typescript@0.6.0` onward. Earlier versions required
+`toJSON(): Record<string, unknown>` while `@kubernetes-models/base` declares `toJSON(): unknown`
+from v6 onward, so the call failed with TS2345
 ([function-sdk-typescript#26](https://github.com/crossplane/function-sdk-typescript/pull/26)).
-`Resource.fromJSON({ resource: vpc.toJSON() })` works on every version, which is why the example
-above uses it.
+On an SDK older than 0.6.0 the equivalent is
+`Resource.fromJSON({ resource: vpc.toJSON() })`, and the function is written as a class
+implementing `FunctionHandler` rather than a `ComposeFunction`. The template generates 0.7.0,
+so this only matters when working in an existing project pinned to an older SDK.
 
 The generated `package.json` already includes the `crossplane-models` dependency when TypeScript schemas are enabled. It will look like:
 
@@ -336,12 +335,10 @@ The generated `package.json` already includes the `crossplane-models` dependency
     "local": "node dist/main.js --insecure --debug"
   },
   "dependencies": {
-    "@crossplane-org/function-sdk-typescript": "^0.6.0",
+    "@crossplane-org/function-sdk-typescript": "^0.7.0",
     "@types/node": "^26.0.0",
-    "commander": "^15.0.0",
     "crossplane-models": "file:../../schemas/typescript",
-    "kubernetes-models": "^5.0.0",
-    "pino": "^10.3.0"
+    "kubernetes-models": "^5.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

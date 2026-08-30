@@ -185,7 +185,10 @@ func (b *pythonBuilder) buildVenv(ctx context.Context, c BuildContext) (map[stri
 
 	pySchemasRel := path.Join(c.SchemasPath, "python")
 	pySchemasFS := afero.NewBasePathFs(c.ProjectFS, pySchemasRel)
-	hasPySchemas, _ := afero.DirExists(pySchemasFS, ".")
+	hasPySchemas, err := afero.DirExists(pySchemasFS, ".")
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot check for python schemas at %q", pySchemasRel)
+	}
 	var schemasTar []byte
 	if hasPySchemas {
 		schemasTar, err = filesystem.FSToTar(pySchemasFS, pySchemasRel)

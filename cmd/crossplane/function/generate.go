@@ -303,7 +303,10 @@ type pythonTemplateData struct {
 }
 
 func (c *generateCmd) generatePythonFiles(targetFS afero.Fs) error {
-	hasSchemas, _ := afero.DirExists(c.schemasFS, "python")
+	hasSchemas, err := afero.DirExists(c.schemasFS, "python")
+	if err != nil {
+		return errors.Wrap(err, "cannot inspect python schemas directory")
+	}
 	if hasSchemas {
 		entries, err := afero.ReadDir(c.schemasFS, "python")
 		if err != nil {
@@ -368,7 +371,10 @@ func (c *generateCmd) generateGoFiles(fs afero.Fs) error {
 
 	var imports []goImport
 	schemasGoPath := filepath.Join(relRoot, c.proj.Spec.Paths.Schemas, "go")
-	hasSchemas, _ := afero.DirExists(c.schemasFS, "go")
+	hasSchemas, err := afero.DirExists(c.schemasFS, "go")
+	if err != nil {
+		return errors.Wrap(err, "cannot inspect go schemas directory")
+	}
 	if hasSchemas {
 		imports = []goImport{{
 			Module:  "dev.crossplane.io/models",
@@ -395,9 +401,11 @@ type goTemplatingTemplateData struct {
 
 func (c *generateCmd) generateGoTemplatingFiles(fs afero.Fs) error {
 	var modelPath string
-	indexExists, _ := afero.Exists(c.schemasFS, "json/index.schema.json")
+	indexExists, err := afero.Exists(c.schemasFS, "json/index.schema.json")
+	if err != nil {
+		return errors.Wrap(err, "cannot inspect json schema index")
+	}
 	if indexExists {
-		var err error
 		modelPath, err = filepath.Rel(c.fsPath, "schemas/json/index.schema.json")
 		if err != nil {
 			return errors.Wrap(err, "cannot determine model path")

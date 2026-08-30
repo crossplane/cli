@@ -70,7 +70,8 @@ type runCmd struct {
 	ControlPlaneName  string        `help:"Name of the dev control plane. Defaults to project name."`
 	CrossplaneVersion string        `help:"Version of Crossplane to install."`
 	RegistryDir       string        `help:"Directory for local registry images."`
-	ClusterAdmin      bool          `default:"true"                                                  help:"Grant Crossplane the cluster-admin role." negatable:""`
+	ClusterAdmin      bool          `default:"true"                                                  help:"Grant Crossplane the cluster-admin role."                                               negatable:""`
+	DefaultMRAP       bool          `default:"true"                                                  help:"Install the default wildcard ManagedResourceActivationPolicy in the dev control plane." negatable:""`
 	Timeout           time.Duration `default:"5m"                                                    help:"Max wait for project readiness."`
 	InitResources     []string      `help:"Resources to apply before installing."                    type:"path"`
 	ExtraResources    []string      `help:"Resources to apply after installing."                     type:"path"`
@@ -218,6 +219,7 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 				controlplane.WithCrossplaneVersion(c.CrossplaneVersion),
 				controlplane.WithRegistryDir(c.RegistryDir),
 				controlplane.WithClusterAdmin(c.ClusterAdmin),
+				controlplane.WithDefaultMRAP(c.DefaultMRAP),
 				controlplane.WithLogger(logger),
 			)
 			if ctpErr != nil {

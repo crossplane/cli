@@ -46,8 +46,9 @@ import (
 const (
 	// typescriptBuildImage is the image in which we build the function.
 	typescriptBuildImage = "docker.io/library/node:24-slim"
-	// typescriptRuntimeImage is the distroless base used at runtime.
-	typescriptRuntimeImage = "gcr.io/distroless/nodejs24-debian13"
+	// typescriptRuntimeImage is the distroless base used at runtime. The
+	// :nonroot variant, so the built function does not serve gRPC as root.
+	typescriptRuntimeImage = "gcr.io/distroless/nodejs24-debian13:nonroot"
 	// typescriptBuildScript is the shell pipeline that runs in the build
 	// container.
 	//
@@ -306,8 +307,8 @@ func npmArchitecture(a string) (string, error) {
 }
 
 // configureTypescriptImage sets the runtime configuration on the final image:
-// the function entrypoint and the gRPC port. The working directory is the
-// architecture's own /fn_<arch> tree, so that Node resolves the node_modules
+// the user, the function entrypoint and the gRPC port. The working directory is
+// the architecture's own /fn_<arch> tree, so that Node resolves the node_modules
 // built for this architecture.
 func configureTypescriptImage(img v1.Image, arch string) (v1.Image, error) {
 	cfgFile, err := img.ConfigFile()
@@ -323,6 +324,10 @@ func configureTypescriptImage(img v1.Image, arch string) (v1.Image, error) {
 	cfg.Entrypoint = []string{"/nodejs/bin/node", "dist/main.js"}
 	cfg.Cmd = nil
 	cfg.WorkingDir = fmt.Sprintf("/fn_%s", npmArch)
+	// Set explicitly as well as selecting the :nonroot base, so an image
+	// rewritten through spec.imageConfigs cannot quietly reintroduce root.
+	// Matches the python builder.
+	cfg.User = "nonroot:nonroot"
 	if cfg.ExposedPorts == nil {
 		cfg.ExposedPorts = map[string]struct{}{}
 	}

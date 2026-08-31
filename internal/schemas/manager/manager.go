@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -186,17 +185,12 @@ func jsonBuildIndexSchema(langFS afero.Fs) error {
 	return afero.WriteFile(langFS, metaFile, bs, 0o644)
 }
 
-// currentLanguages returns the language set recorded in the lock.
-func (m *Manager) currentLanguages() ([]string, error) {
+// currentLock returns the persisted lock.
+func (m *Manager) currentLock() (*lock, error) {
 	m.lockMu.RLock()
 	defer m.lockMu.RUnlock()
 
-	l, err := m.getLock()
-	if err != nil {
-		return nil, err
-	}
-
-	return l.Languages, nil
+	return m.getLock()
 }
 
 func (m *Manager) currentVersion(id string) (string, error) {
@@ -409,11 +403,19 @@ func (m *Manager) mergedSourcesFresh(ctx context.Context, sources []Source) (boo
 		return false, versions, nil
 	}
 
-	recorded, err := m.currentLanguages()
+	recorded, err := m.currentLock()
 	if err != nil {
 		return false, nil, err
 	}
-	if !slices.Equal(recorded, m.languages()) {
+	if !slices.Equal(recorded.Languages, m.languages()) {
+		return false, versions, nil
+	}
+
+	// Every current source matched above, so the lock holding more entries than
+	// there are sources means one was removed from the project. Its models are
+	// still on disk and nothing else would notice, because what remains is all
+	// current.
+	if len(recorded.Packages) != len(versions) {
 		return false, versions, nil
 	}
 
@@ -445,6 +447,11 @@ func (m *Manager) languages() []string {
 // recordGeneration writes the source versions and the language set that
 // produced the schemas now on disk, in one lock update so the two cannot
 // disagree.
+//
+// versions must be the complete set of sources that were generated from, not a
+// subset: it replaces what the lock held rather than merging into it, so that a
+// dependency removed from the project stops being recorded. Only the merged
+// path calls this, and it always passes every source.
 func (m *Manager) recordGeneration(versions map[string]string, languages []string) error {
 	m.lockMu.Lock()
 	defer m.lockMu.Unlock()
@@ -453,7 +460,7 @@ func (m *Manager) recordGeneration(versions map[string]string, languages []strin
 	if err != nil {
 		return err
 	}
-	maps.Copy(l.Packages, versions)
+	l.Packages = versions
 	l.Languages = languages
 
 	return m.updateLock(l)

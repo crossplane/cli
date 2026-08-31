@@ -805,6 +805,76 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 	}
 }
 
+func TestManager_CollectSources_Transitive(t *testing.T) {
+	// The merged schema pass generates from exactly what CollectSources
+	// returns, so a transitive dependency missing here contributes no schemas.
+	// provA and provB both depend on family, which must appear once.
+	const (
+		provA  = "xpkg.example/prov-a"
+		provB  = "xpkg.example/prov-b"
+		family = "xpkg.example/family"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			provA + ":v0.1.0":  makePackageWithBody(t, provA, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			provB + ":v0.2.0":  makePackageWithBody(t, provB, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			family + ":v1.0.0": makePackageWithBody(t, family, digest, "", providerPackageYAML),
+		},
+		tagsByRepo: map[string][]string{
+			provA:  {"v0.1.0"},
+			provB:  {"v0.2.0"},
+			family: {"v1.0.0"},
+		},
+	}
+
+	m := NewManager(
+		&v1alpha1.Project{
+			Spec: v1alpha1.ProjectSpec{
+				Dependencies: []v1alpha1.Dependency{
+					*xpkgDep(provA, "v0.1.0"),
+					*xpkgDep(provB, "v0.2.0"),
+				},
+				Paths: &v1alpha1.ProjectPaths{Schemas: "schemas"},
+			},
+		},
+		afero.NewMemMapFs(),
+		WithSchemaFS(afero.NewMemMapFs()),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+	)
+
+	var ch async.EventChannel // nil channel; SendEvent is a no-op.
+	sources, err := m.CollectSources(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("CollectSources: %v", err)
+	}
+
+	got := make([]string, 0, len(sources))
+	for _, src := range sources {
+		got = append(got, src.ID())
+	}
+
+	// Sorted by ID, and family only once even though both providers depend on
+	// it. Sorting is what makes this assertable: the project dependencies are
+	// collected concurrently, so a shared transitive dependency would otherwise
+	// land under whichever goroutine claimed it first.
+	want := []string{
+		"xpkg://" + family + ":v1.0.0",
+		"xpkg://" + provA + ":v0.1.0",
+		"xpkg://" + provB + ":v0.2.0",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("source IDs (-want +got):\n%s", diff)
+	}
+
+	if got := fc.getCount(family + ":v1.0.0"); got != 1 {
+		t.Errorf("fetch count for %s = %d, want 1", family+":v1.0.0", got)
+	}
+}
+
 func TestManager_AddAll_SharedTransitiveDep(t *testing.T) {
 	const (
 		provA  = "xpkg.example/prov-a"

@@ -775,11 +775,58 @@ your linter, ends up in the function image.
 
 ### Missing crossplane-models
 
-If imports from `crossplane-models` fail:
+If imports from `crossplane-models` fail, the models were almost certainly never
+generated. TypeScript generation is opt in, and `crossplane project init` does not
+write `spec.schemas.languages`, so a project only generates `go`, `json`, `kcl` and
+`python` until you say otherwise. `crossplane project build` will not add
+`typescript` for you.
 
-1. Ensure `schemas.languages` includes `typescript` in `crossplane-project.yaml`
-2. Run `crossplane project build` to generate schemas
-3. Verify `schemas/typescript/` exists and contains the expected types
+Add it to `crossplane-project.yaml`:
+
+```yaml
+spec:
+  schemas:
+    languages:
+    - typescript
+```
+
+Then rebuild and confirm the models appear:
+
+```shell
+crossplane project build
+ls schemas/typescript/
+```
+
+If `schemas/typescript/` exists but an import still fails, the models are stale
+rather than missing — see [Stale crossplane-models](#stale-crossplane-models).
+
+### Stale crossplane-models
+
+If an import fails with `TS2307` for a type you just generated — a new API group,
+or a kind you renamed — the models on disk are current but the copy inside
+`node_modules` is not.
+
+The generated models package is always version `0.0.0`, and `.npmrc` sets
+`install-links=true` so npm copies the `file:` dependency rather than symlinking
+it. npm caches `file:` dependencies by version, sees `crossplane-models@0.0.0`
+already installed, and skips the copy.
+
+`npm install` does not fix this, and neither does `npm update crossplane-models`,
+`npm install --force`, or touching the models `package.json`. Use:
+
+```shell
+npm ci
+```
+
+or, if there is no lockfile yet:
+
+```shell
+rm -rf node_modules package-lock.json && npm install
+```
+
+This affects the local development loop only. `crossplane project build` tars a
+fresh tree into the build container every time, so a built function image always
+carries the current models.
 
 ### Runtime module not found
 

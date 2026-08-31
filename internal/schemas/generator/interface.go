@@ -86,6 +86,14 @@ func AllLanguages(opts ...Option) []Interface {
 	}
 }
 
+// DefaultLanguages returns the languages generated for when a project does not
+// set spec.schemas.languages. Exported so callers can tell a user which
+// languages they will actually get, rather than treating an unset list as
+// permitting anything.
+func DefaultLanguages() []string {
+	return defaultLanguages()
+}
+
 // defaultLanguages returns the languages generated when none are requested
 // explicitly. TypeScript is excluded because it requires Node.js and npm,
 // which adds significant build time. Users can enable it by explicitly

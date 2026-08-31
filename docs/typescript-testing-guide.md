@@ -1,13 +1,14 @@
 # Testing TypeScript Support in Crossplane CLI
 
-This guide walks through testing the TypeScript support added in PR #170. We'll create a complete Crossplane configuration project with a TypeScript composition function.
+This guide walks through testing the TypeScript support added in PR #170. We'll create a complete
+Crossplane configuration project with a TypeScript composition function.
 
 An example Crossplane project is located at <https://github.com/upbound/configuration-aws-network-ts>.
 
 ## Prerequisites
 
 - Go 1.25+
-- The Github CLI <https://cli.github.com>
+- The GitHub CLI <https://cli.github.com>
 - Docker, or an engine that supports `DOCKER_HOST`
 - Node.js 24+ (for local development)
 - A Kubernetes cluster with Crossplane installed
@@ -255,7 +256,9 @@ This creates `functions/network/` with:
 
 ## Step 7: Implement the Function
 
-The generated `functions/network/src/function.ts` contains a template implementation. A full example is available at [function.ts](https://github.com/upbound/configuration-aws-network-ts/blob/main/functions/network/src/function.ts).
+The generated `functions/network/src/function.ts` contains a template implementation. A full example
+is available at
+[function.ts](https://github.com/upbound/configuration-aws-network-ts/blob/main/functions/network/src/function.ts).
 
 Edit the `function.ts` to create a VPC:
 
@@ -348,7 +351,8 @@ serve(compose, { name: 'network' });
 `serve` parses the standard function flags, builds a logger from `--debug`, starts the gRPC
 server, and shuts down cleanly on `SIGINT` and `SIGTERM`.
 
-The generated `package.json` already includes the `crossplane-models` dependency when TypeScript schemas are enabled. It will look like:
+The generated `package.json` already includes the `crossplane-models` dependency when TypeScript
+schemas are enabled. It will look like:
 
 ```json
 {
@@ -451,9 +455,14 @@ in sequence to create resources.
 crossplane composition generate apis/networks/definition.yaml
 ```
 
-This generates a basic composition with `function-auto-ready`. You need to add your embedded function to the pipeline.
+This generates a basic composition with `function-auto-ready`. You need to add your embedded
+function to the pipeline.
 
-The functionRef name is derived from the project repository and the function name. The CLI builds the embedded function's image repository as `<repository>_<function-name>`, then converts it to a DNS label — which drops the underscore rather than replacing it. So for repository `xpkg.upbound.io/your-org/configuration-aws-network-ts` and function `network`, the functionRef name is `your-org-configuration-aws-network-tsnetwork`, with no separator before `network`.
+The functionRef name is derived from the project repository and the function name. The CLI builds
+the embedded function's image repository as `<repository>_<function-name>`, then converts it to a
+DNS label — which drops the underscore rather than replacing it. So for repository
+`xpkg.upbound.io/your-org/configuration-aws-network-ts` and function `network`, the functionRef name
+is `your-org-configuration-aws-network-tsnetwork`, with no separator before `network`.
 
 Edit `apis/networks/composition.yaml` to add your function before `function-auto-ready`:
 
@@ -489,18 +498,25 @@ directory that already exists, so having followed Step 6 this fails with `functi
 "network" already exists and is not empty`, and the hand-edit above is the way in.
 
 The step is inserted at the front of the pipeline, so your function runs before
-`function-auto-ready` sees the resources it composes. If the Composition already has a step with that name pointing at a different function — which happens when porting an existing configuration — the command fails rather than creating two steps with the same name, and you edit the pipeline by hand.
+`function-auto-ready` sees the resources it composes. If the Composition already has a step with
+that name pointing at a different function — which happens when porting an existing configuration —
+the command fails rather than creating two steps with the same name, and you edit the pipeline by
+hand.
 
 ### Activating Managed Resources
 
-Crossplane v2 supports [`ManagedResourceActivationPolicy`](https://docs.crossplane.io/latest/managed-resources/managed-resource-activation-policies/), a way to limit the number
+Crossplane v2 supports
+[`ManagedResourceActivationPolicy`](https://docs.crossplane.io/latest/managed-resources/managed-resource-activation-policies/),
+a way to limit the number
 of CRDs providers install onto a cluster
 
-By default, the Crossplane Helm chart installs wildcard policy the value of `provider.defaultActivations` `["*"]`, which causes every
+By default, the Crossplane Helm chart installs wildcard policy the value of
+`provider.defaultActivations` `["*"]`, which causes every
 CRD available in a Provider to be installed, which can have
 significant performance impacts on the Kubernetes API server.
 
-On dev control plane created by `crossplane project run`, we can control this behavior by disabling the default policy and only
+On dev control plane created by `crossplane project run`, we can control this behavior by disabling
+the default policy and only
 installing CRDs that are related to our Composition. A Crossplane
 cluster can support multiple `ManagedResourceActivationPolicy`, so
 it's good practice for each Composition to define a policy.
@@ -511,7 +527,8 @@ In summary:
 - Add a `ManagedResourceActivationPolicy` manifest that only activates the CRDs you need.
 
 In our example, we need to support creation of a VPC. Save this file
-as `apis/network/mrap.yaml` and it will automatically be applied to the Cluster when your project is installed:
+as `apis/network/mrap.yaml` and it will automatically be applied to the Cluster when your project is
+installed:
 
 ```yaml
 apiVersion: apiextensions.crossplane.io/v1alpha1
@@ -549,7 +566,9 @@ The output will be in `_output/configuration-aws-network-ts.xpkg`.
 
 ## Step 12: Test with Composition Render
 
-Before deploying to a cluster, you can test your composition function locally using `crossplane composition render`. This renders the composition pipeline and shows you what resources would be created without needing a Kubernetes cluster.
+Before deploying to a cluster, you can test your composition function locally using
+`crossplane composition render`. This renders the composition pipeline and shows you what resources
+would be created without needing a Kubernetes cluster.
 
 ```bash
 # Render the composition with a 5 minute timeout (recommended for TypeScript builds)
@@ -596,7 +615,8 @@ This is useful for:
 
 ## Step 13: Test with a Local Dev Cluster
 
-For quick local testing, use `crossplane project run` to spin up a local Kubernetes cluster with Crossplane and your configuration automatically deployed:
+For quick local testing, use `crossplane project run` to spin up a local Kubernetes cluster with
+Crossplane and your configuration automatically deployed:
 
 ```bash
 # Start a local dev cluster and deploy the project
@@ -611,8 +631,10 @@ is what activates your CRDs:
 crossplane project run --no-default-mrap
 ```
 
-The flag only takes effect when the control plane is **created**. If a Control Plane already exists it keeps
-whatever the `ManagedResourceActivationPolicy` was built with, so run `crossplane project stop` first. 
+The flag only takes effect when the control plane is **created**. If a Control Plane already exists
+it keeps
+whatever the `ManagedResourceActivationPolicy` was built with, so run `crossplane project stop`
+first.
 
 Verify it applied:
 
@@ -797,7 +819,7 @@ your linter, ends up in the function image.
 ### Missing crossplane-models
 
 If imports from `crossplane-models` fail, the models were almost certainly never
-generated. TypeScript generation is opt in, and `crossplane project init` does not
+generated. TypeScript generation is opt-in, and `crossplane project init` does not
 write `spec.schemas.languages`, so a project only generates `go`, `json`, `kcl` and
 `python` until you say otherwise. `crossplane project build` will not add
 `typescript` for you.
@@ -860,7 +882,8 @@ carries the current models.
 If the function fails at runtime with "Cannot find package 'crossplane-models'":
 
 1. Ensure the `file:` dependency path in `package.json` is correct
-2. The CLI automatically dereferences symlinks during build - check that the function image includes the actual files
+2. The CLI automatically dereferences symlinks during build - check that the function image includes
+   the actual files
 
 ### 404 from the registry when pushing
 
@@ -890,7 +913,9 @@ If you see an error like:
 crossplane: error: cannot build embedded functions: failed to build function "network": failed to build runtime images: typescript build container failed: container unknown failure: context deadline exceeded
 ```
 
-This means the TypeScript build (including `npm install` and `npm run build`) exceeded the default 1 minute timeout. This commonly happens on the first build when Docker images and npm packages need to be downloaded.
+This means the TypeScript build (including `npm install` and `npm run build`) exceeded the default 1
+minute timeout. This commonly happens on the first build when Docker images and npm packages need to
+be downloaded.
 
 Increase the timeout using the `--timeout` flag:
 
@@ -915,7 +940,8 @@ crossplane xpkg install configuration \
   xpkg.upbound.io/upbound/configuration-aws-network-ts:v0.3.0
 ```
 
-Note that this Configuration's CI builds the CLI from this PR's branch rather than installing a release, since
+Note that this Configuration's CI builds the CLI from this PR's branch rather than installing a
+release, since
 the feature has not shipped yet — so v0.3.0 was itself built from an unreleased CLI. That is
 marked temporary in `.github/actions/crossplane-cli` and comes out once a release includes the
 feature.

@@ -363,10 +363,6 @@ The generated `package.json` already includes the `crossplane-models` dependency
 }
 ```
 
-`kubernetes-models` is pinned to `^5.0.0` deliberately: v5 brings `@kubernetes-models/base` v6,
-which is the version the generated `crossplane-models` package depends on. Staying on v4 installs
-a second, older copy of `base` alongside it.
-
 ## Step 8: Generate Schemas
 
 Before building, generate the TypeScript schemas from the dependencies:
@@ -426,6 +422,9 @@ setting existed, add the `.npmrc` yourself or run `npm install --install-links`.
 
 ## Step 10: Create a Composition
 
+A Composition contains a pipeline of functions that are executed
+in sequence to create resources.
+
 ```bash
 # Generate a composition from the XRD
 crossplane composition generate apis/networks/definition.yaml
@@ -471,22 +470,27 @@ directory that already exists, so having followed Step 6 this fails with `functi
 The step is inserted at the front of the pipeline, so your function runs before
 `function-auto-ready` sees the resources it composes. If the Composition already has a step with that name pointing at a different function — which happens when porting an existing configuration — the command fails rather than creating two steps with the same name, and you edit the pipeline by hand.
 
-### Activating managed resources (Crossplane 2)
+### Activating Managed Resources
 
-Crossplane 2 activates managed resource CRDs through a `ManagedResourceActivationPolicy`, and the
-Crossplane Helm chart installs a **wildcard** policy by default — its `provider.defaultActivations`
-value is `["*"]`. So on a dev control plane created by `crossplane project run`, every managed
-resource is active and composed resources reconcile without you adding anything.
+Crossplane v2 supports [`ManagedResourceActivationPolicy`](https://docs.crossplane.io/latest/managed-resources/managed-resource-activation-policies/), a way to limit the number
+of CRDs providers install onto a cluster
 
-That default is convenient and unlike production, where a control plane usually manages activation
-explicitly. Two situations need a policy of your own:
+By default, the Crossplane Helm chart installs wildcard policy the value of `provider.defaultActivations` `["*"]`, which causes every
+CRD available in a Provider to be installed, which can have
+significant performance impacts on the Kubernetes API server.
 
-- You pass `crossplane project run --no-default-mrap`, which suppresses the wildcard policy so the
-  control plane matches production.
-- You deploy to a control plane that does not have the wildcard policy.
+On dev control plane created by `crossplane project run`, we can control this behavior by disabling the default policy and only
+installing CRDs that are related to our Composition. A Crossplane
+cluster can support multiple `ManagedResourceActivationPolicy`, so
+it's good practice for each Composition to define a policy.
 
-In either case, add a `ManagedResourceActivationPolicy` alongside the XRD, listing every managed
-resource kind the function creates:
+In summary:
+
+- Pass `crossplane project run --no-default-mrap`, which suppresses the wildcard policy.
+- Add a `ManagedResourceActivationPolicy` manifest that only activates the CRDs you need.
+
+In our example, we need to support creation of a VPC. Save this file
+as `apis/network/mrap.yaml` and it will automatically be applied to the Cluster when your project is installed:
 
 ```yaml
 apiVersion: apiextensions.crossplane.io/v1alpha1
@@ -499,8 +503,8 @@ spec:
     - subnets.ec2.aws.m.upbound.io
 ```
 
-Without it the composed resources are created but never reconciled — or their CRDs are absent
-altogether, so they are never created at all. `crossplane composition render` does not need the
+Without a CRD activated, no resources can be created on the Cluster. 
+`crossplane composition render` does not need the
 policy, so this only shows up once you deploy to a cluster.
 
 Testing with `--no-default-mrap` is worth doing before you ship: it is the cheapest way to find
@@ -617,7 +621,7 @@ kubectl create ns network-team
 # Format: [default]
 #         aws_access_key_id = YOUR_ACCESS_KEY
 #         aws_secret_access_key = YOUR_SECRET_KEY
-kubectl create secret generic aws-creds -n crossplane-system --from-file=creds=creds.conf
+kubectl create secret generic aws-creds -n network-team --from-file=creds=creds.conf
 
 # Create a ProviderConfig to use the credentials
 kubectl apply -f - <<EOF
@@ -631,7 +635,7 @@ spec:
     source: Secret
     secretRef:
       name: aws-creds
-      namespace: crossplane-system
+      namespace: network-team
       key: creds
 EOF
 ```
@@ -668,7 +672,7 @@ EOF
 kubectl get managed -w
 
 # Check the XR status
-kubectl get network.aws.platform.upbound.io my-network -o yaml
+kubectl get -n network-team network.aws.platform.upbound.io my-network -o yaml
 ```
 
 When you're done testing, tear down the local cluster:

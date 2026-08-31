@@ -286,6 +286,28 @@ func (m *Manager) GenerateFromMultipleSources(ctx context.Context, sources []Sou
 		}
 	}
 
+	// One freshness decision covering every source, not one per group. The
+	// language directories are cleared before generating, so a partial
+	// regeneration would delete models it is not going to rewrite.
+	fresh, versions, err := m.mergedSourcesFresh(ctx, sources)
+	if err != nil {
+		return err
+	}
+	if fresh {
+		return nil
+	}
+
+	// Copying alone never removes anything, so a renamed or deleted kind would
+	// leave its model behind for good — and the TypeScript builder copies this
+	// tree into the function image, so the stale model would ship. Clear first.
+	//
+	// If generation then fails the tree is left empty, but the lock is only
+	// written on success and mergedSourcesFresh checks that each language
+	// directory exists, so the next build regenerates rather than trusting it.
+	if err := m.clearLanguageDirs(); err != nil {
+		return err
+	}
+
 	// Generate from CRD sources (merged)
 	if len(crdSources) > 0 {
 		if err := m.generateFromMergedSources(ctx, crdSources, SourceTypeCRD); err != nil {
@@ -300,37 +322,36 @@ func (m *Manager) GenerateFromMultipleSources(ctx context.Context, sources []Sou
 		}
 	}
 
+	return m.recordGeneration(versions, m.languages())
+}
+
+// clearLanguageDirs removes the generated tree for each language this manager
+// generates, so that the next generation writes a tree containing only what the
+// current sources describe.
+func (m *Manager) clearLanguageDirs() error {
+	for _, lang := range m.languages() {
+		if err := m.fs.RemoveAll(lang); err != nil {
+			return errors.Wrapf(err, "failed to clear generated %s schemas", lang)
+		}
+	}
 	return nil
 }
 
-// generateFromMergedSources merges all source filesystems and generates schemas once.
+// generateFromMergedSources merges one group of same-typed sources and
+// generates from them. Freshness, clearing and recording the result belong to
+// GenerateFromMultipleSources, which owns the whole cycle.
 func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Source, sourceType SourceType) error {
-	fresh, sourceVersions, err := m.mergedSourcesFresh(ctx, sources)
-	if err != nil {
-		return err
-	}
-	if fresh {
-		return nil
-	}
-
-	// Collect all resources into a merged filesystem
 	mergedFS, err := m.collectSourceResources(ctx, sources)
 	if err != nil {
 		return err
 	}
 
-	// Run generators on the merged filesystem
 	schemas, err := m.runGenerators(ctx, mergedFS, sourceType)
 	if err != nil {
 		return err
 	}
 
-	// Copy generated schemas into our schema repository
-	if err := m.copyGeneratedSchemas(schemas); err != nil {
-		return err
-	}
-
-	return m.recordGeneration(sourceVersions, m.languages())
+	return m.copyGeneratedSchemas(schemas)
 }
 
 // collectSourceResources merges resources from all sources into a single

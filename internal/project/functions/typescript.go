@@ -96,9 +96,20 @@ for arch in $ARCHS ; do
   rm -rf node_modules
   npm install --omit=dev --no-fund --cpu=$arch --os=linux
   mkdir -p /fn_$arch
-  # Use -L to dereference symlinks so file: dependencies (like crossplane-models)
-  # are copied as actual files, not symlinks that won't resolve at runtime.
-  cp -rL . /fn_$arch
+  # Ship only what the function needs in order to run: the compiled output, the
+  # runtime dependencies, and a package.json — Node needs its "type": "module"
+  # to load dist/ as ESM. Everything else in the build tree (src/, the tsconfigs,
+  # the eslint config, the README, the lockfile) has no runtime purpose.
+  #
+  # -L dereferences symlinks so file: dependencies (like crossplane-models) are
+  # copied as real files rather than links that will not resolve at runtime.
+  cp -rL node_modules /fn_$arch/
+  cp -r dist /fn_$arch/
+  # Drop file: dependencies from the manifest that ships. Those packages are
+  # vendored into node_modules above, but the paths they came from do not exist
+  # inside the image, so declaring them would make any npm install or npm ci
+  # run there fail on a package it cannot resolve.
+  node -e 'const p=require("./package.json");const d=p.dependencies||{};for(const k of Object.keys(d))if(String(d[k]).startsWith("file:"))delete d[k];process.stdout.write(JSON.stringify(p,null,2)+"\n")' > /fn_$arch/package.json
 done
 `
 )

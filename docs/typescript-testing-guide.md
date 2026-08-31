@@ -363,6 +363,10 @@ The generated `package.json` already includes the `crossplane-models` dependency
 }
 ```
 
+`kubernetes-models` is pinned to `^5.0.0` deliberately: v5 brings `@kubernetes-models/base` v6,
+which is the version the generated `crossplane-models` package depends on. Staying on v4 installs
+a second, older copy of `base` alongside it.
+
 ## Step 8: Generate Schemas
 
 Before building, generate the TypeScript schemas from the dependencies:
@@ -446,6 +450,7 @@ spec:
   pipeline:
     - step: network
       functionRef:
+        # Ensure this name matches your org 
         name: your-org-configuration-aws-network-tsnetwork
     - step: crossplane-contrib-function-auto-ready
       functionRef:
@@ -463,7 +468,7 @@ Use this **instead of Step 6**, not after it. `function generate` refuses to wri
 directory that already exists, so having followed Step 6 this fails with `function directory
 "network" already exists and is not empty`, and the hand-edit above is the way in.
 
-The step is inserted at the **front** of the pipeline, so your function runs before
+The step is inserted at the front of the pipeline, so your function runs before
 `function-auto-ready` sees the resources it composes. If the Composition already has a step with that name pointing at a different function — which happens when porting an existing configuration — the command fails rather than creating two steps with the same name, and you edit the pipeline by hand.
 
 ### Activating managed resources (Crossplane 2)
@@ -487,7 +492,7 @@ resource kind the function creates:
 apiVersion: apiextensions.crossplane.io/v1alpha1
 kind: ManagedResourceActivationPolicy
 metadata:
-  name: network
+  name: configuration-aws-network-ts
 spec:
   activate:
     - vpcs.ec2.aws.m.upbound.io
@@ -581,8 +586,10 @@ is what activates your CRDs:
 crossplane project run --no-default-mrap
 ```
 
-The flag only takes effect when the control plane is **created**. If one already exists it keeps
-whatever it was built with, so run `crossplane project stop` first. Verify it applied:
+The flag only takes effect when the control plane is **created**. If a Control Plane already exists it keeps
+whatever the `ManagedResourceActivationPolicy` was built with, so run `crossplane project stop` first. 
+
+Verify it applied:
 
 ```bash
 kubectl -n crossplane-system get deploy crossplane \
@@ -698,7 +705,7 @@ kind: Configuration
 metadata:
   name: configuration-aws-network-ts
 spec:
-  package: xpkg.upbound.io/your-org/configuration-aws-network-ts:v0.2.0
+  package: xpkg.upbound.io/your-org/configuration-aws-network-ts:v0.3.0
 EOF
 
 # Create an XR to test
@@ -732,9 +739,8 @@ npm run build
 
 ### Lint and test tooling on TypeScript 7
 
-TypeScript 7's native compiler exposes only `typescript/unstable/*`; the JavaScript compiler
-API that powers type-aware linting is gone. `typescript-eslint` is built on that API and caps
-its `typescript` peer below 7, and there is no release or canary yet that does otherwise.
+Typescript 7 is a rewrite of the compiler, which means some
+tooling is not available yet. We'll use Typescript 6 to support Eslint.
 
 The scaffold works around this by installing both compilers under aliases:
 
@@ -824,29 +830,15 @@ still recompiled in a container on every render, so they are not instant.
 ## Reference Projects
 
 For a complete working example built from scratch, see:
-https://github.com/stevendborrelli/configuration-aws-network-ts-xp-cli
-
-For an example of porting an existing configuration — one that previously built its
-function image with a hand-written Dockerfile and packaged it with `crossplane xpkg build`
-— see:
-https://github.com/upbound/configuration-aws-network-ts
-
-That one is released, so you can see what a project built this way produces without building
-anything yourself:
+<https://github.com/upbound/configuration-aws-network-ts>
 
 ```bash
 crossplane xpkg install configuration \
-  xpkg.upbound.io/upbound/configuration-aws-network-ts:v0.2.0
+  xpkg.upbound.io/upbound/configuration-aws-network-ts:v0.3.0
 ```
 
-v0.2.0 is the first release built with `crossplane project build`. The configuration package is
-a single manifest; the embedded function at
-`xpkg.upbound.io/upbound/configuration-aws-network-ts_network:v0.2.0` is a multi-architecture
-index covering `linux/amd64` and `linux/arm64`.
-
-Note that its CI builds the CLI from this PR's branch rather than installing a release, since
-the feature has not shipped yet — so v0.2.0 was itself built from an unreleased CLI. That is
+Note that this Configuration's CI builds the CLI from this PR's branch rather than installing a release, since
+the feature has not shipped yet — so v0.3.0 was itself built from an unreleased CLI. That is
 marked temporary in `.github/actions/crossplane-cli` and comes out once a release includes the
 feature.
 
-Both repositories demonstrate the patterns described in this guide.

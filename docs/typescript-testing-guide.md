@@ -2,15 +2,17 @@
 
 This guide walks through testing the TypeScript support added in PR #170. We'll create a complete Crossplane configuration project with a TypeScript composition function.
 
-An example project is located at <https://github.com/stevendborrelli/configuration-aws-network-ts-xp-cli>.
+An example Crossplane project is located at <https://github.com/upbound/configuration-aws-network-ts>.
 
 ## Prerequisites
 
 - Go 1.25+
-- Docker
+- The Github CLI <https://cli.github.com>
+- Docker, or an engine that supports `DOCKER_HOST`
 - Node.js 24+ (for local development)
 - A Kubernetes cluster with Crossplane installed
 - Access to push packages to a registry (e.g., `xpkg.upbound.io`)
+- (optional) AWS Credentials
 
 ## Step 1: Build the CLI from this PR
 
@@ -93,7 +95,7 @@ in Step 4 fill the whole section in for you.
 When a dependency is added to a Crossplane project:
 
 - The dependency is deployed to the cluster
-- The CLI generates Schemas from any CRDS
+- The CLI generates Schemas from any CRDs
 
 You can add dependencies using `crossplane dependency add` or by
 modifying `crossplane-project.yaml`.
@@ -117,6 +119,7 @@ apiVersion: aws.platform.upbound.io/v1alpha1
 kind: Network
 metadata:
   name: example-network
+  namespace: network-team
 spec:
   region: us-west-2
   cidrBlock: "10.0.0.0/16"
@@ -131,8 +134,14 @@ crossplane xrd generate examples/network/example.yaml
 ```
 
 This writes `apis/networks/definition.yaml` — note the plural directory name. The CLI emits an
-`apiextensions.crossplane.io/v2` XRD with `scope: Cluster` and no `claimNames`; claims are a v1
-concept, and in v2 you use the XR directly.
+`apiextensions.crossplane.io/v2` XRD with no `claimNames`; claims are a v1 concept, and in v2 you
+use the XR directly.
+
+**The scope is inferred from the example.** Because the XR above carries
+`metadata.namespace`, the generated XRD gets `scope: Namespaced`. Drop the namespace from the
+example and you get `scope: Cluster` instead. This walkthrough is namespaced throughout, which is
+the usual choice for a platform API a team consumes inside its own namespace, and it is what
+[configuration-aws-network-ts](https://github.com/upbound/configuration-aws-network-ts) does.
 
 Edit `apis/networks/definition.yaml` to add descriptions, defaults and status fields:
 
@@ -148,7 +157,7 @@ spec:
       - crossplane
     kind: Network
     plural: networks
-  scope: Cluster
+  scope: Namespaced
   versions:
     - name: v1alpha1
       served: true
@@ -178,19 +187,22 @@ spec:
                   description: The ID of the created VPC
 ```
 
-### Cluster-scoped or namespaced?
+### Scope determines which types you import
 
-This choice determines which generated types your function must import, and getting it wrong
-fails only at apply time.
+The XRD's scope decides which generated types your function must use, and getting it wrong fails
+only at apply time.
 
-- `scope: Cluster` (the default above) composes **cluster-scoped** managed resources — import
-  from `crossplane-models/ec2.aws.upbound.io/v1beta1`.
-- `scope: Namespaced` composes **namespaced** managed resources — import from the mirrored `.m.`
-  group instead, `crossplane-models/ec2.aws.m.upbound.io/v1beta1`.
+- `scope: Namespaced` — what this guide uses — composes **namespaced** managed resources. Import
+  from the mirrored `.m.` group: `crossplane-models/ec2.aws.m.upbound.io/v1beta1`.
+- `scope: Cluster` composes **cluster-scoped** managed resources. Import from
+  `crossplane-models/ec2.aws.upbound.io/v1beta1`.
 
 Mixing them gets you `cannot apply cluster scoped composed resource for a namespaced composite
 resource` on the cluster. Note that `crossplane composition render` renders the mismatched
 combination without complaint, so this does not surface until you deploy.
+
+A namespaced XR also means the composed resources belong in the XR's namespace. Crossplane does
+not infer that for you — the function has to set it, which Step 7 does.
 
 ## Step 6: Create a TypeScript Function
 
@@ -230,10 +242,10 @@ import {
   normal,
 } from '@crossplane-org/function-sdk-typescript';
 
-// Import the generated types from crossplane-models. This is the cluster-scoped
-// group, matching the `scope: Cluster` XRD from Step 5. For a namespaced XRD,
-// import from 'crossplane-models/ec2.aws.m.upbound.io/v1beta1' instead.
-import { VPC } from 'crossplane-models/ec2.aws.upbound.io/v1beta1';
+// Import the generated types from crossplane-models. This is the mirrored `.m.`
+// group, matching the `scope: Namespaced` XRD from Step 5. For a cluster-scoped
+// XRD, import from 'crossplane-models/ec2.aws.upbound.io/v1beta1' instead.
+import { VPC } from 'crossplane-models/ec2.aws.m.upbound.io/v1beta1';
 
 /**
  * compose is a Crossplane composition function that creates a VPC.
@@ -256,6 +268,10 @@ export const compose: ComposeFunction = async (req, rsp, logger) => {
   const cidrBlock = spec?.cidrBlock || '10.0.0.0/16';
   const xrName = observedComposite.resource?.metadata?.name || 'unknown';
 
+  // A namespaced XR composes namespaced managed resources, and Crossplane does
+  // not place them for you — carry the XR's namespace onto everything composed.
+  const namespace = observedComposite.resource?.metadata?.namespace;
+
   // Create a VPC using the generated TypeScript class.
   //
   // Do NOT set crossplane.io/external-name here. For a VPC the external name
@@ -267,6 +283,7 @@ export const compose: ComposeFunction = async (req, rsp, logger) => {
   const vpc = new VPC({
     metadata: {
       name: `${xrName}-vpc`,
+      ...(namespace && { namespace: namespace }),
     },
     spec: {
       forProvider: {
@@ -367,7 +384,9 @@ crossplane project build
 The models are generated as TypeScript, then compiled — so `schemas/typescript/` holds JavaScript
 plus declarations, not `.ts` sources:
 
-- `ec2.aws.upbound.io/v1beta1/VPC.js` and `VPC.d.ts` - VPC class with full type definitions
+- `ec2.aws.m.upbound.io/v1beta1/VPC.js` and `VPC.d.ts` - namespaced VPC class with full type
+  definitions. The cluster-scoped `ec2.aws.upbound.io/` tree is generated alongside it; a
+  namespaced XRD uses the `.m.` one.
 - `aws.platform.upbound.io/v1alpha1/Network.js` and `Network.d.ts` - Your XRD's types
 
 Schema generation runs once per dependency and is not cheap: adding a function package that
@@ -402,7 +421,7 @@ package cannot reach its own dependencies and any import of a generated model fa
 
 ```text
 Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@kubernetes-models/base'
-imported from .../schemas/typescript/ec2.aws.upbound.io/v1beta1/VPC.js
+imported from .../schemas/typescript/ec2.aws.m.upbound.io/v1beta1/VPC.js
 ```
 
 `install-links=true` copies the package into `node_modules` instead, which also matches the

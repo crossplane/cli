@@ -113,6 +113,27 @@ crossplane dependency add xpkg.upbound.io/upbound/provider-aws-ec2:v2.6.0
 crossplane dependency add xpkg.crossplane.io/crossplane-contrib/function-auto-ready:v0.7.0
 ```
 
+### Kubernetes built-in types
+
+A `k8s` dependency generates no TypeScript models. Those types are described by
+an OpenAPI spec rather than by CRDs, and the TypeScript generator reads CRDs — so
+unlike Python and Go, adding one produces nothing for TypeScript. `dependency
+add` prints a note when you do it.
+
+That is deliberate rather than a gap. TypeScript functions get typed Kubernetes
+built-ins from
+[kubernetes-models](https://www.npmjs.com/package/kubernetes-models), which the
+function scaffold already depends on:
+
+```typescript
+import { Deployment } from 'kubernetes-models/apps/v1';
+import { Service } from 'kubernetes-models/v1';
+```
+
+Generating them would duplicate that package. Provider CRDs, and CRDs fetched
+over HTTP or from git, do generate TypeScript models as normal — only the
+Kubernetes API itself is affected.
+
 ## Step 5: Create an Example Manifest and the API
 
 First, create an example XR file that defines your custom resource:

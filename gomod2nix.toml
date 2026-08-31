@@ -1909,8 +1909,8 @@ cachePackages = [
     hash = 'sha256-rem+hSqFYx823e1DmruK/qhL8Ka+zSoGIfeSyab+LI4='
 
   [mod.'github.com/crossplane/crossplane/apis/v2']
-    version = 'v2.3.4'
-    hash = 'sha256-hzqPKmqnfeJOqXadKGCkdpU4QCJxtC0xO+Uy4uGDsgw='
+    version = 'v2.4.0'
+    hash = 'sha256-XiLN3txjmZlVkJXa5LbenVWGnseC7rUHElCXv2MgIxo='
 
   [mod.'github.com/crossplane/function-sdk-go']
     version = 'v0.7.1'

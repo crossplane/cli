@@ -806,10 +806,16 @@ If an import fails with `TS2307` for a type you just generated — a new API gro
 or a kind you renamed — the models on disk are current but the copy inside
 `node_modules` is not.
 
-The generated models package is always version `0.0.0`, and `.npmrc` sets
-`install-links=true` so npm copies the `file:` dependency rather than symlinking
-it. npm caches `file:` dependencies by version, sees `crossplane-models@0.0.0`
-already installed, and skips the copy.
+`.npmrc` sets `install-links=true` so npm copies the `file:` dependency rather
+than symlinking it, and npm treats a `file:` dependency as satisfied while its
+spec is unchanged. Regenerating the models changes their content but not the
+`file:` path, so npm leaves the copy in `node_modules` alone.
+
+To confirm that is what you are looking at, compare the version in
+`schemas/typescript/package.json` against
+`node_modules/crossplane-models/package.json`. The version is derived from the
+content of the generated models, so two different values mean the copy is
+stale.
 
 `npm install` does not fix this, and neither does `npm update crossplane-models`,
 `npm install --force`, or touching the models `package.json`. Use:

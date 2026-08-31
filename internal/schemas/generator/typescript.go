@@ -20,8 +20,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io/fs"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/afero"
@@ -393,5 +396,96 @@ DISTEOF
 		return nil, errors.Wrap(err, "failed to copy generated TypeScript files")
 	}
 
+	if err := stampModelsVersion(schemaFS); err != nil {
+		return nil, err
+	}
+
 	return schemaFS, nil
+}
+
+// stampModelsVersion replaces the generated package's placeholder version with
+// one derived from the content of the generated files.
+//
+// This is a diagnostic, not a cure. The function scaffold sets
+// install-links=true so the models are copied into node_modules rather than
+// symlinked, and npm treats a file: dependency as satisfied while its spec is
+// unchanged — so models generated after the first install do not reach the
+// tree. Measured: neither `npm install` nor `npm update crossplane-models`
+// picks up new models even with a changing version here; only `npm ci` (or
+// removing node_modules) does, which was already true with a constant version.
+//
+// What the version buys is a way to see the problem. With every copy stamped
+// 0.0.0 there was no way to tell a stale node_modules from a current one, and
+// the symptom is a TS2307 pointing at the import rather than at the copy.
+// Comparing this version against the one in node_modules now answers it
+// directly. `crossplane project build` is unaffected either way: it tars a
+// fresh tree into the build container every time.
+func stampModelsVersion(fsys afero.Fs) error {
+	pkgPath := path.Join(typescriptModelsFolder, "package.json")
+
+	digest, err := hashModels(fsys, pkgPath)
+	if err != nil {
+		return err
+	}
+
+	bs, err := afero.ReadFile(fsys, pkgPath)
+	if err != nil {
+		// No manifest means nothing was generated, so there is nothing to stamp.
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return errors.Wrap(err, "failed to read generated models package.json")
+	}
+
+	var pkg map[string]any
+	if err := json.Unmarshal(bs, &pkg); err != nil {
+		return errors.Wrap(err, "generated models package.json is not valid JSON")
+	}
+
+	// A semver prerelease identifier, so the value stays a valid version that
+	// npm will compare and order.
+	pkg["version"] = "0.0.0-" + digest
+
+	out, err := json.MarshalIndent(pkg, "", "  ")
+	if err != nil {
+		return errors.Wrap(err, "failed to serialize generated models package.json")
+	}
+
+	return errors.Wrap(afero.WriteFile(fsys, pkgPath, append(out, '\n'), 0o644), "failed to write generated models package.json")
+}
+
+// hashModels returns a digest over every generated file except the manifest,
+// which is excluded because its own content depends on the result.
+func hashModels(fsys afero.Fs, skip string) (string, error) {
+	var paths []string
+	if err := afero.Walk(fsys, typescriptModelsFolder, func(p string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || p == skip {
+			return nil
+		}
+		paths = append(paths, p)
+		return nil
+	}); err != nil {
+		return "", errors.Wrap(err, "failed to walk generated TypeScript files")
+	}
+
+	// Walk order is not guaranteed across filesystem implementations, and the
+	// digest has to be stable for identical content.
+	slices.Sort(paths)
+
+	h := sha256.New()
+	for _, p := range paths {
+		content, err := afero.ReadFile(fsys, p)
+		if err != nil {
+			return "", errors.Wrapf(err, "failed to read %s", p)
+		}
+		// Include the path so that moving content between files changes the
+		// digest.
+		_, _ = h.Write([]byte(p))
+		_, _ = h.Write(content)
+	}
+
+	return hex.EncodeToString(h.Sum(nil))[:12], nil
 }

@@ -327,6 +327,16 @@ func WaitForContainerByID(ctx context.Context, cid string) error {
 			return fmt.Errorf("container exited with non-zero status: %d, logs: %s", status.StatusCode, logs.String())
 		}
 	case err := <-wait.Error:
+		// Docker reports an expired or cancelled context on this channel, and
+		// "unknown failure" describes neither. A deadline here is one the user
+		// set, so name it and the flag that changes it — every command that
+		// gives this call a deadline takes it from a --timeout flag.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				return errors.Wrap(err, "timed out waiting for the container to finish; re-run with a longer --timeout")
+			}
+			return errors.Wrap(err, "cancelled while waiting for the container to finish")
+		}
 		return errors.Wrapf(err, "container unknown failure")
 	}
 

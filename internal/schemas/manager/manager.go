@@ -22,7 +22,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -184,6 +186,19 @@ func jsonBuildIndexSchema(langFS afero.Fs) error {
 	return afero.WriteFile(langFS, metaFile, bs, 0o644)
 }
 
+// currentLanguages returns the language set recorded in the lock.
+func (m *Manager) currentLanguages() ([]string, error) {
+	m.lockMu.RLock()
+	defer m.lockMu.RUnlock()
+
+	l, err := m.getLock()
+	if err != nil {
+		return nil, err
+	}
+
+	return l.Languages, nil
+}
+
 func (m *Manager) currentVersion(id string) (string, error) {
 	m.lockMu.RLock()
 	defer m.lockMu.RUnlock()
@@ -290,8 +305,16 @@ func (m *Manager) GenerateFromMultipleSources(ctx context.Context, sources []Sou
 
 // generateFromMergedSources merges all source filesystems and generates schemas once.
 func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Source, sourceType SourceType) error {
+	fresh, sourceVersions, err := m.mergedSourcesFresh(ctx, sources)
+	if err != nil {
+		return err
+	}
+	if fresh {
+		return nil
+	}
+
 	// Collect all resources into a merged filesystem
-	mergedFS, sourceVersions, err := m.collectSourceResources(ctx, sources)
+	mergedFS, err := m.collectSourceResources(ctx, sources)
 	if err != nil {
 		return err
 	}
@@ -307,39 +330,19 @@ func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Sourc
 		return err
 	}
 
-	// Update version for all sources
-	for id, version := range sourceVersions {
-		if err := m.updateVersion(id, version); err != nil {
-			return errors.Wrapf(err, "failed to update version for source %s", id)
-		}
-	}
-
-	return nil
+	return m.recordGeneration(sourceVersions, m.languages())
 }
 
-// collectSourceResources merges resources from all sources into a single filesystem.
-func (m *Manager) collectSourceResources(ctx context.Context, sources []Source) (afero.Fs, map[string]string, error) {
+// collectSourceResources merges resources from all sources into a single
+// filesystem. Version bookkeeping belongs to the caller, which has already
+// computed each source's version to decide whether to generate at all.
+func (m *Manager) collectSourceResources(ctx context.Context, sources []Source) (afero.Fs, error) {
 	mergedFS := afero.NewMemMapFs()
-	sourceVersions := make(map[string]string)
 
 	for i, src := range sources {
-		version, err := src.Version(ctx)
-		if err != nil {
-			return nil, nil, errors.Wrapf(err, "failed to get version for source %s", src.ID())
-		}
-
-		// Check if this source is already up to date
-		existing, err := m.currentVersion(src.ID())
-		if err != nil {
-			return nil, nil, err
-		}
-		// Note: Even if existing == version, we still need to include the
-		// resources for the merged generation to work correctly.
-		_ = existing
-
 		srcFS, err := src.Resources(ctx)
 		if err != nil {
-			return nil, nil, errors.Wrapf(err, "failed to get resources for source %s", src.ID())
+			return nil, errors.Wrapf(err, "failed to get resources for source %s", src.ID())
 		}
 
 		// Copy resources into merged filesystem under a unique prefix
@@ -347,13 +350,92 @@ func (m *Manager) collectSourceResources(ctx context.Context, sources []Source) 
 		prefix := fmt.Sprintf("%04d_%s", i, sanitizeSourceID(src.ID()))
 		prefixedFS := afero.NewBasePathFs(mergedFS, prefix)
 		if err := filesystem.CopyFilesBetweenFs(srcFS, prefixedFS); err != nil {
-			return nil, nil, errors.Wrapf(err, "failed to copy resources from source %s", src.ID())
+			return nil, errors.Wrapf(err, "failed to copy resources from source %s", src.ID())
 		}
-
-		sourceVersions[src.ID()] = version
 	}
 
-	return mergedFS, sourceVersions, nil
+	return mergedFS, nil
+}
+
+// mergedSourcesFresh reports whether the schemas already on disk are correct
+// for these sources, and returns the versions it computed either way so the
+// caller does not repeat the work.
+//
+// Merged generation is all-or-nothing: crd-generate needs every CRD in one pass
+// to emit a coherent index and working cross-references. So the only safe cache
+// decision is whether to skip the pass entirely — one stale source regenerates
+// all of them.
+func (m *Manager) mergedSourcesFresh(ctx context.Context, sources []Source) (bool, map[string]string, error) {
+	versions := make(map[string]string, len(sources))
+	fresh := true
+
+	for _, src := range sources {
+		version, err := src.Version(ctx)
+		if err != nil {
+			return false, nil, errors.Wrapf(err, "failed to get version for source %s", src.ID())
+		}
+		versions[src.ID()] = version
+
+		existing, err := m.currentVersion(src.ID())
+		if err != nil {
+			return false, nil, err
+		}
+		if existing != version {
+			fresh = false
+		}
+	}
+	if !fresh {
+		return false, versions, nil
+	}
+
+	recorded, err := m.currentLanguages()
+	if err != nil {
+		return false, nil, err
+	}
+	if !slices.Equal(recorded, m.languages()) {
+		return false, versions, nil
+	}
+
+	// The lock can outlive its output: a partly deleted schemas tree would
+	// otherwise read as fresh and leave the build with no models at all.
+	for _, lang := range m.languages() {
+		ok, err := afero.DirExists(m.fs, lang)
+		if err != nil {
+			return false, nil, err
+		}
+		if !ok {
+			return false, versions, nil
+		}
+	}
+
+	return true, versions, nil
+}
+
+// languages returns the sorted language identifiers this manager generates for.
+func (m *Manager) languages() []string {
+	langs := make([]string, 0, len(m.generators))
+	for _, g := range m.generators {
+		langs = append(langs, g.Language())
+	}
+	slices.Sort(langs)
+	return langs
+}
+
+// recordGeneration writes the source versions and the language set that
+// produced the schemas now on disk, in one lock update so the two cannot
+// disagree.
+func (m *Manager) recordGeneration(versions map[string]string, languages []string) error {
+	m.lockMu.Lock()
+	defer m.lockMu.Unlock()
+
+	l, err := m.getLock()
+	if err != nil {
+		return err
+	}
+	maps.Copy(l.Packages, versions)
+	l.Languages = languages
+
+	return m.updateLock(l)
 }
 
 // runGenerators runs all generators on the merged filesystem and returns the generated schemas.

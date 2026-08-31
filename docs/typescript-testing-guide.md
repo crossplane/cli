@@ -94,8 +94,13 @@ in Step 4 fill the whole section in for you.
 
 When a dependency is added to a Crossplane project:
 
-- The dependency is deployed to the cluster
-- The CLI generates Schemas from any CRDs
+- The package is resolved and cached locally, under `--cache-dir`
+  (`$CROSSPLANE_XPKG_CACHE`, defaulting to a per-user directory)
+- The CLI generates schemas from any CRDs the package contains
+- The dependency is recorded in `crossplane-project.yaml`
+
+No cluster is involved. `dependency add` works before any control plane exists; the dependency is
+installed on a control plane later, by `project run` or by applying the built Configuration.
 
 You can add dependencies using `crossplane dependency add` or by
 modifying `crossplane-project.yaml`.
@@ -460,17 +465,36 @@ spec:
         name: crossplane-contrib-function-auto-ready
 ```
 
-**Tip**: You can generate the function and add it to the composition pipeline automatically by running:
+**Tip**: `function generate` can create the function *and* wire it into the pipeline in one go,
+which saves the hand-edit above:
 
 ```bash
 crossplane function generate network apis/networks/composition.yaml --language typescript
 ```
 
-The step is inserted at the **front** of the pipeline, so your function runs before `function-auto-ready` sees the resources it composes. If the Composition already has a step with that name pointing at a different function — which happens when porting an existing configuration — the command fails rather than creating two steps with the same name, and you edit the pipeline by hand.
+Use this **instead of Step 6**, not after it. `function generate` refuses to write into a function
+directory that already exists, so having followed Step 6 this fails with `function directory
+"network" already exists and is not empty`, and the hand-edit above is the way in.
+
+The step is inserted at the **front** of the pipeline, so your function runs before
+`function-auto-ready` sees the resources it composes. If the Composition already has a step with that name pointing at a different function — which happens when porting an existing configuration — the command fails rather than creating two steps with the same name, and you edit the pipeline by hand.
 
 ### Activating managed resources (Crossplane 2)
 
-If your XRD is `apiextensions.crossplane.io/v2` and your function composes namespaced managed resources (the `*.m.upbound.io` API groups), Crossplane 2 does not activate those CRDs by default. Add a `ManagedResourceActivationPolicy` alongside the XRD, listing every managed resource kind the function creates:
+Crossplane 2 activates managed resource CRDs through a `ManagedResourceActivationPolicy`, and the
+Crossplane Helm chart installs a **wildcard** policy by default — its `provider.defaultActivations`
+value is `["*"]`. So on a dev control plane created by `crossplane project run`, every managed
+resource is active and composed resources reconcile without you adding anything.
+
+That default is convenient and unlike production, where a control plane usually manages activation
+explicitly. Two situations need a policy of your own:
+
+- You pass `crossplane project run --no-default-mrap`, which suppresses the wildcard policy so the
+  control plane matches production.
+- You deploy to a control plane that does not have the wildcard policy.
+
+In either case, add a `ManagedResourceActivationPolicy` alongside the XRD, listing every managed
+resource kind the function creates:
 
 ```yaml
 apiVersion: apiextensions.crossplane.io/v1alpha1
@@ -483,7 +507,13 @@ spec:
     - subnets.ec2.aws.m.upbound.io
 ```
 
-Without it the composed resources are created but never reconciled. `crossplane composition render` does not need the policy, so this only shows up once you deploy to a cluster.
+Without it the composed resources are created but never reconciled — or their CRDs are absent
+altogether, so they are never created at all. `crossplane composition render` does not need the
+policy, so this only shows up once you deploy to a cluster.
+
+Testing with `--no-default-mrap` is worth doing before you ship: it is the cheapest way to find
+out that an activation policy is incomplete, and the failure is far easier to read locally than in
+a production control plane.
 
 ## Step 11: Build the Project
 
@@ -556,6 +586,24 @@ For quick local testing, use `crossplane project run` to spin up a local Kuberne
 crossplane project run
 ```
 
+Add `--no-default-mrap` to suppress the wildcard activation policy the Crossplane chart installs,
+so the control plane behaves like production and the `ManagedResourceActivationPolicy` from Step 10
+is what activates your CRDs:
+
+```bash
+crossplane project run --no-default-mrap
+```
+
+The flag only takes effect when the control plane is **created**. If one already exists it keeps
+whatever it was built with, so run `crossplane project stop` first. Verify it applied:
+
+```bash
+kubectl -n crossplane-system get deploy crossplane \
+  -o jsonpath='{.spec.template.spec.containers[0].args}'
+```
+
+With the flag, that shows no `--activation` argument. Without it you get `--activation "*"`.
+
 This will:
 
 1. Create a local Kind cluster
@@ -565,39 +613,58 @@ This will:
 
 Once the cluster is running, configure AWS credentials for the provider:
 
+The XRD from Step 5 is namespaced, so the ProviderConfig belongs in the XR's namespace and comes
+from the mirrored `.m.` group. The secret it points at can live elsewhere:
+
 ```bash
+kubectl create ns network-team
+
 # Create AWS credentials secret (creds.conf should contain your AWS credentials)
 # Format: [default]
 #         aws_access_key_id = YOUR_ACCESS_KEY
 #         aws_secret_access_key = YOUR_SECRET_KEY
-kubectl create secret generic aws-creds -n default --from-file=creds=creds.conf
+kubectl create secret generic aws-creds -n crossplane-system --from-file=creds=creds.conf
 
 # Create a ProviderConfig to use the credentials
 kubectl apply -f - <<EOF
-apiVersion: aws.upbound.io/v1beta1
+apiVersion: aws.m.upbound.io/v1beta1
 kind: ProviderConfig
 metadata:
   name: default
+  namespace: network-team
 spec:
   credentials:
     source: Secret
     secretRef:
       name: aws-creds
-      namespace: default
+      namespace: crossplane-system
       key: creds
 EOF
+```
+
+`project run` can apply both for you instead, which is how
+[configuration-aws-network-ts](https://github.com/upbound/configuration-aws-network-ts) drives its
+own testing — `--init-resources` is applied before the Configuration is installed and
+`--extra-resources` after, so the namespace exists by the time the ProviderConfig inside it lands:
+
+```bash
+crossplane project run \
+  --init-resources=examples/network/namespace-network-team.yaml \
+  --extra-resources=examples/network/providerconfig.yaml \
+  --no-default-mrap
 ```
 
 Now you can test your configuration:
 
 ```bash
-# Create an XR to test your function. The XRD from Step 5 is cluster scoped and
-# has no claim, so apply the Network XR directly — v2 drops the X prefix.
+# Create an XR to test your function. The XRD from Step 5 is namespaced and has
+# no claim, so apply the Network XR directly — v2 drops the X prefix.
 kubectl apply -f - <<EOF
 apiVersion: aws.platform.upbound.io/v1alpha1
 kind: Network
 metadata:
   name: my-network
+  namespace: network-team
 spec:
   region: us-west-2
   cidrBlock: "10.0.0.0/16"
@@ -653,6 +720,7 @@ apiVersion: aws.platform.upbound.io/v1alpha1
 kind: Network
 metadata:
   name: my-network
+  namespace: network-team
 spec:
   region: us-west-2
   cidrBlock: "10.0.0.0/16"

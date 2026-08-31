@@ -234,7 +234,7 @@ This creates `functions/network/` with:
 
 ## Step 7: Implement the Function
 
-The generated `functions/network/src/function.ts` contains a template implementation. A full example is available at [function.ts](https://github.com/stevendborrelli/configuration-aws-network-ts-xp-cli/blob/main/functions/network/src/function.ts).
+The generated `functions/network/src/function.ts` contains a template implementation. A full example is available at [function.ts](https://github.com/upbound/configuration-aws-network-ts/blob/main/functions/network/src/function.ts).
 
 Edit the `function.ts` to create a VPC:
 
@@ -327,16 +327,6 @@ serve(compose, { name: 'network' });
 `serve` parses the standard function flags, builds a logger from `--debug`, starts the gRPC
 server, and shuts down cleanly on `SIGINT` and `SIGTERM`.
 
-**On older SDK versions**: `fromModel` accepts the generated models from
-`@crossplane-org/function-sdk-typescript@0.6.0` onward. Earlier versions required
-`toJSON(): Record<string, unknown>` while `@kubernetes-models/base` declares `toJSON(): unknown`
-from v6 onward, so the call failed with TS2345
-([function-sdk-typescript#26](https://github.com/crossplane/function-sdk-typescript/pull/26)).
-On an SDK older than 0.6.0 the equivalent is
-`Resource.fromJSON({ resource: vpc.toJSON() })`, and the function is written as a class
-implementing `FunctionHandler` rather than a `ComposeFunction`. The template generates 0.7.0,
-so this only matters when working in an existing project pinned to an older SDK.
-
 The generated `package.json` already includes the `crossplane-models` dependency when TypeScript schemas are enabled. It will look like:
 
 ```json
@@ -373,10 +363,6 @@ The generated `package.json` already includes the `crossplane-models` dependency
 }
 ```
 
-`kubernetes-models` is pinned to `^5.0.0` deliberately: v5 brings `@kubernetes-models/base` v6,
-which is the version the generated `crossplane-models` package depends on. Staying on v4 installs
-a second, older copy of `base` alongside it.
-
 ## Step 8: Generate Schemas
 
 Before building, generate the TypeScript schemas from the dependencies:
@@ -395,7 +381,8 @@ plus declarations, not `.ts` sources:
 - `aws.platform.upbound.io/v1alpha1/Network.js` and `Network.d.ts` - Your XRD's types
 
 Schema generation runs once per dependency and is not cheap: adding a function package that
-contributes no CRDs at all still costs a few minutes.
+contributes no CRDs to the composition will add time
+to the generation step.
 
 ## Step 9: Local Development (Optional)
 

@@ -348,7 +348,7 @@ The generated `package.json` already includes the `crossplane-models` dependency
   },
   "dependencies": {
     "@crossplane-org/function-sdk-typescript": "^0.7.0",
-    "@types/node": "^26.0.0",
+    "@types/node": "^24.0.0",
     "crossplane-models": "file:../../schemas/typescript",
     "kubernetes-models": "^5.0.0"
   },

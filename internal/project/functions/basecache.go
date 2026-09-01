@@ -28,21 +28,28 @@ import (
 )
 
 // DefaultBaseImageCacheDir returns the default per-user cache directory for
-// function runtime base image layers. It sits beside the xpkg cache rather
-// than inside it, since the two hold different kinds of artifact and are
-// pruned on different terms.
+// function runtime base image layers, or "" to disable caching when there is no
+// per-user directory to put it in. It sits beside the xpkg cache rather than
+// inside it, since the two hold different kinds of artifact and would be pruned
+// on different terms.
 //
-// Nothing prunes this directory. Layers are keyed by content digest, so
-// entries are never stale, but they are also never replaced: every base image
-// version a user builds against accumulates, at tens of megabytes per image
-// per architecture. Users can delete the directory safely — the next build
-// refetches what it needs — but the CLI should grow a retention policy or a
-// prune command before this becomes the kind of thing people discover by
-// running out of disk.
+// Falling back to os.TempDir() would put the cache at a predictable path that
+// another user on a shared machine could have created first, with permissions
+// of their choosing. The layers are public registry content rather than
+// anything sensitive, but a cache is not worth a world-readable directory
+// someone else controls — and callers already treat "" as "do not cache", so
+// declining is cheap.
+//
+// Nothing prunes this directory. Layers are keyed by content digest, so entries
+// are never stale, but they are also never replaced: every base image version a
+// user builds against accumulates. Users can delete the directory safely — the
+// next build refetches what it needs — but the CLI should grow a retention
+// policy or a prune command before this becomes the kind of thing people
+// discover by running out of disk.
 func DefaultBaseImageCacheDir() string {
 	base, err := os.UserCacheDir()
 	if err != nil {
-		base = os.TempDir()
+		return ""
 	}
 	return filepath.Join(base, "crossplane", "base-images")
 }

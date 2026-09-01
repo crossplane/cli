@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/cache"
 	"github.com/google/go-containerregistry/pkg/v1/static"
@@ -75,8 +76,8 @@ func TestTolerantCachePutFailureReturnsUsableLayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put(): unexpected error: %v", err)
 	}
-	if got, want := readAll(t, l), "hello from a layer"; got != want {
-		t.Errorf("layer contents: got %q, want %q", got, want)
+	if diff := cmp.Diff("hello from a layer", readAll(t, l)); diff != "" {
+		t.Errorf("layer contents (-want +got):\n%s", diff)
 	}
 }
 
@@ -108,8 +109,8 @@ func TestTolerantCacheUnwritableDirStillReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put(): unexpected error: %v", err)
 	}
-	if got, want := readAll(t, wrapped), "hello from a layer"; got != want {
-		t.Errorf("layer contents: got %q, want %q", got, want)
+	if diff := cmp.Diff("hello from a layer", readAll(t, wrapped)); diff != "" {
+		t.Errorf("layer contents (-want +got):\n%s", diff)
 	}
 }
 
@@ -126,8 +127,8 @@ func TestTolerantCachePassesThroughOnSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put(): unexpected error: %v", err)
 	}
-	if got, want := readAll(t, l), "hello from a layer"; got != want {
-		t.Errorf("layer contents: got %q, want %q", got, want)
+	if diff := cmp.Diff("hello from a layer", readAll(t, l)); diff != "" {
+		t.Errorf("layer contents (-want +got):\n%s", diff)
 	}
 
 	// Reading the layer populates the cache, so the digest is now a hit.

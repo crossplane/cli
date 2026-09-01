@@ -860,17 +860,25 @@ To confirm that is what you are looking at, compare the version in
 content of the generated models, so two different values mean the copy is
 stale.
 
-`npm install` does not fix this, and neither does `npm update crossplane-models`,
-`npm install --force`, or touching the models `package.json`. Use:
+Naming the package is the quickest fix, and leaves `package.json` untouched:
+
+```shell
+npm install crossplane-models
+```
+
+Naming it forces npm to re-resolve that one dependency rather than trusting the
+tree it already has. `npm update` works too, because the models package carries
+a version derived from its content, so a regenerated package looks newer.
+
+What does not work, in case you try them first: bare `npm install`,
+`npm install --force`, `npm rebuild`, and — confusingly — `npm update
+crossplane-models`. Naming the package works for `install` but not for `update`.
+
+`npm ci` also works, and is the one to reach for in CI or when the tree is
+suspect, since it rebuilds `node_modules` from the lockfile:
 
 ```shell
 npm ci
-```
-
-or, if there is no lockfile yet:
-
-```shell
-rm -rf node_modules package-lock.json && npm install
 ```
 
 This affects the local development loop only. `crossplane project build` tars a

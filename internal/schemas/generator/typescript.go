@@ -406,20 +406,24 @@ DISTEOF
 // stampModelsVersion replaces the generated package's placeholder version with
 // one derived from the content of the generated files.
 //
-// This is a diagnostic, not a cure. The function scaffold sets
-// install-links=true so the models are copied into node_modules rather than
-// symlinked, and npm treats a file: dependency as satisfied while its spec is
-// unchanged — so models generated after the first install do not reach the
-// tree. Measured: neither `npm install` nor `npm update crossplane-models`
-// picks up new models even with a changing version here; only `npm ci` (or
-// removing node_modules) does, which was already true with a constant version.
+// The function scaffold sets install-links=true so the models are copied into
+// node_modules rather than symlinked, and npm treats a file: dependency as
+// satisfied while its spec is unchanged — so models generated after the first
+// install do not reach the tree on their own.
 //
-// What the version buys is a way to see the problem. With every copy stamped
-// 0.0.0 there was no way to tell a stale node_modules from a current one, and
-// the symptom is a TS2307 pointing at the import rather than at the copy.
-// Comparing this version against the one in node_modules now answers it
-// directly. `crossplane project build` is unaffected either way: it tars a
-// fresh tree into the build container every time.
+// A changing version is what lets `npm update` recover from that. Measured
+// against a build with a constant 0.0.0: `npm update` does not pick up new
+// models, and does once the version tracks the content. `npm install
+// crossplane-models` works either way, by naming the package and forcing npm to
+// re-resolve it; bare `npm install`, `npm install --force`, `npm rebuild` and
+// `npm update crossplane-models` all fail regardless.
+//
+// It also makes a stale copy visible, which matters because the symptom is a
+// TS2307 pointing at the import rather than at the copy: comparing this version
+// against the one in node_modules answers it in one step.
+//
+// `crossplane project build` is unaffected either way — it tars a fresh tree
+// into the build container every time.
 func stampModelsVersion(fsys afero.Fs) error {
 	pkgPath := path.Join(typescriptModelsFolder, "package.json")
 

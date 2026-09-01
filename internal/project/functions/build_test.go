@@ -25,9 +25,11 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -179,9 +181,11 @@ func TestKCLBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	keychain := &anonymousKeychain{}
 	b := &kclBuilder{
 		baseImage:   baseImageRef.String(),
 		transport:   regSrv.Client().Transport,
+		keychain:    keychain,
 		configStore: clixpkg.NewStaticImageConfigStore(nil),
 	}
 	projFS := afero.FromIOFS{FS: kclFunction}
@@ -204,6 +208,10 @@ func TestKCLBuild(t *testing.T) {
 	}
 	if !slices.Contains(cfgFile.Config.Env, "FUNCTION_KCL_DEFAULT_SOURCE=/src") {
 		t.Errorf("env missing FUNCTION_KCL_DEFAULT_SOURCE=/src; got %v", cfgFile.Config.Env)
+	}
+
+	if !keychain.used.Load() {
+		t.Error("base image was pulled without the injected keychain; the builder fell back to the host's docker config")
 	}
 
 	verifyCodeLayer(t, fnImg, afero.NewBasePathFs(projFS, "testdata/kcl-function"), "/src")
@@ -249,9 +257,11 @@ func TestGoTemplatingBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	keychain := &anonymousKeychain{}
 	b := &goTemplatingBuilder{
 		baseImage:   baseImageRef.String(),
 		transport:   regSrv.Client().Transport,
+		keychain:    keychain,
 		configStore: clixpkg.NewStaticImageConfigStore(nil),
 	}
 	projFS := afero.FromIOFS{FS: goTemplatingFunction}
@@ -274,6 +284,10 @@ func TestGoTemplatingBuild(t *testing.T) {
 	}
 	if !slices.Contains(cfgFile.Config.Env, "FUNCTION_GO_TEMPLATING_DEFAULT_SOURCE=/src") {
 		t.Errorf("env missing FUNCTION_GO_TEMPLATING_DEFAULT_SOURCE=/src; got %v", cfgFile.Config.Env)
+	}
+
+	if !keychain.used.Load() {
+		t.Error("base image was pulled without the injected keychain; the builder fell back to the host's docker config")
 	}
 
 	verifyCodeLayer(t, fnImg, afero.NewBasePathFs(projFS, "testdata/go-templating-function"), "/src")
@@ -327,4 +341,26 @@ func verifyCodeLayer(t *testing.T, img v1.Image, sourceFS afero.Fs, destPrefix s
 
 		return nil
 	})
+}
+
+// anonymousKeychain returns authn.Anonymous for every request, and records
+// that it was asked. A real keychain would consult the host's docker config:
+// if that sets a credsStore, resolving credentials shells out to
+// docker-credential-<store>, which is not on PATH under `nix run .#test`
+// (nix/apps.nix sets inheritPath = false), and the base-image pull fails on a
+// developer machine while passing in CI. internal/project/push_test.go carries
+// the same helper for the push path.
+//
+// The used flag is what keeps this honest: if a builder stops threading its
+// keychain through and falls back to authn.DefaultKeychain, this keychain is
+// never consulted and the test fails on any host, with or without a docker
+// config.
+type anonymousKeychain struct {
+	used atomic.Bool
+}
+
+func (k *anonymousKeychain) Resolve(authn.Resource) (authn.Authenticator, error) {
+	k.used.Store(true)
+
+	return authn.Anonymous, nil
 }

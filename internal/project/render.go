@@ -26,6 +26,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/daemon"
+	"github.com/moby/moby/client"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -131,12 +132,16 @@ func getDockerDaemonArchitecture(ctx context.Context) string {
 	}
 	defer cli.Close() //nolint:errcheck // best effort
 
-	info, err := cli.Info(ctx)
+	// Ask /version rather than /info: it carries the architecture in a plain
+	// string field, where system.Info decodes DefaultAddressPools into a
+	// netip.Prefix and so fails wholesale on a runtime that reports a
+	// non-CIDR pool -- which here would silently mean the local GOARCH.
+	v, err := cli.ServerVersion(ctx, client.ServerVersionOptions{})
 	if err != nil {
 		return runtime.GOARCH
 	}
 
-	return normalizeArchitecture(info.Architecture)
+	return normalizeArchitecture(v.Arch)
 }
 
 // normalizeArchitecture converts Docker's architecture naming to Go's GOARCH format.

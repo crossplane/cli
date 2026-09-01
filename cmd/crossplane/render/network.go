@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/client"
 	"k8s.io/apimachinery/pkg/util/rand"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -57,7 +57,7 @@ func createRenderNetwork(ctx context.Context) (string, string, error) {
 
 	name := fmt.Sprintf("crossplane-render-%s", rand.String(8))
 
-	resp, err := cli.NetworkCreate(ctx, name, network.CreateOptions{
+	resp, err := cli.NetworkCreate(ctx, name, client.NetworkCreateOptions{
 		Driver: "bridge",
 	})
 	if err != nil {
@@ -73,5 +73,6 @@ func removeRenderNetwork(ctx context.Context, networkID string) error {
 	if err != nil {
 		return errors.Wrap(err, "cannot create Docker client")
 	}
-	return errors.Wrap(cli.NetworkRemove(ctx, networkID), "cannot remove Docker network")
+	_, err = cli.NetworkRemove(ctx, networkID, client.NetworkRemoveOptions{})
+	return errors.Wrap(err, "cannot remove Docker network")
 }

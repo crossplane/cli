@@ -32,13 +32,11 @@ import (
 	"strings"
 
 	"github.com/docker/cli/cli/config"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 	"github.com/spf13/afero"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -51,7 +49,7 @@ func Check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if _, err := cli.Ping(ctx); err != nil {
+	if _, err := cli.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true}); err != nil {
 		return errors.Wrap(err, "failed to ping docker daemon")
 	}
 	return nil
@@ -76,17 +74,17 @@ func GetContainerByName(ctx context.Context, name string, includeStopped bool) (
 		return nil, false, err
 	}
 
-	cs, err := cli.ContainerList(ctx, container.ListOptions{
-		Filters: filters.NewArgs(filters.KeyValuePair{Key: "name", Value: name}),
+	cs, err := cli.ContainerList(ctx, client.ContainerListOptions{
+		Filters: make(client.Filters).Add("name", name),
 		All:     includeStopped,
 	})
 	if err != nil {
 		return nil, false, errors.Wrap(err, "failed to list containers")
 	}
-	if len(cs) == 0 {
+	if len(cs.Items) == 0 {
 		return nil, false, nil
 	}
-	return &cs[0], true, nil
+	return &cs.Items[0], true, nil
 }
 
 // GetNetworkIDByName returns the ID of the network with the given name.
@@ -96,16 +94,16 @@ func GetNetworkIDByName(ctx context.Context, name string) (string, bool, error) 
 		return "", false, err
 	}
 
-	ns, err := cli.NetworkList(ctx, network.ListOptions{
-		Filters: filters.NewArgs(filters.KeyValuePair{Key: "name", Value: name}),
+	ns, err := cli.NetworkList(ctx, client.NetworkListOptions{
+		Filters: make(client.Filters).Add("name", name),
 	})
 	if err != nil {
 		return "", false, errors.Wrap(err, "failed to list networks")
 	}
-	if len(ns) == 0 {
+	if len(ns.Items) == 0 {
 		return "", false, nil
 	}
-	return ns[0].ID, true, nil
+	return ns.Items[0].ID, true, nil
 }
 
 // StartContainer starts a container with the given name using the given image.
@@ -130,7 +128,7 @@ func StartContainer(ctx context.Context, name, img string, opts ...StartContaine
 			return "", err
 		}
 
-		out, err := cli.ImagePull(ctx, img, image.PullOptions{
+		out, err := cli.ImagePull(ctx, img, client.ImagePullOptions{
 			RegistryAuth: auth,
 		})
 		if err != nil {
@@ -142,29 +140,30 @@ func StartContainer(ctx context.Context, name, img string, opts ...StartContaine
 		}
 	}
 
-	resp, err := cli.ContainerCreate(ctx,
-		cfg.containerConfig,
-		cfg.hostConfig,
-		nil,
-		nil,
-		name,
-	)
+	resp, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config:     cfg.containerConfig,
+		HostConfig: cfg.hostConfig,
+		Name:       name,
+	})
 	if err != nil {
 		return "", errors.Wrap(err, "failed to create container")
 	}
 
 	for _, cpy := range cfg.copyFiles {
-		if err := cli.CopyToContainer(ctx, resp.ID, filepath.Clean(cpy.to), bytes.NewReader(cpy.tarball), container.CopyToContainerOptions{}); err != nil {
+		if _, err := cli.CopyToContainer(ctx, resp.ID, client.CopyToContainerOptions{
+			DestinationPath: filepath.Clean(cpy.to),
+			Content:         bytes.NewReader(cpy.tarball),
+		}); err != nil {
 			return "", errors.Wrapf(err, "failed to copy files to container path %s", cpy.to)
 		}
 	}
 
-	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		return "", errors.Wrap(err, "failed to start container")
 	}
 
 	for _, nid := range cfg.networks {
-		if err := cli.NetworkConnect(ctx, nid, resp.ID, nil); err != nil {
+		if _, err := cli.NetworkConnect(ctx, nid, client.NetworkConnectOptions{Container: resp.ID}); err != nil {
 			return "", errors.Wrapf(err, "failed to connect container to network %q", nid)
 		}
 	}
@@ -211,7 +210,8 @@ func StartContainerByID(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	return errors.Wrap(cli.ContainerStart(ctx, id, container.StartOptions{}), "failed to start container")
+	_, err = cli.ContainerStart(ctx, id, client.ContainerStartOptions{})
+	return errors.Wrap(err, "failed to start container")
 }
 
 type startContainerConfig struct {
@@ -288,13 +288,11 @@ func StopContainerByID(ctx context.Context, cid string) error {
 		return err
 	}
 
-	if err := cli.ContainerStop(ctx, cid, container.StopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, cid, client.ContainerStopOptions{}); err != nil {
 		return errors.Wrap(err, "failed to stop container")
 	}
-	return errors.Wrap(
-		cli.ContainerRemove(ctx, cid, container.RemoveOptions{Force: true, RemoveVolumes: true}),
-		"failed to remove container",
-	)
+	_, err = cli.ContainerRemove(ctx, cid, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
+	return errors.Wrap(err, "failed to remove container")
 }
 
 // WaitForContainerByID waits for the container with the given ID to stop.
@@ -304,11 +302,13 @@ func WaitForContainerByID(ctx context.Context, cid string) error {
 		return err
 	}
 
-	statusCh, errCh := cli.ContainerWait(ctx, cid, container.WaitConditionNotRunning)
+	wait := cli.ContainerWait(ctx, cid, client.ContainerWaitOptions{
+		Condition: container.WaitConditionNotRunning,
+	})
 	select {
-	case status := <-statusCh:
+	case status := <-wait.Result:
 		if status.StatusCode != 0 {
-			out, err := cli.ContainerLogs(ctx, cid, container.LogsOptions{ShowStdout: true, ShowStderr: true})
+			out, err := cli.ContainerLogs(ctx, cid, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true})
 			if err != nil {
 				return errors.Wrapf(err, "failed to get container logs")
 			}
@@ -320,7 +320,7 @@ func WaitForContainerByID(ctx context.Context, cid string) error {
 
 			return fmt.Errorf("container exited with non-zero status: %d, logs: %s", status.StatusCode, logs.String())
 		}
-	case err := <-errCh:
+	case err := <-wait.Error:
 		return errors.Wrapf(err, "container unknown failure")
 	}
 
@@ -433,7 +433,7 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 		if authErr != nil {
 			return nil, nil, authErr
 		}
-		out, pullErr := cli.ImagePull(ctx, img, image.PullOptions{RegistryAuth: auth})
+		out, pullErr := cli.ImagePull(ctx, img, client.ImagePullOptions{RegistryAuth: auth})
 		if pullErr != nil {
 			return nil, nil, errors.Wrapf(pullErr, "failed to pull image %q", img)
 		}
@@ -442,18 +442,22 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 		}
 	}
 
-	resp, err := cli.ContainerCreate(ctx, cfg.containerConfig, cfg.hostConfig, cfg.networkConfig, nil, "")
+	resp, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config:           cfg.containerConfig,
+		HostConfig:       cfg.hostConfig,
+		NetworkingConfig: cfg.networkConfig,
+	})
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "failed to create container")
 	}
 	defer func() { //nolint:contextcheck // Intentionally use a detached context for cleanup.
-		_ = cli.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(context.Background(), resp.ID, client.ContainerRemoveOptions{Force: true})
 	}()
 
 	// Attach before starting so we don't miss any output. Docker
 	// multiplexes stdout/stderr with 8-byte frame headers when the
 	// container is not using a TTY.
-	attach, err := cli.ContainerAttach(ctx, resp.ID, container.AttachOptions{
+	attach, err := cli.ContainerAttach(ctx, resp.ID, client.ContainerAttachOptions{
 		Stream: true,
 		Stdout: true,
 		Stderr: true,
@@ -464,7 +468,7 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 	}
 	defer attach.Close()
 
-	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		return nil, nil, errors.Wrap(err, "failed to start container")
 	}
 
@@ -485,16 +489,18 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 	}
 
 	// Wait for the container to finish.
-	statusCh, errCh := cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
+	wait := cli.ContainerWait(ctx, resp.ID, client.ContainerWaitOptions{
+		Condition: container.WaitConditionNotRunning,
+	})
 	select {
-	case status := <-statusCh:
+	case status := <-wait.Result:
 		if status.StatusCode != 0 {
 			return stdout.Bytes(), stderr.Bytes(), &ContainerExitError{
 				ExitCode: int(status.StatusCode),
 				Stderr:   stderr.Bytes(),
 			}
 		}
-	case err := <-errCh:
+	case err := <-wait.Error:
 		return nil, nil, errors.Wrap(err, "error waiting for container")
 	}
 
@@ -508,13 +514,13 @@ func CopyFromContainer(ctx context.Context, cid, basePath string, fs afero.Fs) e
 		return err
 	}
 
-	reader, _, err := cli.CopyFromContainer(ctx, cid, basePath)
+	resp, err := cli.CopyFromContainer(ctx, cid, client.CopyFromContainerOptions{SourcePath: basePath})
 	if err != nil {
 		return errors.Wrap(err, "failed to copy files from container")
 	}
-	defer func() { _ = reader.Close() }()
+	defer func() { _ = resp.Content.Close() }()
 
-	tarReader := tar.NewReader(reader)
+	tarReader := tar.NewReader(resp.Content)
 
 	// Limit files to 1GiB to avoid excessive memory usage.
 	const maxFileSize = 1024 * 1024 * 1024
@@ -573,18 +579,18 @@ func TarFromContainer(ctx context.Context, cid, path string) ([]byte, error) {
 		return nil, err
 	}
 
-	reader, _, err := cli.CopyFromContainer(ctx, cid, path)
+	resp, err := cli.CopyFromContainer(ctx, cid, client.CopyFromContainerOptions{SourcePath: path})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to copy files from container")
 	}
-	defer func() { _ = reader.Close() }()
+	defer func() { _ = resp.Content.Close() }()
 
-	return io.ReadAll(reader)
+	return io.ReadAll(resp.Content)
 }
 
 // NewClient creates a new Docker client configured from environment variables.
 func NewClient() (*client.Client, error) {
-	cli, err := client.NewClientWithOpts(client.WithAPIVersionNegotiation(), client.FromEnv)
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create docker client")
 	}

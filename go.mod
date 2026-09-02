@@ -6,7 +6,7 @@ require (
 	dario.cat/mergo v1.0.2
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/alecthomas/kong v1.16.1
-	github.com/charmbracelet/bubbles v1.0.0
+	github.com/charmbracelet/bubbles/v2 v2.2.1
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834

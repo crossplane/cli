@@ -75,6 +75,34 @@ func TestGenerateFromCRD(t *testing.T) {
 	}
 }
 
+func TestMutateJSONSchema(t *testing.T) {
+	t.Run("ObjectWithProperties", func(t *testing.T) {
+		s := &jsonschema.Schema{
+			Type: "object",
+		}
+		s.Properties = jsonschema.NewProperties()
+		s.Properties.Set("name", &jsonschema.Schema{Type: "string"})
+
+		mutateJSONSchema(s)
+
+		if s.AdditionalProperties != jsonschema.FalseSchema {
+			t.Error("expected additionalProperties to be false for object with properties")
+		}
+	})
+
+	t.Run("EmptyObject", func(t *testing.T) {
+		s := &jsonschema.Schema{
+			Type: "object",
+		}
+
+		mutateJSONSchema(s)
+
+		if s.AdditionalProperties != nil {
+			t.Error("expected additionalProperties to remain nil for empty object")
+		}
+	})
+}
+
 func TestGenerateFromOpenAPI(t *testing.T) {
 	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataJSONFS}, "testdata")
 	schemaFS, err := jsonGenerator{}.GenerateFromOpenAPI(t.Context(), inputFS, nil)

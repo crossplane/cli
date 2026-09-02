@@ -166,7 +166,7 @@ func CRDsToJSONSchemas(crds []*extv1.CustomResourceDefinition) ([]CRDJSONSchema,
 // Schema: sets additionalProperties to false on object types and rewrites
 // component $ref paths to file references.
 func mutateJSONSchema(s *jsonschema.Schema) *jsonschema.Schema {
-	if s.Type == "object" && s.AdditionalProperties == nil {
+	if s.Type == "object" && s.AdditionalProperties == nil && s.Properties.Len() > 0 {
 		s.AdditionalProperties = jsonschema.FalseSchema
 	}
 

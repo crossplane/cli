@@ -48,7 +48,7 @@ const (
 	// typescriptImage is the Docker image used to run crd-generate. Pinned to
 	// an exact tag: the toolchain is installed from a lockfile, so a floating
 	// Node would leave generated output dependent on when it was generated.
-	typescriptImage = "docker.io/library/node:22.22.1-slim"
+	typescriptImage = "docker.io/library/node:24.20.0-slim"
 )
 
 // The toolchain that turns CRDs into TypeScript models is pinned by a

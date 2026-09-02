@@ -45,7 +45,7 @@ import (
 
 const (
 	// typescriptBuildImage is the image in which we build the function.
-	typescriptBuildImage = "docker.io/library/node:24-slim"
+	typescriptBuildImage = "docker.io/library/node:24.20.0-slim"
 	// typescriptRuntimeImage is the distroless base used at runtime. The
 	// :nonroot variant, so the built function does not serve gRPC as root.
 	typescriptRuntimeImage = "gcr.io/distroless/nodejs24-debian13:nonroot"

@@ -49,7 +49,7 @@ const (
 	pythonVersion = "3.13"
 
 	// pythonBuildImage is the image in which we build the function.
-	pythonBuildImage = "docker.io/library/debian:13-slim"
+	pythonBuildImage = "docker.io/library/debian:13.6-slim"
 	// pythonRuntimeImage is the distroless base used at runtime.
 	pythonRuntimeImage = "gcr.io/distroless/python3-debian13:nonroot"
 	// pythonBuildScript is the shell pipeline that runs in the build

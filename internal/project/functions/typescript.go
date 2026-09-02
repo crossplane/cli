@@ -173,7 +173,7 @@ func (b *typescriptBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Ima
 	eg, _ := errgroup.WithContext(ctx)
 	for i, arch := range c.Architectures {
 		eg.Go(func() error {
-			baseImg, err := baseImageForArch(runtimeRef, arch, b.transport)
+			baseImg, err := baseImageForArch(runtimeRef, arch, b.transport, c.BaseImageCacheDir)
 			if err != nil {
 				return errors.Wrap(err, "failed to fetch typescript runtime base image")
 			}

@@ -20,7 +20,9 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/afero"
+	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	structuralschema "k8s.io/apiextensions-apiserver/pkg/apiserver/schema"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -44,6 +46,10 @@ func createCRDFromXRD(xrd xpv1.CompositeResourceDefinition) (*apiextensionsv1.Cu
 		xrCrd.Spec.Names.ListKind = xrCrd.Spec.Names.Kind + "List"
 	}
 
+	if err := validateStructural(xrCrd); err != nil {
+		return nil, nil, errors.Wrapf(err, "composite CRD derived from XRD %q has an unusable schema", xrd.GetName())
+	}
+
 	if xrd.Spec.ClaimNames != nil {
 		claimCrd, err = xcrd.ForCompositeResourceClaim(&xrd)
 		if err != nil {
@@ -57,6 +63,35 @@ func createCRDFromXRD(xrd xpv1.CompositeResourceDefinition) (*apiextensionsv1.Cu
 	}
 
 	return xrCrd, claimCrd, nil
+}
+
+// validateStructural reports schemas that Kubernetes would not accept as
+// structural. Such a schema is silently reduced to an empty object when it is
+// converted to OpenAPI, which leaves the generated language types with no
+// fields at all rather than with the one bad field missing, so it is worth
+// stopping on rather than passing through.
+func validateStructural(crd *apiextensionsv1.CustomResourceDefinition) error {
+	for _, ver := range crd.Spec.Versions {
+		if ver.Schema == nil || ver.Schema.OpenAPIV3Schema == nil {
+			continue
+		}
+
+		internal := &apiextensions.JSONSchemaProps{}
+		if err := apiextensionsv1.Convert_v1_JSONSchemaProps_To_apiextensions_JSONSchemaProps(ver.Schema.OpenAPIV3Schema, internal, nil); err != nil {
+			return errors.Wrapf(err, "cannot read the schema of version %q", ver.Name)
+		}
+
+		s, err := structuralschema.NewStructural(internal)
+		if err != nil {
+			return errors.Wrapf(err, "version %q", ver.Name)
+		}
+
+		if err := structuralschema.ValidateStructural(nil, s).ToAggregate(); err != nil {
+			return errors.Wrapf(err, "version %q", ver.Name)
+		}
+	}
+
+	return nil
 }
 
 // ProcessXRD generates associated CRDs from an XRD.

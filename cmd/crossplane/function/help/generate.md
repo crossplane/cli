@@ -1,7 +1,8 @@
 The `function generate` command creates an embedded function in the specified
 language under the project's `functions/` directory. It optionally idempotently
-adds the new function to the end of a Composition's pipeline when given a
-Composition path.
+adds the new function to the start of a Composition's pipeline when given a
+Composition path, so that it runs before steps such as `function-auto-ready`,
+which observe the resources it composes.
 
 ## Supported languages
 
@@ -11,6 +12,7 @@ The following are valid arguments to the `--language` / `-l` flag:
 - `go`
 - `kcl`
 - `python`
+- `typescript`
 
 ## Examples
 

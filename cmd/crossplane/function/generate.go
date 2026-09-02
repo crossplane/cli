@@ -49,6 +49,12 @@ import (
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
+// Function language constants.
+const (
+	langGoTemplating = "go-templating"
+	langPython       = "python"
+)
+
 //go:embed help/generate.md
 var generateHelp string
 
@@ -59,6 +65,8 @@ var (
 	pythonTemplates embed.FS
 	//go:embed templates/go-templating/*
 	goTemplatingTemplates embed.FS
+	//go:embed all:templates/typescript
+	typescriptTemplates embed.FS
 
 	// The go template contains a go.mod, so we can't embed it as an
 	// embed.FS. Instead we have to embed it as a tar archive and extract it
@@ -70,7 +78,7 @@ var (
 type generateCmd struct {
 	Name         string `arg:""                            help:"Name of the function to generate. Must be a valid DNS-1035 label."`
 	PipelinePath string `arg:""                            help:"Path to a Composition YAML file to add a pipeline step to."        optional:""`
-	Language     string `default:"go-templating"           enum:"go,go-templating,kcl,python"                                       help:"Language to use for the function." short:"l"`
+	Language     string `default:"go-templating"           enum:"go,go-templating,kcl,python,typescript"                            help:"Language to use for the function." short:"l"`
 	ProjectFile  string `default:"crossplane-project.yaml" help:"Path to project definition file."                                  short:"f"`
 
 	projFS            afero.Fs
@@ -120,14 +128,22 @@ func (c *generateCmd) AfterApply() error {
 // validateLanguageAgainstSchemas refuses to generate a function in a language
 // whose schemas the project doesn't generate. Such a function would have no
 // models to import, which is surprising, so we fail up front rather than
-// scaffolding a function that can't compile. An empty schemaLangs means the
-// project generates all languages (matching generator.Filter), so any function
-// language is fine.
+// scaffolding a function that can't compile.
 func validateLanguageAgainstSchemas(functionLang string, schemaLangs []string) error {
-	if len(schemaLangs) == 0 {
-		return nil
-	}
 	required := functionSchemaLanguage(functionLang)
+
+	// An unset list is not permission for anything: it selects a default set,
+	// which does not include every supported language. Validating against the
+	// defaults is what stops `function generate --language typescript` on a
+	// freshly initialised project from scaffolding a function whose models are
+	// never generated.
+	if len(schemaLangs) == 0 {
+		if slices.Contains(generator.DefaultLanguages(), required) {
+			return nil
+		}
+		return errors.Errorf("cannot generate a %q function: this project does not set spec.schemas.languages, so it generates %v schemas and not %q; add %q to spec.schemas.languages", functionLang, generator.DefaultLanguages(), required, required)
+	}
+
 	if !slices.Contains(schemaLangs, required) {
 		return errors.Errorf("cannot generate a %q function: the project only generates %v schemas; add %q to spec.schemas.languages or choose a different language", functionLang, schemaLangs, required)
 	}
@@ -138,7 +154,7 @@ func validateLanguageAgainstSchemas(functionLang string, schemaLangs []string) e
 // the given function language consumes. Most function languages map to a
 // like-named schema language; go-templating consumes the JSON schema.
 func functionSchemaLanguage(functionLang string) string {
-	if functionLang == "go-templating" {
+	if functionLang == langGoTemplating {
 		return v1alpha1.SchemaLanguageJSON
 	}
 	return functionLang
@@ -176,10 +192,11 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 
 	type generatorFunc func(afero.Fs) error
 	generators := map[string]generatorFunc{
-		"go":            c.generateGoFiles,
-		"go-templating": c.generateGoTemplatingFiles,
-		"kcl":           c.generateKCLFiles,
-		"python":        c.generatePythonFiles,
+		"go":             c.generateGoFiles,
+		langGoTemplating: c.generateGoTemplatingFiles,
+		"kcl":            c.generateKCLFiles,
+		langPython:       c.generatePythonFiles,
+		"typescript":     c.generateTypescriptFiles,
 	}
 
 	generator, ok := generators[c.Language]
@@ -418,6 +435,59 @@ func (c *generateCmd) generateGoTemplatingFiles(fs afero.Fs) error {
 	}
 
 	return renderTemplates(fs, tmpls, tmplData)
+}
+
+type typescriptTemplateData struct {
+	Name        string
+	HasSchemas  bool
+	SchemasPath string
+}
+
+func (c *generateCmd) generateTypescriptFiles(targetFS afero.Fs) error {
+	hasSchemas, err := afero.DirExists(c.schemasFS, "typescript")
+	if err != nil {
+		return errors.Wrap(err, "cannot inspect typescript schemas directory")
+	}
+	if hasSchemas {
+		entries, err := afero.ReadDir(c.schemasFS, "typescript")
+		if err != nil {
+			return errors.Wrap(err, "cannot read typescript schemas directory")
+		}
+		hasSchemas = len(entries) > 0
+	}
+
+	// Compute the relative path from the function dir to schemas/typescript/.
+	fnDir := filepath.Join("/", c.proj.Spec.Paths.Functions, c.Name)
+	relRoot, err := filepath.Rel(fnDir, "/")
+	if err != nil {
+		return errors.Wrap(err, "cannot determine path to schemas directory")
+	}
+	schemasPath := filepath.ToSlash(filepath.Join(relRoot, c.proj.Spec.Paths.Schemas, "typescript"))
+
+	data := typescriptTemplateData{
+		Name:        c.Name,
+		HasSchemas:  hasSchemas,
+		SchemasPath: schemasPath,
+	}
+
+	// Parse top-level templates
+	tmpls, err := template.ParseFS(typescriptTemplates, "templates/typescript/*.*")
+	if err != nil {
+		return errors.Wrap(err, "cannot parse top-level TypeScript templates")
+	}
+	if err := renderTemplates(targetFS, tmpls, data); err != nil {
+		return err
+	}
+
+	// Create src directory and parse src templates
+	if err := targetFS.Mkdir("src", 0o755); err != nil {
+		return errors.Wrap(err, "cannot create src directory")
+	}
+	tmpls, err = template.ParseFS(typescriptTemplates, "templates/typescript/src/*.*")
+	if err != nil {
+		return errors.Wrap(err, "cannot parse TypeScript source templates")
+	}
+	return renderTemplates(afero.NewBasePathFs(targetFS, "src"), tmpls, data)
 }
 
 func renderTemplates(targetFS afero.Fs, tmpls *template.Template, data any) error {

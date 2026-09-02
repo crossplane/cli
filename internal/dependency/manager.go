@@ -21,6 +21,7 @@ package dependency
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -384,6 +385,149 @@ func (m *Manager) addDependencyNoWrite(ctx context.Context, dep *v1alpha1.Depend
 	default:
 		return nil, errors.New("dependency has no source configured")
 	}
+}
+
+// CollectSources returns all schema sources from the project's dependencies
+// without generating schemas. This allows the caller to merge sources and
+// generate schemas in a single pass.
+func (m *Manager) CollectSources(ctx context.Context, ch async.EventChannel) ([]smanager.Source, error) {
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	// One slice per project dependency: a package contributes its own CRDs and
+	// those of everything its metadata depends on. Indexing by position keeps
+	// the flattened result in project-file order.
+	sourcesByIndex := make([][]smanager.Source, len(m.proj.Spec.Dependencies))
+
+	for i := range m.proj.Spec.Dependencies {
+		dep := &m.proj.Spec.Dependencies[i]
+		desc := "Updating dependency " + GetSourceDescription(*dep)
+		eg.Go(func() error {
+			ch.SendEvent(desc, async.EventStatusStarted)
+			srcs, err := m.collectSource(egCtx, dep)
+			if err != nil {
+				ch.SendEvent(desc, async.EventStatusFailure)
+				return err
+			}
+			ch.SendEvent(desc, async.EventStatusSuccess)
+
+			sourcesByIndex[i] = srcs
+			return nil
+		})
+	}
+
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
+
+	var sources []smanager.Source
+	for _, srcs := range sourcesByIndex {
+		sources = append(sources, srcs...)
+	}
+
+	// Sort by ID. Project dependencies are collected concurrently and a
+	// transitive dependency shared by two of them lands under whichever
+	// goroutine claimed it first, so the flattened order is otherwise a race.
+	// The merged filesystem prefixes each source by its position, so a stable
+	// order keeps that tree reproducible between runs.
+	slices.SortFunc(sources, func(a, b smanager.Source) int {
+		return strings.Compare(a.ID(), b.ID())
+	})
+
+	return sources, nil
+}
+
+// collectSource returns the schema source for a dependency without generating schemas.
+func (m *Manager) collectSource(ctx context.Context, dep *v1alpha1.Dependency) ([]smanager.Source, error) {
+	desc := GetSourceDescription(*dep)
+	switch {
+	case dep.Type == v1alpha1.DependencyTypeXpkg:
+		if dep.Xpkg == nil || dep.Xpkg.Package == "" {
+			return nil, errors.Errorf("xpkg dependency %q is missing xpkg.package; set xpkg.package to a valid package reference", desc)
+		}
+
+		// If the version is a digest, format the OCI ref as
+		// repo@digest. Otherwise, use repo:tag, where tag may be a semver
+		// constraint.
+		ref := dep.Xpkg.Package
+		if _, err := conregv1.NewHash(dep.Xpkg.Version); err == nil {
+			ref = fmt.Sprintf("%s@%s", ref, dep.Xpkg.Version)
+		} else if dep.Xpkg.Version != "" {
+			ref = fmt.Sprintf("%s:%s", ref, dep.Xpkg.Version)
+		}
+
+		return m.collectPackageSource(ctx, ref)
+	case dep.Git != nil:
+		return []smanager.Source{smanager.NewGitSource(*dep, m.gitCloner, m.gitAuthProvider)}, nil
+	case dep.HTTP != nil:
+		return []smanager.Source{smanager.NewHTTPSource(*dep)}, nil
+	case dep.K8s != nil:
+		return []smanager.Source{smanager.NewK8sSource(*dep)}, nil
+	default:
+		return nil, errors.Errorf("dependency %q has no source configured; set exactly one of xpkg, git, http, or k8s", desc)
+	}
+}
+
+// collectPackageSource fetches a package and returns its CRD source, followed by
+// the sources of everything its metadata declares a dependency on, without
+// generating schemas.
+//
+// The transitive walk matters because the merged schema pass generates from
+// exactly what this returns: a dependency it does not collect contributes no
+// schemas at all. A project depending on a Configuration would otherwise get
+// none of the CRDs defined by the providers that Configuration pulls in, even
+// though `dependency add` and `dependency update-cache` — which walk the graph
+// through addPackage — do generate them.
+//
+// claim() gives cycle protection and deduplication for a diamond, where two
+// packages depend on the same third one. It is shared with the addPackage path,
+// which is safe because a single command uses one path or the other.
+func (m *Manager) collectPackageSource(ctx context.Context, ref string) ([]smanager.Source, error) {
+	if !m.claim(ref) {
+		// Already collected this invocation, directly or through another
+		// package's dependencies.
+		return nil, nil
+	}
+
+	resolvedRef, version, err := m.resolver.Resolve(ctx, ref)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot resolve package %q; check that the package exists and that the version or digest is valid", ref)
+	}
+
+	pullPolicy := corev1.PullIfNotPresent
+	pkg, err := m.client.Get(ctx, resolvedRef.String(), runtimexpkg.WithPullPolicy(pullPolicy))
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot download package %q; check registry access and credentials", ref)
+	}
+
+	crdFS, err := clixpkg.CRDFilesystem(pkg.Package)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot extract CRDs from package %q; check that it is a valid Crossplane package", ref)
+	}
+
+	// Use the resolved version so constraint and exact-version inputs
+	// collapse to one schema-lock entry.
+	id := pkg.Source + "@" + pkg.Digest
+	if version != "" {
+		id = pkg.Source + ":" + version
+	}
+
+	sources := []smanager.Source{smanager.NewXpkgSource(id, pkg.Digest, crdFS)}
+
+	// Depth first, in metadata order, so the result is deterministic for a
+	// given dependency graph.
+	for _, dep := range pkg.GetDependencies() {
+		repo := dependencyRepo(dep)
+		if repo == "" {
+			continue
+		}
+		depSources, err := m.collectPackageSource(ctx, xpkgRef(repo, dep.Version))
+		if err != nil {
+			return nil, errors.Wrapf(err, "cannot collect transitive dependency %s of %s", repo, pkg.Source)
+		}
+		sources = append(sources, depSources...)
+	}
+
+	return sources, nil
 }
 
 // Clean removes all generated schemas.

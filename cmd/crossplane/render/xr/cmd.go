@@ -433,9 +433,12 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 
 	// Built here rather than alongside the schema manager below so the
 	// dependency manager generates dependency schemas the same way.
-	generators := generator.AllLanguages(
-		generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-		generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+	generators := generator.Filter(
+		generator.AllLanguages(
+			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+		),
+		proj.Spec.Schemas.GetLanguages(),
 	)
 
 	depMgr := dependency.NewManager(proj, projFS,

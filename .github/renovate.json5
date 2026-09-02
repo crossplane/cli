@@ -47,6 +47,22 @@
   customManagers: [
     {
       customType: 'regex',
+      description: 'Bump the container images the schema generators run in',
+      // Scoped to the generator package on purpose. The function builders in
+      // internal/project/functions also declare image constants, but those are
+      // deliberately floating bases for user function images (for example
+      // distroless nodejs24-debian13, whose tag is not a version), so bumping
+      // them automatically would be wrong.
+      managerFilePatterns: [
+        '/^internal/schemas/generator/.*\\.go$/',
+      ],
+      matchStrings: [
+        'Image\\s*=\\s*"(?<depName>[^":]+):(?<currentValue>[^"]+)"',
+      ],
+      datasourceTemplate: 'docker',
+    },
+    {
+      customType: 'regex',
       description: 'Bump the Renovate version used by the config validator and the bot',
       managerFilePatterns: [
         '/^\\.github/workflows/renovate\\.ya?ml$/',
@@ -147,6 +163,20 @@
         'google/oss-fuzz',
       ],
       enabled: false,
+    },
+    {
+      // The TypeScript schema generator installs this tree with npm ci inside a
+      // container, so package.json and package-lock.json have to move together
+      // or the install fails. Grouping keeps them in one reviewable PR, and
+      // each bump changes generated model output, so these are worth reading.
+      description: 'Group updates to the pinned TypeScript schema generator toolchain',
+      matchManagers: [
+        'npm',
+      ],
+      matchFileNames: [
+        'internal/schemas/generator/typescript-toolchain/package.json',
+      ],
+      groupName: 'typescript schema generator toolchain',
     },
     {
       description: 'Group all go version updates',

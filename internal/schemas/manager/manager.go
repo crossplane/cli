@@ -20,8 +20,11 @@ package manager
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/invopop/jsonschema"
@@ -182,6 +185,14 @@ func jsonBuildIndexSchema(langFS afero.Fs) error {
 	return afero.WriteFile(langFS, metaFile, bs, 0o644)
 }
 
+// currentLock returns the persisted lock.
+func (m *Manager) currentLock() (*lock, error) {
+	m.lockMu.RLock()
+	defer m.lockMu.RUnlock()
+
+	return m.getLock()
+}
+
 func (m *Manager) currentVersion(id string) (string, error) {
 	m.lockMu.RLock()
 	defer m.lockMu.RUnlock()
@@ -244,6 +255,294 @@ func (m *Manager) updateLock(l *lock) error {
 	}
 
 	return nil
+}
+
+// GenerateFromMultipleSources generates schemas from multiple sources at once.
+// This is important for TypeScript generation where all CRDs should be processed
+// together to generate proper cross-references and a unified index.js.
+// Sources with the same SourceType are merged before generation.
+func (m *Manager) GenerateFromMultipleSources(ctx context.Context, sources []Source) error {
+	if len(sources) == 0 {
+		return nil
+	}
+
+	// Group sources by type
+	crdSources := make([]Source, 0)
+	openAPISources := make([]Source, 0)
+	for _, src := range sources {
+		switch src.Type() {
+		case SourceTypeCRD:
+			crdSources = append(crdSources, src)
+		case SourceTypeOpenAPI:
+			openAPISources = append(openAPISources, src)
+		default:
+			return errors.Errorf("cannot generate schemas for source %q: source type %q is not supported; use a CRD or OpenAPI source", src.ID(), src.Type())
+		}
+	}
+
+	// One freshness decision covering every source, not one per group. The
+	// language directories are cleared before generating, so a partial
+	// regeneration would delete models it is not going to rewrite.
+	fresh, versions, err := m.mergedSourcesFresh(ctx, sources)
+	if err != nil {
+		return err
+	}
+	if fresh {
+		return nil
+	}
+
+	// Copying alone never removes anything, so a renamed or deleted kind would
+	// leave its model behind for good — and the TypeScript builder copies this
+	// tree into the function image, so the stale model would ship. Clear first.
+	//
+	// If generation then fails the tree is left empty, but the lock is only
+	// written on success and mergedSourcesFresh checks that each language
+	// directory exists, so the next build regenerates rather than trusting it.
+	if err := m.clearLanguageDirs(); err != nil {
+		return err
+	}
+
+	// Generate from CRD sources (merged)
+	if len(crdSources) > 0 {
+		if err := m.generateFromMergedSources(ctx, crdSources, SourceTypeCRD); err != nil {
+			return errors.Wrap(err, "failed to generate schemas from CRD sources")
+		}
+	}
+
+	// Generate from OpenAPI sources (merged)
+	if len(openAPISources) > 0 {
+		if err := m.generateFromMergedSources(ctx, openAPISources, SourceTypeOpenAPI); err != nil {
+			return errors.Wrap(err, "failed to generate schemas from OpenAPI sources")
+		}
+	}
+
+	return m.recordGeneration(versions, m.languages())
+}
+
+// clearLanguageDirs removes the generated tree for each language this manager
+// generates, so that the next generation writes a tree containing only what the
+// current sources describe.
+func (m *Manager) clearLanguageDirs() error {
+	for _, lang := range m.languages() {
+		if err := m.fs.RemoveAll(lang); err != nil {
+			return errors.Wrapf(err, "failed to clear generated %s schemas", lang)
+		}
+	}
+	return nil
+}
+
+// generateFromMergedSources merges one group of same-typed sources and
+// generates from them. Freshness, clearing and recording the result belong to
+// GenerateFromMultipleSources, which owns the whole cycle.
+func (m *Manager) generateFromMergedSources(ctx context.Context, sources []Source, sourceType SourceType) error {
+	mergedFS, err := m.collectSourceResources(ctx, sources)
+	if err != nil {
+		return err
+	}
+
+	schemas, err := m.runGenerators(ctx, mergedFS, sourceType)
+	if err != nil {
+		return err
+	}
+
+	return m.copyGeneratedSchemas(schemas)
+}
+
+// collectSourceResources merges resources from all sources into a single
+// filesystem. Version bookkeeping belongs to the caller, which has already
+// computed each source's version to decide whether to generate at all.
+func (m *Manager) collectSourceResources(ctx context.Context, sources []Source) (afero.Fs, error) {
+	mergedFS := afero.NewMemMapFs()
+
+	for i, src := range sources {
+		srcFS, err := src.Resources(ctx)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to get resources for source %s", src.ID())
+		}
+
+		// Copy resources into merged filesystem under a unique prefix
+		// to avoid file name collisions
+		prefix := fmt.Sprintf("%04d_%s", i, sanitizeSourceID(src.ID()))
+		prefixedFS := afero.NewBasePathFs(mergedFS, prefix)
+		if err := filesystem.CopyFilesBetweenFs(srcFS, prefixedFS); err != nil {
+			return nil, errors.Wrapf(err, "failed to copy resources from source %s", src.ID())
+		}
+	}
+
+	return mergedFS, nil
+}
+
+// mergedSourcesFresh reports whether the schemas already on disk are correct
+// for these sources, and returns the versions it computed either way so the
+// caller does not repeat the work.
+//
+// Merged generation is all-or-nothing: crd-generate needs every CRD in one pass
+// to emit a coherent index and working cross-references. So the only safe cache
+// decision is whether to skip the pass entirely — one stale source regenerates
+// all of them.
+func (m *Manager) mergedSourcesFresh(ctx context.Context, sources []Source) (bool, map[string]string, error) {
+	versions := make(map[string]string, len(sources))
+	fresh := true
+
+	for _, src := range sources {
+		version, err := src.Version(ctx)
+		if err != nil {
+			return false, nil, errors.Wrapf(err, "failed to get version for source %s", src.ID())
+		}
+		versions[src.ID()] = version
+
+		existing, err := m.currentVersion(src.ID())
+		if err != nil {
+			return false, nil, err
+		}
+		if existing != version {
+			fresh = false
+		}
+	}
+	if !fresh {
+		return false, versions, nil
+	}
+
+	recorded, err := m.currentLock()
+	if err != nil {
+		return false, nil, err
+	}
+	if !slices.Equal(recorded.Languages, m.languages()) {
+		return false, versions, nil
+	}
+
+	// Every current source matched above, so the lock holding more entries than
+	// there are sources means one was removed from the project. Its models are
+	// still on disk and nothing else would notice, because what remains is all
+	// current.
+	if len(recorded.Packages) != len(versions) {
+		return false, versions, nil
+	}
+
+	// The lock can outlive its output: a partly deleted schemas tree would
+	// otherwise read as fresh and leave the build with no models at all.
+	for _, lang := range m.languages() {
+		ok, err := afero.DirExists(m.fs, lang)
+		if err != nil {
+			return false, nil, err
+		}
+		if !ok {
+			return false, versions, nil
+		}
+	}
+
+	return true, versions, nil
+}
+
+// languages returns the sorted language identifiers this manager generates for.
+func (m *Manager) languages() []string {
+	langs := make([]string, 0, len(m.generators))
+	for _, g := range m.generators {
+		langs = append(langs, g.Language())
+	}
+	slices.Sort(langs)
+	return langs
+}
+
+// recordGeneration writes the source versions and the language set that
+// produced the schemas now on disk, in one lock update so the two cannot
+// disagree.
+//
+// versions must be the complete set of sources that were generated from, not a
+// subset: it replaces what the lock held rather than merging into it, so that a
+// dependency removed from the project stops being recorded. Only the merged
+// path calls this, and it always passes every source.
+func (m *Manager) recordGeneration(versions map[string]string, languages []string) error {
+	m.lockMu.Lock()
+	defer m.lockMu.Unlock()
+
+	l, err := m.getLock()
+	if err != nil {
+		return err
+	}
+	l.Packages = versions
+	l.Languages = languages
+
+	return m.updateLock(l)
+}
+
+// runGenerators runs all generators on the merged filesystem and returns the generated schemas.
+func (m *Manager) runGenerators(ctx context.Context, mergedFS afero.Fs, sourceType SourceType) (map[string]afero.Fs, error) {
+	schemas := make(map[string]afero.Fs)
+	var schemasMu sync.Mutex
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	for _, gen := range m.generators {
+		eg.Go(func() error {
+			schemaFS, err := m.runGenerator(egCtx, gen, mergedFS, sourceType)
+			if err != nil {
+				return err
+			}
+			if schemaFS != nil {
+				schemasMu.Lock()
+				schemas[gen.Language()] = schemaFS
+				schemasMu.Unlock()
+			}
+			return nil
+		})
+	}
+
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
+
+	return schemas, nil
+}
+
+// runGenerator runs a single generator on the merged filesystem.
+func (m *Manager) runGenerator(ctx context.Context, gen generator.Interface, mergedFS afero.Fs, sourceType SourceType) (afero.Fs, error) {
+	switch sourceType {
+	case SourceTypeCRD:
+		return gen.GenerateFromCRD(ctx, mergedFS, m.runner)
+	case SourceTypeOpenAPI:
+		return gen.GenerateFromOpenAPI(ctx, mergedFS, m.runner)
+	default:
+		return nil, errors.Errorf("unsupported source type %q", sourceType)
+	}
+}
+
+// copyGeneratedSchemas copies generated schemas to the schema repository.
+func (m *Manager) copyGeneratedSchemas(schemas map[string]afero.Fs) error {
+	for lang, genFS := range schemas {
+		langFS := afero.NewBasePathFs(m.fs, lang)
+
+		// Try to copy from models/ subdirectory first (generators put output there)
+		modelsFS := afero.NewBasePathFs(genFS, "models")
+		hasModels := false
+		if fi, err := modelsFS.Stat("."); err == nil && fi.IsDir() {
+			hasModels = true
+		}
+
+		if hasModels {
+			if err := filesystem.CopyFilesBetweenFs(modelsFS, langFS); err != nil {
+				return err
+			}
+		} else {
+			if err := filesystem.CopyFilesBetweenFs(genFS, langFS); err != nil {
+				return err
+			}
+		}
+
+		if err := postProcessForLanguage(lang, langFS); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sanitizeSourceID converts a source ID to a safe directory name.
+func sanitizeSourceID(id string) string {
+	// Replace characters that are problematic in filesystem paths
+	result := id
+	for _, c := range []string{"://", ":", "/", "@"} {
+		result = strings.ReplaceAll(result, c, "_")
+	}
+	return result
 }
 
 // New returns an initialized manager.

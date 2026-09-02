@@ -53,6 +53,8 @@ func (realIdentifier) Identify(fromFS afero.Fs, imageConfigs []pkgv1beta1.ImageC
 		newPythonBuilder(imageConfigs),
 		newGoBuilder(imageConfigs),
 		newGoTemplatingBuilder(imageConfigs),
+		// TypeScript is checked last since package.json can appear in other project types.
+		newTypescriptBuilder(imageConfigs),
 	}
 	for _, b := range builders {
 		ok, err := b.match(fromFS)

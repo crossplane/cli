@@ -34,6 +34,14 @@ import (
 	_ "embed"
 )
 
+// Common field names for unstructured objects.
+const (
+	fieldAPIVersion = "apiVersion"
+	fieldKind       = "kind"
+	fieldName       = "name"
+	fieldNamespace  = "namespace"
+)
+
 //go:embed help/generate.md
 var generateHelp string
 
@@ -211,10 +219,10 @@ func ConvertClaimToXR(claim *unstructured.Unstructured, opts Options) (*composit
 
 		labels[labelClaimNamespace] = claim.GetNamespace()
 		if err := xrPaved.SetValue("spec.claimRef", map[string]any{
-			"apiVersion": apiVersion,
-			"kind":       claimKind,
-			"name":       claimName,
-			"namespace":  claim.GetNamespace(),
+			fieldAPIVersion: apiVersion,
+			fieldKind:       claimKind,
+			fieldName:       claimName,
+			fieldNamespace:  claim.GetNamespace(),
 		}); err != nil {
 			return nil, errors.Wrap(err, "cannot set claimRef")
 		}

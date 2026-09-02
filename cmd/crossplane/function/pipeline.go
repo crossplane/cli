@@ -47,9 +47,16 @@ func addStepToComposition(fs afero.Fs, path, stepName, functionRef string) error
 
 func addCompositionStep(comp *apiextv1.Composition, stepName, functionRef string) error {
 	for _, step := range comp.Spec.Pipeline {
-		if step.Step == stepName && step.FunctionRef.Name == functionRef {
+		if step.Step != stepName {
+			continue
+		}
+		if step.FunctionRef.Name == functionRef {
 			return nil // already exists
 		}
+		// Step names must be unique within a pipeline, so we can't add this
+		// one alongside the existing step. Rewriting the existing step to
+		// point somewhere else isn't ours to decide either.
+		return errors.Errorf("composition already has a step named %q referencing function %q; rename the function or edit the pipeline by hand", stepName, step.FunctionRef.Name)
 	}
 
 	step := apiextv1.PipelineStep{
@@ -59,6 +66,8 @@ func addCompositionStep(comp *apiextv1.Composition, stepName, functionRef string
 		},
 	}
 
+	// Prepend, so the generated function runs before steps that observe what
+	// it composes, such as function-auto-ready.
 	comp.Spec.Pipeline = append([]apiextv1.PipelineStep{step}, comp.Spec.Pipeline...)
 	return nil
 }

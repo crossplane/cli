@@ -49,10 +49,11 @@ const (
 // ProjectSchemas.Languages. Each corresponds to a schema generator in
 // internal/schemas/generator.
 const (
-	SchemaLanguageGo     = "go"
-	SchemaLanguageJSON   = "json"
-	SchemaLanguageKCL    = "kcl"
-	SchemaLanguagePython = "python"
+	SchemaLanguageGo         = "go"
+	SchemaLanguageJSON       = "json"
+	SchemaLanguageKCL        = "kcl"
+	SchemaLanguagePython     = "python"
+	SchemaLanguageTypescript = "typescript"
 )
 
 // SupportedSchemaLanguages returns the set of language identifiers accepted
@@ -63,6 +64,7 @@ func SupportedSchemaLanguages() []string {
 		SchemaLanguageJSON,
 		SchemaLanguageKCL,
 		SchemaLanguagePython,
+		SchemaLanguageTypescript,
 	}
 }
 
@@ -133,8 +135,8 @@ type ProjectPackageMetadata struct {
 // produced both for the project's own XRDs and for its declared dependencies.
 type ProjectSchemas struct {
 	// Languages restricts schema generation to the listed languages.
-	// Supported values are "go", "json", "kcl", and "python". If not
-	// specified, schemas are generated for all supported languages.
+	// If not specified, schemas are generated for all supported languages.
+	// +kubebuilder:validation:items:Enum=go;json;kcl;python;typescript
 	Languages []string `json:"languages,omitempty"`
 }
 

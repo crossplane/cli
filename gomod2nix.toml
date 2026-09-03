@@ -834,8 +834,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v4.0.0-rc.2"
     hash = "sha256-vLpe6QjO8zGBfBSCkWgrI8uPSABAF+Cc3PJNCcm4ylU="
   [mod."golang.org/x/crypto"]
-    version = "v0.55.0"
-    hash = "sha256-99uV/ESeqhaDEwqbXxDpePuwzO0JoEHGhqZXZVHq/H4="
+    version = "v0.56.0"
+    hash = "sha256-B4el+S5mIq9f5uvCjMQ4Fh3EAxxo7Cb0yeXoxJXuyF8="
   [mod."golang.org/x/exp"]
     version = "v0.0.0-20260410095643-746e56fc9e2f"
     hash = "sha256-JaDJGLIRoJjjvsg3dgfFuo7XApEJO2V4kUDmd58qTLI="

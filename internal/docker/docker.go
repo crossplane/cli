@@ -454,23 +454,22 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 		_, _ = cli.ContainerRemove(context.Background(), resp.ID, client.ContainerRemoveOptions{Force: true})
 	}()
 
-	// Attach before starting so we don't miss any output. Docker
-	// multiplexes stdout/stderr with 8-byte frame headers when the
+	// Start before attaching. Podman's Docker-compatible API rejects attach for
+	// a created container, while Docker supports both orderings. Request logs
+	// when attaching so output written between start and attach is not lost.
+	// Docker multiplexes stdout/stderr with 8-byte frame headers when the
 	// container is not using a TTY.
-	attach, err := cli.ContainerAttach(ctx, resp.ID, client.ContainerAttachOptions{
-		Stream: true,
-		Stdout: true,
-		Stderr: true,
-		Stdin:  cfg.stdin != nil,
+	attach, err := startAndAttach(ctx, resp.ID, cfg.stdin != nil, runContainerCalls{
+		start: func(ctx context.Context, id string, opts client.ContainerStartOptions) error {
+			_, err := cli.ContainerStart(ctx, id, opts)
+			return err
+		},
+		attach: cli.ContainerAttach,
 	})
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "failed to attach to container")
+		return nil, nil, err
 	}
 	defer attach.Close()
-
-	if _, err := cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
-		return nil, nil, errors.Wrap(err, "failed to start container")
-	}
 
 	// Write stdin data if provided, then close the write side so the
 	// container sees EOF.
@@ -505,6 +504,29 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 	}
 
 	return stdout.Bytes(), stderr.Bytes(), nil
+}
+
+type runContainerCalls struct {
+	start  func(context.Context, string, client.ContainerStartOptions) error
+	attach func(context.Context, string, client.ContainerAttachOptions) (client.ContainerAttachResult, error)
+}
+
+// startAndAttach starts a container before attaching to its streams. Podman's
+// Docker-compatible API does not support attaching to a created container. The
+// Logs option ensures output produced between these two calls is replayed.
+func startAndAttach(ctx context.Context, id string, stdin bool, calls runContainerCalls) (client.ContainerAttachResult, error) {
+	if err := calls.start(ctx, id, client.ContainerStartOptions{}); err != nil {
+		return client.ContainerAttachResult{}, errors.Wrap(err, "failed to start container")
+	}
+
+	rsp, err := calls.attach(ctx, id, client.ContainerAttachOptions{
+		Stream: true,
+		Stdout: true,
+		Stderr: true,
+		Stdin:  stdin,
+		Logs:   true,
+	})
+	return rsp, errors.Wrap(err, "failed to attach to container")
 }
 
 // CopyFromContainer copies files from a container to an afero filesystem.

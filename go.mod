@@ -32,7 +32,6 @@ require (
 	github.com/oapi-codegen/oapi-codegen/v2 v2.8.0
 	github.com/pkg/errors v0.9.1
 	github.com/posener/complete v1.2.3
-	github.com/posener/complete/v2 v2.1.0
 	github.com/spf13/afero v1.15.0
 	github.com/willabides/kongplete v0.4.0
 	golang.org/x/mod v0.40.0
@@ -302,7 +301,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect

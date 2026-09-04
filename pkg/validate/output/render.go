@@ -26,16 +26,8 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
+	"github.com/crossplane/cli/v2/pkg/symbols"
 	pkgvalidate "github.com/crossplane/cli/v2/pkg/validate"
-)
-
-// Per-line markers used in text output. Lifted into named constants so
-// the line formats below read as "<marker> <message>" rather than
-// repeating the bracket literal at every call site.
-const (
-	markerSuccess = "[✓]" // resource passed validation
-	markerWarning = "[!]" // operational issue (missing schema, defaulting failure)
-	markerFail    = "[x]" // assertion failure (schema, CEL, or unknown-field error)
 )
 
 // Renderer writes a *ValidationResult to an io.Writer in some specific
@@ -139,12 +131,12 @@ func (textRenderer) Render(result *pkgvalidate.ValidationResult, w io.Writer, op
 		var line string
 		switch r.Status {
 		case pkgvalidate.ValidationStatusMissingSchema:
-			line = fmt.Sprintf(markerWarning+" could not find CRD/XRD for: %s\n", gvk)
+			line = fmt.Sprintf(symbols.MarkerWarning+" could not find CRD/XRD for: %s\n", gvk)
 		case pkgvalidate.ValidationStatusValid:
 			if opts.SkipSuccessResults {
 				continue
 			}
-			line = fmt.Sprintf(markerSuccess+" %s, %s validated successfully\n", gvk, r.Name)
+			line = fmt.Sprintf(symbols.MarkerSuccess+" %s, %s validated successfully\n", gvk, r.Name)
 		case pkgvalidate.ValidationStatusInvalid, pkgvalidate.ValidationStatusDefaultingFailed:
 			var sb strings.Builder
 			for _, e := range r.Errors {
@@ -167,13 +159,13 @@ func (textRenderer) Render(result *pkgvalidate.ValidationResult, w io.Writer, op
 func textErrorLine(gvk, name string, e pkgvalidate.FieldValidationError) string {
 	switch e.Type {
 	case pkgvalidate.FieldErrorTypeDefaulting:
-		return fmt.Sprintf(markerWarning+" failed to apply defaults for %s, %s: %s\n", gvk, name, e.Message)
+		return fmt.Sprintf(symbols.MarkerWarning+" failed to apply defaults for %s, %s: %s\n", gvk, name, e.Message)
 	case pkgvalidate.FieldErrorTypeCEL:
-		return fmt.Sprintf(markerFail+" CEL validation error %s, %s : %s\n", gvk, name, e.Message)
+		return fmt.Sprintf(symbols.MarkerFail+" CEL validation error %s, %s : %s\n", gvk, name, e.Message)
 	case pkgvalidate.FieldErrorTypeSchema, pkgvalidate.FieldErrorTypeUnknownField:
-		return fmt.Sprintf(markerFail+" schema validation error %s, %s : %s\n", gvk, name, e.Message)
+		return fmt.Sprintf(symbols.MarkerFail+" schema validation error %s, %s : %s\n", gvk, name, e.Message)
 	default:
 		// Breadcrumb for an unhandled FieldErrorType added without updating this switch.
-		return fmt.Sprintf(markerFail+" validation error %s, %s : %s\n", gvk, name, e.Message)
+		return fmt.Sprintf(symbols.MarkerFail+" validation error %s, %s : %s\n", gvk, name, e.Message)
 	}
 }

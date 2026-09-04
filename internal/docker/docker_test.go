@@ -18,87 +18,107 @@ package docker
 
 import (
 	"context"
-	"errors"
-	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/moby/moby/client"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
 
 func TestStartAndAttach(t *testing.T) {
+	t.Parallel()
+
 	errStart := errors.New("start failed")
 	errAttach := errors.New("attach failed")
 
+	type args struct {
+		stdin     bool
+		startErr  error
+		attachErr error
+	}
+	type want struct {
+		calls   []string
+		err     error
+		options client.ContainerAttachOptions
+	}
+
 	cases := map[string]struct {
-		stdin       bool
-		startErr    error
-		attachErr   error
-		wantCalls   []string
-		wantErr     string
-		wantOptions client.ContainerAttachOptions
+		reason string
+		args   args
+		want   want
 	}{
 		"Success": {
-			stdin:     true,
-			wantCalls: []string{"start", "attach"},
-			wantOptions: client.ContainerAttachOptions{
-				Stream: true,
-				Stdout: true,
-				Stderr: true,
-				Stdin:  true,
-				Logs:   true,
+			reason: "A container must be started before attaching, and attach must replay logs while streaming all configured channels.",
+			args:   args{stdin: true},
+			want: want{
+				calls: []string{"start", "attach"},
+				options: client.ContainerAttachOptions{
+					Stream: true,
+					Stdout: true,
+					Stderr: true,
+					Stdin:  true,
+					Logs:   true,
+				},
 			},
 		},
 		"StartFailureDoesNotAttach": {
-			startErr:  errStart,
-			wantCalls: []string{"start"},
-			wantErr:   "failed to start container: start failed",
+			reason: "Attaching cannot succeed when starting the container fails, so the start error must be preserved and attach must not be attempted.",
+			args:   args{startErr: errStart},
+			want: want{
+				calls: []string{"start"},
+				err:   errStart,
+			},
 		},
 		"AttachFailure": {
-			attachErr: errAttach,
-			wantCalls: []string{"start", "attach"},
-			wantErr:   "failed to attach to container: attach failed",
-			wantOptions: client.ContainerAttachOptions{
-				Stream: true,
-				Stdout: true,
-				Stderr: true,
-				Logs:   true,
+			reason: "An attach failure after a successful start must be preserved for callers.",
+			args:   args{attachErr: errAttach},
+			want: want{
+				calls: []string{"start", "attach"},
+				err:   errAttach,
+				options: client.ContainerAttachOptions{
+					Stream: true,
+					Stdout: true,
+					Stderr: true,
+					Logs:   true,
+				},
 			},
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
 			calls := []string{}
 			var gotOptions client.ContainerAttachOptions
-			_, err := startAndAttach(context.Background(), "container-id", tc.stdin, runContainerCalls{
+			_, err := startAndAttach(t.Context(), "container-id", tc.args.stdin, runContainerCalls{
 				start: func(_ context.Context, id string, _ client.ContainerStartOptions) error {
-					if id != "container-id" {
-						t.Errorf("start id = %q, want container-id", id)
+					if diff := cmp.Diff("container-id", id); diff != "" {
+						t.Errorf("%s\nstart container ID: -want, +got:\n%s", tc.reason, diff)
 					}
 					calls = append(calls, "start")
-					return tc.startErr
+					return tc.args.startErr
 				},
 				attach: func(_ context.Context, id string, opts client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
-					if id != "container-id" {
-						t.Errorf("attach id = %q, want container-id", id)
+					if diff := cmp.Diff("container-id", id); diff != "" {
+						t.Errorf("%s\nattach container ID: -want, +got:\n%s", tc.reason, diff)
 					}
 					calls = append(calls, "attach")
 					gotOptions = opts
-					return client.ContainerAttachResult{}, tc.attachErr
+					return client.ContainerAttachResult{}, tc.args.attachErr
 				},
 			})
 
-			if strings.Join(calls, ",") != strings.Join(tc.wantCalls, ",") {
-				t.Errorf("calls = %v, want %v", calls, tc.wantCalls)
+			if diff := cmp.Diff(tc.want.calls, calls); diff != "" {
+				t.Errorf("%s\nstartAndAttach(...) calls: -want, +got:\n%s", tc.reason, diff)
 			}
-			if gotOptions != tc.wantOptions {
-				t.Errorf("attach options = %+v, want %+v", gotOptions, tc.wantOptions)
+			if diff := cmp.Diff(tc.want.options, gotOptions); diff != "" {
+				t.Errorf("%s\nstartAndAttach(...) attach options: -want, +got:\n%s", tc.reason, diff)
 			}
-			switch {
-			case tc.wantErr == "" && err != nil:
-				t.Fatalf("unexpected error: %v", err)
-			case tc.wantErr != "" && (err == nil || err.Error() != tc.wantErr):
-				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("%s\nstartAndAttach(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
 		})
 	}

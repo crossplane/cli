@@ -507,19 +507,15 @@ hand.
 
 Crossplane v2 supports
 [`ManagedResourceActivationPolicy`](https://docs.crossplane.io/latest/managed-resources/managed-resource-activation-policies/),
-a way to limit the number
-of CRDs providers install onto a cluster
+which limits how many CRDs a provider installs onto a cluster.
 
-By default, the Crossplane Helm chart installs wildcard policy the value of
-`provider.defaultActivations` `["*"]`, which causes every
-CRD available in a Provider to be installed, which can have
-significant performance impacts on the Kubernetes API server.
+The Crossplane Helm chart sets `provider.defaultActivations` to `["*"]` by default, which installs
+a wildcard activation policy. That activates every CRD a provider ships, which can have a
+significant performance impact on the Kubernetes API server.
 
-On dev control plane created by `crossplane project run`, we can control this behavior by disabling
-the default policy and only
-installing CRDs that are related to our Composition. A Crossplane
-cluster can support multiple `ManagedResourceActivationPolicy`, so
-it's good practice for each Composition to define a policy.
+On a development control plane created by `crossplane project run`, disable the default policy and
+install only the CRDs your Composition uses. A Crossplane cluster supports multiple
+`ManagedResourceActivationPolicy` resources, so defining one per Composition is good practice.
 
 In summary:
 
@@ -918,14 +914,17 @@ nothing published — the tag exists with no artifact behind it. Create the repo
 If you see an error like:
 
 ```text
-crossplane: error: cannot build embedded functions: failed to build function "network": failed to build runtime images: typescript build container failed: container unknown failure: context deadline exceeded
+crossplane: error: cannot build embedded functions: failed to build function "network": failed to build runtime images: typescript build container failed: timed out waiting for the container to finish; re-run with a longer --timeout: context deadline exceeded
 ```
 
-This means the TypeScript build (including `npm install` and `npm run build`) exceeded the default 1
-minute timeout. This commonly happens on the first build when Docker images and npm packages need to
-be downloaded.
+the TypeScript build — `npm install` and `npm run build`, in a container — did not finish inside
+the timeout, which defaults to 1 minute.
 
-Increase the timeout using the `--timeout` flag:
+A warm render normally fits: on the example project a repeat render takes around 28 seconds with no
+`--timeout` flag at all. A first render is the one that overruns, because the Docker images, the npm
+packages and the schema models all have to be fetched before anything compiles.
+
+Increase the timeout for that first run using the `--timeout` flag:
 
 ```bash
 # Use a 5 minute timeout

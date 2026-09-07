@@ -327,7 +327,29 @@ func (m *Manager) GenerateFromMultipleSources(ctx context.Context, sources []Sou
 // generates, so that the next generation writes a tree containing only what the
 // current sources describe.
 func (m *Manager) clearLanguageDirs() error {
-	for _, lang := range m.languages() {
+	langs := m.languages()
+
+	// Also clear languages the last pass generated for but this one will not.
+	// A language dropped from the project is gone from the generator set, so it
+	// is absent from m.languages() and nothing else would ever remove its tree.
+	// The lock records what was generated last time, so it knows the directory
+	// is there.
+	//
+	// Leaving it is not cosmetic: the TypeScript function builder gates on
+	// whether its language directory exists, so an orphan stays load-bearing. A
+	// project with a hand-added function would keep building against models
+	// that no pass will ever update again.
+	recorded, err := m.currentLock()
+	if err != nil {
+		return err
+	}
+	for _, lang := range recorded.Languages {
+		if !slices.Contains(langs, lang) {
+			langs = append(langs, lang)
+		}
+	}
+
+	for _, lang := range langs {
 		if err := m.fs.RemoveAll(lang); err != nil {
 			return errors.Wrapf(err, "failed to clear generated %s schemas", lang)
 		}

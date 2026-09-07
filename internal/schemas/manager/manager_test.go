@@ -264,9 +264,14 @@ func (s *mockSource) Type() SourceType {
 // single-source pass overwrites that same file with only its own. The real
 // TypeScript generator has exactly this shape - a root index enumerating every
 // group - which is why the bug below is visible there and not in JSON.
-type indexingGenerator struct{}
+type indexingGenerator struct{ lang string }
 
-func (g *indexingGenerator) Language() string { return "mock" }
+func (g *indexingGenerator) Language() string {
+	if g.lang == "" {
+		return "mock"
+	}
+	return g.lang
+}
 
 func (g *indexingGenerator) GenerateFromCRD(_ context.Context, in afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
 	var names []string
@@ -348,5 +353,62 @@ func TestMergedPassRegeneratesAfterSingleSourceWrite(t *testing.T) {
 	}
 	if got, want := readMockIndex(t, testFS), "a.yaml,b.yaml,c.yaml"; got != want {
 		t.Errorf("after the merged pass that follows a single-source write, index = %q, want %q", got, want)
+	}
+}
+
+// A language dropped from spec.schemas.languages must not leave its tree
+// behind. Nothing else would ever remove it: it is gone from the generator set,
+// so it is absent from m.languages(), which is what the clearing iterated.
+//
+// That is not cosmetic. The TypeScript function builder gates on whether the
+// language directory exists, so an orphaned tree stays load-bearing - a project
+// with a hand-added function keeps building against models no pass will update
+// again, exit 0 and no warning.
+func TestRemovedLanguageDirIsCleared(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	testFS := afero.NewMemMapFs()
+	src := &mockSource{id: "xpkg://a", version: "v1", resources: map[string]string{"a.yaml": "a"}}
+
+	both := New(testFS, []generator.Interface{&indexingGenerator{}, &indexingGenerator{lang: "other"}}, nil)
+	if err := both.GenerateFromMultipleSources(ctx, []Source{src}); err != nil {
+		t.Fatal(err)
+	}
+	for _, lang := range []string{"mock", "other"} {
+		ok, err := afero.DirExists(testFS, lang)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			t.Fatalf("%s schemas were not generated, so this test proves nothing", lang)
+		}
+	}
+
+	// The same project with "other" removed from spec.schemas.languages.
+	one := New(testFS, []generator.Interface{&indexingGenerator{}}, nil)
+	if err := one.GenerateFromMultipleSources(ctx, []Source{src}); err != nil {
+		t.Fatal(err)
+	}
+
+	orphaned, err := afero.DirExists(testFS, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orphaned {
+		t.Error("schemas for the removed language are still on disk")
+	}
+
+	// The language the project still generates for is intact.
+	if got, want := readMockIndex(t, testFS), "a.yaml"; got != want {
+		t.Errorf("index for the remaining language = %q, want %q", got, want)
+	}
+
+	l, err := one.currentLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{"mock"}, l.Languages); diff != "" {
+		t.Errorf("recorded languages (-want +got):\n%s", diff)
 	}
 }

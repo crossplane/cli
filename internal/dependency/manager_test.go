@@ -875,6 +875,72 @@ func TestManager_CollectSources_Transitive(t *testing.T) {
 	}
 }
 
+func TestManager_CollectSources_RangeAndExactCollapse(t *testing.T) {
+	// A package reached once through a constraint and once through an exact
+	// version is still one package. claim() records the reference as written,
+	// before Resolve canonicalizes it, so both spellings pass it and produce
+	// two sources with the same ID - which makes the merged pass generate from
+	// the same CRDs twice.
+	const (
+		provA  = "xpkg.example/prov-a"
+		family = "xpkg.example/family"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			provA + ":v0.1.0":  makePackageWithBody(t, provA, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			family + ":v1.0.0": makePackageWithBody(t, family, digest, "", providerPackageYAML),
+		},
+		tagsByRepo: map[string][]string{
+			provA:  {"v0.1.0"},
+			family: {"v1.0.0"},
+		},
+	}
+
+	m := NewManager(
+		&v1alpha1.Project{
+			Spec: v1alpha1.ProjectSpec{
+				Dependencies: []v1alpha1.Dependency{
+					// Depends on family:v1.0.0 through its metadata.
+					*xpkgDep(provA, "v0.1.0"),
+					// And the project names the same package by constraint.
+					*xpkgDep(family, ">=v1.0.0"),
+				},
+				Paths: &v1alpha1.ProjectPaths{Schemas: "schemas"},
+			},
+		},
+		afero.NewMemMapFs(),
+		WithSchemaFS(afero.NewMemMapFs()),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+	)
+
+	var ch async.EventChannel // nil channel; SendEvent is a no-op.
+	sources, err := m.CollectSources(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("CollectSources: %v", err)
+	}
+
+	got := make([]string, 0, len(sources))
+	for _, src := range sources {
+		got = append(got, src.ID())
+	}
+
+	want := []string{
+		"xpkg://" + family + ":v1.0.0",
+		"xpkg://" + provA + ":v0.1.0",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("source IDs (-want +got):\n%s", diff)
+	}
+
+	if got := fc.getCount(family + ":v1.0.0"); got != 1 {
+		t.Errorf("fetch count for %s = %d, want 1", family+":v1.0.0", got)
+	}
+}
+
 func TestManager_AddAll_SharedTransitiveDep(t *testing.T) {
 	const (
 		provA  = "xpkg.example/prov-a"

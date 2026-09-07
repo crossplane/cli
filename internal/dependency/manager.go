@@ -493,6 +493,21 @@ func (m *Manager) collectPackageSource(ctx context.Context, ref string) ([]smana
 		return nil, errors.Wrapf(err, "cannot resolve package %q; check that the package exists and that the version or digest is valid", ref)
 	}
 
+	// Claim the resolved identity as well. The claim above is on the reference
+	// as written, so one package named two ways passes it twice — a project
+	// depending on family:>=v1.0.0 while another package's metadata depends on
+	// family:v1.0.0 resolves to the same package, and the source IDs below are
+	// built from the resolved version. Without this the merged pass would
+	// generate from the same CRDs twice, under two prefixes.
+	//
+	// Claiming here rather than after the fetch also skips the download and CRD
+	// extraction for the copy that is dropped. Whichever path claimed it first
+	// walks this package's dependencies, and they are the same dependencies,
+	// so returning early loses nothing.
+	if !m.claim("resolved:" + resolvedRef.String()) {
+		return nil, nil
+	}
+
 	pullPolicy := corev1.PullIfNotPresent
 	pkg, err := m.client.Get(ctx, resolvedRef.String(), runtimexpkg.WithPullPolicy(pullPolicy))
 	if err != nil {

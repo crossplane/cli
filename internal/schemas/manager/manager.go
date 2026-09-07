@@ -215,6 +215,10 @@ func (m *Manager) updateVersion(id, version string) error {
 	}
 
 	l.Packages[id] = version
+	// This pass wrote into the language directories from one source, so what is
+	// on disk is no longer the merged tree the versions in Packages describe.
+	// See lock.FromMergedPass.
+	l.FromMergedPass = false
 
 	return m.updateLock(l)
 }
@@ -411,6 +415,14 @@ func (m *Manager) mergedSourcesFresh(ctx context.Context, sources []Source) (boo
 		return false, versions, nil
 	}
 
+	// Every version matching is not enough: a single-source pass records its
+	// version in the same map while overwriting part of the merged tree, so the
+	// lock can describe these exact sources and still not describe what is on
+	// disk. Only a merged pass may be trusted to have produced it.
+	if !recorded.FromMergedPass {
+		return false, versions, nil
+	}
+
 	// Every current source matched above, so the lock holding more entries than
 	// there are sources means one was removed from the project. Its models are
 	// still on disk and nothing else would notice, because what remains is all
@@ -462,6 +474,7 @@ func (m *Manager) recordGeneration(versions map[string]string, languages []strin
 	}
 	l.Packages = versions
 	l.Languages = languages
+	l.FromMergedPass = true
 
 	return m.updateLock(l)
 }

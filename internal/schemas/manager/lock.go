@@ -31,6 +31,23 @@ type lock struct {
 	// regenerates once.
 	Languages []string `json:"languages,omitempty"`
 
+	// FromMergedPass records that the language directories currently hold the
+	// output of a merged generation pass over exactly the sources in Packages.
+	//
+	// Packages serves two callers. The merged pass replaces the whole map,
+	// while Add and Generate write single entries into it. Without this field,
+	// a single-source write leaves every recorded version matching its source
+	// while the tree on disk is the one that write produced: copying is
+	// write-over, so a language whose index is a single file enumerating every
+	// group loses the groups the merged pass had put there. The next merged
+	// pass would then read as fresh and write nothing, and the only way back
+	// would be deleting this file by hand.
+	//
+	// Only recordGeneration sets it; any single-source write clears it. An
+	// absent value reads as "not a merged tree", so a lock written before this
+	// field existed regenerates once.
+	FromMergedPass bool `json:"fromMergedPass,omitempty"`
+
 	Packages map[string]string `json:"packages"`
 }
 

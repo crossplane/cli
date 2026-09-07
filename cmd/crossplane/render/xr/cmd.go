@@ -39,6 +39,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composed"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
+	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
@@ -86,12 +87,11 @@ type Cmd struct {
 	FunctionCredentials    string            `help:"A YAML file or directory of YAML files specifying credentials to use for Functions to render the XR."                                                           placeholder:"PATH"      predictor:"yaml_file_or_directory" type:"path"`
 	FunctionAnnotations    []string          `help:"Override function annotations for all functions. Provide multiple annotations by repeating the argument."                                                       placeholder:"KEY=VALUE" short:"a"`
 
-	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                      help:"Directory for cached xpkg package contents."                                                        name:"cache-dir"`
+	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                      help:"Directory for cached xpkg package contents."                                                      name:"cache-dir"`
 	MaxConcurrency uint          `default:"8"                                                                                                      help:"Maximum concurrency for building embedded functions."`
-	PkgMetaFile    string        `default:"crossplane.yaml"                                                                                        help:"Path to a package metadata file (crossplane.yaml). Used as fallback when no project file is found." name:"pkg-meta-file" optional:""           predictor:"yaml_file" type:"path"`
-	ProjectFile    string        `default:"crossplane-project.yaml"                                                                                help:"Path to the project file. Optional."                                                                optional:""          predictor:"yaml_file" short:"f"             type:"path"`
+	ProjectFile    string        `default:"crossplane-project.yaml"                                                                                help:"Path to the project file or package metadata file (crossplane.yaml). Auto-detects the file type." optional:""        predictor:"yaml_file" short:"f" type:"path"`
 	Timeout        time.Duration `default:"1m"                                                                                                     help:"How long to run before timing out."`
-	XRD            string        `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that defines the XR's schema and properties." optional:""                                                                                               placeholder:"PATH"   type:"existingfile"`
+	XRD            string        `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that defines the XR's schema and properties." optional:""                                                                                             placeholder:"PATH" type:"existingfile"`
 
 	fs afero.Fs
 
@@ -399,48 +399,71 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		return fns, nil
 	}
 
-	projFilePath, err := filepath.Abs(c.ProjectFile)
+	filePath, err := filepath.Abs(c.ProjectFile)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot determine project file path")
 	}
-	projDir := filepath.Dir(projFilePath)
 
-	if _, err := os.Stat(projFilePath); err != nil {
-		return c.loadFunctionsFromConfiguration(ctx, log)
+	if _, err := os.Stat(filePath); err != nil {
+		// Fall back to crossplane.yaml in the same directory when the
+		// default project file is not found.
+		fallback := filepath.Join(filepath.Dir(filePath), "crossplane.yaml")
+		if _, ferr := os.Stat(fallback); ferr != nil {
+			return nil, errors.New("functions argument is required when not in a project or configuration")
+		}
+		filePath = fallback
 	}
 
-	log.Debug("Loading functions from project", "project-file", projFilePath)
+	dir := filepath.Dir(filePath)
+	fs := afero.NewBasePathFs(afero.NewOsFs(), dir)
+	fileName := filepath.Base(filePath)
 
-	projFS := afero.NewBasePathFs(afero.NewOsFs(), projDir)
-	proj, err := projectfile.Parse(projFS, filepath.Base(projFilePath))
+	isProject, err := projectfile.IsProjectFile(fs, fileName)
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
+		return nil, errors.Wrapf(err, "cannot detect file type of %q", filePath)
 	}
 
+	if isProject {
+		return c.loadFunctionsFromProject(ctx, log, sp, cfg, fs, filePath, fileName)
+	}
+
+	return c.loadFunctionsFromConfiguration(ctx, log, fs, fileName)
+}
+
+func (c *Cmd) newClientAndResolver(extraOpts ...clixpkg.ClientOption) (runtimexpkg.Client, *clixpkg.Resolver, error) {
 	cacheDir := c.CacheDir
 	if cacheDir == "" {
 		cacheDir = dependency.DefaultCacheDir()
 	}
 
-	xpkgClient, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-		clixpkg.WithImageConfigs(proj.Spec.ImageConfigs),
-	)
+	opts := append([]clixpkg.ClientOption{clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir)}, extraOpts...)
+	xpkgClient, err := clixpkg.NewClient(clixpkg.NewRemoteFetcher(), opts...)
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot create xpkg client")
+		return nil, nil, errors.Wrap(err, "cannot create xpkg client")
 	}
-	resolver := clixpkg.NewResolver(xpkgClient)
+	return xpkgClient, clixpkg.NewResolver(xpkgClient), nil
+}
 
-	// Built here rather than alongside the schema manager below so the
-	// dependency manager generates dependency schemas the same way.
+func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config, projFS afero.Fs, projFilePath, projFileName string) ([]pkgv1.Function, error) {
+	log.Debug("Loading functions from project", "project-file", projFilePath)
+
+	proj, err := projectfile.Parse(projFS, projFileName)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
+	}
+
+	xpkgClient, resolver, err := c.newClientAndResolver(clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
+	if err != nil {
+		return nil, err
+	}
+
 	generators := generator.AllLanguages(
 		generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
 		generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
 	)
 
 	depMgr := dependency.NewManager(proj, projFS,
-		dependency.WithProjectFile(filepath.Base(projFilePath)),
+		dependency.WithProjectFile(projFileName),
 		dependency.WithSchemaGenerators(generators),
 		dependency.WithXpkgClient(xpkgClient),
 		dependency.WithResolver(resolver),
@@ -460,9 +483,6 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(proj.Spec.ImageConfigs))
 		schemaMgr := manager.New(schemasFS, generators, schemaRunner)
 
-		// The builder may decompress function runtime tarballs into this
-		// directory; the built images read from it lazily, so we remove it only
-		// after they have been written to the daemon below.
 		tempDir, err := os.MkdirTemp("", "crossplane-build-")
 		if err != nil {
 			return errors.Wrap(err, "failed to create temporary build directory")
@@ -496,41 +516,20 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 	return fns, nil
 }
 
-func (c *Cmd) loadFunctionsFromConfiguration(ctx context.Context, log logging.Logger) ([]pkgv1.Function, error) {
-	cfgFilePath, err := filepath.Abs(c.PkgMetaFile)
+func (c *Cmd) loadFunctionsFromConfiguration(ctx context.Context, log logging.Logger, cfgFS afero.Fs, cfgFileName string) ([]pkgv1.Function, error) {
+	log.Debug("Loading functions from configuration file", "configuration-file", cfgFileName)
+
+	cfgMeta, err := clixpkg.ParseConfiguration(cfgFS, cfgFileName)
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot determine configuration file path")
+		return nil, errors.Wrapf(err, "cannot parse configuration file %q", cfgFileName)
 	}
 
-	if _, err := os.Stat(cfgFilePath); err != nil {
-		return nil, errors.New("functions argument is required when not in a project or configuration")
-	}
-
-	log.Debug("Loading functions from configuration file", "configuration-file", cfgFilePath)
-
-	cfgDir := filepath.Dir(cfgFilePath)
-	cfgFS := afero.NewBasePathFs(afero.NewOsFs(), cfgDir)
-
-	cfg, err := clixpkg.ParseConfiguration(cfgFS, filepath.Base(cfgFilePath))
+	_, resolver, err := c.newClientAndResolver()
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot parse configuration file %q", cfgFilePath)
+		return nil, err
 	}
 
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	xpkgClient, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-	)
-	if err != nil {
-		return nil, errors.Wrap(err, "cannot create xpkg client")
-	}
-	resolver := clixpkg.NewResolver(xpkgClient)
-
-	fns, err := clixpkg.ResolveConfigurationFunctions(ctx, cfg, resolver)
+	fns, err := clixpkg.ResolveConfigurationFunctions(ctx, cfgMeta, resolver)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot resolve function dependencies from configuration file")
 	}

@@ -34,6 +34,23 @@ const (
 	Kind = "Project"
 )
 
+// IsProjectFile reads the TypeMeta from the given YAML file and returns true
+// when apiVersion and kind match a Crossplane Project. Any other type (e.g. a
+// Configuration package metadata file) returns false with no error.
+func IsProjectFile(fs afero.Fs, filePath string) (bool, error) {
+	bs, err := afero.ReadFile(fs, filePath)
+	if err != nil {
+		return false, errors.Wrapf(err, "failed to read file %q", filePath)
+	}
+
+	var tm metav1.TypeMeta
+	if err := yaml.Unmarshal(bs, &tm); err != nil {
+		return false, errors.Wrapf(err, "failed to parse file %q", filePath)
+	}
+
+	return tm.APIVersion == APIVersion && tm.Kind == Kind, nil
+}
+
 // Parse parses and validates the project file, returning a Project with
 // defaults applied.
 func Parse(projFS afero.Fs, projFilePath string) (*v1alpha1.Project, error) {

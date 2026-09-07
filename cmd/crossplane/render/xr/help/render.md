@@ -43,14 +43,12 @@ metadata and embedded functions from the project.
 
 ## Configuration package support
 
-When no project file is found, `render` looks for a Configuration package
-metadata file (`crossplane.yaml` by default). If found, it extracts function
-dependencies from the `spec.dependsOn` list and resolves their version
-constraints to concrete OCI references. This lets you omit the functions file
-argument in directories that contain a `crossplane.yaml` with
-`kind: Configuration`.
-
-Use `--pkg-meta-file` to specify a custom path to the package metadata file.
+The `--project-file` (`-f`) flag also accepts a Configuration package metadata
+file (`crossplane.yaml`).
+The file type is auto-detected from `apiVersion` and `kind`.
+When pointing to a Configuration, `render` extracts function dependencies from
+`spec.dependsOn` and resolves their version constraints to concrete OCI
+references.
 
 ## Function context
 
@@ -171,5 +169,5 @@ Render using functions from a Configuration package metadata file:
 
 ```shell
 crossplane composition render xr.yaml composition.yaml \
-  --pkg-meta-file=crossplane.yaml
+  -f crossplane.yaml
 ```

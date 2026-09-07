@@ -1,0 +1,32 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xuntypedbuckets.platform.example.com
+spec:
+  group: platform.example.com
+  names:
+    categories:
+    - crossplane
+    kind: XUntypedBucket
+    plural: xuntypedbuckets
+  versions:
+  - name: v1alpha1
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        description: UntypedBucket is the Schema for the UntypedBucket API.
+        properties:
+          spec:
+            description: UntypedBucketSpec defines the desired state of UntypedBucket.
+            properties:
+              parameters:
+                properties:
+                  acl:
+                    description: This property has no type, which is not structural.
+                type: object
+            type: object
+          status:
+            description: UntypedBucketStatus defines the observed state of UntypedBucket.
+            type: object
+        type: object
+    served: true

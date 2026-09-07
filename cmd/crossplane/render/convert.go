@@ -57,7 +57,7 @@ func BuildCompositeRequest(in CompositionInputs) (*renderv1alpha1.RenderRequest,
 		})
 	}
 
-	observedStructs, err := composedToStructs(in.ObservedResources)
+	observedStructs, err := composedToStructs(filterObservedXR(in.ObservedResources, in.CompositeResource))
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot convert observed resources to protobuf")
 	}
@@ -276,6 +276,27 @@ func asStructFromTyped(o runtime.Object) (*structpb.Struct, error) {
 	}
 	u := &kunstructured.Unstructured{Object: data}
 	return resource.AsStruct(u)
+}
+
+// filterObservedXR drops any observed resource that is really the composite
+// resource itself. A render run emits the XR as its first output document, so
+// an --observed-resources file produced by a previous run usually contains a
+// UID-less copy of the XR. Keyed by GVK+namespace+name, that copy would
+// overwrite the real XR in the engine's store and blank its UID, causing the
+// ownership check to drop every composed resource. The XR is already supplied
+// as the positional argument, so the copy is redundant. See issue #47.
+func filterObservedXR(observed []composed.Unstructured, xr *ucomposite.Unstructured) []composed.Unstructured {
+	out := make([]composed.Unstructured, 0, len(observed))
+	for i := range observed {
+		o := observed[i]
+		if o.GroupVersionKind() == xr.GroupVersionKind() &&
+			o.GetNamespace() == xr.GetNamespace() &&
+			o.GetName() == xr.GetName() {
+			continue
+		}
+		out = append(out, o)
+	}
+	return out
 }
 
 func composedToStructs(resources []composed.Unstructured) ([]*structpb.Struct, error) {

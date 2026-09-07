@@ -27,6 +27,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/cache"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -85,7 +86,7 @@ func (b *kclBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, err
 	eg, _ := errgroup.WithContext(ctx)
 	for i, arch := range c.Architectures {
 		eg.Go(func() error {
-			baseImg, err := baseImageForArch(baseRef, arch, b.transport)
+			baseImg, err := baseImageForArch(baseRef, arch, b.transport, c.BaseImageCacheDir)
 			if err != nil {
 				return errors.Wrap(err, "failed to fetch KCL base image")
 			}
@@ -130,13 +131,30 @@ func (b *kclBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, err
 // baseImageForArch pulls the image with the given ref, and returns a version of
 // it suitable for use as a function base image. Package and examples layers
 // will be removed if present.
-func baseImageForArch(ref name.Reference, arch string, transport http.RoundTripper) (v1.Image, error) {
+// baseImageForArch fetches the runtime base image for one architecture and
+// strips the layers that belong to the package rather than the runtime.
+//
+// The layers it returns are lazy: their bytes are not read until the built
+// image is written out. Left unwrapped that means re-fetching the whole base
+// image from the registry on every build, which for a two-architecture
+// distroless base is over a hundred megabytes spread across dozens of small
+// requests. cacheDir, when set, backs those layers with a content-addressed
+// on-disk cache so a repeat build reads them locally instead.
+func baseImageForArch(ref name.Reference, arch string, transport http.RoundTripper, cacheDir string) (v1.Image, error) {
 	img, err := remote.Image(ref, remote.WithPlatform(v1.Platform{
 		OS:           "linux",
 		Architecture: arch,
 	}), remote.WithTransport(transport), remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to pull image")
+	}
+
+	if cacheDir != "" {
+		// Layers are addressed by digest, so a cache hit cannot be stale.
+		// tolerantCache keeps a cache that cannot be read or written from
+		// failing the build; see its doc comment for the one case it cannot
+		// recover from.
+		img = cache.Image(img, tolerantCache{cache.NewFilesystemCache(cacheDir)})
 	}
 
 	cfg, err := img.ConfigFile()

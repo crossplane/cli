@@ -17,6 +17,15 @@ multiple projects side-by-side.
 You can use a Crossplane version other than the latest stable version by
 specifying the `--crossplane-version` flag.
 
+By default Crossplane installs a wildcard `ManagedResourceActivationPolicy`,
+which activates the CRDs for every managed resource its providers offer. Pass
+`--no-default-mrap` to skip it, so the control plane activates only the managed
+resources your project declares its own activation policies for. This matches
+what a production control plane looks like when it manages activation
+explicitly. Like `--cluster-admin`, this flag applies only when `run` creates
+the control plane. A control plane that already runs Crossplane keeps its
+original settings, so run `crossplane project stop` first to change them.
+
 You can provide resources to apply around the project install:
 
 - `--init-resources` applies one or more files *before* installing the
@@ -42,6 +51,13 @@ Pin the Crossplane version installed in the dev control plane:
 
 ```shell
 crossplane project run --crossplane-version=v2.2.1
+```
+
+Run without the default wildcard activation policy, so only the project's own
+`ManagedResourceActivationPolicy` resources activate CRDs:
+
+```shell
+crossplane project run --no-default-mrap
 ```
 
 Apply `imageconfig.yaml` before installing the Configuration, and

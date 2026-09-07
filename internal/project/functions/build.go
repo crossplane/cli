@@ -85,6 +85,10 @@ type BuildContext struct {
 	// OSBasePath is the absolute on-disk path of the function directory.
 	// Used by FSToTar to resolve symlinks.
 	OSBasePath string
+	// BaseImageCacheDir is where runtime base image layers are cached between
+	// builds. Empty disables caching, so layers are fetched from the registry
+	// every time.
+	BaseImageCacheDir string
 }
 
 // FunctionFS returns a filesystem rooted at the function's source directory.

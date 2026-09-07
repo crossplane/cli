@@ -146,6 +146,7 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 		project.BuildWithSchemaManager(schemaMgr),
 		project.BuildWithDependencyManager(depMgr),
 		project.BuildWithTempDir(tempDir),
+		project.BuildWithBaseImageCacheDir(functions.DefaultBaseImageCacheDir()),
 	)
 
 	var imgMap project.ImageTagMap

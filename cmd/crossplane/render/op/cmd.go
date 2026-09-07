@@ -398,6 +398,7 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 			project.BuildWithSchemaManager(schemaMgr),
 			project.BuildWithDependencyManager(depMgr),
 			project.BuildWithTempDir(tempDir),
+			project.BuildWithBaseImageCacheDir(functions.DefaultBaseImageCacheDir()),
 		)
 
 		imgMap, err := b.Build(ctx, proj, projFS,

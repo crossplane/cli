@@ -17,6 +17,7 @@ limitations under the License.
 package crd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -33,6 +34,9 @@ var claimableXRDBytes []byte
 //go:embed testdata/unclaimable-xrd.yaml
 var unclaimableXRDBytes []byte
 
+//go:embed testdata/untyped-field-xrd.yaml
+var untypedFieldXRDBytes []byte
+
 func TestProcessXRD(t *testing.T) {
 	t.Parallel()
 
@@ -44,6 +48,8 @@ func TestProcessXRD(t *testing.T) {
 
 		expectedClaimKind     string
 		expectedClaimListKind string
+
+		expectedErr string
 	}{
 		"ClaimableXRD": {
 			xrdBytes:              claimableXRDBytes,
@@ -57,6 +63,10 @@ func TestProcessXRD(t *testing.T) {
 			expectedXRKind:     "XInternalBucket",
 			expectedXRListKind: "XInternalBucketList",
 		},
+		"XRDWithAnUntypedField": {
+			xrdBytes:    untypedFieldXRDBytes,
+			expectedErr: `properties[spec].properties[parameters].properties[acl].type: Required value: must not be empty for specified object fields`,
+		},
 	}
 
 	for name, tc := range tcs {
@@ -65,6 +75,15 @@ func TestProcessXRD(t *testing.T) {
 
 			outFS := afero.NewMemMapFs()
 			xrPath, claimPath, err := ProcessXRD(outFS, tc.xrdBytes, "output", "/")
+			if tc.expectedErr != "" {
+				if err == nil {
+					t.Fatalf("expected an error mentioning %q, got none", tc.expectedErr)
+				}
+				if !strings.Contains(err.Error(), tc.expectedErr) {
+					t.Fatalf("expected the error to mention %q, got: %v", tc.expectedErr, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}

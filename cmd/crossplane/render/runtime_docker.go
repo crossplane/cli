@@ -22,16 +22,15 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
 
 	"github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	typesimage "github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
-	"github.com/docker/go-connections/nat"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
@@ -256,7 +255,7 @@ func (r *RuntimeDocker) findContainer(ctx context.Context, cli *client.Client) (
 		return "", nil
 	}
 
-	inspect, err := cli.ContainerInspect(ctx, r.Name)
+	inspect, err := cli.ContainerInspect(ctx, r.Name, client.ContainerInspectOptions{})
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return "", nil // Container doesn't exist, but that's not an error
@@ -264,7 +263,7 @@ func (r *RuntimeDocker) findContainer(ctx context.Context, cli *client.Client) (
 		return "", errors.Wrapf(err, "cannot inspect Docker container %q", r.Name)
 	}
 
-	return inspect.ID, nil
+	return inspect.Container.ID, nil
 }
 
 func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client) (string, error) {
@@ -272,12 +271,12 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 
 	// Let Docker automatically allocate an available port on the bind address.
 	// This avoids race conditions and works reliably with Docker daemons.
-	port := nat.Port(fmt.Sprintf("%d/tcp", FunctionPort))
+	port := network.MustParsePort(fmt.Sprintf("%d/tcp", FunctionPort))
 
 	cfg := &container.Config{
 		Image:        r.Image,
 		Cmd:          []string{"--insecure"},
-		ExposedPorts: nat.PortSet{port: struct{}{}},
+		ExposedPorts: network.PortSet{port: struct{}{}},
 		Env:          r.Env,
 	}
 	hcfg := &container.HostConfig{}
@@ -294,9 +293,16 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 		}
 		r.log.Debug("Connecting container to Docker network", "network", r.Network)
 	} else {
-		hcfg.PortBindings = nat.PortMap{
-			port: []nat.PortBinding{{
-				HostIP:   r.BindAddress,
+		// PortBinding.HostIP is a netip.Addr in the Moby API types, where it
+		// was a string; reject a malformed bind address here rather than
+		// letting it reach the daemon as a zero value.
+		bindAddr, err := netip.ParseAddr(r.BindAddress)
+		if err != nil {
+			return "", errors.Wrapf(err, "invalid bind address %q", r.BindAddress)
+		}
+		hcfg.PortBindings = network.PortMap{
+			port: []network.PortBinding{{
+				HostIP:   bindAddr,
 				HostPort: "0", // "0" => engine allocates an ephemeral port
 			}},
 		}
@@ -320,7 +326,12 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 
 	r.log.Debug("Creating Docker container", "image", r.Image, "name", r.Name, "network", r.Network)
 
-	rsp, err := cli.ContainerCreate(ctx, cfg, hcfg, ncfg, nil, r.Name)
+	rsp, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config:           cfg,
+		HostConfig:       hcfg,
+		NetworkingConfig: ncfg,
+		Name:             r.Name,
+	})
 	if err != nil {
 		// TODO: If Docker ever exposes a structured way to distinguish
 		// network-not-found from image-not-found (e.g. via errdefs or a typed
@@ -348,7 +359,12 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 			return "", errors.Wrapf(err, "cannot pull Docker image %q", r.Image)
 		}
 
-		rsp, err = cli.ContainerCreate(ctx, cfg, hcfg, ncfg, nil, r.Name)
+		rsp, err = cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+			Config:           cfg,
+			HostConfig:       hcfg,
+			NetworkingConfig: ncfg,
+			Name:             r.Name,
+		})
 		if err != nil {
 			if r.Network != "" {
 				return "", errors.Wrapf(err, "cannot create Docker container for image %q on network %q; verify the network exists and is accessible by the Docker daemon", r.Image, r.Network)
@@ -363,7 +379,7 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 // startContainer ensures the container is running and returns its address.
 func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, containerID string) (string, error) {
 	// Start the container (idempotent - safe to call on running containers)
-	if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{}); err != nil {
 		return "", errors.Wrap(err, "cannot start Docker container")
 	}
 
@@ -372,14 +388,14 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 	// specified network and to get its DNS-resolvable name (Docker's embedded
 	// DNS resolves container names and hostnames, but not container IDs).
 	if r.Network != "" {
-		inspect, err := cli.ContainerInspect(ctx, containerID)
+		inspect, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 		if err != nil {
 			return "", errors.Wrap(err, "cannot inspect Docker container")
 		}
-		if _, ok := inspect.NetworkSettings.Networks[r.Network]; !ok {
-			return "", errors.Errorf("container %q is not connected to Docker network %q; verify the %q annotation value matches an existing network", strings.TrimPrefix(inspect.Name, "/"), r.Network, AnnotationKeyRuntimeDockerNetwork)
+		if _, ok := inspect.Container.NetworkSettings.Networks[r.Network]; !ok {
+			return "", errors.Errorf("container %q is not connected to Docker network %q; verify the %q annotation value matches an existing network", strings.TrimPrefix(inspect.Container.Name, "/"), r.Network, AnnotationKeyRuntimeDockerNetwork)
 		}
-		hostname := strings.TrimPrefix(inspect.Name, "/")
+		hostname := strings.TrimPrefix(inspect.Container.Name, "/")
 		if hostname == "" {
 			return "", errors.Errorf("cannot determine hostname for container %q on network %q", containerID, r.Network)
 		}
@@ -389,21 +405,21 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 	}
 
 	// Inspect the container to get the actual allocated host port.
-	inspect, err := cli.ContainerInspect(ctx, containerID)
+	inspect, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return "", errors.Wrap(err, "cannot inspect Docker container")
 	}
 
 	// Look up the specific function port instead of taking the first one
-	p := nat.Port(fmt.Sprintf("%d/tcp", FunctionPort))
-	if len(inspect.NetworkSettings.Ports[p]) == 0 {
+	p := network.MustParsePort(fmt.Sprintf("%d/tcp", FunctionPort))
+	if len(inspect.Container.NetworkSettings.Ports[p]) == 0 {
 		return "", errors.Errorf("container %q has no published binding for port %s", r.Name, p.Port())
 	}
 
-	binding := inspect.NetworkSettings.Ports[p][0]
+	binding := inspect.Container.NetworkSettings.Ports[p][0]
 	host := r.Target
-	if host == "" {
-		host = binding.HostIP
+	if host == "" && binding.HostIP.IsValid() {
+		host = binding.HostIP.String()
 	}
 	if host == "" {
 		return "", errors.Errorf("container %q has port binding for %s but no host address", r.Name, p.Port())
@@ -412,36 +428,36 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 	return net.JoinHostPort(host, binding.HostPort), nil
 }
 
-func (r *RuntimeDocker) getPullOptions() (typesimage.PullOptions, error) {
+func (r *RuntimeDocker) getPullOptions() (client.ImagePullOptions, error) {
 	// Resolve auth token by looking into keychain
 	ref, err := name.ParseReference(r.Image)
 	if err != nil {
-		return typesimage.PullOptions{}, errors.Wrapf(err, "Image is not a valid reference %s", r.Image)
+		return client.ImagePullOptions{}, errors.Wrapf(err, "Image is not a valid reference %s", r.Image)
 	}
 
 	auth, err := r.Keychain.Resolve(ref.Context().Registry)
 	if err != nil {
-		return typesimage.PullOptions{}, errors.Wrapf(err, "Cannot resolve auth for %s", ref.Context().RegistryStr())
+		return client.ImagePullOptions{}, errors.Wrapf(err, "Cannot resolve auth for %s", ref.Context().RegistryStr())
 	}
 
 	authConfig, err := auth.Authorization()
 	if err != nil {
-		return typesimage.PullOptions{}, errors.Wrapf(err, "Cannot get auth config for %s", ref.Context().RegistryStr())
+		return client.ImagePullOptions{}, errors.Wrapf(err, "Cannot get auth config for %s", ref.Context().RegistryStr())
 	}
 
 	token, err := authConfig.MarshalJSON()
 	if err != nil {
-		return typesimage.PullOptions{}, errors.Wrapf(err, "Cannot marshal auth config for %s", ref.Context().RegistryStr())
+		return client.ImagePullOptions{}, errors.Wrapf(err, "Cannot marshal auth config for %s", ref.Context().RegistryStr())
 	}
 
-	return typesimage.PullOptions{
+	return client.ImagePullOptions{
 		RegistryAuth: base64.StdEncoding.EncodeToString(token),
 	}, nil
 }
 
 // Start a Function as a Docker container.
 func (r *RuntimeDocker) Start(ctx context.Context) (RuntimeContext, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return RuntimeContext{}, errors.Wrap(err, "cannot create Docker client using environment variables")
 	}
@@ -471,14 +487,14 @@ func (r *RuntimeDocker) Start(ctx context.Context) (RuntimeContext, error) {
 		case AnnotationValueRuntimeDockerCleanupOrphan:
 			return nil
 		case AnnotationValueRuntimeDockerCleanupStop:
-			if err := cli.ContainerStop(ctx, containerID, container.StopOptions{}); err != nil {
+			if _, err := cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{}); err != nil {
 				return errors.Wrap(err, "cannot stop Docker container")
 			}
 		case AnnotationValueRuntimeDockerCleanupRemove:
-			if err := cli.ContainerStop(ctx, containerID, container.StopOptions{}); err != nil {
+			if _, err := cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{}); err != nil {
 				return errors.Wrap(err, "cannot stop Docker container")
 			}
-			if err := cli.ContainerRemove(ctx, containerID, container.RemoveOptions{}); err != nil {
+			if _, err := cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{}); err != nil {
 				return errors.Wrap(err, "cannot remove Docker container")
 			}
 		}
@@ -490,12 +506,12 @@ func (r *RuntimeDocker) Start(ctx context.Context) (RuntimeContext, error) {
 }
 
 type pullClient interface {
-	ImagePull(ctx context.Context, ref string, options typesimage.PullOptions) (io.ReadCloser, error)
+	ImagePull(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error)
 }
 
 // PullImage pulls the supplied image using the supplied client. It blocks until
 // the image has either finished pulling or hit an error.
-func PullImage(ctx context.Context, p pullClient, image string, options typesimage.PullOptions) error {
+func PullImage(ctx context.Context, p pullClient, image string, options client.ImagePullOptions) error {
 	out, err := p.ImagePull(ctx, image, options)
 	if err != nil {
 		return err

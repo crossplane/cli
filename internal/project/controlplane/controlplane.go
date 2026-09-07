@@ -209,6 +209,7 @@ type config struct {
 	crossplaneVersion string
 	registryDir       string
 	clusterAdmin      bool
+	defaultMRAP       bool
 	log               logging.Logger
 }
 
@@ -240,6 +241,15 @@ func WithClusterAdmin(enabled bool) Option {
 	}
 }
 
+// WithDefaultMRAP sets whether to install the default wildcard
+// ManagedResourceActivationPolicy, which activates every managed resource CRD
+// in the control plane.
+func WithDefaultMRAP(enabled bool) Option {
+	return func(c *config) {
+		c.defaultMRAP = enabled
+	}
+}
+
 // WithLogger sets the logger for progress updates.
 func WithLogger(l logging.Logger) Option {
 	return func(c *config) {
@@ -252,6 +262,7 @@ func WithLogger(l logging.Logger) Option {
 func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControlPlane, error) { //nolint:gocyclo // Main orchestration function.
 	cfg := &config{
 		clusterAdmin: true,
+		defaultMRAP:  true,
 		log:          logging.NewNopLogger(),
 	}
 	for _, opt := range opts {
@@ -323,7 +334,7 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	}
 
 	cfg.log.Debug("Ensuring Crossplane is installed")
-	if err := ensureCrossplane(restConfig, cfg.crossplaneVersion, ca.Name, cfg.clusterAdmin); err != nil {
+	if err := ensureCrossplane(restConfig, cfg.crossplaneVersion, ca.Name, cfg.clusterAdmin, cfg.defaultMRAP); err != nil {
 		return nil, err
 	}
 
@@ -464,7 +475,7 @@ func createKindClusterConfig() *v1alpha4.Cluster {
 	}
 }
 
-func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clusterAdmin bool) error {
+func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clusterAdmin, defaultMRAP bool) error {
 	mgr, err := helm.NewManager(restConfig,
 		"crossplane",
 		"https://charts.crossplane.io/stable",
@@ -494,6 +505,15 @@ func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clus
 		"rbac": map[string]any{
 			"clusterAdmin": clusterAdmin,
 		},
+	}
+	if !defaultMRAP {
+		// The chart defaults provider.defaultActivations to ["*"], which makes
+		// Crossplane create a wildcard ManagedResourceActivationPolicy. An
+		// explicit null removes the chart default during value coalescing, so
+		// no activations are passed and no default MRAP is created.
+		values["provider"] = map[string]any{
+			"defaultActivations": nil,
+		}
 	}
 	if err = mgr.Install(version, values); err != nil {
 		return errors.Wrap(err, "failed to install crossplane")

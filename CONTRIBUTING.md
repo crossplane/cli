@@ -6,6 +6,12 @@ Please start by reading the [Crossplane contributing document]. The Crossplane
 CLI follows the same guidelines and policies as the core Crossplane project,
 including coding style. We also use a similar Nix-based development environment.
 
+In particular, we follow Crossplane's [AI policy]. AI usage is assumed and
+encouraged when working on the Crossplane CLI, but please familiarize yourself
+with the policy to ensure you are engaging respectfully with the project and its
+maintainers. As outlined in the policy, maintainers may summarily close pull
+requests and issues that do not meet the guidelines.
+
 The CLI maintainers primarily communicate in the [#sig-cli] channel on Slack.
 
 Topics specific to CLI development are covered below.
@@ -119,6 +125,7 @@ matches rather than whole rules, and rules rather than whole styles.
 <!-- Named links -->
 
 [Crossplane contributing document]: https://github.com/crossplane/crossplane/tree/main/contributing
+[AI policy]: https://github.com/crossplane/crossplane/tree/main/AI_POLICY.md
 [#sig-cli]: https://crossplane.slack.com/archives/C08V9PMLRQA
 [kong]: https://pkg.go.dev/github.com/alecthomas/kong
 [struct tags]: https://pkg.go.dev/github.com/alecthomas/kong#readme-supported-tags

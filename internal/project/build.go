@@ -103,6 +103,14 @@ func BuildWithDependencyManager(m *dependency.Manager) BuilderOption {
 	}
 }
 
+// BuildWithBaseImageCacheDir sets where function runtime base image layers are
+// cached between builds. Empty disables caching.
+func BuildWithBaseImageCacheDir(dir string) BuilderOption {
+	return func(b *Builder) {
+		b.baseImageCacheDir = dir
+	}
+}
+
 // BuildWithTempDir sets a directory the builder can use to hold temporary
 // files. The images returned from Build() may depend on this directory, so
 // callers should not remove it until they have finished consuming the images.
@@ -161,6 +169,7 @@ type Builder struct {
 	schemaManager      *manager.Manager
 	dependencyManager  *dependency.Manager
 	tempDir            string
+	baseImageCacheDir  string
 }
 
 // Build builds a project into a set of packages. It returns a map containing
@@ -540,11 +549,12 @@ func (b *Builder) buildDirectoryRuntime(ctx context.Context, projectFS afero.Fs,
 	}
 
 	imgs, err := fnBuilder.Build(ctx, functions.BuildContext{
-		ProjectFS:     projectFS,
-		FunctionPath:  filepath.Join(project.Spec.Paths.Functions, dir.Name),
-		SchemasPath:   project.Spec.Paths.Schemas,
-		Architectures: project.Spec.Architectures,
-		OSBasePath:    fnBasePath,
+		ProjectFS:         projectFS,
+		FunctionPath:      filepath.Join(project.Spec.Paths.Functions, dir.Name),
+		SchemasPath:       project.Spec.Paths.Schemas,
+		Architectures:     project.Spec.Architectures,
+		OSBasePath:        fnBasePath,
+		BaseImageCacheDir: b.baseImageCacheDir,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to build runtime images")

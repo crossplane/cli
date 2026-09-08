@@ -7,12 +7,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-
-    # TODO(negz): Unpin once https://github.com/nix-community/gomod2nix/pull/231 is released.
-    gomod2nix = {
-      url = "github:nix-community/gomod2nix/1201ddd1279c35497754f016ef33d5e060f3da8d";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -20,7 +14,6 @@
       self,
       nixpkgs,
       nixpkgs-unstable,
-      gomod2nix,
     }:
     let
       # Set by CI to override the auto-generated dev version.
@@ -87,7 +80,6 @@
           pkgs = import nixpkgs {
             inherit system;
             overlays = [
-              gomod2nix.overlays.default
               (_final: prev: {
                 # Allow use of pkgs.unstable.<package-name> to pull individual
                 # packages from nixpkgs-unstable.
@@ -115,6 +107,9 @@
               goPlatforms
               ;
           };
+          # Vendor-dependency derivation, used by `nix run .#tidy` to refresh
+          # the hash in nix/vendor-hashes.nix.
+          crossplane-vendor = build.vendor.root;
         }
       );
 
@@ -171,7 +166,6 @@
               pkgs.docker-client
               pkgs.gotestsum
               pkgs.awscli2
-              pkgs.gomod2nix
 
               # Code generation
               pkgs.buf

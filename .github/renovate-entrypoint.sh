@@ -26,8 +26,8 @@ experimental-features = nix-command flakes
 # needing to create the nixbld group and users in this ephemeral container.
 build-users-group =
 
-# One build at a time, so no build starts before we can clean up /homeless-shelter.
-max-jobs = 1
+# Build derivations in parallel, one per CPU core.
+max-jobs = auto
 
 # Removes /homeless-shelter after each build (see the hook script above).
 post-build-hook = /usr/local/bin/nix-clean-homeless-shelter

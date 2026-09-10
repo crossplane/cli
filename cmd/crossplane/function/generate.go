@@ -71,7 +71,7 @@ type generateCmd struct {
 	Name         string `arg:""                            help:"Name of the function to generate. Must be a valid DNS-1035 label."`
 	PipelinePath string `arg:""                            help:"Path to a Composition YAML file to add a pipeline step to."        optional:""`
 	Language     string `default:"go-templating"           enum:"go,go-templating,kcl,python"                                       help:"Language to use for the function." short:"l"`
-	ProjectFile  string `default:"crossplane-project.yaml" help:"Path to project definition file."                                  short:"f"`
+	ProjectFile  string `default:"${project_file}" help:"Path to project definition file."                                  short:"f"`
 
 	projFS            afero.Fs
 	functionsFS       afero.Fs

@@ -31,6 +31,10 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 )
 
+// ProjectFile is the conventional name for a Crossplane project definition
+// file (crossplane-project.yaml).
+const ProjectFile = "crossplane-project.yaml"
+
 // ParseConfiguration parses a Configuration package metadata file and returns the Configuration.
 func ParseConfiguration(fs afero.Fs, filePath string) (*pkgmetav1.Configuration, error) {
 	bs, err := afero.ReadFile(fs, filePath)
@@ -38,22 +42,17 @@ func ParseConfiguration(fs afero.Fs, filePath string) (*pkgmetav1.Configuration,
 		return nil, errors.Wrapf(err, "failed to read configuration file %q", filePath)
 	}
 
-	var tm metav1.TypeMeta
-	if err := yaml.Unmarshal(bs, &tm); err != nil {
+	var cfg pkgmetav1.Configuration
+	if err := yaml.Unmarshal(bs, &cfg); err != nil {
 		return nil, errors.Wrap(err, "failed to parse configuration file")
 	}
 
 	wantAPIVersion := pkgmetav1.SchemeGroupVersion.String()
-	if tm.APIVersion != wantAPIVersion {
-		return nil, errors.Errorf("unsupported configuration apiVersion %q, expected %q", tm.APIVersion, wantAPIVersion)
+	if cfg.APIVersion != wantAPIVersion {
+		return nil, errors.Errorf("unsupported configuration apiVersion %q, expected %q", cfg.APIVersion, wantAPIVersion)
 	}
-	if tm.Kind != pkgmetav1.ConfigurationKind {
-		return nil, errors.Errorf("unsupported configuration kind %q, expected %q", tm.Kind, pkgmetav1.ConfigurationKind)
-	}
-
-	var cfg pkgmetav1.Configuration
-	if err := yaml.Unmarshal(bs, &cfg); err != nil {
-		return nil, errors.Wrap(err, "failed to parse configuration file")
+	if cfg.Kind != pkgmetav1.ConfigurationKind {
+		return nil, errors.Errorf("unsupported configuration kind %q, expected %q", cfg.Kind, pkgmetav1.ConfigurationKind)
 	}
 
 	return &cfg, nil
@@ -64,11 +63,11 @@ func ParseConfiguration(fs afero.Fs, filePath string) (*pkgmetav1.Configuration,
 func ResolveConfigurationFunctions(ctx context.Context, cfg *pkgmetav1.Configuration, resolver *Resolver) ([]pkgv1.Function, error) {
 	fns := make([]pkgv1.Function, 0, len(cfg.Spec.DependsOn))
 	for _, dep := range cfg.Spec.DependsOn {
-		if dep.Function == nil {
+		ref, ok := functionDepRef(dep)
+		if !ok {
 			continue
 		}
 
-		ref := *dep.Function
 		if dep.Version != "" {
 			ref = fmt.Sprintf("%s:%s", ref, dep.Version)
 		}
@@ -91,4 +90,17 @@ func ResolveConfigurationFunctions(ctx context.Context, cfg *pkgmetav1.Configura
 	}
 
 	return fns, nil
+}
+
+// functionDepRef returns the OCI image ref for a function dependency,
+// handling both the modern style (APIVersion + Kind + Package) and the
+// deprecated style (Function field).
+func functionDepRef(dep pkgmetav1.Dependency) (string, bool) {
+	if dep.Kind != nil && *dep.Kind == pkgv1.FunctionKind && dep.Package != nil {
+		return *dep.Package, true
+	}
+	if dep.Function != nil {
+		return *dep.Function, true
+	}
+	return "", false
 }

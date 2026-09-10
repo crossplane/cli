@@ -60,7 +60,7 @@ type generateCmd struct {
 	Path        string `help:"Output path."                          optional:""`
 	Replace     bool   `help:"Replaces the existing definition file" optional:""`
 	Plural      string `help:"Custom plural form for the XRD."       optional:""`
-	ProjectFile string `default:"crossplane-project.yaml"            help:"Path to project definition."      short:"f"`
+	ProjectFile string `default:"${project_file}"            help:"Path to project definition."      short:"f"`
 
 	projFS  afero.Fs
 	apisFS  afero.Fs

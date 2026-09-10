@@ -99,6 +99,10 @@ func TestResolveConfigurationFunctions(t *testing.T) {
 	fnA := "ghcr.io/example/function-a"
 	fnB := "ghcr.io/example/function-b"
 	provider := "ghcr.io/example/provider-x"
+	fnKind := "Function"
+	providerKind := "Provider"
+	pkgAPIVersion := "pkg.crossplane.io/v1beta1"
+	providerAPIVersion := "pkg.crossplane.io/v1"
 
 	tests := []struct {
 		name string
@@ -106,11 +110,29 @@ func TestResolveConfigurationFunctions(t *testing.T) {
 		want []pkgv1.Function
 	}{
 		{
-			name: "FiltersFunctionsOnly",
+			name: "DeprecatedStyle",
 			deps: []pkgmetav1.Dependency{
 				{Function: &fnA, Version: "v1.0.0"},
 				{Provider: &provider, Version: "v2.0.0"},
 				{Function: &fnB, Version: "v0.5.0"},
+			},
+			want: []pkgv1.Function{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "function-a"},
+					Spec:       pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: "ghcr.io/example/function-a:v1.0.0"}},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "function-b"},
+					Spec:       pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: "ghcr.io/example/function-b:v0.5.0"}},
+				},
+			},
+		},
+		{
+			name: "ModernStyle",
+			deps: []pkgmetav1.Dependency{
+				{APIVersion: &pkgAPIVersion, Kind: &fnKind, Package: &fnA, Version: "v1.0.0"},
+				{APIVersion: &providerAPIVersion, Kind: &providerKind, Package: &provider, Version: "v2.0.0"},
+				{APIVersion: &pkgAPIVersion, Kind: &fnKind, Package: &fnB, Version: "v0.5.0"},
 			},
 			want: []pkgv1.Function{
 				{

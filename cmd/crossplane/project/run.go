@@ -62,7 +62,7 @@ var runHelp string
 
 // runCmd builds a project and runs it in a local dev control plane.
 type runCmd struct {
-	ProjectFile    string `default:"crossplane-project.yaml" help:"Path to project definition."                 short:"f"`
+	ProjectFile    string `default:"${project_file}" help:"Path to project definition."                 short:"f"`
 	Repository     string `help:"Override the repository."   optional:""`
 	MaxConcurrency uint   `default:"8"                       help:"Max concurrent builds."`
 	CacheDir       string `env:"CROSSPLANE_XPKG_CACHE"       help:"Directory for cached xpkg package contents." name:"cache-dir"`

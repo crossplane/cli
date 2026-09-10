@@ -79,7 +79,7 @@ type Cmd struct {
 
 	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE"       help:"Directory for cached xpkg package contents."          name:"cache-dir"`
 	MaxConcurrency uint          `default:"8"                       help:"Maximum concurrency for building embedded functions."`
-	ProjectFile    string        `default:"crossplane-project.yaml" help:"Path to the project file. Optional."                  optional:""      predictor:"yaml_file" short:"f" type:"path"`
+	ProjectFile    string        `default:"${project_file}" help:"Path to the project file. Optional."                  optional:""      predictor:"yaml_file" short:"f" type:"path"`
 	Timeout        time.Duration `default:"1m"                      help:"How long to run before timing out."`
 
 	fs afero.Fs

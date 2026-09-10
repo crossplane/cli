@@ -138,7 +138,7 @@ func WithResolver(r *clixpkg.Resolver) ManagerOption {
 // in the user's config.
 func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) *Manager {
 	options := &managerOptions{
-		projFile:         "crossplane-project.yaml",
+		projFile:         clixpkg.ProjectFile,
 		schemaFS:         afero.NewBasePathFs(projFS, proj.Spec.Paths.Schemas),
 		schemaGenerators: generator.AllLanguages(),
 		schemaRunner: runner.NewRealSchemaRunner(

@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/cluster"
 	"github.com/crossplane/cli/v2/cmd/crossplane/completion"
@@ -46,6 +47,7 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/xr"
 	"github.com/crossplane/cli/v2/cmd/crossplane/xrd"
 	"github.com/crossplane/cli/v2/internal/config"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 	"github.com/crossplane/cli/v2/internal/maturity"
 	"github.com/crossplane/cli/v2/internal/terminal"
 
@@ -128,6 +130,10 @@ func main() {
 		kong.BindTo(configcmd.ConfigPath(cfgPath), (*configcmd.ConfigPath)(nil)),
 		// Bind the loaded config so commands can read feature flags at runtime.
 		kong.Bind(cfg),
+		kong.Vars{
+			"project_file":        clixpkg.ProjectFile,
+			"package_metadata_file": runtimexpkg.MetaFile,
+		},
 		kong.Help(helpPrinter),
 		kong.UsageOnError())
 

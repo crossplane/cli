@@ -87,11 +87,11 @@ type Cmd struct {
 	FunctionCredentials    string            `help:"A YAML file or directory of YAML files specifying credentials to use for Functions to render the XR."                                                           placeholder:"PATH"      predictor:"yaml_file_or_directory" type:"path"`
 	FunctionAnnotations    []string          `help:"Override function annotations for all functions. Provide multiple annotations by repeating the argument."                                                       placeholder:"KEY=VALUE" short:"a"`
 
-	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                      help:"Directory for cached xpkg package contents."                                                      name:"cache-dir"`
+	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                      help:"Directory for cached xpkg package contents."          name:"cache-dir"`
 	MaxConcurrency uint          `default:"8"                                                                                                      help:"Maximum concurrency for building embedded functions."`
-	ProjectFile    string        `default:"crossplane-project.yaml"                                                                                help:"Path to the project file or package metadata file (crossplane.yaml). Auto-detects the file type." optional:""        predictor:"yaml_file" short:"f" type:"path"`
+	ProjectFile    string        `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetects the file type."          optional:""                                                 predictor:"yaml_file" short:"f"           type:"path"`
 	Timeout        time.Duration `default:"1m"                                                                                                     help:"How long to run before timing out."`
-	XRD            string        `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that defines the XR's schema and properties." optional:""                                                                                             placeholder:"PATH" type:"existingfile"`
+	XRD            string        `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that defines the XR's schema and properties." optional:""                                                 placeholder:"PATH"    type:"existingfile"`
 
 	fs afero.Fs
 
@@ -399,19 +399,9 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		return fns, nil
 	}
 
-	filePath, err := filepath.Abs(c.ProjectFile)
+	filePath, err := c.resolveProjectFile()
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot determine project file path")
-	}
-
-	if _, err := os.Stat(filePath); err != nil {
-		// Fall back to crossplane.yaml in the same directory when the
-		// default project file is not found.
-		fallback := filepath.Join(filepath.Dir(filePath), "crossplane.yaml")
-		if _, ferr := os.Stat(fallback); ferr != nil {
-			return nil, errors.New("functions argument is required when not in a project or configuration")
-		}
-		filePath = fallback
+		return nil, err
 	}
 
 	dir := filepath.Dir(filePath)
@@ -428,6 +418,28 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 	}
 
 	return c.loadFunctionsFromConfiguration(ctx, log, fs, fileName)
+}
+
+// resolveProjectFile returns the absolute path of the project or configuration
+// file to use. When the user supplied an explicit --project-file, that path is
+// used as-is. Otherwise it probes for crossplane-project.yaml and then
+// crossplane.yaml in the working directory.
+func (c *Cmd) resolveProjectFile() (string, error) {
+	if c.ProjectFile != "" {
+		return filepath.Abs(c.ProjectFile)
+	}
+
+	for _, name := range []string{clixpkg.ProjectFile, runtimexpkg.MetaFile} {
+		abs, err := filepath.Abs(name)
+		if err != nil {
+			return "", errors.Wrapf(err, "cannot determine path for %q", name)
+		}
+		if _, err := os.Stat(abs); err == nil {
+			return abs, nil
+		}
+	}
+
+	return "", errors.New("functions argument is required when not in a project or configuration")
 }
 
 func (c *Cmd) newClientAndResolver(extraOpts ...clixpkg.ClientOption) (runtimexpkg.Client, *clixpkg.Resolver, error) {

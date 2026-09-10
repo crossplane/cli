@@ -38,7 +38,7 @@ var stopHelp string
 
 // stopCmd tears down a local dev control plane.
 type stopCmd struct {
-	ProjectFile      string `default:"crossplane-project.yaml"                               help:"Path to project definition." short:"f"`
+	ProjectFile      string `default:"${project_file}"                               help:"Path to project definition." short:"f"`
 	ControlPlaneName string `help:"Name of the dev control plane. Defaults to project name."`
 	RegistryDir      string `help:"Directory for local registry images."`
 }

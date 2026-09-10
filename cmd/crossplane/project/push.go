@@ -46,7 +46,7 @@ var pushHelp string
 
 // pushCmd pushes a built project to an OCI registry.
 type pushCmd struct {
-	ProjectFile           string `default:"crossplane-project.yaml"                                          help:"Path to project definition."                                           short:"f"`
+	ProjectFile           string `default:"${project_file}"                                          help:"Path to project definition."                                           short:"f"`
 	Repository            string `help:"Override the repository in the project file."                        optional:""`
 	Tag                   string `default:""                                                                 help:"Tag for the pushed package. Defaults to a time-based semver-like tag." short:"t"`
 	PackageFile           string `help:"Package file to push. Defaults to <output-dir>/<project-name>.xpkg." optional:""`

@@ -441,5 +441,5 @@ func (ss *SuccessSpinner) stop() {
 	ss.program.Quit()
 	ss.program.Wait()
 
-	_, _ = fmt.Fprintln(ss.out, ss.View().Content)
+	_, _ = lipgloss.Fprintln(ss.out, ss.View().Content)
 }

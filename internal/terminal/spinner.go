@@ -27,20 +27,11 @@ import (
 	"syscall"
 	"time"
 
-	bspinner "github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	bspinner "charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/crossplane/cli/v2/internal/async"
-)
-
-var (
-	// Crossplane teal for dark backgrounds, dark blue for light backgrounds.
-
-	//nolint:gochecknoglobals // This is effectively a const.
-	accentColor = lipgloss.AdaptiveColor{Dark: "#35D0BA", Light: "#183D54"}
-	//nolint:gochecknoglobals // This is effectively a const.
-	accentStyle = lipgloss.NewStyle().Foreground(accentColor)
 )
 
 // SpinnerPrinter prints spinners to the console.
@@ -230,16 +221,16 @@ func (m *MultiSpinner) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View satisfies tea.Model.
-func (m *MultiSpinner) View() string {
+func (m *MultiSpinner) View() tea.View {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	views := make([]string, len(m.spinners))
 	for i, sp := range m.spinners {
-		views[i] = sp.View()
+		views[i] = sp.View().Content
 	}
 
-	return strings.Join(views, "\n") + "\n"
+	return tea.NewView(strings.Join(views, "\n") + "\n")
 }
 
 // Add adds a spinner to the multi-spinner.
@@ -328,8 +319,9 @@ func (m *MultiSpinner) Stop() {
 // updates its view accordingly. It is used by MultiSpinner, but can also be
 // used as a standalone spinner.
 type SuccessSpinner struct {
-	title string
-	out   io.Writer
+	title       string
+	out         io.Writer
+	accentStyle lipgloss.Style
 
 	success *bool
 	spinner bspinner.Model
@@ -340,12 +332,18 @@ type SuccessSpinner struct {
 }
 
 func newSuccessSpinner(w io.Writer, msg string) *SuccessSpinner {
+	// Crossplane teal for dark backgrounds, dark blue for light backgrounds.
+	lightDark := lipgloss.LightDark(lipgloss.HasDarkBackground(os.Stdin, os.Stdout))
+	color := lightDark(lipgloss.Color("#183D54"), lipgloss.Color("#35D0BA"))
+	style := lipgloss.NewStyle().Foreground(color)
+
 	return &SuccessSpinner{
-		title: msg,
-		out:   w,
+		title:       msg,
+		out:         w,
+		accentStyle: style,
 		spinner: bspinner.New(
 			bspinner.WithSpinner(bspinner.Dot),
-			bspinner.WithStyle(accentStyle),
+			bspinner.WithStyle(style),
 		),
 	}
 }
@@ -369,15 +367,15 @@ func (ss *SuccessSpinner) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View satisfies tea.Model.
-func (ss *SuccessSpinner) View() string {
+func (ss *SuccessSpinner) View() tea.View {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
 	ind := ss.spinner.View()
 	if ss.success != nil {
-		ind = accentStyle.Render("✓")
+		ind = ss.accentStyle.Render("✓")
 		if !*ss.success {
-			ind = accentStyle.Render("✗")
+			ind = ss.accentStyle.Render("✗")
 		}
 	}
 
@@ -386,7 +384,7 @@ func (ss *SuccessSpinner) View() string {
 		view += "\n" + strings.Join(ss.log, "\n") + "\n"
 	}
 
-	return view
+	return tea.NewView(view)
 }
 
 // UpdateText updates the spinner's text.
@@ -443,5 +441,5 @@ func (ss *SuccessSpinner) stop() {
 	ss.program.Quit()
 	ss.program.Wait()
 
-	_, _ = fmt.Fprintln(ss.out, ss.View())
+	_, _ = fmt.Fprintln(ss.out, ss.View().Content)
 }

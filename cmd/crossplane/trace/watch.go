@@ -22,8 +22,8 @@ import (
 	"fmt"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/alecthomas/kong"
-	tea "github.com/charmbracelet/bubbletea"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -83,11 +83,11 @@ func (m treeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m treeModel) View() string {
+func (m treeModel) View() tea.View {
 	if m.err != nil {
-		return fmt.Sprintf("error: %v\n", m.err)
+		return tea.NewView(fmt.Sprintf("error: %v\n", m.err))
 	}
-	return m.rendered
+	return tea.NewView(m.rendered)
 }
 
 // renderTreeToString runs the printer into a string buffer.

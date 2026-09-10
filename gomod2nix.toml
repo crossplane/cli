@@ -204,8 +204,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v1.6.3"
     hash = "sha256-XZm4EastgX67Dgm5BpOEW/PY4aLcHM/O8+Xbz26PuTY="
   [mod."github.com/containerd/containerd"]
-    version = "v1.7.33"
-    hash = "sha256-5hXYyZJcXZiS0kTlcIgEfUwIZj/E++BOC7zI2tn3/Wg="
+    version = "v1.7.35"
+    hash = "sha256-cswP0DMIWj4YVHsOKoBSgZuD255ce7iQ6KmkGHL8UhE="
   [mod."github.com/containerd/errdefs"]
     version = "v1.0.0"
     hash = "sha256-wMZGoeqvRhuovYCJx0Js4P3qFCNTZ/6Atea/kNYoPMI="
@@ -876,8 +876,8 @@ cachePackages = ["al.essio.dev/pkg/shellescape", "cel.dev/expr", "cloud.google.c
     version = "v0.0.0-20260526163538-3dc84a4a5aaa"
     hash = "sha256-ldJTTb7hhj1mdmzTn9IEkQVwCoj3KRlENZtUSEKHABU="
   [mod."google.golang.org/grpc"]
-    version = "v1.83.1"
-    hash = "sha256-FpEi28U8I4/pzzfS+Gv4PySLcxkjVTy1pqtRlEDZJ54="
+    version = "v1.83.2"
+    hash = "sha256-q5VtdeJvWM7kbIvui8ncNV/+Rm+d0y/b6XkNN0/u1is="
   [mod."google.golang.org/protobuf"]
     version = "v1.36.11"
     hash = "sha256-7W+6jntfI/awWL3JP6yQedxqP5S9o3XvPgJ2XxxsIeE="

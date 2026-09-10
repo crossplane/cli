@@ -71,6 +71,46 @@ spec:
         type: object
 `
 
+// configurationWithXRDPackageYAML is a Configuration package that bundles an
+// XRD (rather than a raw CRD, like configurationPackageYAML above) - the
+// shape that previously produced zero schemas.
+const configurationWithXRDPackageYAML = `apiVersion: meta.pkg.crossplane.io/v1
+kind: Configuration
+metadata:
+  name: example
+spec:
+  crossplane:
+    version: ">=v1.14.0"
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xdatabases.acme.example.com
+spec:
+  group: acme.example.com
+  names:
+    kind: XDatabase
+    plural: xdatabases
+    singular: xdatabase
+    listKind: XDatabaseList
+  claimNames:
+    kind: Database
+    plural: databases
+    singular: database
+    listKind: DatabaseList
+  scope: LegacyCluster
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+`
+
 const providerPackageYAML = `apiVersion: meta.pkg.crossplane.io/v1
 kind: Provider
 metadata:
@@ -945,5 +985,55 @@ func TestManager_AddDependency_TransitiveNotPersisted(t *testing.T) {
 	}
 	if diff := cmp.Diff(wantDeps, gotProj.Spec.Dependencies); diff != "" {
 		t.Errorf("on-disk project deps (-want +got):\n%s", diff)
+	}
+}
+
+// TestManager_AddPackage_ConfigurationXRD verifies that adding a
+// Configuration dependency that bundles XRDs (rather than raw CRDs)
+// generates real schema output, not just an empty successful pass. Before
+// internal/xpkg.CRDFilesystem learned to convert XRDs to their derived CRD
+// form, this produced a lock entry but zero schema content.
+func TestManager_AddPackage_ConfigurationXRD(t *testing.T) {
+	const (
+		cfgPkg = "xpkg.crossplane.io/crossplane-contrib/configuration-xrd"
+		cfgTag = "v0.1.0"
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			cfgPkg + ":" + cfgTag: makePackageWithBody(t, cfgPkg, "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03", "", configurationWithXRDPackageYAML),
+		},
+		tags: []string{cfgTag},
+	}
+
+	schemaFS := afero.NewMemMapFs()
+	m := NewManager(
+		&v1alpha1.Project{
+			Spec: v1alpha1.ProjectSpec{
+				Paths: &v1alpha1.ProjectPaths{Schemas: "schemas"},
+			},
+		},
+		afero.NewMemMapFs(),
+		WithSchemaFS(schemaFS),
+		WithSchemaGenerators(generator.Filter(generator.AllLanguages(), []string{v1alpha1.SchemaLanguageJSON})),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+	)
+
+	if _, err := m.AddPackage(context.Background(), cfgPkg+":"+cfgTag, false); err != nil {
+		t.Fatalf("AddPackage: %v", err)
+	}
+
+	wantKey := "xpkg://" + cfgPkg + ":" + cfgTag
+	if diff := cmp.Diff([]string{wantKey}, readLockKeys(t, schemaFS)); diff != "" {
+		t.Errorf("lock keys (-want +got):\n%s", diff)
+	}
+
+	files, err := afero.Glob(schemaFS, "json/*.schema.json")
+	if err != nil {
+		t.Fatalf("glob generated schemas: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no JSON schemas were generated for the XRD-bundling Configuration dependency")
 	}
 }

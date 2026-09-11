@@ -124,7 +124,10 @@ func TestRewriteComponentRefs(t *testing.T) {
 	}
 	rewriteComponentRefs(s)
 
-	bs, _ := json.Marshal(s)
+	bs, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
 	raw := string(bs)
 	if strings.Contains(raw, "#/components/schemas/") {
 		t.Fatalf("refs remain: %s", raw)

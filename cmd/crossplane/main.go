@@ -57,7 +57,12 @@ import (
 //go:embed help.md
 var helpDescription string
 
-var _ = kong.Must(&cli{})
+var kongVars = kong.Vars{ //nolint:gochecknoglobals // We treat these as constants.
+	"project_file":          clixpkg.ProjectFile,
+	"package_metadata_file": runtimexpkg.MetaFile,
+}
+
+var _ = kong.Must(&cli{}, kongVars)
 
 type (
 	verboseFlag bool
@@ -130,10 +135,7 @@ func main() {
 		kong.BindTo(configcmd.ConfigPath(cfgPath), (*configcmd.ConfigPath)(nil)),
 		// Bind the loaded config so commands can read feature flags at runtime.
 		kong.Bind(cfg),
-		kong.Vars{
-			"project_file":          clixpkg.ProjectFile,
-			"package_metadata_file": runtimexpkg.MetaFile,
-		},
+		kongVars,
 		kong.Help(helpPrinter),
 		kong.UsageOnError())
 

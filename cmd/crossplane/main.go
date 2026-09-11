@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/cluster"
 	"github.com/crossplane/cli/v2/cmd/crossplane/completion"
@@ -48,6 +49,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/maturity"
 	"github.com/crossplane/cli/v2/internal/terminal"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
 	_ "embed"
 )
@@ -55,7 +57,12 @@ import (
 //go:embed help.md
 var helpDescription string
 
-var _ = kong.Must(&cli{})
+var kongVars = kong.Vars{ //nolint:gochecknoglobals // We treat these as constants.
+	"project_file":          clixpkg.ProjectFile,
+	"package_metadata_file": runtimexpkg.MetaFile,
+}
+
+var _ = kong.Must(&cli{}, kongVars)
 
 type (
 	verboseFlag bool
@@ -128,6 +135,7 @@ func main() {
 		kong.BindTo(configcmd.ConfigPath(cfgPath), (*configcmd.ConfigPath)(nil)),
 		// Bind the loaded config so commands can read feature flags at runtime.
 		kong.Bind(cfg),
+		kongVars,
 		kong.Help(helpPrinter),
 		kong.UsageOnError())
 

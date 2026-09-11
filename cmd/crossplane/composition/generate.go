@@ -59,7 +59,7 @@ type generateCmd struct {
 	Name        string `help:"Name prefix for the composition."       optional:""`
 	Plural      string `help:"Custom plural for the referenced kind." optional:""`
 	Path        string `help:"Output file."                           optional:""`
-	ProjectFile string `default:"crossplane-project.yaml"             help:"Path to project definition file."                    short:"f"`
+	ProjectFile string `default:"${project_file}"                     help:"Path to project definition file."                    short:"f"`
 	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE"                   help:"Directory for cached xpkg package contents."         name:"cache-dir"`
 
 	projFS     afero.Fs

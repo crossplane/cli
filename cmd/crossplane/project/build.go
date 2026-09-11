@@ -50,7 +50,7 @@ var buildHelp string
 
 // buildCmd builds a project into Crossplane packages.
 type buildCmd struct {
-	ProjectFile    string `default:"crossplane-project.yaml"                   help:"Path to project definition."                 short:"f"`
+	ProjectFile    string `default:"${project_file}"                           help:"Path to project definition."                 short:"f"`
 	Repository     string `help:"Override the repository in the project file." optional:""`
 	OutputDir      string `default:"_output"                                   help:"Output directory for packages."              short:"o"`
 	MaxConcurrency uint   `default:"8"                                         help:"Max concurrent function builds."`

@@ -28,14 +28,13 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
 	"github.com/crossplane/cli/v2/internal/terminal"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
 	_ "embed"
 )
 
 //go:embed help/init.md
 var initHelp string
-
-const projectFileName = "crossplane-project.yaml"
 
 // initCmd initializes a new project.
 type initCmd struct {
@@ -82,7 +81,7 @@ func (c *initCmd) Run(sp terminal.SpinnerPrinter) error {
 		}
 
 		// Write a minimal crossplane-project.yaml.
-		projFile := filepath.Join(c.Directory, projectFileName)
+		projFile := filepath.Join(c.Directory, clixpkg.ProjectFile)
 		content := fmt.Sprintf(`apiVersion: dev.crossplane.io/v1alpha1
 kind: Project
 metadata:
@@ -92,7 +91,7 @@ spec:
 `, c.Name, r.String())
 
 		if err := os.WriteFile(projFile, []byte(content), 0o600); err != nil {
-			return errors.Wrapf(err, "failed to write %s", projectFileName)
+			return errors.Wrapf(err, "failed to write %s", clixpkg.ProjectFile)
 		}
 
 		// Create default subdirectories.

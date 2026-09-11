@@ -41,6 +41,10 @@ const (
 
 	refFmt   = "%s@%s"
 	imageFmt = "%s:%s"
+
+	// Crossplane resource kinds.
+	kindXRD           = "CompositeResourceDefinition"
+	kindConfiguration = "Configuration"
 )
 
 // Manager defines a Manager for preparing Crossplane packages for validation.
@@ -122,7 +126,7 @@ func (m *Manager) PrepExtensions(extensions []*unstructured.Unstructured) error 
 
 			m.crds = append(m.crds, crd)
 
-		case schema.GroupKind{Group: "apiextensions.crossplane.io", Kind: "CompositeResourceDefinition"}:
+		case schema.GroupKind{Group: "apiextensions.crossplane.io", Kind: kindXRD}:
 			xrd := &v1.CompositeResourceDefinition{}
 
 			bytes, err := e.MarshalJSON()
@@ -170,7 +174,7 @@ func (m *Manager) PrepExtensions(extensions []*unstructured.Unstructured) error 
 
 			m.deps[image] = true
 
-		case schema.GroupKind{Group: "pkg.crossplane.io", Kind: "Configuration"}:
+		case schema.GroupKind{Group: "pkg.crossplane.io", Kind: kindConfiguration}:
 			paved := fieldpath.Pave(e.Object)
 
 			image, err := paved.GetString("spec.package")
@@ -180,7 +184,7 @@ func (m *Manager) PrepExtensions(extensions []*unstructured.Unstructured) error 
 
 			m.confs[image] = nil
 
-		case schema.GroupKind{Group: "meta.pkg.crossplane.io", Kind: "Configuration"}:
+		case schema.GroupKind{Group: "meta.pkg.crossplane.io", Kind: kindConfiguration}:
 			meta, err := e.MarshalJSON()
 			if err != nil {
 				return errors.Wrap(err, "cannot marshal configuration to JSON")

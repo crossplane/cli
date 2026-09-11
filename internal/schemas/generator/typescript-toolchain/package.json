@@ -1,0 +1,29 @@
+{
+  "name": "crossplane-models",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./*": {
+      "types": "./*/index.d.ts",
+      "default": "./*/index.js"
+    }
+  },
+  "dependencies": {
+    "@kubernetes-models/apimachinery": "3.0.2",
+    "@kubernetes-models/base": "6.0.1"
+  },
+  "devDependencies": {
+    "@kubernetes-models/crd-generate": "6.1.1",
+    "typescript": "5.9.3"
+  },
+  "crd-generate": {
+    "input": ["./all-crds.yaml"],
+    "output": "./gen"
+  }
+}

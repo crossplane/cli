@@ -36,8 +36,12 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
 )
 
-// defaultConcurrency is the concurrency using which the resource tree if loaded when not explicitly specified.
-const defaultConcurrency = 5
+const (
+	// defaultConcurrency is the concurrency using which the resource tree if loaded when not explicitly specified.
+	defaultConcurrency = 5
+	// kindSecret is the Kubernetes Secret kind.
+	kindSecret = "Secret"
+)
 
 // Client to get a Resource with all its children.
 type Client struct {
@@ -105,7 +109,7 @@ func getResourceChildrenRefs(r *resource.Resource, getConnectionSecrets bool) []
 	obj := r.Unstructured
 
 	switch obj.GroupVersionKind().GroupKind() {
-	case schema.GroupKind{Group: "", Kind: "Secret"},
+	case schema.GroupKind{Group: "", Kind: kindSecret},
 		v1alpha1.UsageGroupVersionKind.GroupKind(),
 		v1beta1.EnvironmentConfigGroupVersionKind.GroupKind():
 		// nothing to do here, it's a resource we know not to have any reference
@@ -131,7 +135,7 @@ func getResourceChildrenRefs(r *resource.Resource, getConnectionSecrets bool) []
 			if cmSecretRef := cm.GetWriteConnectionSecretToReference(); cmSecretRef != nil {
 				ref := v1.ObjectReference{
 					APIVersion: "v1",
-					Kind:       "Secret",
+					Kind:       kindSecret,
 					Name:       cmSecretRef.Name,
 					Namespace:  cm.GetNamespace(),
 				}
@@ -159,7 +163,7 @@ func getResourceChildrenRefs(r *resource.Resource, getConnectionSecrets bool) []
 		if xrSecretRef := xr.GetWriteConnectionSecretToReference(); xrSecretRef != nil {
 			ref := v1.ObjectReference{
 				APIVersion: "v1",
-				Kind:       "Secret",
+				Kind:       kindSecret,
 				Name:       xrSecretRef.Name,
 				Namespace:  xrSecretRef.Namespace,
 			}

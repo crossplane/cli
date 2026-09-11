@@ -44,6 +44,11 @@ import (
 	_ "embed"
 )
 
+// Common field and value constants.
+const (
+	categoryCrossplane = "crossplane"
+)
+
 //go:embed help/generate.md
 var generateHelp string
 
@@ -302,7 +307,7 @@ func newXRDFromSimpleSchema(yamlData []byte, customPlural string) (*v2.Composite
 			Group: gv.Group,
 			Scope: v2.CompositeResourceScopeNamespaced,
 			Names: extv1.CustomResourceDefinitionNames{
-				Categories: []string{"crossplane"},
+				Categories: []string{categoryCrossplane},
 				Kind:       flect.Capitalize(kind),
 				Plural:     strings.ToLower(plural),
 			},
@@ -339,7 +344,7 @@ func newXRDFromExample(yamlData []byte, customPlural string) (*v2.CompositeResou
 		return nil, errors.Wrap(err, "failed to unmarshal YAML to check top-level keys")
 	}
 	for key := range topLevelKeys {
-		allowedKeys := []string{"apiVersion", "kind", "metadata", "spec", "status", "additionalPrinterColumns"}
+		allowedKeys := []string{"apiVersion", "kind", "metadata", schemaFieldSpec, schemaFieldStatus, "additionalPrinterColumns"}
 		if !slices.Contains(allowedKeys, key) {
 			return nil, errors.Errorf("invalid manifest: valid top-level keys are: %v", allowedKeys)
 		}
@@ -446,7 +451,7 @@ func newXRDFromExample(yamlData []byte, customPlural string) (*v2.CompositeResou
 			Group: gv.Group,
 			Scope: scope,
 			Names: extv1.CustomResourceDefinitionNames{
-				Categories: []string{"crossplane"},
+				Categories: []string{categoryCrossplane},
 				Kind:       flect.Capitalize(kind),
 				Plural:     strings.ToLower(plural),
 			},

@@ -64,7 +64,7 @@ func (kclGenerator) Language() string {
 func (kclGenerator) GenerateFromCRD(ctx context.Context, fromFS afero.Fs, generator runner.SchemaRunner) (afero.Fs, error) { //nolint:gocognit // generate kcl schemas
 	crdFS := afero.NewMemMapFs()
 	schemaFS := afero.NewMemMapFs()
-	baseFolder := "workdir"
+	baseFolder := workDir
 
 	if err := crdFS.MkdirAll(baseFolder, 0o755); err != nil {
 		return nil, err
@@ -81,7 +81,7 @@ func (kclGenerator) GenerateFromCRD(ctx context.Context, fromFS afero.Fs, genera
 			return nil
 		}
 		ext := filepath.Ext(path)
-		if ext != ".yaml" && ext != ".yml" {
+		if ext != extYAML && ext != extYML {
 			return nil
 		}
 

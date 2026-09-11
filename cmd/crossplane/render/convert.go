@@ -36,6 +36,12 @@ import (
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
 
+// Common field names for unstructured objects.
+const (
+	fieldAPIVersion = "apiVersion"
+	fieldKind       = "kind"
+)
+
 // BuildCompositeRequest builds a RenderRequest for a composite resource from
 // the supplied inputs and function addresses.
 func BuildCompositeRequest(in CompositionInputs) (*renderv1alpha1.RenderRequest, error) {
@@ -123,11 +129,11 @@ func ParseCompositeResponse(out *renderv1alpha1.CompositeOutput) (CompositionOut
 	results := make([]kunstructured.Unstructured, 0, len(out.GetEvents()))
 	for _, ev := range out.GetEvents() {
 		results = append(results, kunstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "render.crossplane.io/v1beta1",
-			"kind":       "Result",
-			"severity":   ev.GetType(),
-			"reason":     ev.GetReason(),
-			"message":    ev.GetMessage(),
+			fieldAPIVersion: "render.crossplane.io/v1beta1",
+			fieldKind:       "Result",
+			"severity":      ev.GetType(),
+			"reason":        ev.GetReason(),
+			"message":       ev.GetMessage(),
 		}})
 	}
 
@@ -234,11 +240,11 @@ func ParseOperationResponse(out *renderv1alpha1.OperationOutput) (OperationOutpu
 	results := make([]kunstructured.Unstructured, 0, len(out.GetEvents()))
 	for _, ev := range out.GetEvents() {
 		results = append(results, kunstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "render.crossplane.io/v1beta1",
-			"kind":       "Result",
-			"severity":   ev.GetType(),
-			"reason":     ev.GetReason(),
-			"message":    ev.GetMessage(),
+			fieldAPIVersion: "render.crossplane.io/v1beta1",
+			fieldKind:       "Result",
+			"severity":      ev.GetType(),
+			"reason":        ev.GetReason(),
+			"message":       ev.GetMessage(),
 		}})
 	}
 

@@ -18,6 +18,7 @@ package function
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -229,6 +230,127 @@ func TestGeneratePythonFiles(t *testing.T) {
 			}
 			assertFiles(t, fs, tc.wantFiles)
 			assertContains(t, fs, tc.wantContains, tc.wantNotContains)
+		})
+	}
+}
+
+func TestGenerateTypescriptFiles(t *testing.T) {
+	cases := map[string]struct {
+		seedSchemas     map[string][]byte
+		wantFiles       []string
+		wantContains    map[string][]byte
+		wantNotContains map[string][]byte
+	}{
+		"NoSchemas": {
+			wantFiles: []string{
+				".npmrc",
+				"README.md",
+				"eslint.config.js",
+				"package.json",
+				"tsconfig.json",
+				"tsconfig.eslint.json",
+				"src/main.ts",
+				"src/function.ts",
+				"src/function.test.ts",
+			},
+			wantContains: map[string][]byte{
+				// install-links=true is load-bearing: without it npm symlinks
+				// the file: models dependency, Node resolves the symlink to a
+				// path outside node_modules, and every generated import fails
+				// at runtime. The file reaches the scaffold only because it
+				// happens to match the templates/typescript/*.* glob, so this
+				// asserts that it still does — renaming it to npmrc, or
+				// widening the glob to *, would otherwise drop it silently.
+				".npmrc": []byte("install-links=true"),
+				// The function name is templated into the entrypoint.
+				"src/main.ts": []byte("serve(compose, { name: 'my-func' })"),
+			},
+			wantNotContains: map[string][]byte{
+				"package.json": []byte("crossplane-models"),
+			},
+		},
+		"WithSchemas": {
+			seedSchemas: map[string][]byte{
+				"typescript/index.d.ts": nil,
+			},
+			wantContains: map[string][]byte{
+				"package.json": []byte(`"crossplane-models": "file:../../schemas/typescript"`),
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := &generateCmd{
+				Name:      "my-func",
+				schemasFS: seedFS(t, tc.seedSchemas),
+				proj:      testProject(),
+			}
+			fs := afero.NewMemMapFs()
+			if err := c.generateTypescriptFiles(fs); err != nil {
+				t.Fatal(err)
+			}
+			assertFiles(t, fs, tc.wantFiles)
+			assertContains(t, fs, tc.wantContains, tc.wantNotContains)
+		})
+	}
+}
+
+// TestGenerateTypescriptPackageJSON checks that the scaffolded manifest parses
+// in both HasSchemas states. The crossplane-models entry sits inside a
+// {{- if }} block whose whitespace trimming decides whether the preceding
+// comma is still valid, so a template that emits correct JSON in one state can
+// emit a trailing comma in the other. A substring assertion would not notice.
+func TestGenerateTypescriptPackageJSON(t *testing.T) {
+	cases := map[string]struct {
+		seedSchemas map[string][]byte
+		wantModels  bool
+	}{
+		"NoSchemas":   {wantModels: false},
+		"WithSchemas": {seedSchemas: map[string][]byte{"typescript/index.d.ts": nil}, wantModels: true},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := &generateCmd{
+				Name:      "my-func",
+				schemasFS: seedFS(t, tc.seedSchemas),
+				proj:      testProject(),
+			}
+			fs := afero.NewMemMapFs()
+			if err := c.generateTypescriptFiles(fs); err != nil {
+				t.Fatal(err)
+			}
+
+			data, err := afero.ReadFile(fs, "package.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var pkg struct {
+				Type         string            `json:"type"`
+				Dependencies map[string]string `json:"dependencies"`
+			}
+			if err := json.Unmarshal(data, &pkg); err != nil {
+				t.Fatalf("package.json is not valid JSON: %v\ngot:\n%s", err, data)
+			}
+
+			// Node needs this to load the compiled output as ESM.
+			if pkg.Type != "module" {
+				t.Errorf(`type: got %q, want "module"`, pkg.Type)
+			}
+
+			if _, ok := pkg.Dependencies["crossplane-models"]; ok != tc.wantModels {
+				t.Errorf("crossplane-models present: got %v, want %v", ok, tc.wantModels)
+			}
+
+			// @types/node must track the Node major in the build and runtime
+			// images (see typescriptBuildImage and typescriptRuntimeImage).
+			// Types ahead of the runtime let a newer API compile and then fail
+			// inside the image. Update both together.
+			if got, want := pkg.Dependencies["@types/node"], "^24.0.0"; got != want {
+				t.Errorf("@types/node: got %q, want %q", got, want)
+			}
 		})
 	}
 }

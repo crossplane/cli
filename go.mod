@@ -26,8 +26,8 @@ require (
 	github.com/google/ko v0.18.1
 	github.com/invopop/jsonschema v0.14.0
 	github.com/kubernetes-sigs/kro v0.9.2
-	github.com/moby/moby/api v1.55.0
-	github.com/moby/moby/client v0.5.1
+	github.com/moby/moby/api v1.56.0
+	github.com/moby/moby/client v0.6.0
 	github.com/muesli/termenv v0.16.0
 	github.com/oapi-codegen/oapi-codegen/v2 v2.8.0
 	github.com/pkg/errors v0.9.1

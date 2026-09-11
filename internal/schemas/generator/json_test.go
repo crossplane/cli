@@ -19,10 +19,14 @@ package generator
 import (
 	"embed"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/invopop/jsonschema"
 	"github.com/spf13/afero"
+	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/kube-openapi/pkg/validation/spec"
 )
 
 //go:embed testdata/*.json
@@ -101,6 +105,88 @@ func TestMutateJSONSchema(t *testing.T) {
 			t.Error("expected additionalProperties to remain nil for empty object")
 		}
 	})
+}
+
+func TestRewriteComponentRefs(t *testing.T) {
+	cRef := func(n string) spec.Ref { return spec.MustCreateRef("#/components/schemas/" + n) }
+
+	s := &spec.Schema{
+		SchemaProps: spec.SchemaProps{
+			Properties: map[string]spec.Schema{
+				"a": {SchemaProps: spec.SchemaProps{Ref: cRef("A")}},
+			},
+			Items: &spec.SchemaOrArray{
+				Schema: &spec.Schema{SchemaProps: spec.SchemaProps{Ref: cRef("B")}},
+			},
+			AllOf: []spec.Schema{{SchemaProps: spec.SchemaProps{Ref: cRef("C")}}},
+			Not:   &spec.Schema{SchemaProps: spec.SchemaProps{Ref: cRef("D")}},
+		},
+	}
+	rewriteComponentRefs(s)
+
+	bs, _ := json.Marshal(s)
+	raw := string(bs)
+	if strings.Contains(raw, "#/components/schemas/") {
+		t.Fatalf("refs remain: %s", raw)
+	}
+	for _, name := range []string{"A", "B", "C", "D"} {
+		if !strings.Contains(raw, "#/$defs/"+name) {
+			t.Errorf("missing #/$defs/%s in output", name)
+		}
+	}
+}
+
+func TestCRDsToJSONSchemasRewritesRefs(t *testing.T) {
+	crd := &extv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "widgets.example.org"},
+		Spec: extv1.CustomResourceDefinitionSpec{
+			Group: "example.org",
+			Names: extv1.CustomResourceDefinitionNames{
+				Kind: "Widget", Plural: "widgets", Singular: "widget", ListKind: "WidgetList",
+			},
+			Scope: extv1.NamespaceScoped,
+			Versions: []extv1.CustomResourceDefinitionVersion{{
+				Name: "v1", Served: true, Storage: true,
+				Schema: &extv1.CustomResourceValidation{
+					OpenAPIV3Schema: &extv1.JSONSchemaProps{
+						Type:       "object",
+						Properties: map[string]extv1.JSONSchemaProps{"spec": {Type: "object"}},
+					},
+				},
+			}},
+		},
+	}
+
+	schemas, err := CRDsToJSONSchemas([]*extv1.CustomResourceDefinition{crd})
+	if err != nil {
+		t.Fatalf("CRDsToJSONSchemas: %v", err)
+	}
+	if len(schemas) == 0 {
+		t.Fatal("expected at least one schema")
+	}
+
+	raw := string(schemas[0].Data)
+	if strings.Contains(raw, "#/components/schemas/") {
+		t.Fatal("output still contains #/components/schemas/ refs")
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(schemas[0].Data, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	defs, ok := parsed["$defs"].(map[string]any)
+	if !ok || len(defs) == 0 {
+		t.Fatal("expected $defs with at least one entry")
+	}
+
+	// Verify every #/$defs/ ref in the output resolves to an actual $defs entry.
+	for _, match := range strings.Split(raw, "#/$defs/")[1:] {
+		name, _, _ := strings.Cut(match, "\"")
+		if _, ok := defs[name]; !ok {
+			t.Errorf("#/$defs/%s referenced but not defined in $defs", name)
+		}
+	}
 }
 
 func TestGenerateFromOpenAPI(t *testing.T) {

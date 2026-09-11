@@ -43,9 +43,9 @@ var addHelp string
 
 // addCmd adds a dependency to the current project.
 type addCmd struct {
-	Package     string `arg:""                            help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
-	ProjectFile string `default:"${project_file}" help:"Path to project definition file."                                                        short:"f"`
-	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE"       help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
+	Package     string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
+	ProjectFile string `default:"${project_file}"   help:"Path to project definition file."                                                        short:"f"`
+	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
 
 	// Flags for specific dependency types.
 	APIOnly bool   `help:"Mark an xpkg dependency as API-only (not a runtime dependency)." name:"api-only"`

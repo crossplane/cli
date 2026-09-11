@@ -77,10 +77,10 @@ type Cmd struct {
 	RequiredSchemas        string            `help:"A directory of JSON files specifying OpenAPI schemas to pass to the function pipeline."                                                                   placeholder:"DIR"       predictor:"directory"              type:"path"`
 	WatchedResource        string            `help:"A YAML file specifying the watched resource for WatchOperation rendering. The resource is also added to required resources."                              placeholder:"PATH"      predictor:"yaml_file"              short:"w"   type:"existingfile"`
 
-	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE"       help:"Directory for cached xpkg package contents."          name:"cache-dir"`
-	MaxConcurrency uint          `default:"8"                       help:"Maximum concurrency for building embedded functions."`
-	ProjectFile    string        `default:"${project_file}" help:"Path to the project file. Optional."                  optional:""      predictor:"yaml_file" short:"f" type:"path"`
-	Timeout        time.Duration `default:"1m"                      help:"How long to run before timing out."`
+	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."          name:"cache-dir"`
+	MaxConcurrency uint          `default:"8"                 help:"Maximum concurrency for building embedded functions."`
+	ProjectFile    string        `default:"${project_file}"   help:"Path to the project file. Optional."                  optional:""      predictor:"yaml_file" short:"f" type:"path"`
+	Timeout        time.Duration `default:"1m"                help:"How long to run before timing out."`
 
 	fs afero.Fs
 

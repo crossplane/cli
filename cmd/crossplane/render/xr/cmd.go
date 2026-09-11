@@ -89,7 +89,7 @@ type Cmd struct {
 
 	CacheDir       string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                      help:"Directory for cached xpkg package contents."          name:"cache-dir"`
 	MaxConcurrency uint          `default:"8"                                                                                                      help:"Maximum concurrency for building embedded functions."`
-	ProjectFile    string        `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetects the file type."          optional:""                                                 predictor:"yaml_file" short:"f"           type:"path"`
+	ProjectFile    string        `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetects the file type."           optional:""                                                 predictor:"yaml_file" short:"f"           type:"path"`
 	Timeout        time.Duration `default:"1m"                                                                                                     help:"How long to run before timing out."`
 	XRD            string        `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that defines the XR's schema and properties." optional:""                                                 placeholder:"PATH"    type:"existingfile"`
 

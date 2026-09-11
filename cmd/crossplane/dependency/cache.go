@@ -42,10 +42,10 @@ var updateHelp string
 
 // updateCacheCmd updates the dependency cache by regenerating all schemas.
 type updateCacheCmd struct {
-	ProjectFile string `default:"${project_file}" help:"Path to project definition file."            short:"f"`
-	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE"       help:"Directory for cached xpkg package contents." name:"cache-dir"`
-	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"        help:"Token for git HTTPS authentication."`
-	GitUsername string `default:"x-access-token"          env:"CROSSPLANE_GIT_USERNAME"                      help:"Username for git HTTPS authentication."`
+	ProjectFile string `default:"${project_file}"   help:"Path to project definition file."            short:"f"`
+	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents." name:"cache-dir"`
+	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"  help:"Token for git HTTPS authentication."`
+	GitUsername string `default:"x-access-token"    env:"CROSSPLANE_GIT_USERNAME"                      help:"Username for git HTTPS authentication."`
 }
 
 func (c *updateCacheCmd) Help() string {
@@ -116,7 +116,7 @@ var cleanHelp string
 
 // cleanCacheCmd removes all generated schemas.
 type cleanCacheCmd struct {
-	ProjectFile  string `default:"${project_file}"                                        help:"Path to project definition file."            short:"f"`
+	ProjectFile  string `default:"${project_file}"                                                help:"Path to project definition file."            short:"f"`
 	CacheDir     string `env:"CROSSPLANE_XPKG_CACHE"                                              help:"Directory for cached xpkg package contents." name:"cache-dir"`
 	KeepPackages bool   `help:"Keep cached xpkg package contents; remove only generated schemas." name:"keep-packages"`
 }

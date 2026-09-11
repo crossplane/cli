@@ -47,9 +47,9 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/xr"
 	"github.com/crossplane/cli/v2/cmd/crossplane/xrd"
 	"github.com/crossplane/cli/v2/internal/config"
-	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 	"github.com/crossplane/cli/v2/internal/maturity"
 	"github.com/crossplane/cli/v2/internal/terminal"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
 	_ "embed"
 )
@@ -131,7 +131,7 @@ func main() {
 		// Bind the loaded config so commands can read feature flags at runtime.
 		kong.Bind(cfg),
 		kong.Vars{
-			"project_file":        clixpkg.ProjectFile,
+			"project_file":          clixpkg.ProjectFile,
 			"package_metadata_file": runtimexpkg.MetaFile,
 		},
 		kong.Help(helpPrinter),

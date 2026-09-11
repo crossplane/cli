@@ -45,7 +45,7 @@ metadata and embedded functions from the project.
 
 The `--project-file` (`-f`) flag also accepts a Configuration package metadata
 file (`crossplane.yaml`).
-The file type is auto-detected from `apiVersion` and `kind`.
+`render` detects the file type automatically from `apiVersion` and `kind`.
 When pointing to a Configuration, `render` extracts function dependencies from
 `spec.dependsOn` and resolves their version constraints to concrete OCI
 references.

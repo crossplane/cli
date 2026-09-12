@@ -489,3 +489,41 @@ func (o *Foo) GetAdditionalProperties() *map[string]string {
 		t.Errorf("expected SetAdditionalProperties to be generated, got %d", n)
 	}
 }
+
+// TestAddAccessorsSkipsFieldNameCollisions guards against a Terraform schema
+// that legitimately has both a field (e.g. PasswordData) and a sibling field
+// whose name matches the accessor the first field would generate (e.g.
+// GetPasswordData). Go forbids a method and a field sharing a name on the same
+// type, so emitting GetPasswordData() here would make the package fail to
+// compile, as happened for provider-aws-ec2's InstanceStatusAtProvider.
+func TestAddAccessorsSkipsFieldNameCollisions(t *testing.T) {
+	input := `package v1alpha1
+
+type Foo struct {
+	PasswordData    *string ` + "`json:\"passwordData,omitempty\"`" + `
+	GetPasswordData *bool   ` + "`json:\"getPasswordData,omitempty\"`" + `
+}
+`
+
+	got, err := addAccessors(input)
+	if err != nil {
+		t.Fatalf("addAccessors returned error: %v", err)
+	}
+
+	// The colliding getter must not be generated at all: the struct's own
+	// GetPasswordData field is the only thing named GetPasswordData.
+	if n := countMethods(t, got, "Foo", "GetPasswordData"); n != 0 {
+		t.Errorf("expected no GetPasswordData method (field of that name already exists), got %d", n)
+	}
+	// SetPasswordData doesn't collide with anything and should still be generated.
+	if n := countMethods(t, got, "Foo", "SetPasswordData"); n != 1 {
+		t.Errorf("expected SetPasswordData to be generated, got %d", n)
+	}
+	// The other field's own accessors are unaffected.
+	if n := countMethods(t, got, "Foo", "GetGetPasswordData"); n != 1 {
+		t.Errorf("expected GetGetPasswordData to be generated for the GetPasswordData field, got %d", n)
+	}
+	if n := countMethods(t, got, "Foo", "SetGetPasswordData"); n != 1 {
+		t.Errorf("expected SetGetPasswordData to be generated for the GetPasswordData field, got %d", n)
+	}
+}

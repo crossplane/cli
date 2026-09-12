@@ -130,6 +130,26 @@ func receiverTypeName(e ast.Expr) string {
 	return ""
 }
 
+// embeddedFieldName returns the name Go promotes into the struct's namespace
+// for an anonymous field, mirroring the Go spec: it's the embedded type's own
+// name, ignoring any pointer indirection or package qualification (e.g.
+// embedding `*Bar` or `pkg.Bar` both promote the name `Bar`). Returns "" for
+// type shapes generated models don't use (generics, etc.), which simply
+// aren't tracked as potential collisions.
+func embeddedFieldName(e ast.Expr) string {
+	if star, ok := e.(*ast.StarExpr); ok {
+		e = star.X
+	}
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	default:
+		return ""
+	}
+}
+
 // isNilable reports whether a zero value of the given type is spelled `nil`,
 // letting the generated getter return nil directly instead of declaring a zero
 // variable. Generated models use pointers throughout, so this is the common
@@ -156,6 +176,17 @@ func isNilable(e ast.Expr) bool {
 func writeStructAccessors(b *strings.Builder, fset *token.FileSet, typeName string, st *ast.StructType, skip map[string]bool) {
 	fieldNames := map[string]bool{}
 	for _, field := range st.Fields.List {
+		if len(field.Names) == 0 {
+			// Anonymous/embedded field: Go promotes the embedded type's own
+			// name into the struct's namespace (e.g. embedding GetFoo gives
+			// the struct a field effectively named GetFoo), so it can still
+			// collide with a generated accessor even though it has no
+			// explicit field.Names entry of its own.
+			if n := embeddedFieldName(field.Type); n != "" {
+				fieldNames[n] = true
+			}
+			continue
+		}
 		for _, name := range field.Names {
 			fieldNames[name.Name] = true
 		}

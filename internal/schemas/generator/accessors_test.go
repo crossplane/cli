@@ -489,3 +489,93 @@ func (o *Foo) GetAdditionalProperties() *map[string]string {
 		t.Errorf("expected SetAdditionalProperties to be generated, got %d", n)
 	}
 }
+
+// TestAddAccessorsSkipsFieldNameCollisions guards against a Terraform schema
+// that legitimately has two fields where one's name matches the accessor the
+// other would generate (e.g. a field named PasswordData alongside a sibling
+// field named GetPasswordData). Go forbids a method and a field sharing a name
+// on the same type, so emitting the colliding accessor would make the package
+// fail to compile, as happened for provider-aws-ec2's InstanceStatusAtProvider.
+// Table-driven so a regression in either the getter or the setter collision
+// check — or in the embedded-field case, which go/ast reports via an empty
+// field.Names rather than a plain name — is caught, and cmp.Diff over the full
+// generated method set confirms nothing else was skipped along the way.
+func TestAddAccessorsSkipsFieldNameCollisions(t *testing.T) {
+	cases := []struct {
+		name   string
+		args   string
+		want   map[string]string
+		reason string
+	}{
+		{
+			name: "GetterCollidesWithSiblingField",
+			args: `package v1alpha1
+
+type Foo struct {
+	PasswordData    *string ` + "`json:\"passwordData,omitempty\"`" + `
+	GetPasswordData *bool   ` + "`json:\"getPasswordData,omitempty\"`" + `
+}
+`,
+			want: map[string]string{
+				// No Foo.GetPasswordData: it would collide with the sibling
+				// field of that exact name.
+				"Foo.SetPasswordData":    "*string",
+				"Foo.GetGetPasswordData": "*bool",
+				"Foo.SetGetPasswordData": "*bool",
+			},
+			reason: "a field named PasswordData must not get a GetPasswordData() method when a sibling field is itself named GetPasswordData",
+		},
+		{
+			name: "SetterCollidesWithSiblingField",
+			args: `package v1alpha1
+
+type Foo struct {
+	Data    *string ` + "`json:\"data,omitempty\"`" + `
+	SetData *bool   ` + "`json:\"setData,omitempty\"`" + `
+}
+`,
+			want: map[string]string{
+				"Foo.GetData": "*string",
+				// No Foo.SetData: it would collide with the sibling field of
+				// that exact name.
+				"Foo.GetSetData": "*bool",
+				"Foo.SetSetData": "*bool",
+			},
+			reason: "a field named Data must not get a SetData() method when a sibling field is itself named SetData",
+		},
+		{
+			name: "GetterCollidesWithEmbeddedFieldName",
+			args: `package v1alpha1
+
+type GetPasswordData struct {
+	Enabled *bool ` + "`json:\"enabled,omitempty\"`" + `
+}
+
+type Foo struct {
+	PasswordData *string ` + "`json:\"passwordData,omitempty\"`" + `
+	GetPasswordData
+}
+`,
+			want: map[string]string{
+				// No Foo.GetPasswordData: Go promotes the embedded
+				// GetPasswordData field under that same name.
+				"Foo.SetPasswordData":        "*string",
+				"GetPasswordData.GetEnabled": "*bool",
+				"GetPasswordData.SetEnabled": "*bool",
+			},
+			reason: "an anonymous/embedded field promotes its type name into the struct's namespace just like a named field would, so it must be treated as a collision candidate too",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := addAccessors(tc.args)
+			if err != nil {
+				t.Fatalf("addAccessors returned error: %v", err)
+			}
+			if diff := cmp.Diff(tc.want, collectMethods(t, got)); diff != "" {
+				t.Errorf("%s\ngenerated accessors (-want +got):\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

@@ -27,6 +27,19 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
 
+type mockContainerStarter struct {
+	containerStart  func(context.Context, string, client.ContainerStartOptions) (client.ContainerStartResult, error)
+	containerAttach func(context.Context, string, client.ContainerAttachOptions) (client.ContainerAttachResult, error)
+}
+
+func (m *mockContainerStarter) ContainerStart(ctx context.Context, id string, opts client.ContainerStartOptions) (client.ContainerStartResult, error) {
+	return m.containerStart(ctx, id, opts)
+}
+
+func (m *mockContainerStarter) ContainerAttach(ctx context.Context, id string, opts client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+	return m.containerAttach(ctx, id, opts)
+}
+
 func TestStartAndAttach(t *testing.T) {
 	t.Parallel()
 
@@ -93,15 +106,15 @@ func TestStartAndAttach(t *testing.T) {
 
 			calls := []string{}
 			var gotOptions client.ContainerAttachOptions
-			_, err := startAndAttach(t.Context(), "container-id", tc.args.stdin, runContainerCalls{
-				start: func(_ context.Context, id string, _ client.ContainerStartOptions) error {
+			_, err := startAndAttach(t.Context(), "container-id", tc.args.stdin, &mockContainerStarter{
+				containerStart: func(_ context.Context, id string, _ client.ContainerStartOptions) (client.ContainerStartResult, error) {
 					if diff := cmp.Diff("container-id", id); diff != "" {
 						t.Errorf("%s\nstart container ID: -want, +got:\n%s", tc.reason, diff)
 					}
 					calls = append(calls, "start")
-					return tc.args.startErr
+					return client.ContainerStartResult{}, tc.args.startErr
 				},
-				attach: func(_ context.Context, id string, opts client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+				containerAttach: func(_ context.Context, id string, opts client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
 					if diff := cmp.Diff("container-id", id); diff != "" {
 						t.Errorf("%s\nattach container ID: -want, +got:\n%s", tc.reason, diff)
 					}

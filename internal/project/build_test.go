@@ -18,6 +18,7 @@ package project
 
 import (
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -36,9 +37,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/parser"
 
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project/functions"
+	"github.com/crossplane/cli/v2/internal/schemas/generator"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
 // xrdYAML returns an XRD manifest for a resource with the given group/kind.
@@ -294,6 +299,165 @@ func TestBuilderDependsOn(t *testing.T) {
 	}
 	if diff := cmp.Diff(2, foundArchs); diff != "" {
 		t.Errorf("function arch images (-want +got):\n%s", diff)
+	}
+}
+
+// configurationWithXRDPackageYAML is a Configuration package that bundles an
+// XRD (rather than a raw CRD) - the shape that, before internal/xpkg learned
+// to convert XRDs to their derived CRD form, produced zero schemas.
+const configurationWithXRDPackageYAML = `apiVersion: meta.pkg.crossplane.io/v1
+kind: Configuration
+metadata:
+  name: example
+spec:
+  crossplane:
+    version: ">=v1.14.0"
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xdatabases.acme.example.com
+spec:
+  group: acme.example.com
+  names:
+    kind: XDatabase
+    plural: xdatabases
+    singular: xdatabase
+    listKind: XDatabaseList
+  claimNames:
+    kind: Database
+    plural: databases
+    singular: database
+    listKind: DatabaseList
+  scope: LegacyCluster
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+`
+
+// fakePkgClient is a minimal fake xpkg.Client that serves one pre-parsed
+// package per exact ref, used to drive a real dependency.Manager in tests
+// without a network or registry.
+type fakePkgClient struct {
+	packages map[string]*xpkg.Package
+	tags     []string
+}
+
+func (f *fakePkgClient) Get(_ context.Context, ref string, _ ...xpkg.GetOption) (*xpkg.Package, error) {
+	pkg, ok := f.packages[ref]
+	if !ok {
+		return nil, fmt.Errorf("package not found: %s", ref) //nolint:err113 // test-only fake.
+	}
+	return pkg, nil
+}
+
+func (f *fakePkgClient) ListVersions(_ context.Context, _ string, _ ...xpkg.GetOption) ([]string, error) {
+	return f.tags, nil
+}
+
+// parseFixturePackage parses body into a *parser.Package using the real
+// runtime schemes, the same way the xpkg client parses a fetched package.
+func parseFixturePackage(t *testing.T, body string) *parser.Package {
+	t.Helper()
+	metaScheme, err := xpkg.BuildMetaScheme()
+	if err != nil {
+		t.Fatalf("build meta scheme: %v", err)
+	}
+	objScheme, err := xpkg.BuildObjectScheme()
+	if err != nil {
+		t.Fatalf("build object scheme: %v", err)
+	}
+	pkg, err := parser.New(metaScheme, objScheme).Parse(context.Background(), io.NopCloser(strings.NewReader(body)))
+	if err != nil {
+		t.Fatalf("parse package: %v", err)
+	}
+	return pkg
+}
+
+// TestBuilderBuild_DependencyManagerGeneratesXRDSchemas verifies that
+// Builder.Build, wired with a real dependency.Manager (the same
+// addPackage/CRDFilesystem path dependency add and update-cache use), drives
+// schema generation for a Configuration dependency that bundles XRDs. This
+// exercises BuildWithDependencyManager directly, independent of
+// internal/dependency's own tests - before internal/xpkg.CRDFilesystem
+// learned to convert XRDs, this would have completed the build without
+// generating any schema for the dependency.
+func TestBuilderBuild_DependencyManagerGeneratesXRDSchemas(t *testing.T) {
+	t.Parallel()
+
+	const (
+		cfgPkg = "xpkg.crossplane.io/example/configuration-xrd"
+		cfgTag = "v0.1.0"
+	)
+
+	projFS := afero.NewMemMapFs()
+	writeProject(t, projFS,
+		map[string]string{
+			"db.yaml": xrdYAML("acme.example.com", "xwidgets", "xwidget", "XWidget"),
+		},
+		nil,
+	)
+
+	proj := &devv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-project",
+		},
+		Spec: devv1alpha1.ProjectSpec{
+			Repository: "xpkg.crossplane.io/example/test",
+			Dependencies: []devv1alpha1.Dependency{{
+				Type: devv1alpha1.DependencyTypeXpkg,
+				Xpkg: &devv1alpha1.XpkgDependency{
+					APIVersion: "pkg.crossplane.io/v1",
+					Kind:       "Configuration",
+					Package:    cfgPkg,
+					Version:    cfgTag,
+				},
+			}},
+		},
+	}
+	proj.Default()
+
+	fc := &fakePkgClient{
+		packages: map[string]*xpkg.Package{
+			cfgPkg + ":" + cfgTag: {
+				Package: parseFixturePackage(t, configurationWithXRDPackageYAML),
+				Source:  cfgPkg,
+				Digest:  "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+			},
+		},
+		tags: []string{cfgTag},
+	}
+
+	schemaFS := afero.NewMemMapFs()
+	depMgr := dependency.NewManager(proj, projFS,
+		dependency.WithSchemaFS(schemaFS),
+		dependency.WithSchemaGenerators(generator.Filter(generator.AllLanguages(), []string{devv1alpha1.SchemaLanguageJSON})),
+		dependency.WithXpkgClient(fc),
+		dependency.WithResolver(clixpkg.NewResolver(fc)),
+	)
+
+	b := NewBuilder(
+		BuildWithFunctionIdentifier(functions.FakeIdentifier),
+		BuildWithDependencyManager(depMgr),
+	)
+
+	if _, err := b.Build(t.Context(), proj, projFS); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	files, err := afero.Glob(schemaFS, "json/*.schema.json")
+	if err != nil {
+		t.Fatalf("glob generated schemas: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no JSON schemas were generated for the XRD-bundling Configuration dependency during Build")
 	}
 }
 

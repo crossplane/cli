@@ -3,7 +3,7 @@
 * Owner: Christopher Haar (@haarchri)
 * Reviewers: Jonathan Ogilvie (@jcogilvie), Theo Chatzimichos
   (@tampakrap), Adam Wolfe-Gordon (@adamwg)
-* Status: Draft
+* Status: Accepted
 
 ## Background
 
@@ -39,7 +39,7 @@ external resource to update it, so applying such a change does not recreate
 anything, it wedges. The provider refuses the update, the MR sits unsynced, and
 a human has to intervene. Replacement, computed values, provider defaults, and
 custom diff logic are provider knowledge. A companion one-pager in
-crossplane/upjet proposes exposing that knowledge: a `PlanService` gRPC protocol
+crossplane/upjet proposes exposing that knowledge: a `PlanService` protocol
 that upjet providers serve from an `internal plan-server` subcommand, computing
 the provider's own Terraform diff from a desired resource and its live state,
 statelessly, with no cloud credentials and no cluster access. What that proposal
@@ -118,6 +118,15 @@ state), sends desired and live to the routed plan server, and renders the
 response. A resource with no live counterpart plans as a create "plan
 before apply".
 
+Which providers answer those plans comes from the current kubeconfig
+context by default: the CLI lists the providers installed on the target
+cluster and runs their package images as plan servers, so the preview uses
+the provider versions the cluster actually runs. `--provider-images` is
+optional and overrides that discovery for the cases where the cluster is
+not the source of truth, most importantly the provider upgrade preview
+below, where the point is to plan with a version that is not installed
+yet.
+
 ### Previewing a Provider Upgrade
 
 Provider upgrades fall out of the same command with no new machinery,
@@ -185,8 +194,10 @@ The flow:
    iteratively, fetching what the pipeline requests from the live cluster
    and re-rendering until requirements stabilize, with an iteration cap.
    (When Crossplane records required-resource references on XRs,
-   [crossplane/crossplane#7351][issue-7351], discovery collapses to a
-   single read; the loop is the interim.)
+   [crossplane/crossplane#7351][issue-7351], those references seed the
+   first pass, so most runs converge in one iteration. The loop itself
+   stays: simulate renders with local changes, and a changed pipeline can
+   require different resources than the ones recorded.)
 4. **Diff the cluster layer.** Compare rendered against live composed
    resources with crossplane-diff's calculator, including its server-side
    dry-run so defaulting does not masquerade as change, and its removal
@@ -204,6 +215,17 @@ The flow:
 Composition changes, embedded function changes, and XR changes all reduce to
 this one flow, because they all reduce to "re-render with local inputs, then
 ask the providers what the delta means".
+
+A project is the default source of those local inputs, not a requirement.
+Not everyone uses projects, and a changed Composition is worth previewing
+either way, so `-f` also accepts Composition or XR files directly. The
+flow stays the same with the inputs swapped: the changed Composition
+comes from the file, the XRs it matches are discovered on the cluster
+exactly as in step 1, the functions its pipeline calls run from the
+packages installed on the cluster instead of a local build, and
+everything not overridden locally is fetched live. That is the preview
+crossplane-diff's `comp` gives today, which is why it becomes an input
+mode of simulate rather than a separate command (below).
 
 One class of matched XRs needs special honesty: those pinned to an older
 CompositionRevision (`compositionUpdatePolicy: Manual`). Applying the
@@ -227,20 +249,45 @@ composites by default behind an `--include-manual` flag. This keeps that
 behavior and adds the visible deferred line, so a pinned XR is a stated
 fact instead of a silent omission.
 
+Pinning only shields an XR from Composition changes, though. Until
+progressive function rollout lands
+([crossplane/crossplane#6139][issue-6139]), function packages are not
+pinned with the revision: upgrading a function changes the behavior of
+every composition revision that calls it, old or new. For a project with
+embedded functions that matters, because deploying the project upgrades
+those functions. So when the working tree changes an embedded function,
+simulate does not defer pinned XRs: it fetches each XR's pinned
+CompositionRevision from the cluster and renders it with the locally
+built functions, previewing what the deploy really does to that XR. The
+deferred treatment applies to Composition-only changes, where pinning
+does mean nothing happens.
+
+Claims are supported too. Crossplane v2 still supports claims through the
+`LegacyCluster` scope on v1 XRDs, and a project can contain a v1 XRD even
+though `crossplane xrd generate` only generates v2. The CLI already has
+machinery to convert a claim to its XR, and simulate reuses it: a claim
+passed as a changed file is converted and simulated as its XR, an XR that
+a claim created on the cluster is discovered and simulated like any other,
+and the result prints under the claim's name. Simulate supports claims for
+as long as the supported upstream Crossplane versions do, and drops them
+when upstream does.
+
 The command shape follows the CLI's kong conventions, and every flag falls
 out of the flow above:
 
 ```go
 type simulateCmd struct {
-	ProjectFile    string        `short:"f" help:"The project definition file."`
+	Input          []string      `short:"f" help:"Project file (default), or changed Composition or XR files."`
 	Namespace      string        `help:"Simulate only XRs in this namespace."`
 	Name           string        `help:"Simulate only the XR with this name."`
 	ProviderImages []string      `help:"Override the provider images to run as plan servers."`
 	IncludePinned  bool          `help:"Also simulate XRs pinned to older composition revisions."`
+	SkipPlan        bool         `help:"Skip the cloud-layer plan; show only the cluster-layer diff."`
+	KeepPlanServers bool         `help:"Leave plan server containers running for reuse by later runs."`
 	MaxIterations  uint          `default:"10" help:"Cap on requirement resolution passes per XR."`
 	Timeout        time.Duration `default:"2m" help:"Per XR render and plan timeout."`
 	MaxConcurrency uint          `default:"8" help:"XRs simulated concurrently."`
-	Output         string        `short:"o" enum:"diff,json,yaml" default:"diff" help:"Output format."`
+	Output         string        `short:"o" enum:"plan,diff,json,yaml" default:"plan" help:"Output format."`
 }
 ```
 
@@ -254,23 +301,49 @@ tag and graduate the way every other command does.
 The CLI treats provider packages the way render treats function packages: as
 images it can run locally and talk to over gRPC.
 
-From the project's `dependsOn` (or an explicit `--provider-images` override,
-for `resource simulate` outside a project), the CLI starts each provider
-image with its `internal plan-server` entrypoint as a Docker container bound to an
-ephemeral localhost port, following the same runtime conventions render
-established for functions (pull policy, named-network support for
-containerized CI, cleanup on exit). It then calls each server's `GetInfo`
-RPC, which returns the API groups the server can plan
-(`s3.aws.upbound.io`, `kms.aws.upbound.io`, ...), and builds a routing table
-from the answer. Routing by declared capability rather than image-name
-convention means family providers coexist and a resource with no route is
-detected up front, not by a failed RPC.
+The provider images come from the project's `dependsOn` for `project
+simulate`, from the providers installed on the current cluster context for
+`resource simulate`, or from an explicit `--provider-images` override of
+either. The CLI starts each provider
+image with its `internal plan-server` entrypoint as a local Docker
+container, following the same runtime conventions render established for
+functions (pull policy, cleanup on exit). How the CLI talks to that
+container, a gRPC connection on an ephemeral localhost port or a protobuf
+exchange over the container's stdin and stdout, is part of the plan service
+contract, so the upjet one-pager decides it and this document follows. The
+exchange is the same either way: the CLI first asks each server `GetInfo`,
+which returns the API groups the server can plan (`s3.aws.upbound.io`,
+`kms.aws.upbound.io`, ...), and builds a routing table from the answer.
+Routing by declared capability rather than image-name convention means
+family providers coexist and a resource with no route is detected up
+front, not by a failed call.
+
+That split is what makes the `--provider-images` override simple: the flag
+only changes where the image list comes from, never how routing works. The
+CLI never needs to know up front which image serves which API group, not
+from a registry, not from image names, not from cluster state. It starts
+whatever images the list contains and lets each server declare its groups
+through `GetInfo`. Override the list with a new provider version and the
+routing table rebuilds itself from what that version actually serves.
 
 Because plan servers are stateless and credential-free, all state travels
 in the request. There is nothing to configure: no ProviderConfig, no cloud
 credentials, no reach into the cluster from the container. The
 CLI fetches live state with the user's own kubeconfig and RBAC; the plan
 server only ever sees what the user could already read.
+
+Startup is the one cost that hurts across runs: a plan server takes a few
+seconds to come up, and an edit-simulate-edit loop pays that on every run
+if containers are torn down at exit. So containers get deterministic
+names derived from the provider image digest, and `--keep-plan-servers`
+leaves them running when the command exits: the next run finds a live
+server with a matching name and reuses it instead of starting a new one.
+Because the name carries the digest, a changed image never matches a
+stale server, and leftovers are easy to find and remove since they all
+follow one naming scheme. The default stays clean, start and tear down
+per run; the flag is for the loops where those seconds add up. The same
+naming convention is worth extending to render's function containers,
+but that belongs to render.
 
 ### From Response to Printed Diff
 
@@ -300,9 +373,19 @@ values print as `(known after apply)`, and fields that force replacement
 carry that warning on the line where the user's eye already is. Provider
 diagnostics print under the resource they belong to. Actions map to the
 summary symbols (`[+]` create, `[~]` update, `[-/+]` replace, `[-]` delete,
-`[=]` no-op, `[?]` approximate fallback). The same data serializes as
-`-o json|yaml`, one typed result per resource, so a pull-request bot can
-gate on "any replace anywhere" without parsing console output.
+`[=]` no-op, `[?]` approximate fallback).
+
+That annotated view is `-o plan`, the default, and choosing it over
+kubectl-diff style output is a conscious switch, so the choice belongs to
+the consumer, not the tool: `-o diff` prints the same result as a
+line-by-line unified diff (`- foo: bar` / `+ foo: baz`), the format
+crossplane-diff emits today, which renders directly in Markdown `diff`
+code blocks for CI comments. What only the plan layer knows (replacement,
+known-after-apply, diagnostics) prints in the per-resource header and the
+summary in diff mode, since those have no inline line to attach to. The
+same data serializes as `-o json|yaml`, one typed result per resource, so
+a pull-request bot can gate on "any replace anywhere" without parsing
+console output.
 
 ### When There Is No Plan Server
 
@@ -368,7 +451,16 @@ standalone packaging forced them to build.
   cluster. They become input modes of the simulate commands (`-f` for
   changed XRs or Compositions, project discovery by default, `--namespace`
   and `--name` to scope the cluster side), and both gain the plan layer as
-  their upgrade. Whether thin aliases remain for existing crossplane-diff
+  their upgrade. That upgrade is strictly additive, so today's diff
+  functionality is subsumed rather than replaced: planning is a capability
+  simulate detects per resource, and a resource with no plan server gets
+  the client-side diff crossplane-diff computes today ("When There Is No
+  Plan Server" above). Run simulate where no provider serves plans and the
+  output is today's diff, unchanged. For users who want only the
+  cluster-layer diff, `--skip-plan` makes that explicit: no plan servers
+  start, no containers run, and the command does exactly what diff does
+  today. That keeps "diff without simulation" one flag away instead of a
+  second command. Whether thin aliases remain for existing crossplane-diff
   invocations is part of the command-naming discussion that belongs to the
   review. The existing maintainers stay code owners of what they built, the
   standalone repo enters maintenance with a pointer forward, and every
@@ -389,10 +481,13 @@ implementations.
 Simulate's cost scales with what the user asks to preview, not with the size
 of the control plane. Per XR: the same render work `crossplane render` does
 (plus requirement-resolution iterations, capped), one server-side dry-run
-per composed resource, and one gRPC plan call per rendered MR, each of
+per composed resource, and one plan computation per rendered MR, each of
 which is a pure in-process schema diff on the server, no cloud calls.
+(Whether the protocol carries those computations one per request or
+batched is a plan protocol question, decided in the upjet one-pager.)
 Plan-server startup is the dominant fixed cost, a few seconds per distinct
-provider image, paid once per run and torn down after. Nothing simulate does
+provider image, paid once per run and torn down after, or paid once across
+many runs with `--keep-plan-servers`. Nothing simulate does
 writes to the cluster or the cloud: reads plus dry-runs on one side, a
 credential-free diff on the other.
 
@@ -423,6 +518,7 @@ be layered on later if a real need emerges.
 
 [crossplane-diff]: https://github.com/crossplane-contrib/crossplane-diff
 [one-pager-render-engine]: https://github.com/crossplane/crossplane/blob/main/design/one-pager-render-engine.md
+[issue-6139]: https://github.com/crossplane/crossplane/issues/6139
 [issue-6857]: https://github.com/crossplane/crossplane/issues/6857
 [issue-7351]: https://github.com/crossplane/crossplane/issues/7351
 [cli-159]: https://github.com/crossplane/cli/issues/159

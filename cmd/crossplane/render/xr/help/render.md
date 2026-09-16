@@ -41,6 +41,15 @@ When running `render` in a Crossplane Project (any directory containing a
 file argument in favor of using function dependencies defined in the project
 metadata and embedded functions from the project.
 
+## Configuration package support
+
+The `--project-file` (`-f`) flag also accepts a Configuration package metadata
+file (`crossplane.yaml`).
+`render` detects the file type automatically from `apiVersion` and `kind`.
+When pointing to a Configuration, `render` extracts function dependencies from
+`spec.dependsOn` and resolves their version constraints to concrete OCI
+references.
+
 ## Function context
 
 The `--context-files` and `--context-values` flags pass data to each Function's
@@ -154,4 +163,11 @@ Force all functions to use development runtime:
 crossplane composition render xr.yaml composition.yaml functions.yaml \
   -a render.crossplane.io/runtime=Development \
   -a render.crossplane.io/runtime-development-target=localhost:9444
+```
+
+Render using functions from a Configuration package metadata file:
+
+```shell
+crossplane composition render xr.yaml composition.yaml \
+  -f crossplane.yaml
 ```

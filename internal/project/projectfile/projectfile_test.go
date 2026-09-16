@@ -28,6 +28,79 @@ import (
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 )
 
+func TestIsProjectFile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+		wantErr bool
+	}{
+		{
+			name: "Project",
+			content: `apiVersion: dev.crossplane.io/v1alpha1
+kind: Project
+metadata:
+  name: test
+`,
+			want: true,
+		},
+		{
+			name: "Configuration",
+			content: `apiVersion: meta.pkg.crossplane.io/v1
+kind: Configuration
+metadata:
+  name: test
+`,
+			want: false,
+		},
+		{
+			name: "WrongAPIVersion",
+			content: `apiVersion: foo.example.com/v1
+kind: Project
+`,
+			want: false,
+		},
+		{
+			name:    "InvalidYAML",
+			content: `: bad`,
+			wantErr: true,
+		},
+		{
+			name:    "FileNotFound",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fs := afero.NewMemMapFs()
+			if tt.content != "" {
+				if err := afero.WriteFile(fs, "/file.yaml", []byte(tt.content), os.ModePerm); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			got, err := IsProjectFile(fs, "/file.yaml")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Errorf("IsProjectFile() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParse(t *testing.T) {
 	t.Parallel()
 

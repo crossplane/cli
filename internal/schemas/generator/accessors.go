@@ -174,23 +174,7 @@ func isNilable(e ast.Expr) bool {
 // GetPasswordData): Go forbids a method and a field sharing a name on the same
 // type, and Terraform schemas occasionally produce exactly that pair.
 func writeStructAccessors(b *strings.Builder, fset *token.FileSet, typeName string, st *ast.StructType, skip map[string]bool) {
-	fieldNames := map[string]bool{}
-	for _, field := range st.Fields.List {
-		if len(field.Names) == 0 {
-			// Anonymous/embedded field: Go promotes the embedded type's own
-			// name into the struct's namespace (e.g. embedding GetFoo gives
-			// the struct a field effectively named GetFoo), so it can still
-			// collide with a generated accessor even though it has no
-			// explicit field.Names entry of its own.
-			if n := embeddedFieldName(field.Type); n != "" {
-				fieldNames[n] = true
-			}
-			continue
-		}
-		for _, name := range field.Names {
-			fieldNames[name.Name] = true
-		}
-	}
+	fieldNames := collectFieldNames(st)
 
 	for _, field := range st.Fields.List {
 		// Skip embedded/anonymous fields; generated models don't use them.
@@ -215,32 +199,60 @@ func writeStructAccessors(b *strings.Builder, fset *token.FileSet, typeName stri
 			}
 
 			fieldName := name.Name
-
-			// Getter. It tolerates a nil receiver so that chained getters are
-			// safe on partially-populated resources.
 			if !skip["Get"+fieldName] && !fieldNames["Get"+fieldName] {
-				b.WriteString("\n// Get" + fieldName + " returns the " + fieldName + " field.\n")
-				b.WriteString("// It returns the zero value if the receiver is nil.\n")
-				b.WriteString("func (" + accessorReceiver + " *" + typeName + ") Get" + fieldName + "() " + fieldType + " {\n")
-				b.WriteString("\tif " + accessorReceiver + " == nil {\n")
-				if isNilable(field.Type) {
-					b.WriteString("\t\treturn nil\n")
-				} else {
-					b.WriteString("\t\tvar zero " + fieldType + "\n")
-					b.WriteString("\t\treturn zero\n")
-				}
-				b.WriteString("\t}\n")
-				b.WriteString("\treturn " + accessorReceiver + "." + fieldName + "\n")
-				b.WriteString("}\n")
+				writeGetter(b, typeName, fieldName, fieldType, isNilable(field.Type))
 			}
-
-			// Setter.
 			if !skip["Set"+fieldName] && !fieldNames["Set"+fieldName] {
-				b.WriteString("\n// Set" + fieldName + " sets the " + fieldName + " field.\n")
-				b.WriteString("func (" + accessorReceiver + " *" + typeName + ") Set" + fieldName + "(v " + fieldType + ") {\n")
-				b.WriteString("\t" + accessorReceiver + "." + fieldName + " = v\n")
-				b.WriteString("}\n")
+				writeSetter(b, typeName, fieldName, fieldType)
 			}
 		}
 	}
+}
+
+// collectFieldNames returns every name that occupies the struct's field
+// namespace, including names promoted by anonymous/embedded fields. Go
+// promotes an embedded type's own name into the struct's namespace (e.g.
+// embedding GetFoo gives the struct a field effectively named GetFoo), so
+// those still count as potential collisions even though they have no
+// explicit field.Names entry of their own.
+func collectFieldNames(st *ast.StructType) map[string]bool {
+	fieldNames := map[string]bool{}
+	for _, field := range st.Fields.List {
+		if len(field.Names) == 0 {
+			if n := embeddedFieldName(field.Type); n != "" {
+				fieldNames[n] = true
+			}
+			continue
+		}
+		for _, name := range field.Names {
+			fieldNames[name.Name] = true
+		}
+	}
+	return fieldNames
+}
+
+// writeGetter appends a getter for fieldName to b. It tolerates a nil
+// receiver so that chained getters are safe on partially-populated resources.
+func writeGetter(b *strings.Builder, typeName, fieldName, fieldType string, nilable bool) {
+	b.WriteString("\n// Get" + fieldName + " returns the " + fieldName + " field.\n")
+	b.WriteString("// It returns the zero value if the receiver is nil.\n")
+	b.WriteString("func (" + accessorReceiver + " *" + typeName + ") Get" + fieldName + "() " + fieldType + " {\n")
+	b.WriteString("\tif " + accessorReceiver + " == nil {\n")
+	if nilable {
+		b.WriteString("\t\treturn nil\n")
+	} else {
+		b.WriteString("\t\tvar zero " + fieldType + "\n")
+		b.WriteString("\t\treturn zero\n")
+	}
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn " + accessorReceiver + "." + fieldName + "\n")
+	b.WriteString("}\n")
+}
+
+// writeSetter appends a setter for fieldName to b.
+func writeSetter(b *strings.Builder, typeName, fieldName, fieldType string) {
+	b.WriteString("\n// Set" + fieldName + " sets the " + fieldName + " field.\n")
+	b.WriteString("func (" + accessorReceiver + " *" + typeName + ") Set" + fieldName + "(v " + fieldType + ") {\n")
+	b.WriteString("\t" + accessorReceiver + "." + fieldName + " = v\n")
+	b.WriteString("}\n")
 }

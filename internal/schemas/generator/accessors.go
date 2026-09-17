@@ -81,7 +81,7 @@ func addAccessors(code string) (string, error) {
 			if !ok || st.Fields == nil {
 				continue
 			}
-			writeStructAccessors(&b, fset, ts.Name.Name, st, existing[ts.Name.Name])
+			writeStructAccessors(&b, fset, receiverTypeExpr(ts), st, existing[ts.Name.Name])
 		}
 	}
 
@@ -118,16 +118,40 @@ func collectExistingMethods(f *ast.File) map[string]map[string]bool {
 	return existing
 }
 
-// receiverTypeName returns the bare type name of a method receiver, stripping a
-// leading pointer if present (e.g. `*Foo` -> `Foo`).
+// receiverTypeName returns the bare type name of a method receiver, stripping
+// a leading pointer (e.g. `*Foo` -> `Foo`) and any generic instantiation
+// (e.g. `*Foo[T]` -> `Foo`).
 func receiverTypeName(e ast.Expr) string {
 	if star, ok := e.(*ast.StarExpr); ok {
 		e = star.X
 	}
-	if id, ok := e.(*ast.Ident); ok {
-		return id.Name
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.IndexExpr:
+		return receiverTypeName(t.X)
+	case *ast.IndexListExpr:
+		return receiverTypeName(t.X)
+	default:
+		return ""
 	}
-	return ""
+}
+
+// receiverTypeExpr returns the type expression to use for generated methods'
+// receivers on ts, instantiating any type parameters with their own names
+// (e.g. `type Foo[T any] struct{}` needs a receiver of `Foo[T]`, since Go
+// requires a generic type's methods to repeat its parameter list).
+func receiverTypeExpr(ts *ast.TypeSpec) string {
+	if ts.TypeParams == nil {
+		return ts.Name.Name
+	}
+	var params []string
+	for _, field := range ts.TypeParams.List {
+		for _, name := range field.Names {
+			params = append(params, name.Name)
+		}
+	}
+	return ts.Name.Name + "[" + strings.Join(params, ", ") + "]"
 }
 
 // embeddedFieldName returns the name Go promotes into the struct's namespace

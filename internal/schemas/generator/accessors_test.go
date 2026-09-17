@@ -18,8 +18,10 @@ package generator
 
 import (
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +31,21 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/afero"
 )
+
+// typeCheck parses and type-checks generated Go source, catching declarations
+// that merely parse but don't compile (e.g. a generic receiver missing its
+// type arguments).
+func typeCheck(t *testing.T, src string) {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "generated.go", src, 0)
+	if err != nil {
+		t.Fatalf("failed to parse generated source: %v\n%s", err, src)
+	}
+	if _, err := (&types.Config{Importer: importer.Default()}).Check("generated", fset, []*ast.File{f}, nil); err != nil {
+		t.Fatalf("generated source failed to type-check: %v\n%s", err, src)
+	}
+}
 
 // collectMethods parses Go source and returns a set of the methods it declares,
 // keyed by "recv.name", with the rendered type of the single param or result.
@@ -638,6 +655,7 @@ type Foo struct {
 			if diff := cmp.Diff(tc.want, collectMethods(t, got)); diff != "" {
 				t.Errorf("%s\ngenerated accessors (-want +got):\n%s", tc.reason, diff)
 			}
+			typeCheck(t, got)
 		})
 	}
 }

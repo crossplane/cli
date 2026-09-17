@@ -1,0 +1,6 @@
+# The toolchain for working on this function, with the components that format
+# and lint it. crossplane project build compiles with the toolchain of its build
+# image instead.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]

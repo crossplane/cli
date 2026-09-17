@@ -11,6 +11,7 @@ The following are valid arguments to the `--language` / `-l` flag:
 - `go`
 - `kcl`
 - `python`
+- `rust`
 
 ## Examples
 
@@ -25,6 +26,12 @@ Create a Python function in `functions/fn2`:
 
 ```shell
 crossplane function generate fn2 --language python
+```
+
+Create a Rust function in `functions/fn3`:
+
+```shell
+crossplane function generate fn3 --language rust
 ```
 
 Create a Go function in `functions/compose-cluster` and add it as a pipeline

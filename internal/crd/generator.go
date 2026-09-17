@@ -31,13 +31,15 @@ import (
 	xpv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 )
 
-// createCRDFromXRD creates a xrCRD and claimCRD if possible from the XRD.
-func createCRDFromXRD(xrd xpv1.CompositeResourceDefinition) (*apiextensionsv1.CustomResourceDefinition, *apiextensionsv1.CustomResourceDefinition, error) {
+// FromXRD derives the CustomResourceDefinition(s) Crossplane generates for
+// an XRD: the composite resource CRD, and the claim CRD if the XRD offers
+// one (nil otherwise).
+func FromXRD(xrd *xpv1.CompositeResourceDefinition) (*apiextensionsv1.CustomResourceDefinition, *apiextensionsv1.CustomResourceDefinition, error) {
 	var xrCrd, claimCrd *apiextensionsv1.CustomResourceDefinition
 
 	crdGVK := apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition")
 
-	xrCrd, err := xcrd.ForCompositeResource(&xrd)
+	xrCrd, err := xcrd.ForCompositeResource(xrd)
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "cannot derive composite CRD from XRD %q for Composite Resource", xrd.GetName())
 	}
@@ -51,7 +53,7 @@ func createCRDFromXRD(xrd xpv1.CompositeResourceDefinition) (*apiextensionsv1.Cu
 	}
 
 	if xrd.Spec.ClaimNames != nil {
-		claimCrd, err = xcrd.ForCompositeResourceClaim(&xrd)
+		claimCrd, err = xcrd.ForCompositeResourceClaim(xrd)
 		if err != nil {
 			return nil, nil, errors.Wrapf(err, "cannot derive composite CRD from XRD %q for Composite Resource Claim", xrd.GetName())
 		}
@@ -101,7 +103,7 @@ func ProcessXRD(fs afero.Fs, bs []byte, path, baseFolder string) (string, string
 		return "", "", errors.Wrapf(err, "failed to unmarshal XRD file %q", path)
 	}
 
-	xrCRD, claimCRD, err := createCRDFromXRD(xrd)
+	xrCRD, claimCRD, err := FromXRD(&xrd)
 	if err != nil {
 		return "", "", err
 	}

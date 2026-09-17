@@ -132,10 +132,10 @@ func receiverTypeName(e ast.Expr) string {
 
 // embeddedFieldName returns the name Go promotes into the struct's namespace
 // for an anonymous field, mirroring the Go spec: it's the embedded type's own
-// name, ignoring any pointer indirection or package qualification (e.g.
-// embedding `*Bar` or `pkg.Bar` both promote the name `Bar`). Returns "" for
-// type shapes generated models don't use (generics, etc.), which simply
-// aren't tracked as potential collisions.
+// name, ignoring any pointer indirection, package qualification, or generic
+// instantiation (e.g. embedding `*Bar`, `pkg.Bar`, or `Bar[string]` all
+// promote the name `Bar`). Returns "" for type shapes generated models don't
+// use, which simply aren't tracked as potential collisions.
 func embeddedFieldName(e ast.Expr) string {
 	if star, ok := e.(*ast.StarExpr); ok {
 		e = star.X
@@ -145,6 +145,10 @@ func embeddedFieldName(e ast.Expr) string {
 		return t.Name
 	case *ast.SelectorExpr:
 		return t.Sel.Name
+	case *ast.IndexExpr:
+		return embeddedFieldName(t.X)
+	case *ast.IndexListExpr:
+		return embeddedFieldName(t.X)
 	default:
 		return ""
 	}
@@ -231,8 +235,8 @@ func collectFieldNames(st *ast.StructType) map[string]bool {
 	return fieldNames
 }
 
-// writeGetter appends a getter for fieldName to b. It tolerates a nil
-// receiver so that chained getters are safe on partially-populated resources.
+// writeGetter tolerates a nil receiver so that chained getters are safe on
+// partially-populated resources.
 func writeGetter(b *strings.Builder, typeName, fieldName, fieldType string, nilable bool) {
 	b.WriteString("\n// Get" + fieldName + " returns the " + fieldName + " field.\n")
 	b.WriteString("// It returns the zero value if the receiver is nil.\n")
@@ -249,7 +253,6 @@ func writeGetter(b *strings.Builder, typeName, fieldName, fieldType string, nila
 	b.WriteString("}\n")
 }
 
-// writeSetter appends a setter for fieldName to b.
 func writeSetter(b *strings.Builder, typeName, fieldName, fieldType string) {
 	b.WriteString("\n// Set" + fieldName + " sets the " + fieldName + " field.\n")
 	b.WriteString("func (" + accessorReceiver + " *" + typeName + ") Set" + fieldName + "(v " + fieldType + ") {\n")

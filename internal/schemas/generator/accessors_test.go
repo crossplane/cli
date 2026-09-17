@@ -565,6 +565,68 @@ type Foo struct {
 			},
 			reason: "an anonymous/embedded field promotes its type name into the struct's namespace just like a named field would, so it must be treated as a collision candidate too",
 		},
+		{
+			name: "GetterCollidesWithGenericEmbeddedFieldName",
+			args: `package v1alpha1
+
+type GetPasswordData[T any] struct {
+	Enabled *bool ` + "`json:\"enabled,omitempty\"`" + `
+}
+
+type Foo struct {
+	PasswordData *string ` + "`json:\"passwordData,omitempty\"`" + `
+	GetPasswordData[string]
+}
+`,
+			want: map[string]string{
+				// No Foo.GetPasswordData: promotion uses the base type name.
+				"Foo.SetPasswordData":        "*string",
+				"GetPasswordData.GetEnabled": "*bool",
+				"GetPasswordData.SetEnabled": "*bool",
+			},
+			reason: "an embedded generic type instantiation promotes its base type name, just like a plain embedded field, so it must be treated as a collision candidate too",
+		},
+		{
+			name: "GetterCollidesWithPointerGenericEmbeddedFieldName",
+			args: `package v1alpha1
+
+type GetPasswordData[T any] struct {
+	Enabled *bool ` + "`json:\"enabled,omitempty\"`" + `
+}
+
+type Foo struct {
+	PasswordData *string ` + "`json:\"passwordData,omitempty\"`" + `
+	*GetPasswordData[string]
+}
+`,
+			want: map[string]string{
+				"Foo.SetPasswordData":        "*string",
+				"GetPasswordData.GetEnabled": "*bool",
+				"GetPasswordData.SetEnabled": "*bool",
+			},
+			reason: "a pointer to an embedded generic type instantiation still promotes its base type name",
+		},
+		{
+			name: "GetterCollidesWithMultiParamGenericEmbeddedFieldName",
+			args: `package v1alpha1
+
+type GetPasswordData[T, U any] struct {
+	Enabled *bool ` + "`json:\"enabled,omitempty\"`" + `
+}
+
+type Foo struct {
+	PasswordData *string ` + "`json:\"passwordData,omitempty\"`" + `
+	GetPasswordData[string, int]
+}
+`,
+			want: map[string]string{
+				// Exercises go/ast's IndexListExpr instead of IndexExpr.
+				"Foo.SetPasswordData":        "*string",
+				"GetPasswordData.GetEnabled": "*bool",
+				"GetPasswordData.SetEnabled": "*bool",
+			},
+			reason: "a multi-argument generic instantiation (go/ast.IndexListExpr) must be handled the same as the single-argument case (go/ast.IndexExpr)",
+		},
 	}
 
 	for _, tc := range cases {

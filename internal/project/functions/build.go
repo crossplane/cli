@@ -51,6 +51,7 @@ func (realIdentifier) Identify(fromFS afero.Fs, imageConfigs []pkgv1beta1.ImageC
 	builders := []Builder{
 		newKCLBuilder(imageConfigs),
 		newPythonBuilder(imageConfigs),
+		newRustBuilder(imageConfigs),
 		newGoBuilder(imageConfigs),
 		newGoTemplatingBuilder(imageConfigs),
 	}
@@ -69,7 +70,8 @@ func (realIdentifier) Identify(fromFS afero.Fs, imageConfigs []pkgv1beta1.ImageC
 
 // BuildContext bundles the inputs that function builders work from. Each
 // builder slices the parts of the project it needs: the function
-// subdirectory for Go/KCL/go-templating, plus the schemas dir for Python.
+// subdirectory for Go/KCL/go-templating, plus the schemas dir for Python and
+// Rust.
 type BuildContext struct {
 	// ProjectFS is the project root filesystem.
 	ProjectFS afero.Fs
@@ -77,8 +79,9 @@ type BuildContext struct {
 	// e.g. "functions/my-fn".
 	FunctionPath string
 	// SchemasPath is the schemas dir relative to ProjectFS root, e.g.
-	// "schemas". Used by Python to stage schemas/python/ alongside the
-	// function source so the relative path-dep resolves at build time.
+	// "schemas". Used by Python and Rust to stage schemas/<language>/
+	// alongside the function source so the relative path-dep resolves at
+	// build time.
 	SchemasPath string
 	// Architectures is the list of architectures to build for.
 	Architectures []string

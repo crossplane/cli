@@ -1,0 +1,37 @@
+[package]
+name = "{{ .Name }}"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "A Crossplane composition function."
+
+# The function image runs this binary, whatever the package is called.
+[[bin]]
+name = "function"
+path = "src/main.rs"
+
+[dependencies]
+function-sdk-rust = "0.3"
+tonic = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+{{- if .HasSchemas }}
+# Every generated model. To compile only the API groups this function imports,
+# add default-features = false and list their features, which
+# {{ .SchemasPath }}/Cargo.toml names.
+crossplane-models = { path = "{{ .SchemasPath }}" }
+{{- end }}
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Function images should be small.
+[profile.release]
+strip = true

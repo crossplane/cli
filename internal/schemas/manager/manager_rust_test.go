@@ -39,50 +39,72 @@ var rustModDeclRE = regexp.MustCompile(`(?m)^(?:pub )?mod (\w+);`)
 func TestGenerateRustModuleTreeAcrossSources(t *testing.T) {
 	t.Parallel()
 
-	testFS := afero.NewMemMapFs()
-
-	// The project's own XRDs, and a dependency that adds a kind to a module the
-	// project already generated plus a module of its own.
-	sources := []*rustMockGenerator{
-		{files: []string{
-			"models/src/com/example/v1/widget.rs",
-			"models/src/io/k8s/apimachinery/pkg/apis/meta/v1/objectmeta.rs",
-		}},
-		{files: []string{
-			"models/src/com/example/v1/gadget.rs",
-			"models/src/io/upbound/aws/s3/v1beta2/bucket.rs",
-			"models/src/io/k8s/apimachinery/pkg/apis/meta/v1/objectmeta.rs",
-		}},
+	cases := map[string]struct {
+		reason string
+		args   struct {
+			// sources is the files the generator writes for each source, in
+			// the order the sources are generated.
+			sources [][]string
+		}
+		want struct {
+			// modules is the modules each file declares.
+			modules map[string][]string
+		}
+	}{
+		"DependencyExtendsTheProjectsModules": {
+			reason: "The declarations describe the merged crate, not only the source generated last.",
+			args: struct{ sources [][]string }{sources: [][]string{
+				// The project's own XRDs.
+				{
+					"models/src/com/example/v1/widget.rs",
+					"models/src/io/k8s/apimachinery/pkg/apis/meta/v1/objectmeta.rs",
+				},
+				// A dependency that adds a kind to a module the project already
+				// generated, plus a module of its own.
+				{
+					"models/src/com/example/v1/gadget.rs",
+					"models/src/io/upbound/aws/s3/v1beta2/bucket.rs",
+					"models/src/io/k8s/apimachinery/pkg/apis/meta/v1/objectmeta.rs",
+				},
+			}},
+			want: struct{ modules map[string][]string }{modules: map[string][]string{
+				"rust/src/lib.rs":                                      {"com", "io"},
+				"rust/src/com/example/v1/mod.rs":                       {"gadget", "widget"},
+				"rust/src/io/mod.rs":                                   {"k8s", "upbound"},
+				"rust/src/io/k8s/apimachinery/pkg/apis/meta/v1/mod.rs": {"objectmeta"},
+				"rust/src/io/upbound/aws/s3/v1beta2/mod.rs":            {"bucket"},
+			}},
+		},
 	}
 
-	for i, gen := range sources {
-		m := New(testFS, []generator.Interface{gen}, nil)
-		if _, err := m.Generate(t.Context(), &mockSource{id: "source", version: "v1.0.0"}); err != nil {
-			t.Fatalf("source %d: %v", i, err)
-		}
-	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	want := map[string][]string{
-		"rust/src/lib.rs":                                      {"com", "io"},
-		"rust/src/com/example/v1/mod.rs":                       {"gadget", "widget"},
-		"rust/src/io/mod.rs":                                   {"k8s", "upbound"},
-		"rust/src/io/k8s/apimachinery/pkg/apis/meta/v1/mod.rs": {"objectmeta"},
-		"rust/src/io/upbound/aws/s3/v1beta2/mod.rs":            {"bucket"},
-	}
+			testFS := afero.NewMemMapFs()
+			for i, files := range tc.args.sources {
+				m := New(testFS, []generator.Interface{&rustMockGenerator{files: files}}, nil)
+				if _, err := m.Generate(t.Context(), &mockSource{id: "source", version: "v1.0.0"}); err != nil {
+					t.Fatalf("\n%s\nGenerate(...) for source %d: %v", tc.reason, i, err)
+				}
+			}
 
-	for path, children := range want {
-		contents, err := afero.ReadFile(testFS, path)
-		if err != nil {
-			t.Errorf("reading %s: %v", path, err)
-			continue
-		}
-		var got []string
-		for _, m := range rustModDeclRE.FindAllStringSubmatch(string(contents), -1) {
-			got = append(got, m[1])
-		}
-		if diff := cmp.Diff(children, got); diff != "" {
-			t.Errorf("%s does not declare the merged crate's children (-want +got):\n%s", path, diff)
-		}
+			for path, want := range tc.want.modules {
+				contents, err := afero.ReadFile(testFS, path)
+				if err != nil {
+					t.Errorf("\n%s\nreading %s: %v", tc.reason, path, err)
+					continue
+				}
+				decls := rustModDeclRE.FindAllStringSubmatch(string(contents), -1)
+				got := make([]string, 0, len(decls))
+				for _, m := range decls {
+					got = append(got, m[1])
+				}
+				if diff := cmp.Diff(want, got); diff != "" {
+					t.Errorf("\n%s\n%s: -want modules, +got modules:\n%s", tc.reason, path, diff)
+				}
+			}
+		})
 	}
 }
 

@@ -212,7 +212,7 @@ func rustCheckArchitecture(arch string) error {
 	case "amd64", "arm64":
 		return nil
 	default:
-		return errors.Errorf("unable to determine rust target for architecture %s", arch)
+		return errors.Errorf("cannot build a Rust function for architecture %q; use amd64 or arm64", arch)
 	}
 }
 

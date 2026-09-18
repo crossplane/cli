@@ -155,7 +155,7 @@ func postProcessForLanguage(language string, langFS afero.Fs) error {
 
 	case devv1alpha1.SchemaLanguageRust:
 		if err := generator.BuildRustModuleTree(langFS); err != nil {
-			return errors.Wrap(err, "failed to build the module tree for Rust")
+			return errors.Wrap(err, "cannot finish generating Rust models; check the reported file and run schema generation again")
 		}
 		return nil
 

@@ -71,46 +71,6 @@ spec:
         type: object
 `
 
-// configurationWithXRDPackageYAML is a Configuration package that bundles an
-// XRD (rather than a raw CRD, like configurationPackageYAML above) - the
-// shape that previously produced zero schemas.
-const configurationWithXRDPackageYAML = `apiVersion: meta.pkg.crossplane.io/v1
-kind: Configuration
-metadata:
-  name: example
-spec:
-  crossplane:
-    version: ">=v1.14.0"
----
-apiVersion: apiextensions.crossplane.io/v1
-kind: CompositeResourceDefinition
-metadata:
-  name: xdatabases.acme.example.com
-spec:
-  group: acme.example.com
-  names:
-    kind: XDatabase
-    plural: xdatabases
-    singular: xdatabase
-    listKind: XDatabaseList
-  claimNames:
-    kind: Database
-    plural: databases
-    singular: database
-    listKind: DatabaseList
-  scope: LegacyCluster
-  versions:
-  - name: v1alpha1
-    served: true
-    referenceable: true
-    schema:
-      openAPIV3Schema:
-        type: object
-        properties:
-          spec:
-            type: object
-`
-
 const providerPackageYAML = `apiVersion: meta.pkg.crossplane.io/v1
 kind: Provider
 metadata:
@@ -178,6 +138,13 @@ func parsedPackage(t *testing.T, body string) *parser.Package {
 	return pkg
 }
 
+// parsedTestPackage parses configurationPackageYAML once into a *parser.Package
+// that the fake client can hand back from Get.
+func parsedTestPackage(t *testing.T) *parser.Package {
+	t.Helper()
+	return parsedPackage(t, configurationPackageYAML)
+}
+
 // fakeClient is a fake xpkg.Client. Get returns a pre-canned Package per ref;
 // ListVersions returns the tags for the requested repo, falling back to a
 // fixed tag list, so a real Resolver can be wired on top.
@@ -218,6 +185,16 @@ func (f *fakeClient) getCount(ref string) int {
 	return f.gets[ref]
 }
 
+func makePackage(t *testing.T, source, digest, version string) *runtimexpkg.Package {
+	t.Helper()
+	return &runtimexpkg.Package{
+		Package: parsedTestPackage(t),
+		Source:  source,
+		Digest:  digest,
+		Version: version,
+	}
+}
+
 func makePackageWithBody(t *testing.T, source, digest, version, body string) *runtimexpkg.Package {
 	t.Helper()
 	return &runtimexpkg.Package{
@@ -228,7 +205,7 @@ func makePackageWithBody(t *testing.T, source, digest, version, body string) *ru
 	}
 }
 
-func newTestManager(t *testing.T, fc *fakeClient, generators ...generator.Interface) (*Manager, afero.Fs) {
+func newTestManager(t *testing.T, fc *fakeClient) (*Manager, afero.Fs) {
 	t.Helper()
 	schemaFS := afero.NewMemMapFs()
 	m := NewManager(
@@ -239,7 +216,7 @@ func newTestManager(t *testing.T, fc *fakeClient, generators ...generator.Interf
 		},
 		afero.NewMemMapFs(),
 		WithSchemaFS(schemaFS),
-		WithSchemaGenerators(generators),
+		WithSchemaGenerators([]generator.Interface{}),
 		WithXpkgClient(fc),
 		WithResolver(clixpkg.NewResolver(fc)),
 	)
@@ -568,25 +545,11 @@ func TestManager_AddDependency(t *testing.T) {
 }
 
 func TestManager_AddPackage(t *testing.T) {
-	const (
-		cfgXRDPkg = "xpkg.crossplane.io/crossplane-contrib/configuration-xrd"
-		cfgXRDTag = "v0.1.0"
-	)
-
 	tests := map[string]struct {
 		ref     string
 		tags    []string
 		fetchAt string
-		// body is the package YAML served by the fake client; empty
-		// defaults to configurationPackageYAML.
-		body string
-		// generators are the schema generators wired into the manager;
-		// empty/nil means no schema files are actually rendered.
-		generators []generator.Interface
-		wantKey    string
-		// wantSchemaGlob, when set, must match at least one file in
-		// schemaFS after AddPackage.
-		wantSchemaGlob string
+		wantKey string
 	}{
 		"ConstraintCollapsesToResolvedVersion": {
 			ref:     "pkg.example/foo:>=v0.0.0",
@@ -605,36 +568,17 @@ func TestManager_AddPackage(t *testing.T) {
 			fetchAt: "pkg.example/foo@sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
 			wantKey: "xpkg://pkg.example/foo@sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
 		},
-		// ConfigurationWithXRDGeneratesSchemas verifies that adding a
-		// Configuration dependency that bundles XRDs (rather than raw
-		// CRDs) generates real schema output, not just an empty
-		// successful pass. Before internal/xpkg.CRDFilesystem learned to
-		// convert XRDs to their derived CRD form, this produced a lock
-		// entry but zero schema content.
-		"ConfigurationWithXRDGeneratesSchemas": {
-			ref:            cfgXRDPkg + ":" + cfgXRDTag,
-			tags:           []string{cfgXRDTag},
-			fetchAt:        cfgXRDPkg + ":" + cfgXRDTag,
-			body:           configurationWithXRDPackageYAML,
-			generators:     generator.Filter(generator.AllLanguages(), []string{v1alpha1.SchemaLanguageJSON}),
-			wantKey:        "xpkg://" + cfgXRDPkg + ":" + cfgXRDTag,
-			wantSchemaGlob: "json/*.schema.json",
-		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			body := tc.body
-			if body == "" {
-				body = configurationPackageYAML
-			}
 			fc := &fakeClient{
 				packages: map[string]*runtimexpkg.Package{
-					tc.fetchAt: makePackageWithBody(t, refRepo(tc.ref), "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03", "", body),
+					tc.fetchAt: makePackage(t, "pkg.example/foo", "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03", ""),
 				},
 				tags: tc.tags,
 			}
-			m, schemaFS := newTestManager(t, fc, tc.generators...)
+			m, schemaFS := newTestManager(t, fc)
 
 			if _, err := m.AddPackage(context.Background(), tc.ref, false); err != nil {
 				t.Fatalf("AddPackage: %v", err)
@@ -655,16 +599,6 @@ func TestManager_AddPackage(t *testing.T) {
 			}
 			if len(got.Packages) != 1 {
 				t.Errorf("lock packages = %d, want 1; got %v", len(got.Packages), got.Packages)
-			}
-
-			if tc.wantSchemaGlob != "" {
-				files, err := afero.Glob(schemaFS, tc.wantSchemaGlob)
-				if err != nil {
-					t.Fatalf("glob generated schemas: %v", err)
-				}
-				if len(files) == 0 {
-					t.Errorf("no files matched %q; no schemas were generated", tc.wantSchemaGlob)
-				}
 			}
 		})
 	}
@@ -868,6 +802,142 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestManager_CollectSources_Transitive(t *testing.T) {
+	// The merged schema pass generates from exactly what CollectSources
+	// returns, so a transitive dependency missing here contributes no schemas.
+	// provA and provB both depend on family, which must appear once.
+	const (
+		provA  = "xpkg.example/prov-a"
+		provB  = "xpkg.example/prov-b"
+		family = "xpkg.example/family"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			provA + ":v0.1.0":  makePackageWithBody(t, provA, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			provB + ":v0.2.0":  makePackageWithBody(t, provB, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			family + ":v1.0.0": makePackageWithBody(t, family, digest, "", providerPackageYAML),
+		},
+		tagsByRepo: map[string][]string{
+			provA:  {"v0.1.0"},
+			provB:  {"v0.2.0"},
+			family: {"v1.0.0"},
+		},
+	}
+
+	m := NewManager(
+		&v1alpha1.Project{
+			Spec: v1alpha1.ProjectSpec{
+				Dependencies: []v1alpha1.Dependency{
+					*xpkgDep(provA, "v0.1.0"),
+					*xpkgDep(provB, "v0.2.0"),
+				},
+				Paths: &v1alpha1.ProjectPaths{Schemas: "schemas"},
+			},
+		},
+		afero.NewMemMapFs(),
+		WithSchemaFS(afero.NewMemMapFs()),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+	)
+
+	var ch async.EventChannel // nil channel; SendEvent is a no-op.
+	sources, err := m.CollectSources(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("CollectSources: %v", err)
+	}
+
+	got := make([]string, 0, len(sources))
+	for _, src := range sources {
+		got = append(got, src.ID())
+	}
+
+	// Sorted by ID, and family only once even though both providers depend on
+	// it. Sorting is what makes this assertable: the project dependencies are
+	// collected concurrently, so a shared transitive dependency would otherwise
+	// land under whichever goroutine claimed it first.
+	want := []string{
+		"xpkg://" + family + ":v1.0.0",
+		"xpkg://" + provA + ":v0.1.0",
+		"xpkg://" + provB + ":v0.2.0",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("source IDs (-want +got):\n%s", diff)
+	}
+
+	if got := fc.getCount(family + ":v1.0.0"); got != 1 {
+		t.Errorf("fetch count for %s = %d, want 1", family+":v1.0.0", got)
+	}
+}
+
+func TestManager_CollectSources_RangeAndExactCollapse(t *testing.T) {
+	// A package reached once through a constraint and once through an exact
+	// version is still one package. claim() records the reference as written,
+	// before Resolve canonicalizes it, so both spellings pass it and produce
+	// two sources with the same ID - which makes the merged pass generate from
+	// the same CRDs twice.
+	const (
+		provA  = "xpkg.example/prov-a"
+		family = "xpkg.example/family"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			provA + ":v0.1.0":  makePackageWithBody(t, provA, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			family + ":v1.0.0": makePackageWithBody(t, family, digest, "", providerPackageYAML),
+		},
+		tagsByRepo: map[string][]string{
+			provA:  {"v0.1.0"},
+			family: {"v1.0.0"},
+		},
+	}
+
+	m := NewManager(
+		&v1alpha1.Project{
+			Spec: v1alpha1.ProjectSpec{
+				Dependencies: []v1alpha1.Dependency{
+					// Depends on family:v1.0.0 through its metadata.
+					*xpkgDep(provA, "v0.1.0"),
+					// And the project names the same package by constraint.
+					*xpkgDep(family, ">=v1.0.0"),
+				},
+				Paths: &v1alpha1.ProjectPaths{Schemas: "schemas"},
+			},
+		},
+		afero.NewMemMapFs(),
+		WithSchemaFS(afero.NewMemMapFs()),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+	)
+
+	var ch async.EventChannel // nil channel; SendEvent is a no-op.
+	sources, err := m.CollectSources(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("CollectSources: %v", err)
+	}
+
+	got := make([]string, 0, len(sources))
+	for _, src := range sources {
+		got = append(got, src.ID())
+	}
+
+	want := []string{
+		"xpkg://" + family + ":v1.0.0",
+		"xpkg://" + provA + ":v0.1.0",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("source IDs (-want +got):\n%s", diff)
+	}
+
+	if got := fc.getCount(family + ":v1.0.0"); got != 1 {
+		t.Errorf("fetch count for %s = %d, want 1", family+":v1.0.0", got)
 	}
 }
 

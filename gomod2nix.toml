@@ -747,11 +747,10 @@ cachePackages = [
   'go.opentelemetry.io/otel/sdk/trace',
   'go.opentelemetry.io/otel/semconv/v1.17.0',
   'go.opentelemetry.io/otel/semconv/v1.37.0',
-  'go.opentelemetry.io/otel/semconv/v1.37.0/otelconv',
   'go.opentelemetry.io/otel/semconv/v1.40.0',
   'go.opentelemetry.io/otel/semconv/v1.40.0/httpconv',
-  'go.opentelemetry.io/otel/semconv/v1.41.0',
-  'go.opentelemetry.io/otel/semconv/v1.41.0/otelconv',
+  'go.opentelemetry.io/otel/semconv/v1.43.0',
+  'go.opentelemetry.io/otel/semconv/v1.43.0/otelconv',
   'go.opentelemetry.io/otel/trace',
   'go.opentelemetry.io/otel/trace/embedded',
   'go.opentelemetry.io/otel/trace/noop',
@@ -2057,8 +2056,8 @@ cachePackages = [
     hash = 'sha256-Vo2PWnwXTK7dp2xGdvHs4sMLH6MgERLh9B5cTWyqYEo='
 
   [mod.'github.com/go-logr/logr']
-    version = 'v1.4.3'
-    hash = 'sha256-Nnp/dEVNMxLp3RSPDHZzGbI8BkSNuZMX0I0cjWKXXLA='
+    version = 'v1.4.4'
+    hash = 'sha256-q9HX9aelONTLsywyLY4Wc5UYCK+wG0FbSzFWisCYiIA='
 
   [mod.'github.com/go-logr/stdr']
     version = 'v1.2.2'
@@ -2669,36 +2668,36 @@ cachePackages = [
     hash = 'sha256-n90fV18xmJMBnxzLF4S0rqEdAcAPmLl835eFGoQc3K8='
 
   [mod.'go.opentelemetry.io/otel']
-    version = 'v1.44.0'
-    hash = 'sha256-XTGV9RjOIKyWrrgXJ32IA59lovxXqSeRrpcpC1FAFZA='
+    version = 'v1.45.0'
+    hash = 'sha256-ORef6E6hxMrpVU8b+4vh311bMbv2zGbYAIJ9ZE8gXvc='
 
   [mod.'go.opentelemetry.io/otel/exporters/otlp/otlptrace']
-    version = 'v1.43.0'
-    hash = 'sha256-caYRUaQ4DZGYtcUtH5kEkWXezDI4/vZRpUXpet3tQlg='
+    version = 'v1.45.0'
+    hash = 'sha256-+q9AqsCDxlrXTmELo5IJwR5yNiHzCk/dk7mtxxmqCf8='
 
   [mod.'go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc']
-    version = 'v1.39.0'
-    hash = 'sha256-7pfSAaoIS1fbtVd9CCx6J4/DHBsmReon6r9Hocb2CCU='
+    version = 'v1.45.0'
+    hash = 'sha256-fqrhkxeR2Go6sA9W9xKRYpXQfHBZ78/7MVWnyuRpWSU='
 
   [mod.'go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp']
-    version = 'v1.43.0'
-    hash = 'sha256-wvXfMOb3dIVtNDrsxO+wlH3BJwN70t3p0X2EV/ubPjQ='
+    version = 'v1.45.0'
+    hash = 'sha256-GT6dy7rdPY6WK3aByofcuWkMHuT5IhULkiisuzStqag='
 
   [mod.'go.opentelemetry.io/otel/metric']
-    version = 'v1.44.0'
-    hash = 'sha256-e8dVyRoavby/YG7aH2T05IhWHlLvwnMHyPhelAS1mCQ='
+    version = 'v1.45.0'
+    hash = 'sha256-Ec/v1Ghb8Ohb1NsdYQ6juggl/wJMrVA6ktPRPczGWMQ='
 
   [mod.'go.opentelemetry.io/otel/sdk']
-    version = 'v1.44.0'
-    hash = 'sha256-rNqJXr5P2f5Qgllp/3E5Rm5lqt1kBhxHXppT5dXw5Cw='
+    version = 'v1.45.0'
+    hash = 'sha256-VoyRt1cLW8apITGla1K1fqbSyJyRPr53+R3iisreE+4='
 
   [mod.'go.opentelemetry.io/otel/trace']
-    version = 'v1.44.0'
-    hash = 'sha256-69HorWRTLLzAHRgLe4nPp13qJthb3qp7RU7c0Y9qV/c='
+    version = 'v1.45.0'
+    hash = 'sha256-LKrsYVdfPEzxXPEFSapjGIiw2e1C4Yq5HXtoYrN4FIY='
 
   [mod.'go.opentelemetry.io/proto/otlp']
-    version = 'v1.10.0'
-    hash = 'sha256-IEnbR38ucFLTcuC2FA+gRvZNq2loUqXgDskSqP3+LUM='
+    version = 'v1.11.0'
+    hash = 'sha256-jBcVUiab9mWgLmPsrCYK7sC2j15AJ47QJM4prnqGGkE='
 
   [mod.'go.uber.org/multierr']
     version = 'v1.11.0'
@@ -2769,11 +2768,11 @@ cachePackages = [
     hash = 'sha256-L3Xy24GTtcDHmMgc9rlgUm3GrxFO7XQKJhfYIr3li1s='
 
   [mod.'google.golang.org/genproto/googleapis/api']
-    version = 'v0.0.0-20260526163538-3dc84a4a5aaa'
-    hash = 'sha256-XwBCYWKK47hTvTNUl8HenRcbzU5xIYhRfPfNypUU1Ps='
+    version = 'v0.0.0-20260803160001-6ac0973c030d'
+    hash = 'sha256-cECK1WQFTL6TgViX2EOA5honMcFueFP0omL2PmYIEd0='
 
   [mod.'google.golang.org/genproto/googleapis/rpc']
-    version = 'v0.0.0-20260526163538-3dc84a4a5aaa'
+    version = 'v0.0.0-20260803160001-6ac0973c030d'
     hash = 'sha256-ldJTTb7hhj1mdmzTn9IEkQVwCoj3KRlENZtUSEKHABU='
 
   [mod.'google.golang.org/grpc']

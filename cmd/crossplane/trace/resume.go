@@ -172,6 +172,10 @@ func (c *ResumeCmd) Run(k *kong.Context, logger logging.Logger) error {
 func (c *ResumeCmd) applyAnnotation(ctx context.Context, k *kong.Context, logger logging.Logger, client client.Client, resources []*resource.Resource) error {
 	for i := range resources {
 		annotations := resources[i].Unstructured.GetAnnotations()
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+
 		delete(annotations, crossplanemeta.AnnotationKeyReconciliationPaused)
 		resources[i].Unstructured.SetAnnotations(annotations)
 

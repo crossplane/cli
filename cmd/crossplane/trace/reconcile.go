@@ -173,6 +173,10 @@ func (c *ReconcileCmd) Run(k *kong.Context, logger logging.Logger) error {
 func (c *ReconcileCmd) applyAnnotation(ctx context.Context, k *kong.Context, logger logging.Logger, client client.Client, resources []*resource.Resource) error {
 	for i := range resources {
 		annotations := resources[i].Unstructured.GetAnnotations()
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+
 		annotations[crossplanemeta.AnnotationKeyReconcileRequestedAt] = time.Now().Format(time.RFC3339)
 		delete(annotations, crossplanemeta.AnnotationKeyReconciliationPaused)
 		resources[i].Unstructured.SetAnnotations(annotations)

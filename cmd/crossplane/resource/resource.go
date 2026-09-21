@@ -24,6 +24,9 @@ import (
 
 // Cmd contains commands for working with Crossplane resources.
 type Cmd struct {
-	Trace    trace.Cmd    `cmd:"" help:"Trace a Crossplane resource for troubleshooting."`
-	Validate validate.Cmd `cmd:"" help:"Validate Crossplane resources."`
+	Trace     trace.Cmd          `cmd:"" help:"Trace a Crossplane resource for troubleshooting."`
+	Validate  validate.Cmd       `cmd:"" help:"Validate Crossplane resources."`
+	Suspend   trace.SuspendCmd   `cmd:"" help:"Suspend crossplane resource reconciliation."`
+	Resume    trace.ResumeCmd    `cmd:"" help:"Resume reconciliation for suspended crossplane resources."`
+	Reconcile trace.ReconcileCmd `cmd:"" help:"Trigger an immediate reconcilication for a crossplane resource."`
 }

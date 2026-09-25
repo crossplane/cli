@@ -11,6 +11,7 @@ The following are valid arguments to the `--language` / `-l` flag:
 - `go`
 - `kcl`
 - `python`
+- `typescript`
 
 ## Examples
 

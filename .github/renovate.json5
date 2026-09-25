@@ -47,6 +47,17 @@
   customManagers: [
     {
       customType: 'regex',
+      description: 'Bump the container images the schema generators run in',
+      managerFilePatterns: [
+        '/^internal/schemas/generator/.*\\.go$/',
+      ],
+      matchStrings: [
+        'Image\\s*=\\s*"(?<depName>[^":]+):(?<currentValue>[^"]+)"',
+      ],
+      datasourceTemplate: 'docker',
+    },
+    {
+      customType: 'regex',
       description: 'Bump the Renovate version used by the config validator and the bot',
       managerFilePatterns: [
         '/^\\.github/workflows/renovate\\.ya?ml$/',
@@ -147,6 +158,17 @@
         'google/oss-fuzz',
       ],
       enabled: false,
+    },
+    {
+      // Ensure TypeScript generator package.json and package-lock.json are updated together.
+      description: 'Group updates to the pinned TypeScript schema generator toolchain',
+      matchManagers: [
+        'npm',
+      ],
+      matchFileNames: [
+        'internal/schemas/generator/typescript-toolchain/package.json',
+      ],
+      groupName: 'typescript schema generator toolchain',
     },
     {
       description: 'Group all go version updates',

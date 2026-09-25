@@ -27,6 +27,14 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 )
 
+// Constants used by the TypeScript generator. Shared here rather than inlined
+// so the repeated literals stay under the goconst threshold.
+const (
+	workDir = "workdir"
+	extYAML = ".yaml"
+	extYML  = ".yml"
+)
+
 // Interface generates schemas for a specific language.
 type Interface interface {
 	Language() string
@@ -71,6 +79,7 @@ func AllLanguages(opts ...Option) []Interface {
 		&jsonGenerator{},
 		&kclGenerator{},
 		&pythonGenerator{},
+		&typescriptGenerator{},
 	}
 }
 

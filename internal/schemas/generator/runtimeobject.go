@@ -125,9 +125,16 @@ func addRuntimeObjects(code string) (string, bool, error) {
 	return string(formatted), hasRoots, nil
 }
 
-// collectStructTypes returns the set of struct type names declared in the file.
+// collectStructTypes returns the set of names that are, or alias, a struct
+// type declared in the file. oapi-codegen emits `type ComponentName = GoName`
+// for a schema whose x-go-type-name overrides its default derived name (see
+// goRenameSchemaType in go.go) — e.g. a $ref field is typed by the component
+// name, which is a true Go alias (fully interchangeable, same method set) for
+// the actual struct. Without following that alias, a field using the
+// component name wouldn't be recognized as the local struct it actually is.
 func collectStructTypes(f *ast.File) map[string]bool {
 	out := map[string]bool{}
+	aliasOf := map[string]string{}
 	for _, decl := range f.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.TYPE {
@@ -135,7 +142,13 @@ func collectStructTypes(f *ast.File) map[string]bool {
 		}
 		for _, spec := range gen.Specs {
 			ts, ok := spec.(*ast.TypeSpec)
-			if !ok || ts.Assign.IsValid() {
+			if !ok {
+				continue
+			}
+			if ts.Assign.IsValid() {
+				if id, ok := ts.Type.(*ast.Ident); ok {
+					aliasOf[ts.Name.Name] = id.Name
+				}
 				continue
 			}
 			if _, ok := ts.Type.(*ast.StructType); ok {
@@ -143,7 +156,33 @@ func collectStructTypes(f *ast.File) map[string]bool {
 			}
 		}
 	}
+	markStructAliases(out, aliasOf)
 	return out
+}
+
+// markStructAliases adds name to out for every name in aliasOf whose alias
+// chain (following `type A = B` links) terminates at a name already in out.
+func markStructAliases(out map[string]bool, aliasOf map[string]string) {
+	for name := range aliasOf {
+		if !resolvesToStruct(name, aliasOf, out, map[string]bool{}) {
+			continue
+		}
+		out[name] = true
+	}
+}
+
+// resolvesToStruct follows cur's alias chain in aliasOf and reports whether
+// it terminates at a name already in out. seen guards against a cycle.
+func resolvesToStruct(cur string, aliasOf map[string]string, out, seen map[string]bool) bool {
+	if seen[cur] {
+		return false
+	}
+	seen[cur] = true
+	target, isAlias := aliasOf[cur]
+	if !isAlias {
+		return out[cur]
+	}
+	return resolvesToStruct(target, aliasOf, out, seen)
 }
 
 // collectCollectionAliases returns local named types whose underlying type is a
@@ -202,6 +241,17 @@ const (
 	fkStruct
 )
 
+// isJSONRawMessage reports whether typ is exactly json.RawMessage — the
+// unexported backing field oapi-codegen generates for a oneOf/anyOf union.
+func isJSONRawMessage(typ ast.Expr) bool {
+	sel, ok := typ.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "json" && sel.Sel.Name == "RawMessage"
+}
+
 // classifyElem classifies the element type expr (the type with any leading
 // pointer/slice/map already stripped) as scalar or struct.
 func classifyElem(e ast.Expr, structs map[string]bool) fieldKind {
@@ -250,15 +300,37 @@ func writeDeepCopy(b *strings.Builder, fset *token.FileSet, name string, st *ast
 	b.WriteString("\tin.DeepCopyInto(out)\n\treturn out\n}\n")
 }
 
-// writeFieldCopy appends the deep-copy snippet for a single field. All generated
-// fields are pointers; the leading pointer is handled here, then the pointee
-// (scalar, struct, slice or map) is copied appropriately. Named aliases to a
-// map or slice are deep-copied like their literal form.
+// writeFieldCopy appends the deep-copy snippet for a single field. Most
+// generated fields are pointers; the leading pointer is handled here, then
+// the pointee (scalar, struct, slice or map) is copied appropriately. Named
+// aliases to a map or slice are deep-copied like their literal form.
+//
+// A required object-typed field (see goRemoveRequired) is a non-pointer
+// struct value instead. The top-level `*out = *in` in writeDeepCopy shallow-
+// copies it, aliasing any pointer fields nested inside it, so it needs its
+// own DeepCopyInto call.
 func writeFieldCopy(b *strings.Builder, fset *token.FileSet, field string, typ ast.Expr, structs map[string]bool, aliases map[string]ast.Expr) {
 	star, ok := typ.(*ast.StarExpr)
 	if !ok {
-		// Non-pointer fields are copied by the `*out = *in` shallow assignment.
-		// Generated models use pointers throughout, but guard defensively.
+		// A required object-typed field (a bare reference to a known local
+		// struct, see goRemoveRequired) needs DeepCopyInto here.
+		if id, ok := typ.(*ast.Ident); ok && structs[id.Name] {
+			fmt.Fprintf(b, "\tin.%s.DeepCopyInto(&out.%s)\n", field, field)
+			return
+		}
+		// oapi-codegen's unexported `union json.RawMessage` field (its
+		// oneOf/anyOf plumbing) needs its bytes copied explicitly: its
+		// MarshalJSON exposes the backing slice directly, so the shallow
+		// struct assignment would let mutating the copy's raw JSON bytes
+		// corrupt the original. Every other non-pointer, non-struct field
+		// (scalars, named string/int aliases) is already correctly copied by
+		// the shallow assignment.
+		if isJSONRawMessage(typ) {
+			fmt.Fprintf(b, "\tif in.%s != nil {\n", field)
+			fmt.Fprintf(b, "\t\tout.%s = make(json.RawMessage, len(in.%s))\n", field, field)
+			fmt.Fprintf(b, "\t\tcopy(out.%s, in.%s)\n", field, field)
+			b.WriteString("\t}\n")
+		}
 		return
 	}
 

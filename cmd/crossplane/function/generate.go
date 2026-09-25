@@ -161,6 +161,7 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 			generator.AllLanguages(
 				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
 				generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+				generator.WithGoRequiredObjectFields(cfg.Features.GenerateGoRequiredObjectFields),
 			),
 			c.proj.Spec.Schemas.GetLanguages(),
 		),

@@ -20,6 +20,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strings"
 	"testing"
 )
 
@@ -192,6 +193,117 @@ type Foo struct {
 	}
 	if got := countMethod(t, code, "Foo", "GetMetadata"); got != 1 {
 		t.Errorf("Foo.GetMetadata declared %d times, want 1", got)
+	}
+}
+
+// TestWriteFieldCopy covers writeFieldCopy's field cases: a required
+// object-typed field (see goRemoveRequired) needs a real DeepCopyInto call
+// rather than the top-level shallow `*out = *in`, which would alias nested
+// pointers; that struct may be typed by a component-name alias rather than
+// its own name (oapi-codegen's x-go-type-name pattern), for both a
+// non-pointer required field and an ordinary optional pointer field;
+// oapi-codegen's unexported `union json.RawMessage` field needs its backing
+// bytes copied for the same reason (its MarshalJSON exposes that slice
+// directly); and a plain scalar field needs no special-casing, since a value
+// type has no separate backing storage to alias.
+func TestWriteFieldCopy(t *testing.T) {
+	cases := map[string]struct {
+		args         string
+		wantContains []string
+		wantAbsent   []string
+		reason       string
+	}{
+		"ValueStructField": {
+			args: `package v1alpha1
+
+type Bar struct {
+	Count *int64 ` + "`json:\"count,omitempty\"`" + `
+}
+
+type Foo struct {
+	Bar Bar ` + "`json:\"bar\"`" + `
+}
+`,
+			wantContains: []string{"in.Bar.DeepCopyInto(&out.Bar)"},
+			reason:       "a required object-typed field gets a real DeepCopyInto call",
+		},
+		"ValueStructFieldViaAlias": {
+			args: `package v1alpha1
+
+type RealBar struct {
+	Count *int64 ` + "`json:\"count,omitempty\"`" + `
+}
+
+type Bar = RealBar
+
+type Foo struct {
+	Bar Bar ` + "`json:\"bar\"`" + `
+}
+`,
+			wantContains: []string{"in.Bar.DeepCopyInto(&out.Bar)"},
+			reason:       "oapi-codegen types a $ref field by its component-name alias (e.g. IoK8SApiResourceV1DeviceClassSpec = DeviceClassSpec), so a field typed by that alias must still be recognized as the local struct it names",
+		},
+		"PointerToAliasStructField": {
+			args: `package v1alpha1
+
+type RealBar struct {
+	Count *int64 ` + "`json:\"count,omitempty\"`" + `
+}
+
+type Bar = RealBar
+
+type Foo struct {
+	Bar *Bar ` + "`json:\"bar,omitempty\"`" + `
+}
+`,
+			wantContains: []string{"(*in).DeepCopyInto(*out)"},
+			reason:       "this alias shape isn't unique to required object-typed fields: an ordinary optional pointer field typed by a component-name alias must call DeepCopyInto too, not fall back to the shallow **out = **in that classifyElem uses for an unrecognized identifier",
+		},
+		"RawMessageField": {
+			args: `package v1alpha1
+
+import "encoding/json"
+
+type Foo struct {
+	Union json.RawMessage ` + "`json:\"-\"`" + `
+}
+`,
+			wantContains: []string{
+				"out.Union = make(json.RawMessage, len(in.Union))",
+				"copy(out.Union, in.Union)",
+			},
+			reason: "the union field's backing bytes are copied independently, not aliased",
+		},
+		"PlainScalarField": {
+			args: `package v1alpha1
+
+type Foo struct {
+	Count int64 ` + "`json:\"count\"`" + `
+}
+`,
+			wantAbsent: []string{"in.Count.DeepCopyInto", "out.Count = make"},
+			reason:     "a plain scalar field needs no special-cased copy code",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, _, err := addRuntimeObjects(tc.args)
+			if err != nil {
+				t.Fatalf("addRuntimeObjects: %v", err)
+			}
+
+			for _, want := range tc.wantContains {
+				if !strings.Contains(got, want) {
+					t.Errorf("expected generated DeepCopyInto to contain %q (%s), got:\n%s", want, tc.reason, got)
+				}
+			}
+			for _, notWant := range tc.wantAbsent {
+				if strings.Contains(got, notWant) {
+					t.Errorf("did not expect generated DeepCopyInto to contain %q (%s), got:\n%s", notWant, tc.reason, got)
+				}
+			}
+		})
 	}
 }
 

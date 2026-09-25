@@ -373,6 +373,82 @@ type FooAlias = Foo
 	}
 }
 
+// TestAddAccessorsValueStructField verifies a non-pointer struct field (the
+// shape goRemoveRequired gives a required object-typed property) still gets
+// a pointer-shaped Get/Set pair, so callers can chain getters and round-trip
+// SetX(GetX()) like every other field.
+func TestAddAccessorsValueStructField(t *testing.T) {
+	cases := map[string]struct {
+		args   string
+		want   map[string]string
+		reason string
+	}{
+		"ValueStructField": {
+			args: `package v1alpha1
+
+type Foo struct {
+	Bar Bar ` + "`json:\"bar\"`" + `
+}
+
+type Bar struct {
+	Count *int64 ` + "`json:\"count,omitempty\"`" + `
+}
+`,
+			want: map[string]string{
+				"Foo.GetBar":   "*Bar",
+				"Foo.SetBar":   "*Bar",
+				"Bar.GetCount": "*int64",
+				"Bar.SetCount": "*int64",
+			},
+			reason: "a non-pointer struct field still gets a pointer-shaped Get/Set pair",
+		},
+		"ValueStructFieldViaAlias": {
+			args: `package v1alpha1
+
+type Foo struct {
+	Bar Bar ` + "`json:\"bar\"`" + `
+}
+
+type RealBar struct {
+	Count *int64 ` + "`json:\"count,omitempty\"`" + `
+}
+
+type Bar = RealBar
+`,
+			want: map[string]string{
+				"Foo.GetBar":       "*Bar",
+				"Foo.SetBar":       "*Bar",
+				"RealBar.GetCount": "*int64",
+				"RealBar.SetCount": "*int64",
+			},
+			reason: "a field typed by a component-name alias (oapi-codegen's x-go-type-name pattern) is still recognized as the local struct it names",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := addAccessors(tc.args)
+			if err != nil {
+				t.Fatalf("addAccessors returned error: %v", err)
+			}
+
+			if diff := cmp.Diff(tc.want, collectMethods(t, got)); diff != "" {
+				t.Errorf("generated accessors (-want +got, %s):\n%s", tc.reason, diff)
+			}
+
+			// The round-trip pattern every other field supports must still
+			// type-check for a value-struct field.
+			roundTrip := got + `
+
+func roundTrip(f *Foo) {
+	f.SetBar(f.GetBar())
+}
+`
+			typeCheck(t, roundTrip)
+		})
+	}
+}
+
 // guardsNilReceiver reports whether the body of method recv.name opens with an
 // `if <receiver> == nil` guard.
 func guardsNilReceiver(t *testing.T, src, recv, name string) bool {

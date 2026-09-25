@@ -52,6 +52,13 @@ type Features struct {
 	// per-package AddToScheme helpers on generated Go models. Disabled by
 	// default; opt in to register generated types with a runtime.Scheme.
 	GenerateGoRuntimeObjects bool `json:"generateGoRuntimeObjects,omitempty"`
+
+	// GenerateGoRequiredObjectFields enables generating a required
+	// object-typed property (e.g. a managed resource's spec.forProvider) as a
+	// non-pointer value instead of the all-pointer/all-optional default.
+	// Disabled by default; it's a breaking change for any consumer that
+	// constructs such a field as a pointer or nil-checks it.
+	GenerateGoRequiredObjectFields bool `json:"generateGoRequiredObjectFields,omitempty"`
 }
 
 // Load reads a Config from path. A missing file is not an error; the zero

@@ -20,6 +20,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strings"
 	"testing"
 )
 
@@ -192,6 +193,55 @@ type Foo struct {
 	}
 	if got := countMethod(t, code, "Foo", "GetMetadata"); got != 1 {
 		t.Errorf("Foo.GetMetadata declared %d times, want 1", got)
+	}
+}
+
+// TestWriteFieldCopyValueStructField verifies a non-pointer struct field
+// (see goRemoveRequired) gets a real DeepCopyInto call, not just the
+// top-level shallow `*out = *in`, which would alias nested pointers.
+func TestWriteFieldCopyValueStructField(t *testing.T) {
+	const src = `package v1alpha1
+
+type Bar struct {
+	Count *int64 ` + "`json:\"count,omitempty\"`" + `
+}
+
+type Foo struct {
+	Bar Bar ` + "`json:\"bar\"`" + `
+}
+`
+
+	got, _, err := addRuntimeObjects(src)
+	if err != nil {
+		t.Fatalf("addRuntimeObjects: %v", err)
+	}
+
+	if !strings.Contains(got, "in.Bar.DeepCopyInto(&out.Bar)") {
+		t.Errorf("expected Foo.DeepCopyInto to call in.Bar.DeepCopyInto(&out.Bar), got:\n%s", got)
+	}
+}
+
+// TestWriteFieldCopyIgnoresNonStructNonPointerFields verifies a non-pointer,
+// non-struct field (e.g. oapi-codegen's own union-type plumbing) is left to
+// the shallow copy, since it may have no DeepCopyInto method.
+func TestWriteFieldCopyIgnoresNonStructNonPointerFields(t *testing.T) {
+	const src = `package v1alpha1
+
+import "encoding/json"
+
+type Foo struct {
+	Union json.RawMessage ` + "`json:\"-\"`" + `
+	Count int64           ` + "`json:\"count\"`" + `
+}
+`
+
+	got, _, err := addRuntimeObjects(src)
+	if err != nil {
+		t.Fatalf("addRuntimeObjects: %v", err)
+	}
+
+	if strings.Contains(got, "in.Union.DeepCopyInto") {
+		t.Errorf("did not expect a DeepCopyInto call for a non-struct non-pointer field, got:\n%s", got)
 	}
 }
 

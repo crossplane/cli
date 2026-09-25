@@ -959,12 +959,17 @@ func goSchemaIsValidationOnly(s *spec.Schema) bool {
 	return true
 }
 
-// goRemoveRequired removes the required fields from schemas. We want all fields
-// in our generated models to be optional (so functions can set only the fields
-// they wish to own).
+// goRemoveRequired removes required-ness from every field except required
+// object-typed properties, which keep it so oapi-codegen generates them as
+// non-pointer values. That matches how real Kubernetes types declare
+// required nested objects (e.g. a managed resource's Spec.ForProvider): the
+// zero value marshals as `{}`, satisfying the CRD's required-key check
+// without a caller ever setting it. Everything else keeps this generator's
+// all-pointer/all-optional convention, since DeepCopy and accessor
+// generation assume it.
 func goRemoveRequired(s *spec3.OpenAPI) {
 	for _, schema := range s.Components.Schemas {
-		schema.Required = nil
+		schema.Required = filterRequiredObjectFields(schema.Required, schema.Properties)
 		goRemovePropertiesRequired(schema.Properties)
 		if schema.Items != nil {
 			goRemovePropertiesRequired(schema.Items.Schema.Properties)
@@ -974,15 +979,36 @@ func goRemoveRequired(s *spec3.OpenAPI) {
 
 func goRemovePropertiesRequired(props map[string]spec.Schema) {
 	for name, prop := range props {
-		prop.Required = nil
+		prop.Required = filterRequiredObjectFields(prop.Required, prop.Properties)
 		goRemovePropertiesRequired(prop.Properties)
 		if prop.Items != nil {
-			prop.Items.Schema.Required = nil
+			prop.Items.Schema.Required = filterRequiredObjectFields(prop.Items.Schema.Required, prop.Items.Schema.Properties)
 			goRemovePropertiesRequired(prop.Items.Schema.Properties)
 		}
 
 		props[name] = prop
 	}
+}
+
+// filterRequiredObjectFields returns the subset of required naming a
+// struct-shaped property (see isStructShapedProperty); those are the only
+// properties allowed to stay required. Returns nil, not an empty slice, so
+// the emitted OpenAPI has no empty `required: []`.
+func filterRequiredObjectFields(required []string, props map[string]spec.Schema) []string {
+	var kept []string
+	for _, name := range required {
+		if prop, ok := props[name]; ok && isStructShapedProperty(prop) {
+			kept = append(kept, name)
+		}
+	}
+	return kept
+}
+
+// isStructShapedProperty reports whether prop is the kind of object schema
+// oapi-codegen generates as a Go struct (named properties) rather than a map
+// (additionalProperties) or a scalar/array.
+func isStructShapedProperty(prop spec.Schema) bool {
+	return prop.AdditionalProperties == nil && len(prop.Properties) > 0
 }
 
 // goReferenceK8sTypes converts all references to k8s meta/v1 schemas in the

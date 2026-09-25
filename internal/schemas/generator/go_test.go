@@ -19,6 +19,7 @@ package generator
 import (
 	"embed"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"path/filepath"
@@ -116,6 +117,90 @@ func TestGenerateFromCRDGo(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestGenerateFromCRDGoRequiredObjectFields verifies a required object-typed
+// property (spec.parameters, mirroring a provider's spec.forProvider)
+// generates as a non-pointer value with no `omitempty`, so its zero value
+// marshals as `{}` and satisfies the CRD's required-key check. A sibling
+// optional object (spec.compositionRef) and a required scalar
+// (parameters.name) must be unaffected.
+func TestGenerateFromCRDGoRequiredObjectFields(t *testing.T) {
+	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
+	schemaFS, err := goGenerator{}.GenerateFromCRD(t.Context(), inputFS, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	contents, err := afero.ReadFile(schemaFS, "models/co/acme/platform/v1alpha1/accountscaffold.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", contents, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("failed to parse generated source: %v\n%s", err, contents)
+	}
+
+	fields := goStructFields(t, f, "AccountScaffoldSpec")
+	if got := fields["Parameters"]; got.typ != "AccountScaffoldSpecParameters" || got.tag != `json:"parameters"` {
+		t.Errorf("AccountScaffoldSpec.Parameters = %+v, want non-pointer type with no omitempty", got)
+	}
+	if got := fields["CompositionRef"]; got.typ != "*AccountScaffoldSpecCompositionRef" || got.tag != `json:"compositionRef,omitempty"` {
+		t.Errorf("AccountScaffoldSpec.CompositionRef = %+v, want its pointer/omitempty shape unchanged", got)
+	}
+
+	paramFields := goStructFields(t, f, "AccountScaffoldSpecParameters")
+	if got := paramFields["Name"]; got.typ != "*string" || got.tag != `json:"name,omitempty"` {
+		t.Errorf("AccountScaffoldSpecParameters.Name = %+v, want its pointer/omitempty shape unchanged even though it's required", got)
+	}
+}
+
+// goStructField is a struct field's rendered type and raw tag text.
+type goStructField struct {
+	typ string
+	tag string
+}
+
+// goStructFields returns typeName's fields by name, for asserting on their
+// exact type and tag.
+func goStructFields(t *testing.T, f *ast.File, typeName string) map[string]goStructField {
+	t.Helper()
+	fset := token.NewFileSet()
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Name.Name != typeName {
+				continue
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			out := map[string]goStructField{}
+			for _, field := range st.Fields.List {
+				var typ strings.Builder
+				if err := format.Node(&typ, fset, field.Type); err != nil {
+					t.Fatalf("failed to render field type: %v", err)
+				}
+				tag := ""
+				if field.Tag != nil {
+					tag = strings.Trim(field.Tag.Value, "`")
+				}
+				for _, name := range field.Names {
+					out[name.Name] = goStructField{typ: typ.String(), tag: tag}
+				}
+			}
+			return out
+		}
+	}
+	t.Fatalf("type %s not found in generated source", typeName)
+	return nil
 }
 
 // TestGenerateFromCRDGoScaleSubresource ensures CRDs with a scale subresource

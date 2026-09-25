@@ -250,15 +250,25 @@ func writeDeepCopy(b *strings.Builder, fset *token.FileSet, name string, st *ast
 	b.WriteString("\tin.DeepCopyInto(out)\n\treturn out\n}\n")
 }
 
-// writeFieldCopy appends the deep-copy snippet for a single field. All generated
-// fields are pointers; the leading pointer is handled here, then the pointee
-// (scalar, struct, slice or map) is copied appropriately. Named aliases to a
-// map or slice are deep-copied like their literal form.
+// writeFieldCopy appends the deep-copy snippet for a single field. Most
+// generated fields are pointers; the leading pointer is handled here, then
+// the pointee (scalar, struct, slice or map) is copied appropriately. Named
+// aliases to a map or slice are deep-copied like their literal form.
+//
+// A required object-typed field (see goRemoveRequired) is a non-pointer
+// struct value instead. The top-level `*out = *in` in writeDeepCopy shallow-
+// copies it, aliasing any pointer fields nested inside it, so it needs its
+// own DeepCopyInto call.
 func writeFieldCopy(b *strings.Builder, fset *token.FileSet, field string, typ ast.Expr, structs map[string]bool, aliases map[string]ast.Expr) {
 	star, ok := typ.(*ast.StarExpr)
 	if !ok {
-		// Non-pointer fields are copied by the `*out = *in` shallow assignment.
-		// Generated models use pointers throughout, but guard defensively.
+		// Only a required object-typed field (a bare reference to a known
+		// local struct, see goRemoveRequired) needs DeepCopyInto here.
+		// Anything else non-pointer, including oapi-codegen's own union-type
+		// plumbing, is already correctly copied by the shallow assignment.
+		if id, ok := typ.(*ast.Ident); ok && structs[id.Name] {
+			fmt.Fprintf(b, "\tin.%s.DeepCopyInto(&out.%s)\n", field, field)
+		}
 		return
 	}
 

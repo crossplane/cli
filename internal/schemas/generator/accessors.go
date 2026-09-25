@@ -60,6 +60,11 @@ func addAccessors(code string) (string, error) {
 	// duplicate method would make the package fail to compile.
 	existing := collectExistingMethods(f)
 
+	// writeStructAccessors needs to know which fields are non-pointer struct
+	// values (required object-typed fields, see goRemoveRequired in go.go),
+	// so it can still return/accept a pointer for them.
+	structs := collectStructTypes(f)
+
 	var b strings.Builder
 	// Walk declarations in source order so the generated output is stable.
 	for _, decl := range f.Decls {
@@ -81,7 +86,7 @@ func addAccessors(code string) (string, error) {
 			if !ok || st.Fields == nil {
 				continue
 			}
-			writeStructAccessors(&b, fset, receiverTypeExpr(ts), st, existing[ts.Name.Name])
+			writeStructAccessors(&b, fset, receiverTypeExpr(ts), st, existing[ts.Name.Name], structs)
 		}
 	}
 
@@ -201,7 +206,7 @@ func isNilable(e ast.Expr) bool {
 // (e.g. a field named PasswordData alongside a sibling field named
 // GetPasswordData): Go forbids a method and a field sharing a name on the same
 // type, and Terraform schemas occasionally produce exactly that pair.
-func writeStructAccessors(b *strings.Builder, fset *token.FileSet, typeName string, st *ast.StructType, skip map[string]bool) {
+func writeStructAccessors(b *strings.Builder, fset *token.FileSet, typeName string, st *ast.StructType, skip map[string]bool, structs map[string]bool) {
 	fieldNames := collectFieldNames(st)
 
 	for _, field := range st.Fields.List {
@@ -227,6 +232,19 @@ func writeStructAccessors(b *strings.Builder, fset *token.FileSet, typeName stri
 			}
 
 			fieldName := name.Name
+			if isValueStructField(field.Type, structs) {
+				// A required object-typed field is a non-pointer value (see
+				// goRemoveRequired). Still return/accept a pointer here, so
+				// callers can chain getters and round-trip SetX(GetX()) like
+				// every other field.
+				if !skip["Get"+fieldName] && !fieldNames["Get"+fieldName] {
+					writeValueStructGetter(b, typeName, fieldName, fieldType)
+				}
+				if !skip["Set"+fieldName] && !fieldNames["Set"+fieldName] {
+					writeValueStructSetter(b, typeName, fieldName, fieldType)
+				}
+				continue
+			}
 			if !skip["Get"+fieldName] && !fieldNames["Get"+fieldName] {
 				writeGetter(b, typeName, fieldName, fieldType, isNilable(field.Type))
 			}
@@ -281,5 +299,41 @@ func writeSetter(b *strings.Builder, typeName, fieldName, fieldType string) {
 	b.WriteString("\n// Set" + fieldName + " sets the " + fieldName + " field.\n")
 	b.WriteString("func (" + accessorReceiver + " *" + typeName + ") Set" + fieldName + "(v " + fieldType + ") {\n")
 	b.WriteString("\t" + accessorReceiver + "." + fieldName + " = v\n")
+	b.WriteString("}\n")
+}
+
+// isValueStructField reports whether typ is a bare reference to a known
+// local struct — the shape a required object-typed field gets (see
+// goRemoveRequired), unlike every other field, which is a pointer.
+func isValueStructField(typ ast.Expr, structs map[string]bool) bool {
+	id, ok := typ.(*ast.Ident)
+	return ok && structs[id.Name]
+}
+
+// writeValueStructGetter appends a getter for a required object-typed field
+// (a non-pointer value, see isValueStructField). Returns a pointer so
+// callers can chain getters like every other field, and nil on a nil
+// receiver instead of panicking.
+func writeValueStructGetter(b *strings.Builder, typeName, fieldName, fieldType string) {
+	b.WriteString("\n// Get" + fieldName + " returns a pointer to the " + fieldName + " field.\n")
+	b.WriteString("// It returns nil if the receiver is nil.\n")
+	b.WriteString("func (" + accessorReceiver + " *" + typeName + ") Get" + fieldName + "() *" + fieldType + " {\n")
+	b.WriteString("\tif " + accessorReceiver + " == nil {\n")
+	b.WriteString("\t\treturn nil\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn &" + accessorReceiver + "." + fieldName + "\n")
+	b.WriteString("}\n")
+}
+
+// writeValueStructSetter appends a setter for a required object-typed
+// field. Takes a pointer to mirror the getter so SetX(GetX()) round-trips,
+// and no-ops on nil since the field can only be replaced, not unset.
+func writeValueStructSetter(b *strings.Builder, typeName, fieldName, fieldType string) {
+	b.WriteString("\n// Set" + fieldName + " sets the " + fieldName + " field from v. It does nothing if v is nil.\n")
+	b.WriteString("func (" + accessorReceiver + " *" + typeName + ") Set" + fieldName + "(v *" + fieldType + ") {\n")
+	b.WriteString("\tif v == nil {\n")
+	b.WriteString("\t\treturn\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\t" + accessorReceiver + "." + fieldName + " = *v\n")
 	b.WriteString("}\n")
 }

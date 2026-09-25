@@ -43,17 +43,18 @@ func TestAllLanguagesGoOptions(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]struct {
-		reason             string
-		opts               []Option
-		wantRuntimeObjects bool
-		wantAccessors      bool
+		reason                   string
+		opts                     []Option
+		wantRuntimeObjects       bool
+		wantAccessors            bool
+		wantRequiredObjectFields bool
 	}{
 		"OffByDefault": {
-			reason: "both Go generator features are opt-in",
+			reason: "all three Go generator features are opt-in",
 		},
 		"Disabled": {
 			reason: "explicitly disabled flags leave the Go generator alone",
-			opts:   []Option{WithGoRuntimeObjects(false), WithGoModelAccessors(false)},
+			opts:   []Option{WithGoRuntimeObjects(false), WithGoModelAccessors(false), WithGoRequiredObjectFields(false)},
 		},
 		"RuntimeObjectsOnly": {
 			reason:             "the option reaches the Go generator, which is what emits the code",
@@ -61,15 +62,21 @@ func TestAllLanguagesGoOptions(t *testing.T) {
 			wantRuntimeObjects: true,
 		},
 		"AccessorsOnly": {
-			reason:        "the two options are independent",
+			reason:        "the options are independent",
 			opts:          []Option{WithGoModelAccessors(true)},
 			wantAccessors: true,
 		},
-		"Both": {
-			reason:             "neither option clobbers the other",
-			opts:               []Option{WithGoModelAccessors(true), WithGoRuntimeObjects(true)},
-			wantRuntimeObjects: true,
-			wantAccessors:      true,
+		"RequiredObjectFieldsOnly": {
+			reason:                   "the option reaches the Go generator, which is what emits the code",
+			opts:                     []Option{WithGoRequiredObjectFields(true)},
+			wantRequiredObjectFields: true,
+		},
+		"All": {
+			reason:                   "no option clobbers another",
+			opts:                     []Option{WithGoModelAccessors(true), WithGoRuntimeObjects(true), WithGoRequiredObjectFields(true)},
+			wantRuntimeObjects:       true,
+			wantAccessors:            true,
+			wantRequiredObjectFields: true,
 		},
 	}
 
@@ -91,6 +98,9 @@ func TestAllLanguagesGoOptions(t *testing.T) {
 			}
 			if got.accessors != tc.wantAccessors {
 				t.Errorf("accessors = %v, want %v (%s)", got.accessors, tc.wantAccessors, tc.reason)
+			}
+			if got.requiredObjectFields != tc.wantRequiredObjectFields {
+				t.Errorf("requiredObjectFields = %v, want %v (%s)", got.requiredObjectFields, tc.wantRequiredObjectFields, tc.reason)
 			}
 		})
 	}

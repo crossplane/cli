@@ -196,11 +196,23 @@ type Foo struct {
 	}
 }
 
-// TestWriteFieldCopyValueStructField verifies a non-pointer struct field
-// (see goRemoveRequired) gets a real DeepCopyInto call, not just the
-// top-level shallow `*out = *in`, which would alias nested pointers.
-func TestWriteFieldCopyValueStructField(t *testing.T) {
-	const src = `package v1alpha1
+// TestWriteFieldCopy covers writeFieldCopy's non-pointer-field cases: a
+// required object-typed field (see goRemoveRequired) needs a real
+// DeepCopyInto call rather than the top-level shallow `*out = *in`, which
+// would alias nested pointers; oapi-codegen's unexported
+// `union json.RawMessage` field needs its backing bytes copied for the same
+// reason (its MarshalJSON exposes that slice directly); and a plain scalar
+// field needs no special-casing, since a value type has no separate backing
+// storage to alias.
+func TestWriteFieldCopy(t *testing.T) {
+	cases := map[string]struct {
+		args         string
+		wantContains []string
+		wantAbsent   []string
+		reason       string
+	}{
+		"ValueStructField": {
+			args: `package v1alpha1
 
 type Bar struct {
 	Count *int64 ` + "`json:\"count,omitempty\"`" + `
@@ -209,39 +221,55 @@ type Bar struct {
 type Foo struct {
 	Bar Bar ` + "`json:\"bar\"`" + `
 }
-`
-
-	got, _, err := addRuntimeObjects(src)
-	if err != nil {
-		t.Fatalf("addRuntimeObjects: %v", err)
-	}
-
-	if !strings.Contains(got, "in.Bar.DeepCopyInto(&out.Bar)") {
-		t.Errorf("expected Foo.DeepCopyInto to call in.Bar.DeepCopyInto(&out.Bar), got:\n%s", got)
-	}
-}
-
-// TestWriteFieldCopyIgnoresNonStructNonPointerFields verifies a non-pointer,
-// non-struct field (e.g. oapi-codegen's own union-type plumbing) is left to
-// the shallow copy, since it may have no DeepCopyInto method.
-func TestWriteFieldCopyIgnoresNonStructNonPointerFields(t *testing.T) {
-	const src = `package v1alpha1
+`,
+			wantContains: []string{"in.Bar.DeepCopyInto(&out.Bar)"},
+			reason:       "a required object-typed field gets a real DeepCopyInto call",
+		},
+		"RawMessageField": {
+			args: `package v1alpha1
 
 import "encoding/json"
 
 type Foo struct {
 	Union json.RawMessage ` + "`json:\"-\"`" + `
-	Count int64           ` + "`json:\"count\"`" + `
 }
-`
+`,
+			wantContains: []string{
+				"out.Union = make(json.RawMessage, len(in.Union))",
+				"copy(out.Union, in.Union)",
+			},
+			reason: "the union field's backing bytes are copied independently, not aliased",
+		},
+		"PlainScalarField": {
+			args: `package v1alpha1
 
-	got, _, err := addRuntimeObjects(src)
-	if err != nil {
-		t.Fatalf("addRuntimeObjects: %v", err)
+type Foo struct {
+	Count int64 ` + "`json:\"count\"`" + `
+}
+`,
+			wantAbsent: []string{"in.Count.DeepCopyInto", "out.Count = make"},
+			reason:     "a plain scalar field needs no special-cased copy code",
+		},
 	}
 
-	if strings.Contains(got, "in.Union.DeepCopyInto") {
-		t.Errorf("did not expect a DeepCopyInto call for a non-struct non-pointer field, got:\n%s", got)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, _, err := addRuntimeObjects(tc.args)
+			if err != nil {
+				t.Fatalf("addRuntimeObjects: %v", err)
+			}
+
+			for _, want := range tc.wantContains {
+				if !strings.Contains(got, want) {
+					t.Errorf("expected generated DeepCopyInto to contain %q (%s), got:\n%s", want, tc.reason, got)
+				}
+			}
+			for _, notWant := range tc.wantAbsent {
+				if strings.Contains(got, notWant) {
+					t.Errorf("did not expect generated DeepCopyInto to contain %q (%s), got:\n%s", notWant, tc.reason, got)
+				}
+			}
+		})
 	}
 }
 

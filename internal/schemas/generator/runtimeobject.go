@@ -202,6 +202,17 @@ const (
 	fkStruct
 )
 
+// isJSONRawMessage reports whether typ is exactly json.RawMessage — the
+// unexported backing field oapi-codegen generates for a oneOf/anyOf union.
+func isJSONRawMessage(typ ast.Expr) bool {
+	sel, ok := typ.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "json" && sel.Sel.Name == "RawMessage"
+}
+
 // classifyElem classifies the element type expr (the type with any leading
 // pointer/slice/map already stripped) as scalar or struct.
 func classifyElem(e ast.Expr, structs map[string]bool) fieldKind {
@@ -262,12 +273,24 @@ func writeDeepCopy(b *strings.Builder, fset *token.FileSet, name string, st *ast
 func writeFieldCopy(b *strings.Builder, fset *token.FileSet, field string, typ ast.Expr, structs map[string]bool, aliases map[string]ast.Expr) {
 	star, ok := typ.(*ast.StarExpr)
 	if !ok {
-		// Only a required object-typed field (a bare reference to a known
-		// local struct, see goRemoveRequired) needs DeepCopyInto here.
-		// Anything else non-pointer, including oapi-codegen's own union-type
-		// plumbing, is already correctly copied by the shallow assignment.
+		// A required object-typed field (a bare reference to a known local
+		// struct, see goRemoveRequired) needs DeepCopyInto here.
 		if id, ok := typ.(*ast.Ident); ok && structs[id.Name] {
 			fmt.Fprintf(b, "\tin.%s.DeepCopyInto(&out.%s)\n", field, field)
+			return
+		}
+		// oapi-codegen's unexported `union json.RawMessage` field (its
+		// oneOf/anyOf plumbing) needs its bytes copied explicitly: its
+		// MarshalJSON exposes the backing slice directly, so the shallow
+		// struct assignment would let mutating the copy's raw JSON bytes
+		// corrupt the original. Every other non-pointer, non-struct field
+		// (scalars, named string/int aliases) is already correctly copied by
+		// the shallow assignment.
+		if isJSONRawMessage(typ) {
+			fmt.Fprintf(b, "\tif in.%s != nil {\n", field)
+			fmt.Fprintf(b, "\t\tout.%s = make(json.RawMessage, len(in.%s))\n", field, field)
+			fmt.Fprintf(b, "\t\tcopy(out.%s, in.%s)\n", field, field)
+			b.WriteString("\t}\n")
 		}
 		return
 	}

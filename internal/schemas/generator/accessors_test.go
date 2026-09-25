@@ -378,7 +378,13 @@ type FooAlias = Foo
 // a pointer-shaped Get/Set pair, so callers can chain getters and round-trip
 // SetX(GetX()) like every other field.
 func TestAddAccessorsValueStructField(t *testing.T) {
-	input := `package v1alpha1
+	cases := map[string]struct {
+		args   string
+		want   map[string]string
+		reason string
+	}{
+		"ValueStructField": {
+			args: `package v1alpha1
 
 type Foo struct {
 	Bar Bar ` + "`json:\"bar\"`" + `
@@ -387,32 +393,39 @@ type Foo struct {
 type Bar struct {
 	Count *int64 ` + "`json:\"count,omitempty\"`" + `
 }
-`
-
-	got, err := addAccessors(input)
-	if err != nil {
-		t.Fatalf("addAccessors returned error: %v", err)
+`,
+			want: map[string]string{
+				"Foo.GetBar":   "*Bar",
+				"Foo.SetBar":   "*Bar",
+				"Bar.GetCount": "*int64",
+				"Bar.SetCount": "*int64",
+			},
+			reason: "a non-pointer struct field still gets a pointer-shaped Get/Set pair",
+		},
 	}
 
-	want := map[string]string{
-		"Foo.GetBar":   "*Bar",
-		"Foo.SetBar":   "*Bar",
-		"Bar.GetCount": "*int64",
-		"Bar.SetCount": "*int64",
-	}
-	if diff := cmp.Diff(want, collectMethods(t, got)); diff != "" {
-		t.Errorf("generated accessors (-want +got):\n%s", diff)
-	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := addAccessors(tc.args)
+			if err != nil {
+				t.Fatalf("addAccessors returned error: %v", err)
+			}
 
-	// The round-trip pattern every other field supports must still type-check
-	// for a value-struct field.
-	roundTrip := got + `
+			if diff := cmp.Diff(tc.want, collectMethods(t, got)); diff != "" {
+				t.Errorf("generated accessors (-want +got, %s):\n%s", tc.reason, diff)
+			}
+
+			// The round-trip pattern every other field supports must still
+			// type-check for a value-struct field.
+			roundTrip := got + `
 
 func roundTrip(f *Foo) {
 	f.SetBar(f.GetBar())
 }
 `
-	typeCheck(t, roundTrip)
+			typeCheck(t, roundTrip)
+		})
+	}
 }
 
 // guardsNilReceiver reports whether the body of method recv.name opens with an

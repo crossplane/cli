@@ -85,9 +85,11 @@ func resolveGeneratedModuleDeps(t *testing.T, modelsDir string) {
 // TestGeneratedRuntimeObjectsCompile materializes the generated module (flag on),
 // adds a consumer that registers the types in a runtime.Scheme and exercises an
 // accessor through the runtime.Object interface, and compiles the whole module.
+// requiredObjectFields is also on, so this exercises DeepCopy for a required
+// object-typed field (a non-pointer local struct) alongside runtime.Object.
 func TestGeneratedRuntimeObjectsCompile(t *testing.T) {
 	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
-	schemaFS, err := goGenerator{runtimeObjects: true}.GenerateFromCRD(t.Context(), inputFS, nil)
+	schemaFS, err := goGenerator{runtimeObjects: true, requiredObjectFields: true}.GenerateFromCRD(t.Context(), inputFS, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,6 +165,18 @@ func TestGeneratedRuntimeObject(t *testing.T) {
 	if (*sel.MatchLabels)["k"] != "v" {
 		t.Fatalf("DeepCopy (*map) not independent: original mutated to %q", (*sel.MatchLabels)["k"])
 	}
+
+	// Required object-typed field independence (a non-pointer local struct,
+	// see goRemoveRequired; exercises writeFieldCopy's DeepCopyInto branch for
+	// it, rather than the top-level shallow struct copy).
+	withParams := &v1alpha1.XAccountScaffoldSpec{
+		Parameters: v1alpha1.XAccountScaffoldSpecParameters{Name: ptr("a")},
+	}
+	paramsCopy := withParams.DeepCopy()
+	*paramsCopy.Parameters.Name = "b"
+	if *withParams.Parameters.Name != "a" {
+		t.Fatalf("DeepCopy (non-pointer struct) not independent: original mutated to %q", *withParams.Parameters.Name)
+	}
 }
 `
 	consumerDir := filepath.Join(dir, "models", "consumer")
@@ -189,10 +203,15 @@ func TestGeneratedRuntimeObject(t *testing.T) {
 // TestGenerateFromOpenAPIRuntimeObjectsCompile exercises the OpenAPI generation
 // path (the shared k8s and GVK packages, which include union and intstr types)
 // with the feature on, compiles the result, and registers every generated
-// built-in package in one scheme.
+// built-in package in one scheme. requiredObjectFields is also on: this is the
+// real Kubernetes built-in spec, so it's the only gate that compiles a
+// required object-typed field wrapped in a single-element allOf $ref (e.g.
+// DeviceClass.spec in resource.k8s.io/v1) end to end, and a required field
+// that resolves to a shared k8s type (e.g. a LabelSelector), which must stay a
+// pointer rather than become a cross-package non-pointer value.
 func TestGenerateFromOpenAPIRuntimeObjectsCompile(t *testing.T) {
 	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataJSONFS}, "testdata")
-	schemaFS, err := goGenerator{runtimeObjects: true}.GenerateFromOpenAPI(t.Context(), inputFS, nil)
+	schemaFS, err := goGenerator{runtimeObjects: true, requiredObjectFields: true}.GenerateFromOpenAPI(t.Context(), inputFS, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,13 +320,13 @@ func TestGeneratedModelsCompileWithoutRuntimeObjects(t *testing.T) {
 }
 
 // TestGeneratedModelsCompileWithAccessorsAndRuntimeObjects builds the output
-// with both generator features on. They emit methods onto the same structs, so
-// a name they both claim — GetObjectKind against a field named objectKind, say —
-// would be a duplicate method that only a real build catches. Neither feature's
-// own gate covers the combination.
+// with all three generator features on. They emit methods onto the same
+// structs, so a name they both claim — GetObjectKind against a field named
+// objectKind, say — would be a duplicate method that only a real build
+// catches. Neither feature's own gate covers the combination.
 func TestGeneratedModelsCompileWithAccessorsAndRuntimeObjects(t *testing.T) {
 	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
-	schemaFS, err := goGenerator{accessors: true, runtimeObjects: true}.GenerateFromCRD(t.Context(), inputFS, nil)
+	schemaFS, err := goGenerator{accessors: true, runtimeObjects: true, requiredObjectFields: true}.GenerateFromCRD(t.Context(), inputFS, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,10 +345,14 @@ func TestGeneratedModelsCompileWithAccessorsAndRuntimeObjects(t *testing.T) {
 }
 
 // TestGenerateFromOpenAPIWithAccessorsAndRuntimeObjects is the same check for
-// the OpenAPI path, which generates the far larger built-in Kubernetes packages.
+// the OpenAPI path, which generates the far larger built-in Kubernetes
+// packages. With requiredObjectFields also on, this is the gate that would
+// catch a required object-typed field resolving to a struct in another
+// generated package (accessors and DeepCopy only special-case a non-pointer
+// field that's a locally declared struct — see isK8sSharedTypeRef in go.go).
 func TestGenerateFromOpenAPIWithAccessorsAndRuntimeObjects(t *testing.T) {
 	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataJSONFS}, "testdata")
-	schemaFS, err := goGenerator{accessors: true, runtimeObjects: true}.GenerateFromOpenAPI(t.Context(), inputFS, nil)
+	schemaFS, err := goGenerator{accessors: true, runtimeObjects: true, requiredObjectFields: true}.GenerateFromOpenAPI(t.Context(), inputFS, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

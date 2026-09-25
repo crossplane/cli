@@ -82,26 +82,61 @@ func resolveGeneratedModuleDeps(t *testing.T, modelsDir string) {
 	}
 }
 
-// TestGeneratedRuntimeObjectsCompile materializes the generated module (flag on),
-// adds a consumer that registers the types in a runtime.Scheme and exercises an
-// accessor through the runtime.Object interface, and compiles the whole module.
-// requiredObjectFields is also on, so this exercises DeepCopy for a required
-// object-typed field (a non-pointer local struct) alongside runtime.Object.
+// TestGeneratedRuntimeObjectsCompile materializes the generated module with
+// runtimeObjects on, adds a consumer that registers the types in a
+// runtime.Scheme and exercises an accessor through the runtime.Object
+// interface, and compiles the whole module. It's a table over
+// requiredObjectFields, not just the flag-on case: runtimeObjects on with
+// requiredObjectFields off (the default for every existing caller of
+// WithGoRuntimeObjects) needs its own compile/behavior gate too.
 func TestGeneratedRuntimeObjectsCompile(t *testing.T) {
-	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
-	schemaFS, err := goGenerator{runtimeObjects: true, requiredObjectFields: true}.GenerateFromCRD(t.Context(), inputFS, nil)
-	if err != nil {
-		t.Fatal(err)
+	cases := map[string]struct {
+		args   bool
+		want   string // extra behavioral check appended inside the consumer's TestGeneratedRuntimeObject
+		reason string
+	}{
+		"Enabled": {
+			args: true,
+			// Required object-typed field independence: with the feature
+			// on, Parameters is a non-pointer local struct (see
+			// goRemoveRequired), which exercises writeFieldCopy's
+			// DeepCopyInto branch rather than the top-level shallow struct
+			// copy.
+			want: `
+	withParams := &v1alpha1.XAccountScaffoldSpec{
+		Parameters: v1alpha1.XAccountScaffoldSpecParameters{Name: ptr("a")},
+	}
+	paramsCopy := withParams.DeepCopy()
+	*paramsCopy.Parameters.Name = "b"
+	if *withParams.Parameters.Name != "a" {
+		t.Fatalf("DeepCopy (non-pointer struct) not independent: original mutated to %q", *withParams.Parameters.Name)
+	}
+`,
+			reason: "a required object-typed field is a non-pointer local struct and must still DeepCopy independently",
+		},
+		"Disabled": {
+			args:   false,
+			reason: "runtimeObjects on with requiredObjectFields off (today's default for every WithGoRuntimeObjects caller) must still compile and DeepCopy correctly",
+		},
 	}
 
-	dir := t.TempDir()
-	roMaterialize(t, schemaFS, dir)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
+			schemaFS, err := goGenerator{runtimeObjects: true, requiredObjectFields: tc.args}.GenerateFromCRD(t.Context(), inputFS, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	// A behavioral test inside the generated module: it compiles the whole
-	// module (build gate) and asserts runtime.Object satisfaction, AddToScheme
-	// GVK round-tripping, SetGroupVersionKind writing the typed fields, and
-	// DeepCopy independence.
-	consumer := `package consumer
+			dir := t.TempDir()
+			roMaterialize(t, schemaFS, dir)
+
+			// A behavioral test inside the generated module: it compiles the
+			// whole module (build gate) and asserts runtime.Object
+			// satisfaction, AddToScheme GVK round-tripping,
+			// SetGroupVersionKind writing the typed fields, and DeepCopy
+			// independence.
+			consumer := `package consumer
 
 import (
 	"testing"
@@ -165,66 +200,108 @@ func TestGeneratedRuntimeObject(t *testing.T) {
 	if (*sel.MatchLabels)["k"] != "v" {
 		t.Fatalf("DeepCopy (*map) not independent: original mutated to %q", (*sel.MatchLabels)["k"])
 	}
-
-	// Required object-typed field independence (a non-pointer local struct,
-	// see goRemoveRequired; exercises writeFieldCopy's DeepCopyInto branch for
-	// it, rather than the top-level shallow struct copy).
-	withParams := &v1alpha1.XAccountScaffoldSpec{
-		Parameters: v1alpha1.XAccountScaffoldSpecParameters{Name: ptr("a")},
-	}
-	paramsCopy := withParams.DeepCopy()
-	*paramsCopy.Parameters.Name = "b"
-	if *withParams.Parameters.Name != "a" {
-		t.Fatalf("DeepCopy (non-pointer struct) not independent: original mutated to %q", *withParams.Parameters.Name)
-	}
-}
+` + tc.want + `}
 `
-	consumerDir := filepath.Join(dir, "models", "consumer")
-	if err := os.MkdirAll(consumerDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(consumerDir, "consumer_test.go"), []byte(consumer), 0o644); err != nil {
-		t.Fatal(err)
-	}
+			consumerDir := filepath.Join(dir, "models", "consumer")
+			if err := os.MkdirAll(consumerDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(consumerDir, "consumer_test.go"), []byte(consumer), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	modelsDir := filepath.Join(dir, "models")
+			modelsDir := filepath.Join(dir, "models")
 
-	resolveGeneratedModuleDeps(t, modelsDir)
+			resolveGeneratedModuleDeps(t, modelsDir)
 
-	// `go test ./...` builds every generated package and runs the behavioral
-	// test above.
-	cmd := exec.CommandContext(t.Context(), "go", "test", "./...")
-	cmd.Dir = modelsDir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("generated runtime.Object models failed to build/test: %v\n%s", err, out)
+			// `go test ./...` builds every generated package and runs the
+			// behavioral test above.
+			cmd := exec.CommandContext(t.Context(), "go", "test", "./...")
+			cmd.Dir = modelsDir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("generated runtime.Object models failed to build/test (%s): %v\n%s", tc.reason, err, out)
+			}
+		})
 	}
 }
 
-// TestGenerateFromOpenAPIRuntimeObjectsCompile exercises the OpenAPI generation
-// path (the shared k8s and GVK packages, which include union and intstr types)
-// with the feature on, compiles the result, and registers every generated
-// built-in package in one scheme. requiredObjectFields is also on: this is the
-// real Kubernetes built-in spec, so it's the only gate that compiles a
-// required object-typed field wrapped in a single-element allOf $ref (e.g.
-// DeviceClass.spec in resource.k8s.io/v1) end to end, and a required field
-// that resolves to a shared k8s type (e.g. a LabelSelector), which must stay a
-// pointer rather than become a cross-package non-pointer value.
+// TestGenerateFromOpenAPIRuntimeObjectsCompile exercises the OpenAPI
+// generation path (the shared k8s and GVK packages, which include union and
+// intstr types) with runtimeObjects on, compiles the result, and registers
+// every generated built-in package in one scheme. It's a table over
+// requiredObjectFields: with it on, this is the real Kubernetes built-in
+// spec, so it's the gate that compiles a required object-typed field wrapped
+// in a single-element allOf $ref (e.g. DeviceClass.spec in
+// resource.k8s.io/v1) end to end, resolved through the type alias
+// collectStructTypes now follows (see TestGenerateFromOpenAPIGoRequiredObjectFieldsAlias),
+// and a required field that resolves to a shared k8s type (e.g. a
+// LabelSelector), which must stay a pointer rather than become a
+// cross-package non-pointer value. With it off (the default for every
+// existing WithGoRuntimeObjects caller), DeviceClass.spec's DeepCopy must
+// still be independent through that same alias — a pre-existing shallow-copy
+// gap this PR also fixes, unconditionally.
 func TestGenerateFromOpenAPIRuntimeObjectsCompile(t *testing.T) {
-	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataJSONFS}, "testdata")
-	schemaFS, err := goGenerator{runtimeObjects: true, requiredObjectFields: true}.GenerateFromOpenAPI(t.Context(), inputFS, nil)
-	if err != nil {
-		t.Fatal(err)
+	// TestDeviceClassSpecDeepCopyIndependence's body differs by shape (each
+	// case's want): with requiredObjectFields on, Spec is a non-pointer
+	// value (constructed directly); off, it's a pointer (constructed with &).
+	cases := map[string]struct {
+		args   bool
+		want   string
+		reason string
+	}{
+		"Enabled": {
+			args: true,
+			want: `
+	name := "gpu"
+	orig := &resourcev1.DeviceClass{
+		Spec: resourcev1.IoK8SApiResourceV1DeviceClassSpec{
+			ExtendedResourceName: &name,
+		},
+	}
+	cp := orig.DeepCopy()
+	*cp.Spec.ExtendedResourceName = "mutated"
+	if *orig.Spec.ExtendedResourceName != "gpu" {
+		t.Fatalf("DeepCopy of a required object-typed field resolved through a type alias was not independent: original mutated to %q", *orig.Spec.ExtendedResourceName)
+	}
+`,
+			reason: "DeviceClass.spec is a required object-typed field resolved through a type alias to a non-pointer struct",
+		},
+		"Disabled": {
+			args: false,
+			want: `
+	name := "gpu"
+	orig := &resourcev1.DeviceClass{
+		Spec: &resourcev1.IoK8SApiResourceV1DeviceClassSpec{
+			ExtendedResourceName: &name,
+		},
+	}
+	cp := orig.DeepCopy()
+	*cp.Spec.ExtendedResourceName = "mutated"
+	if *orig.Spec.ExtendedResourceName != "gpu" {
+		t.Fatalf("DeepCopy of an optional pointer field resolved through a type alias was not independent: original mutated to %q", *orig.Spec.ExtendedResourceName)
+	}
+`,
+			reason: "runtimeObjects on with requiredObjectFields off (today's default) must still DeepCopy an optional field resolved through the same type alias independently",
+		},
 	}
 
-	dir := t.TempDir()
-	roMaterialize(t, schemaFS, dir)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataJSONFS}, "testdata")
+			schemaFS, err := goGenerator{runtimeObjects: true, requiredObjectFields: tc.args}.GenerateFromOpenAPI(t.Context(), inputFS, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	// Registering every built-in package in a single scheme is the check that
-	// the API groups we write into groupversion_info.go are right:
-	// AddKnownTypes panics if two Go types claim the same GVK, which is what
-	// would happen if two packages sharing the core (empty) group also shared a
-	// kind name.
-	consumer := `package consumer
+			dir := t.TempDir()
+			roMaterialize(t, schemaFS, dir)
+
+			// Registering every built-in package in a single scheme is the
+			// check that the API groups we write into groupversion_info.go
+			// are right: AddKnownTypes panics if two Go types claim the same
+			// GVK, which is what would happen if two packages sharing the
+			// core (empty) group also shared a kind name.
+			consumer := `package consumer
 
 import (
 	"testing"
@@ -237,7 +314,16 @@ import (
 	metav1 "dev.crossplane.io/models/io/k8s/core/meta/v1"
 	corev1 "dev.crossplane.io/models/io/k8s/core/v1"
 	policyv1 "dev.crossplane.io/models/io/k8s/policy/v1"
+	resourcev1 "dev.crossplane.io/models/io/k8s/api/resource/v1"
 )
+
+// TestDeviceClassSpecDeepCopyIndependence exercises the case that surfaced
+// collectStructTypes' alias gap: DeviceClass.spec resolves to
+// IoK8SApiResourceV1DeviceClassSpec — a true Go alias of the real
+// DeviceClassSpec struct, not the struct itself. Without resolving that
+// alias, DeepCopyInto would fall back to the top-level shallow struct copy
+// and this test would fail.
+func TestDeviceClassSpecDeepCopyIndependence(t *testing.T) {` + tc.want + `}
 
 func TestBuiltInGroupVersions(t *testing.T) {
 	s := runtime.NewScheme()
@@ -277,22 +363,24 @@ func TestBuiltInGroupVersions(t *testing.T) {
 	}
 }
 `
-	consumerDir := filepath.Join(dir, "models", "consumer")
-	if err := os.MkdirAll(consumerDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(consumerDir, "consumer_test.go"), []byte(consumer), 0o644); err != nil {
-		t.Fatal(err)
-	}
+			consumerDir := filepath.Join(dir, "models", "consumer")
+			if err := os.MkdirAll(consumerDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(consumerDir, "consumer_test.go"), []byte(consumer), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	modelsDir := filepath.Join(dir, "models")
+			modelsDir := filepath.Join(dir, "models")
 
-	resolveGeneratedModuleDeps(t, modelsDir)
+			resolveGeneratedModuleDeps(t, modelsDir)
 
-	cmd := exec.CommandContext(t.Context(), "go", "test", "./...")
-	cmd.Dir = modelsDir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("generated OpenAPI runtime.Object models failed to build/test: %v\n%s", err, out)
+			cmd := exec.CommandContext(t.Context(), "go", "test", "./...")
+			cmd.Dir = modelsDir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("generated OpenAPI runtime.Object models failed to build/test (%s): %v\n%s", tc.reason, err, out)
+			}
+		})
 	}
 }
 
@@ -320,52 +408,114 @@ func TestGeneratedModelsCompileWithoutRuntimeObjects(t *testing.T) {
 }
 
 // TestGeneratedModelsCompileWithAccessorsAndRuntimeObjects builds the output
-// with all three generator features on. They emit methods onto the same
-// structs, so a name they both claim — GetObjectKind against a field named
-// objectKind, say — would be a duplicate method that only a real build
-// catches. Neither feature's own gate covers the combination.
+// with accessors and runtimeObjects on, as a table over requiredObjectFields.
+// The two features emit methods onto the same structs, so a name they both
+// claim — GetObjectKind against a field named objectKind, say — would be a
+// duplicate method that only a real build catches. Neither feature's own
+// gate covers the combination, and requiredObjectFields off (today's
+// default) needs its own build gate for the combination too.
 func TestGeneratedModelsCompileWithAccessorsAndRuntimeObjects(t *testing.T) {
-	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
-	schemaFS, err := goGenerator{accessors: true, runtimeObjects: true, requiredObjectFields: true}.GenerateFromCRD(t.Context(), inputFS, nil)
-	if err != nil {
-		t.Fatal(err)
+	cases := map[string]struct {
+		args   bool
+		reason string
+	}{
+		"Enabled":  {args: true, reason: "all three features on must not produce duplicate methods"},
+		"Disabled": {args: false, reason: "accessors+runtimeObjects on with requiredObjectFields off (today's default) must also build"},
 	}
 
-	dir := t.TempDir()
-	roMaterialize(t, schemaFS, dir)
-	modelsDir := filepath.Join(dir, "models")
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
+			schemaFS, err := goGenerator{accessors: true, runtimeObjects: true, requiredObjectFields: tc.args}.GenerateFromCRD(t.Context(), inputFS, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	resolveGeneratedModuleDeps(t, modelsDir)
+			dir := t.TempDir()
+			roMaterialize(t, schemaFS, dir)
+			modelsDir := filepath.Join(dir, "models")
 
-	cmd := exec.CommandContext(t.Context(), "go", "build", "./...")
-	cmd.Dir = modelsDir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("generated models failed to compile with both features on: %v\n%s", err, out)
+			resolveGeneratedModuleDeps(t, modelsDir)
+
+			cmd := exec.CommandContext(t.Context(), "go", "build", "./...")
+			cmd.Dir = modelsDir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("generated models failed to compile (%s): %v\n%s", tc.reason, err, out)
+			}
+		})
 	}
 }
 
 // TestGenerateFromOpenAPIWithAccessorsAndRuntimeObjects is the same check for
 // the OpenAPI path, which generates the far larger built-in Kubernetes
-// packages. With requiredObjectFields also on, this is the gate that would
-// catch a required object-typed field resolving to a struct in another
-// generated package (accessors and DeepCopy only special-case a non-pointer
-// field that's a locally declared struct — see isK8sSharedTypeRef in go.go).
+// packages, as a table over requiredObjectFields. The chained getter through
+// DeviceClass.Spec — resolved through a type alias either way (see
+// TestDeviceClassSpecDeepCopyIndependence) — proves GetSpec returns a
+// pointer usable exactly like every other field's getter, whether Spec
+// itself is a pointer (requiredObjectFields off) or a non-pointer struct
+// value (on); accessors and DeepCopy only special-case a non-pointer field
+// that's a locally declared struct — see isK8sSharedTypeRef in go.go — so
+// requiredObjectFields on is also the gate for a required field resolving to
+// a struct in another generated package.
 func TestGenerateFromOpenAPIWithAccessorsAndRuntimeObjects(t *testing.T) {
-	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataJSONFS}, "testdata")
-	schemaFS, err := goGenerator{accessors: true, runtimeObjects: true, requiredObjectFields: true}.GenerateFromOpenAPI(t.Context(), inputFS, nil)
-	if err != nil {
-		t.Fatal(err)
+	cases := map[string]struct {
+		args   bool
+		reason string
+	}{
+		"Enabled":  {args: true, reason: "GetSpec must return a pointer even when Spec itself is a non-pointer struct value"},
+		"Disabled": {args: false, reason: "accessors+runtimeObjects on with requiredObjectFields off (today's default) must also chain through GetSpec"},
 	}
 
-	dir := t.TempDir()
-	roMaterialize(t, schemaFS, dir)
-	modelsDir := filepath.Join(dir, "models")
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataJSONFS}, "testdata")
+			schemaFS, err := goGenerator{accessors: true, runtimeObjects: true, requiredObjectFields: tc.args}.GenerateFromOpenAPI(t.Context(), inputFS, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	resolveGeneratedModuleDeps(t, modelsDir)
+			dir := t.TempDir()
+			roMaterialize(t, schemaFS, dir)
+			modelsDir := filepath.Join(dir, "models")
 
-	cmd := exec.CommandContext(t.Context(), "go", "build", "./...")
-	cmd.Dir = modelsDir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("generated OpenAPI models failed to compile with both features on: %v\n%s", err, out)
+			consumer := `package consumer
+
+import (
+	resourcev1 "dev.crossplane.io/models/io/k8s/api/resource/v1"
+)
+
+func ChainOnEmptyDeviceClass() *string {
+	return (&resourcev1.DeviceClass{}).GetSpec().GetExtendedResourceName()
+}
+`
+			consumerDir := filepath.Join(dir, "models", "consumer")
+			if err := os.MkdirAll(consumerDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(consumerDir, "consumer.go"), []byte(consumer), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			consumerTest := `package consumer
+
+import "testing"
+
+func TestChainOnEmptyDeviceClassDoesNotPanic(t *testing.T) {
+	if got := ChainOnEmptyDeviceClass(); got != nil {
+		t.Errorf("expected nil from a chain over an empty resource, got %v", *got)
+	}
+}
+`
+			if err := os.WriteFile(filepath.Join(consumerDir, "consumer_test.go"), []byte(consumerTest), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			resolveGeneratedModuleDeps(t, modelsDir)
+
+			cmd := exec.CommandContext(t.Context(), "go", "test", "./...")
+			cmd.Dir = modelsDir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("generated OpenAPI models failed to compile/test (%s): %v\n%s", tc.reason, err, out)
+			}
+		})
 	}
 }

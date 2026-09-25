@@ -125,9 +125,16 @@ func addRuntimeObjects(code string) (string, bool, error) {
 	return string(formatted), hasRoots, nil
 }
 
-// collectStructTypes returns the set of struct type names declared in the file.
+// collectStructTypes returns the set of names that are, or alias, a struct
+// type declared in the file. oapi-codegen emits `type ComponentName = GoName`
+// for a schema whose x-go-type-name overrides its default derived name (see
+// goRenameSchemaType in go.go) — e.g. a $ref field is typed by the component
+// name, which is a true Go alias (fully interchangeable, same method set) for
+// the actual struct. Without following that alias, a field using the
+// component name wouldn't be recognized as the local struct it actually is.
 func collectStructTypes(f *ast.File) map[string]bool {
 	out := map[string]bool{}
+	aliasOf := map[string]string{}
 	for _, decl := range f.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.TYPE {
@@ -135,7 +142,13 @@ func collectStructTypes(f *ast.File) map[string]bool {
 		}
 		for _, spec := range gen.Specs {
 			ts, ok := spec.(*ast.TypeSpec)
-			if !ok || ts.Assign.IsValid() {
+			if !ok {
+				continue
+			}
+			if ts.Assign.IsValid() {
+				if id, ok := ts.Type.(*ast.Ident); ok {
+					aliasOf[ts.Name.Name] = id.Name
+				}
 				continue
 			}
 			if _, ok := ts.Type.(*ast.StructType); ok {
@@ -143,7 +156,33 @@ func collectStructTypes(f *ast.File) map[string]bool {
 			}
 		}
 	}
+	markStructAliases(out, aliasOf)
 	return out
+}
+
+// markStructAliases adds name to out for every name in aliasOf whose alias
+// chain (following `type A = B` links) terminates at a name already in out.
+func markStructAliases(out map[string]bool, aliasOf map[string]string) {
+	for name := range aliasOf {
+		if !resolvesToStruct(name, aliasOf, out, map[string]bool{}) {
+			continue
+		}
+		out[name] = true
+	}
+}
+
+// resolvesToStruct follows cur's alias chain in aliasOf and reports whether
+// it terminates at a name already in out. seen guards against a cycle.
+func resolvesToStruct(cur string, aliasOf map[string]string, out, seen map[string]bool) bool {
+	if seen[cur] {
+		return false
+	}
+	seen[cur] = true
+	target, isAlias := aliasOf[cur]
+	if !isAlias {
+		return out[cur]
+	}
+	return resolvesToStruct(target, aliasOf, out, seen)
 }
 
 // collectCollectionAliases returns local named types whose underlying type is a

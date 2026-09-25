@@ -196,14 +196,16 @@ type Foo struct {
 	}
 }
 
-// TestWriteFieldCopy covers writeFieldCopy's non-pointer-field cases: a
-// required object-typed field (see goRemoveRequired) needs a real
-// DeepCopyInto call rather than the top-level shallow `*out = *in`, which
-// would alias nested pointers; oapi-codegen's unexported
-// `union json.RawMessage` field needs its backing bytes copied for the same
-// reason (its MarshalJSON exposes that slice directly); and a plain scalar
-// field needs no special-casing, since a value type has no separate backing
-// storage to alias.
+// TestWriteFieldCopy covers writeFieldCopy's field cases: a required
+// object-typed field (see goRemoveRequired) needs a real DeepCopyInto call
+// rather than the top-level shallow `*out = *in`, which would alias nested
+// pointers; that struct may be typed by a component-name alias rather than
+// its own name (oapi-codegen's x-go-type-name pattern), for both a
+// non-pointer required field and an ordinary optional pointer field;
+// oapi-codegen's unexported `union json.RawMessage` field needs its backing
+// bytes copied for the same reason (its MarshalJSON exposes that slice
+// directly); and a plain scalar field needs no special-casing, since a value
+// type has no separate backing storage to alias.
 func TestWriteFieldCopy(t *testing.T) {
 	cases := map[string]struct {
 		args         string
@@ -224,6 +226,38 @@ type Foo struct {
 `,
 			wantContains: []string{"in.Bar.DeepCopyInto(&out.Bar)"},
 			reason:       "a required object-typed field gets a real DeepCopyInto call",
+		},
+		"ValueStructFieldViaAlias": {
+			args: `package v1alpha1
+
+type RealBar struct {
+	Count *int64 ` + "`json:\"count,omitempty\"`" + `
+}
+
+type Bar = RealBar
+
+type Foo struct {
+	Bar Bar ` + "`json:\"bar\"`" + `
+}
+`,
+			wantContains: []string{"in.Bar.DeepCopyInto(&out.Bar)"},
+			reason:       "oapi-codegen types a $ref field by its component-name alias (e.g. IoK8SApiResourceV1DeviceClassSpec = DeviceClassSpec), so a field typed by that alias must still be recognized as the local struct it names",
+		},
+		"PointerToAliasStructField": {
+			args: `package v1alpha1
+
+type RealBar struct {
+	Count *int64 ` + "`json:\"count,omitempty\"`" + `
+}
+
+type Bar = RealBar
+
+type Foo struct {
+	Bar *Bar ` + "`json:\"bar,omitempty\"`" + `
+}
+`,
+			wantContains: []string{"(*in).DeepCopyInto(*out)"},
+			reason:       "this alias shape isn't unique to required object-typed fields: an ordinary optional pointer field typed by a component-name alias must call DeepCopyInto too, not fall back to the shallow **out = **in that classifyElem uses for an unrecognized identifier",
 		},
 		"RawMessageField": {
 			args: `package v1alpha1

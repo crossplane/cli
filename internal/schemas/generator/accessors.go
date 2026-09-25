@@ -221,8 +221,14 @@ func writeStructAccessors(b *strings.Builder, fset *token.FileSet, typeName stri
 			// a node we just parsed; skip defensively rather than panic.
 			continue
 		}
-		fieldType := typ.String()
 
+		shape := fieldAccessorShape{
+			fieldType:     typ.String(),
+			isValueStruct: isValueStructField(field.Type, structs),
+			isNilable:     isNilable(field.Type),
+			skip:          skip,
+			siblingFields: fieldNames,
+		}
 		for _, name := range field.Names {
 			// Skip unexported fields: an accessor for them would be useless to
 			// external consumers and could produce oddly-cased method names.
@@ -230,27 +236,40 @@ func writeStructAccessors(b *strings.Builder, fset *token.FileSet, typeName stri
 			if !name.IsExported() {
 				continue
 			}
+			writeFieldAccessors(b, typeName, name.Name, shape)
+		}
+	}
+}
 
-			fieldName := name.Name
-			if isValueStructField(field.Type, structs) {
-				// A required object-typed field is a non-pointer value (see
-				// goRemoveRequired). Still return/accept a pointer here, so
-				// callers can chain getters and round-trip SetX(GetX()) like
-				// every other field.
-				if !skip["Get"+fieldName] && !fieldNames["Get"+fieldName] {
-					writeValueStructGetter(b, typeName, fieldName, fieldType)
-				}
-				if !skip["Set"+fieldName] && !fieldNames["Set"+fieldName] {
-					writeValueStructSetter(b, typeName, fieldName, fieldType)
-				}
-				continue
-			}
-			if !skip["Get"+fieldName] && !fieldNames["Get"+fieldName] {
-				writeGetter(b, typeName, fieldName, fieldType, isNilable(field.Type))
-			}
-			if !skip["Set"+fieldName] && !fieldNames["Set"+fieldName] {
-				writeSetter(b, typeName, fieldName, fieldType)
-			}
+// fieldAccessorShape carries the per-field-declaration context
+// writeFieldAccessors needs, so its signature stays small as more shapes
+// (see isValueStructField) are added.
+type fieldAccessorShape struct {
+	fieldType     string
+	isValueStruct bool
+	isNilable     bool
+	skip          map[string]bool
+	siblingFields map[string]bool
+}
+
+// writeFieldAccessors appends the getter/setter pair for one field, in
+// either the value-struct shape (see isValueStructField) or the default
+// pointer shape. An accessor is omitted if its name is already claimed in
+// shape.skip (an oapi-codegen-generated method) or shape.siblingFields (a
+// same-named sibling field; see writeStructAccessors).
+func writeFieldAccessors(b *strings.Builder, typeName, fieldName string, shape fieldAccessorShape) {
+	if !shape.skip["Get"+fieldName] && !shape.siblingFields["Get"+fieldName] {
+		if shape.isValueStruct {
+			writeValueStructGetter(b, typeName, fieldName, shape.fieldType)
+		} else {
+			writeGetter(b, typeName, fieldName, shape.fieldType, shape.isNilable)
+		}
+	}
+	if !shape.skip["Set"+fieldName] && !shape.siblingFields["Set"+fieldName] {
+		if shape.isValueStruct {
+			writeValueStructSetter(b, typeName, fieldName, shape.fieldType)
+		} else {
+			writeSetter(b, typeName, fieldName, shape.fieldType)
 		}
 	}
 }

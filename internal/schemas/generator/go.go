@@ -1074,7 +1074,16 @@ func filterRequiredObjectFields(required []string, props map[string]spec.Schema,
 // has no inline properties of its own (e.g. Kubernetes' OpenAPI shapes a
 // required nested object as `{allOf: [{$ref: "#/components/schemas/Foo"}]}`
 // to attach a description/default alongside the reference), so it's resolved
-// against schemas first.
+// against schemas first — but only when prop has no properties of its own.
+// Verified against the real generator output: a $ref or allOf alongside
+// sibling inline properties, or an allOf with more than one element, merges
+// into an anonymous inline struct literal in oapi-codegen v2.8, not a
+// reference to a named local type. That anonymous struct can't be given a
+// DeepCopyInto method, and isn't an *ast.Ident this generator's
+// accessors/DeepCopy code can recognize as a locally declared struct, so
+// treating it as struct-shaped would silently reintroduce the aliasing bug
+// this generator's DeepCopy fix exists to avoid. Only a lone $ref (direct, or
+// the sole allOf member) with no sibling properties resolves safely.
 //
 // A ref to one of the k8s API machinery types goReferenceK8sType moves into a
 // separately generated shared package is excluded even though it resolves to
@@ -1083,6 +1092,12 @@ func filterRequiredObjectFields(required []string, props map[string]spec.Schema,
 // is a locally declared struct, so such a field must stay a pointer.
 func isStructShapedProperty(prop spec.Schema, schemas map[string]*spec.Schema) bool {
 	if ref := schemaRef(prop); ref.String() != "" && isK8sSharedTypeRef(ref.String()) {
+		return false
+	}
+	if len(prop.Properties) > 0 {
+		return prop.Ref.String() == "" && len(prop.AllOf) == 0
+	}
+	if len(prop.AllOf) > 1 {
 		return false
 	}
 	return len(resolveLocalSchemaRef(prop, schemas).Properties) > 0

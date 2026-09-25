@@ -29,6 +29,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/afero"
 	"golang.org/x/mod/modfile"
+	"k8s.io/kube-openapi/pkg/spec3"
 	"k8s.io/kube-openapi/pkg/validation/spec"
 )
 
@@ -187,10 +188,15 @@ func TestGenerateFromCRDGoRequiredObjectFields(t *testing.T) {
 // relies on to decide whether a required property may keep its
 // required-ness: named properties (with or without also allowing additional
 // properties, since oapi-codegen generates a struct either way), a map-only
-// object, a $ref/single-element-allOf wrapper that must be resolved against
-// schemas before its shape can be judged (the form Kubernetes' own OpenAPI
-// uses for a required nested object, e.g. DeviceClass.spec), and a ref to a
-// k8s API machinery type that generates in a separate package.
+// object, a $ref/single-element-allOf wrapper with no sibling properties that
+// must be resolved against schemas before its shape can be judged (the form
+// Kubernetes' own OpenAPI uses for a required nested object, e.g.
+// DeviceClass.spec), a ref to a k8s API machinery type that generates in a
+// separate package, and every other $ref/allOf shape — a multi-element
+// allOf, or any $ref/allOf alongside sibling inline properties — which is
+// excluded because oapi-codegen v2.8 merges those into an anonymous struct
+// this generator's accessors/DeepCopy code can't recognize (verified against
+// the real generator output).
 func TestIsStructShapedProperty(t *testing.T) {
 	schemas := map[string]*spec.Schema{
 		"pkg.Struct": {SchemaProps: spec.SchemaProps{
@@ -264,6 +270,45 @@ func TestIsStructShapedProperty(t *testing.T) {
 			}},
 			want:   false,
 			reason: "a ref to a k8s API machinery type becomes a cross-package value; accessors and DeepCopy only special-case a locally declared struct, so it must stay a pointer",
+		},
+		"MultiElementAllOf": {
+			args: spec.Schema{SchemaProps: spec.SchemaProps{
+				AllOf: []spec.Schema{
+					{SchemaProps: spec.SchemaProps{Ref: spec.MustCreateRef("#/components/schemas/pkg.Struct")}},
+					{SchemaProps: spec.SchemaProps{Required: []string{"name"}}},
+				},
+			}},
+			want:   false,
+			reason: "oapi-codegen merges a multi-element allOf into an anonymous inline struct, not a reference to a named local type; this generator's accessors/DeepCopy code can't recognize that shape, so it must stay excluded (and thus a pointer) even though a member resolves to a struct",
+		},
+		"MultiElementAllOfWithInlineProperties": {
+			args: spec.Schema{SchemaProps: spec.SchemaProps{
+				Properties: map[string]spec.Schema{"name": {}},
+				AllOf: []spec.Schema{
+					{SchemaProps: spec.SchemaProps{Required: []string{"name"}}},
+					{SchemaProps: spec.SchemaProps{Required: []string{"other"}}},
+				},
+			}},
+			want:   false,
+			reason: "verified against the real generator output: inline properties alongside any allOf, even validation-only members, merge into an anonymous inline struct, not a named local type",
+		},
+		"SingleAllOfRefWithInlineProperties": {
+			args: spec.Schema{SchemaProps: spec.SchemaProps{
+				Properties: map[string]spec.Schema{"extra": {}},
+				AllOf: []spec.Schema{
+					{SchemaProps: spec.SchemaProps{Ref: spec.MustCreateRef("#/components/schemas/pkg.Struct")}},
+				},
+			}},
+			want:   false,
+			reason: "verified against the real generator output: a single allOf $ref member alongside sibling inline properties also merges into an anonymous inline struct, unlike the same $ref with no sibling properties",
+		},
+		"DirectRefWithInlineProperties": {
+			args: spec.Schema{SchemaProps: spec.SchemaProps{
+				Ref:        spec.MustCreateRef("#/components/schemas/pkg.Struct"),
+				Properties: map[string]spec.Schema{"extra": {}},
+			}},
+			want:   false,
+			reason: "a direct $ref alongside sibling inline properties is excluded too, conservatively, since it hasn't been verified to resolve safely",
 		},
 	}
 
@@ -558,6 +603,181 @@ func TestGenerateFromOpenAPIGoRequiredObjectFields(t *testing.T) {
 			fields := goStructFields(t, f, "DeviceClass")
 			if got := fields["Spec"]; got != tc.want {
 				t.Errorf("DeviceClass.Spec = %+v, want %+v (%s)", got, tc.want, tc.reason)
+			}
+		})
+	}
+}
+
+// TestGoRemoveRequiredAllOfShapes is the generator-level gate for
+// isStructShapedProperty's $ref/allOf/additionalProperties handling: it runs
+// a required property named "bar" through the real GVK-group generation
+// pipeline (generateGVKGroupCode's mutator list) and asserts on the actual
+// generated field, rather than only on the isStructShapedProperty predicate
+// in isolation. oapi-codegen v2.8's allOf-merge behavior — which several of
+// these cases depend on — was verified against this same real output before
+// writing the assertions below; see isStructShapedProperty's doc comment.
+func TestGoRemoveRequiredAllOfShapes(t *testing.T) {
+	cases := map[string]struct {
+		args   spec.Schema // the "bar" property's schema
+		want   bool        // whether Foo.Bar should generate non-pointer (struct-shaped)
+		reason string
+	}{
+		"NamedPropertiesOnly": {
+			args: spec.Schema{SchemaProps: spec.SchemaProps{
+				Properties: map[string]spec.Schema{"name": {SchemaProps: spec.SchemaProps{Type: spec.StringOrArray{"string"}}}},
+			}},
+			want:   true,
+			reason: "plain named properties, no ref or allOf, generate as a non-pointer named local struct",
+		},
+		"NamedPropertiesAndAdditionalProperties": {
+			args: spec.Schema{SchemaProps: spec.SchemaProps{
+				Properties:           map[string]spec.Schema{"name": {SchemaProps: spec.SchemaProps{Type: spec.StringOrArray{"string"}}}},
+				AdditionalProperties: &spec.SchemaOrBool{Allows: true},
+			}},
+			want:   true,
+			reason: "oapi-codegen still generates a non-pointer named struct (plus an AdditionalProperties map field) when named properties are present",
+		},
+		"SingleAllOfRefNoSiblingProperties": {
+			args: spec.Schema{SchemaProps: spec.SchemaProps{
+				AllOf: []spec.Schema{{SchemaProps: spec.SchemaProps{Ref: spec.MustCreateRef("#/components/schemas/pkg.Local")}}},
+			}},
+			want:   true,
+			reason: "a lone allOf $ref with no sibling properties resolves to the named referenced type",
+		},
+		"SingleAllOfRefWithSiblingProperties": {
+			args: spec.Schema{SchemaProps: spec.SchemaProps{
+				Properties: map[string]spec.Schema{"name": {SchemaProps: spec.SchemaProps{Type: spec.StringOrArray{"string"}}}},
+				AllOf:      []spec.Schema{{SchemaProps: spec.SchemaProps{Ref: spec.MustCreateRef("#/components/schemas/pkg.Local")}}},
+			}},
+			want:   false,
+			reason: "a single allOf $ref alongside sibling properties merges into an anonymous struct, so it must stay a pointer",
+		},
+		"TwoValidationOnlyAllOfMembersWithSiblingProperties": {
+			args: spec.Schema{SchemaProps: spec.SchemaProps{
+				Properties: map[string]spec.Schema{"name": {SchemaProps: spec.SchemaProps{Type: spec.StringOrArray{"string"}}}},
+				AllOf: []spec.Schema{
+					{SchemaProps: spec.SchemaProps{Required: []string{"x"}}},
+					{SchemaProps: spec.SchemaProps{Required: []string{"y"}}},
+				},
+			}},
+			want:   false,
+			reason: "validation-only allOf members alongside sibling properties also merge into an anonymous struct",
+		},
+		"MultiElementAllOfNoSiblingProperties": {
+			args: spec.Schema{SchemaProps: spec.SchemaProps{
+				AllOf: []spec.Schema{
+					{SchemaProps: spec.SchemaProps{Ref: spec.MustCreateRef("#/components/schemas/pkg.Local")}},
+					{SchemaProps: spec.SchemaProps{Required: []string{"y"}}},
+				},
+			}},
+			want:   false,
+			reason: "a multi-element allOf with no sibling properties also merges into an anonymous struct",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := &spec3.OpenAPI{
+				Version: "3.0.0",
+				Components: &spec3.Components{
+					Schemas: map[string]*spec.Schema{
+						"pkg.Local": {SchemaProps: spec.SchemaProps{
+							Type: spec.StringOrArray{"object"},
+							Properties: map[string]spec.Schema{
+								"name": {SchemaProps: spec.SchemaProps{Type: spec.StringOrArray{"string"}}},
+							},
+						}},
+						"pkg.Foo": {SchemaProps: spec.SchemaProps{
+							Type:       spec.StringOrArray{"object"},
+							Required:   []string{"bar"},
+							Properties: map[string]spec.Schema{"bar": tc.args},
+						}},
+					},
+				},
+			}
+
+			code, err := generateGo(s, "v1",
+				goRemoveValidationOnlyCombinators,
+				goRenameTypes,
+				goRenameEnums,
+				goReplaceNumberWithInt,
+				goGenerator{requiredObjectFields: true}.requiredMutator(),
+				goReferenceK8sTypes,
+				goRemoveK8s,
+				goKeepOnlyComponents,
+				goAddDefaults,
+			)
+			if err != nil {
+				t.Fatalf("generateGo: %v", err)
+			}
+
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, "", code, parser.ParseComments)
+			if err != nil {
+				t.Fatalf("failed to parse generated source: %v\n%s", err, code)
+			}
+			got := goStructFields(t, f, "Foo")["Bar"]
+
+			isNonPointerNamedStruct := !strings.HasPrefix(got.typ, "*") && !strings.Contains(got.typ, "struct") && got.tag == `json:"bar"`
+			if isNonPointerNamedStruct != tc.want {
+				t.Errorf("Foo.Bar = %+v, want non-pointer named struct = %v (%s)", got, tc.want, tc.reason)
+			}
+			if !tc.want && (!strings.HasPrefix(got.typ, "*") || got.tag != `json:"bar,omitempty"`) {
+				t.Errorf("Foo.Bar = %+v, want its default pointer/omitempty shape (%s)", got, tc.reason)
+			}
+		})
+	}
+}
+
+// TestGenerateFromOpenAPIGoRequiredObjectFieldsAlias is the generator-level
+// gate for collectStructTypes' alias resolution: DeviceClass.spec resolves
+// (via TestGenerateFromOpenAPIGoRequiredObjectFields) to
+// IoK8SApiResourceV1DeviceClassSpec, which oapi-codegen declares as a true Go
+// alias (`type IoK8SApiResourceV1DeviceClassSpec = DeviceClassSpec`), not the
+// struct itself — the real struct is separately declared as DeviceClassSpec.
+// Without resolving that alias, writeFieldCopy and addAccessors wouldn't
+// recognize the field as a locally declared struct at all.
+func TestGenerateFromOpenAPIGoRequiredObjectFieldsAlias(t *testing.T) {
+	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataJSONFS}, "testdata")
+	schemaFS, err := goGenerator{requiredObjectFields: true, runtimeObjects: true, accessors: true}.GenerateFromOpenAPI(t.Context(), inputFS, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	contents, err := afero.ReadFile(schemaFS, "models/io/k8s/api/resource/v1/resource.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(contents)
+
+	// This test's premise is that DeviceClass.spec's resolved type is a true
+	// Go alias of the real struct, not the struct itself. If that's no
+	// longer true (e.g. a future oapi-codegen version stops emitting the
+	// alias), the cases below would pass vacuously, so pin the premise first.
+	if !strings.Contains(code, "type IoK8SApiResourceV1DeviceClassSpec = DeviceClassSpec") {
+		t.Fatalf("expected DeviceClass.spec's resolved type to be a Go alias of the real struct; generated source no longer matches this test's premise:\n%s", code)
+	}
+
+	cases := map[string]struct {
+		want   []string
+		reason string
+	}{
+		"DeepCopyThroughAlias": {
+			want:   []string{"in.Spec.DeepCopyInto(&out.Spec)"},
+			reason: "DeviceClass.DeepCopyInto must call in.Spec.DeepCopyInto(&out.Spec) through the alias, not a shallow copy",
+		},
+		"AccessorThroughAlias": {
+			want:   []string{"func (o *DeviceClass) GetSpec() *IoK8SApiResourceV1DeviceClassSpec {"},
+			reason: "DeviceClass.GetSpec must return a pointer to the aliased type, matching every other field's chainable getter shape",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			for _, want := range tc.want {
+				if !strings.Contains(code, want) {
+					t.Errorf("expected generated source to contain %q (%s)", want, tc.reason)
+				}
 			}
 		})
 	}

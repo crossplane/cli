@@ -402,6 +402,27 @@ type Bar struct {
 			},
 			reason: "a non-pointer struct field still gets a pointer-shaped Get/Set pair",
 		},
+		"ValueStructFieldViaAlias": {
+			args: `package v1alpha1
+
+type Foo struct {
+	Bar Bar ` + "`json:\"bar\"`" + `
+}
+
+type RealBar struct {
+	Count *int64 ` + "`json:\"count,omitempty\"`" + `
+}
+
+type Bar = RealBar
+`,
+			want: map[string]string{
+				"Foo.GetBar":       "*Bar",
+				"Foo.SetBar":       "*Bar",
+				"RealBar.GetCount": "*int64",
+				"RealBar.SetCount": "*int64",
+			},
+			reason: "a field typed by a component-name alias (oapi-codegen's x-go-type-name pattern) is still recognized as the local struct it names",
+		},
 	}
 
 	for name, tc := range cases {

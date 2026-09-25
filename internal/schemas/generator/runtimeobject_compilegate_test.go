@@ -215,7 +215,6 @@ import (
 
 	authnv1 "dev.crossplane.io/models/io/k8s/authentication/v1"
 	autoscalingv1 "dev.crossplane.io/models/io/k8s/autoscaling/v1"
-	metav1 "dev.crossplane.io/models/io/k8s/core/meta/v1"
 	corev1 "dev.crossplane.io/models/io/k8s/core/v1"
 	policyv1 "dev.crossplane.io/models/io/k8s/policy/v1"
 )
@@ -224,7 +223,6 @@ func TestBuiltInGroupVersions(t *testing.T) {
 	s := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{
 		corev1.AddToScheme,
-		metav1.AddToScheme,
 		authnv1.AddToScheme,
 		autoscalingv1.AddToScheme,
 		policyv1.AddToScheme,
@@ -236,12 +234,13 @@ func TestBuiltInGroupVersions(t *testing.T) {
 
 	// Built-in types must be known by the GVK their own apiVersion reports, not
 	// by the synthetic group label the generator uses for the directory layout.
+	// meta/v1 no longer registers here; it resolves to the real
+	// k8s.io/apimachinery package, not a locally-generated kind.
 	cases := map[string]struct {
 		obj  runtime.Object
 		want schema.GroupVersionKind
 	}{
 		"CoreV1":      {obj: &corev1.Pod{}, want: schema.GroupVersionKind{Version: "v1", Kind: "Pod"}},
-		"MetaV1":      {obj: &metav1.Status{}, want: schema.GroupVersionKind{Version: "v1", Kind: "Status"}},
 		"Autoscaling": {obj: &autoscalingv1.Scale{}, want: schema.GroupVersionKind{Group: "autoscaling", Version: "v1", Kind: "Scale"}},
 		"Authn":       {obj: &authnv1.TokenRequest{}, want: schema.GroupVersionKind{Group: "authentication.k8s.io", Version: "v1", Kind: "TokenRequest"}},
 	}
@@ -274,6 +273,143 @@ func TestBuiltInGroupVersions(t *testing.T) {
 	cmd.Dir = modelsDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated OpenAPI runtime.Object models failed to build/test: %v\n%s", err, out)
+	}
+}
+
+// TestGeneratedModelsSatisfyClientObject proves the generated types work
+// with a real client.Client. It builds a separate temporary consumer module
+// that requires sigs.k8s.io/controller-runtime and replaces
+// dev.crossplane.io/models with the materialized models directory, so
+// controller-runtime never touches the generated models' own go.mod.
+func TestGeneratedModelsSatisfyClientObject(t *testing.T) {
+	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
+	schemaFS, err := goGenerator{runtimeObjects: true}.GenerateFromCRD(t.Context(), inputFS, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmpDir := t.TempDir()
+	roMaterialize(t, schemaFS, tmpDir)
+	generatedModelsDir := filepath.Join(tmpDir, "models")
+
+	consumerDir := t.TempDir()
+
+	goMod := `module client-object-consumer
+
+go 1.24.0
+
+require (
+	dev.crossplane.io/models v0.0.0
+	sigs.k8s.io/controller-runtime v0.21.0
+)
+
+replace dev.crossplane.io/models => ` + generatedModelsDir + `
+`
+	if err := os.WriteFile(filepath.Join(consumerDir, "go.mod"), []byte(goMod), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	consumer := `package consumer
+
+import (
+	"context"
+	"testing"
+
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	v1alpha1 "dev.crossplane.io/models/co/acme/platform/v1alpha1"
+)
+
+// Compile-time proof: the generated types satisfy client.Object/client.ObjectList.
+var (
+	_ client.Object     = &v1alpha1.XAccountScaffold{}
+	_ client.ObjectList = &v1alpha1.XAccountScaffoldList{}
+)
+
+func TestFakeClientCreateGetList(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+
+	obj := &v1alpha1.XAccountScaffold{}
+	obj.SetGroupVersionKind(schemaGVK())
+	obj.SetName("test-resource")
+	obj.SetNamespace("default")
+	obj.SetLabels(map[string]string{"team": "platform"})
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(obj).Build()
+	ctx := context.Background()
+
+	got := &v1alpha1.XAccountScaffold{}
+	if err := c.Get(ctx, client.ObjectKey{Name: "test-resource", Namespace: "default"}, got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.GetName() != "test-resource" {
+		t.Fatalf("GetName() = %q, want %q", got.GetName(), "test-resource")
+	}
+	if got.GetLabels()["team"] != "platform" {
+		t.Fatalf("GetLabels()[\"team\"] = %q, want %q", got.GetLabels()["team"], "platform")
+	}
+
+	list := &v1alpha1.XAccountScaffoldList{}
+	if err := c.List(ctx, list, client.InNamespace("default")); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list.Items) != 1 {
+		t.Fatalf("len(list.Items) = %d, want 1", len(list.Items))
+	}
+	if list.Items[0].GetName() != "test-resource" {
+		t.Fatalf("list.Items[0].GetName() = %q, want %q", list.Items[0].GetName(), "test-resource")
+	}
+
+	// Items is typed with oapi-codegen's qualified-name alias, the shape
+	// that used to fall back to a shallow copy before collectStructTypes
+	// resolved aliases.
+	listCopy := list.DeepCopy()
+	listCopy.Items[0].SetName("mutated")
+	if list.Items[0].GetName() != "test-resource" {
+		t.Fatalf("DeepCopy is not independent: original mutated to %q", list.Items[0].GetName())
+	}
+}
+
+// TestParameterCodecEncodesListOptions proves AddToGroupVersion is
+// registered. A fake-client test alone wouldn't catch a missing
+// registration, since the fake client never encodes parameters.
+func TestParameterCodecEncodesListOptions(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	codec := runtime.NewParameterCodec(s)
+	limit := int64(5)
+	if _, err := codec.EncodeParameters(&metav1.ListOptions{Limit: limit}, v1alpha1.GroupVersion); err != nil {
+		t.Fatalf("EncodeParameters: %v", err)
+	}
+}
+
+func schemaGVK() schema.GroupVersionKind {
+	return schema.GroupVersionKind{Group: "platform.acme.co", Version: "v1alpha1", Kind: "XAccountScaffold"}
+}
+`
+	if err := os.WriteFile(filepath.Join(consumerDir, "consumer_test.go"), []byte(consumer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tidy := exec.CommandContext(t.Context(), "go", "mod", "tidy")
+	tidy.Dir = consumerDir
+	if out, err := tidy.CombinedOutput(); err != nil {
+		t.Fatalf("go mod tidy failed: %v\n%s", err, out)
+	}
+
+	test := exec.CommandContext(t.Context(), "go", "test", "./...")
+	test.Dir = consumerDir
+	if out, err := test.CombinedOutput(); err != nil {
+		t.Fatalf("consumer module failed to build/test against client.Object: %v\n%s", err, out)
 	}
 }
 

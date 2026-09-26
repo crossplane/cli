@@ -1880,8 +1880,8 @@ cachePackages = [
     hash = 'sha256-XZm4EastgX67Dgm5BpOEW/PY4aLcHM/O8+Xbz26PuTY='
 
   [mod.'github.com/containerd/containerd']
-    version = 'v1.7.35'
-    hash = 'sha256-cswP0DMIWj4YVHsOKoBSgZuD255ce7iQ6KmkGHL8UhE='
+    version = 'v1.7.36'
+    hash = 'sha256-P1zQQa67wbg4kpxg+9/lMyXSfJ5VZvNTBq4kgMLXojw='
 
   [mod.'github.com/containerd/errdefs']
     version = 'v1.0.0'

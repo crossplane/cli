@@ -36,8 +36,9 @@ type Interface interface {
 
 // options holds configurable behavior shared across generators.
 type options struct {
-	goModelAccessors bool
-	goRuntimeObjects bool
+	goModelAccessors       bool
+	goRuntimeObjects       bool
+	goRequiredObjectFields bool
 }
 
 // Option configures the generators returned by AllLanguages.
@@ -58,6 +59,16 @@ func WithGoRuntimeObjects(enabled bool) Option {
 	return func(o *options) { o.goRuntimeObjects = enabled }
 }
 
+// WithGoRequiredObjectFields enables generating a required object-typed
+// property (e.g. a managed resource's spec.forProvider) as a non-pointer
+// value instead of this generator's default all-pointer/all-optional
+// convention. Disabled by default, since it's a breaking change for any
+// consumer constructing such a field as a pointer or nil-checking it; gated
+// behind the features.generateGoRequiredObjectFields config flag.
+func WithGoRequiredObjectFields(enabled bool) Option {
+	return func(o *options) { o.goRequiredObjectFields = enabled }
+}
+
 // AllLanguages returns generators for all supported languages. The set of
 // supported language identifiers is defined by
 // devv1alpha1.SupportedSchemaLanguages.
@@ -67,7 +78,11 @@ func AllLanguages(opts ...Option) []Interface {
 		opt(o)
 	}
 	return []Interface{
-		&goGenerator{accessors: o.goModelAccessors, runtimeObjects: o.goRuntimeObjects},
+		&goGenerator{
+			accessors:            o.goModelAccessors,
+			runtimeObjects:       o.goRuntimeObjects,
+			requiredObjectFields: o.goRequiredObjectFields,
+		},
 		&jsonGenerator{},
 		&kclGenerator{},
 		&pythonGenerator{},

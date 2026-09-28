@@ -109,6 +109,7 @@ func (c *generateCmd) AfterApply(cfg *config.Config) error {
 			generator.AllLanguages(
 				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
 				generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+				generator.WithGoRequiredObjectFields(cfg.Features.GenerateGoRequiredObjectFields),
 			),
 			proj.Spec.Schemas.GetLanguages(),
 		)),

@@ -17,9 +17,36 @@ limitations under the License.
 // Package dependency contains commands for managing project dependencies.
 package dependency
 
+import (
+	"path/filepath"
+
+	"github.com/spf13/afero"
+
+	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/project/projectfile"
+)
+
 // Cmd contains commands for dependency management.
 type Cmd struct {
-	Add         addCmd         `cmd:"" help:"Add a dependency to the current project."             novale:"Google.WordList[\"k8s\"],Google.Units,gitlab.Units"`
-	UpdateCache updateCacheCmd `cmd:"" help:"Update the dependency cache for the current project."`
+	Add         addCmd         `cmd:"" help:"Add a dependency to the current project."                        novale:"Google.WordList[\"k8s\"],Google.Units,gitlab.Units"`
+	UpdateCache updateCacheCmd `cmd:"" help:"Update the dependency cache for the current project or package."`
 	CleanCache  cleanCacheCmd  `cmd:"" help:"Clean the dependency cache."`
+}
+
+// loadProject finds and loads the project or package metadata file at path,
+// probing the working directory when path is empty.
+// projFS is rooted at the file's directory and projFile is the file's name within it.
+func loadProject(path, schemasDir string) (proj *v1alpha1.Project, projFS afero.Fs, projFile string, err error) {
+	abs, err := projectfile.Resolve(path)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	projFS = afero.NewBasePathFs(afero.NewOsFs(), filepath.Dir(abs))
+	projFile = filepath.Base(abs)
+
+	proj, err = projectfile.Load(projFS, projFile, schemasDir)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return proj, projFS, projFile, nil
 }

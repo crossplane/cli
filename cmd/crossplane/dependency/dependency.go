@@ -36,7 +36,7 @@ type Cmd struct {
 // loadProject finds and loads the project or package metadata file at path,
 // probing the working directory when path is empty.
 // projFS is rooted at the file's directory and projFile is the file's name within it.
-func loadProject(path, schemasDir string) (proj *v1alpha1.Project, projFS afero.Fs, projFile string, err error) {
+func loadProject(path string, o projectfile.Overrides) (proj *v1alpha1.Project, projFS afero.Fs, projFile string, err error) {
 	abs, err := projectfile.Resolve(path)
 	if err != nil {
 		return nil, nil, "", err
@@ -44,7 +44,7 @@ func loadProject(path, schemasDir string) (proj *v1alpha1.Project, projFS afero.
 	projFS = afero.NewBasePathFs(afero.NewOsFs(), filepath.Dir(abs))
 	projFile = filepath.Base(abs)
 
-	proj, err = projectfile.Load(projFS, projFile, schemasDir)
+	proj, err = projectfile.Load(projFS, projFile, o)
 	if err != nil {
 		return nil, nil, "", err
 	}

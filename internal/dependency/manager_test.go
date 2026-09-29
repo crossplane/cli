@@ -1037,7 +1037,7 @@ metadata:
 	if err := afero.WriteFile(projFS, "crossplane.yaml", []byte(meta), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	proj, err := projectfile.Load(projFS, "crossplane.yaml", "")
+	proj, err := projectfile.Load(projFS, "crossplane.yaml", projectfile.Overrides{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1055,7 +1055,7 @@ metadata:
 	}
 
 	// The dependency is persisted to spec.dependsOn and loads back.
-	got, err := projectfile.Load(projFS, "crossplane.yaml", "")
+	got, err := projectfile.Load(projFS, "crossplane.yaml", projectfile.Overrides{})
 	if err != nil {
 		t.Fatal(err)
 	}

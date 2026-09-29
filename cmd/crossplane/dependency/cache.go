@@ -28,6 +28,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -44,8 +45,10 @@ type updateCacheCmd struct {
 	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"  help:"Token for git HTTPS authentication."`
 	GitUsername string `default:"x-access-token"    env:"CROSSPLANE_GIT_USERNAME"                      help:"Username for git HTTPS authentication."`
 
-	ProjectFile string `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                           optional:""        predictor:"yaml_file" short:"f" type:"path"`
-	SchemasDir  string `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)." name:"schemas-dir"`
+	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                                      optional:""             predictor:"yaml_file" short:"f" type:"path"`
+	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."                            name:"schemas-dir"`
+	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python). Overrides the project's schemas.languages; defaults to all."                  name:"schema-languages"`
+	K8sVersion      string   `help:"Kubernetes version to generate core API schemas for (e.g. v1.33.0). Replaces the project's k8s dependency for this run; never written to the file." name:"k8s-version"`
 }
 
 func (c *updateCacheCmd) Help() string {
@@ -56,7 +59,11 @@ func (c *updateCacheCmd) Help() string {
 func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
-	proj, projFS, projFile, err := loadProject(c.ProjectFile, c.SchemasDir)
+	proj, projFS, projFile, err := loadProject(c.ProjectFile, projectfile.Overrides{
+		SchemasDir:      c.SchemasDir,
+		SchemaLanguages: c.SchemaLanguages,
+		K8sVersion:      c.K8sVersion,
+	})
 	if err != nil {
 		return err
 	}
@@ -122,7 +129,7 @@ func (c *cleanCacheCmd) Help() string {
 
 // Run executes the clean-cache command.
 func (c *cleanCacheCmd) Run(k *kong.Context, _ logging.Logger) error {
-	proj, projFS, projFile, err := loadProject(c.ProjectFile, c.SchemasDir)
+	proj, projFS, projFile, err := loadProject(c.ProjectFile, projectfile.Overrides{SchemasDir: c.SchemasDir})
 	if err != nil {
 		return err
 	}

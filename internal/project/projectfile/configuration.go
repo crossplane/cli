@@ -19,6 +19,7 @@ package projectfile
 import (
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/spf13/afero"
 	"sigs.k8s.io/yaml"
@@ -59,17 +60,27 @@ func Resolve(path string) (string, error) {
 	return "", errors.Errorf("neither %s nor %s found in the current directory", clixpkg.ProjectFile, runtimexpkg.MetaFile)
 }
 
+// Overrides are settings supplied on the command line that take precedence over the file.
+// They exist mainly because package metadata can't express them, but they apply to project files too.
+// The file on disk is never changed.
+type Overrides struct {
+	// K8sVersion replaces any k8s dependency with one for this Kubernetes version, or adds one if there is none.
+	K8sVersion string
+	// SchemasDir overrides paths.schemas. It must be a relative subdirectory of the file's directory.
+	SchemasDir string
+	// SchemaLanguages overrides schemas.languages. Each must be a supported schema language.
+	SchemaLanguages []string
+}
+
 // Load parses either a project file or a Configuration package metadata file (crossplane.yaml),
-// returning a Project with defaults applied.
+// applies the overrides, and returns a Project with defaults applied.
 // A metadata file is converted into an in-memory Project whose dependencies are the
-// metadata's package dependencies. If schemasDir is non-empty it overrides the
-// project's schemas path; it must be relative and must not escape the file's
-// directory.
-func Load(fs afero.Fs, file, schemasDir string) (*v1alpha1.Project, error) {
+// metadata package dependencies.
+func Load(fs afero.Fs, file string, o Overrides) (*v1alpha1.Project, error) {
 	// The schemas directory is removed by clean-cache, so it must be a strict
 	// subdirectory of the project directory.
-	if schemasDir != "" && (!filepath.IsLocal(schemasDir) || filepath.Clean(schemasDir) == ".") {
-		return nil, errors.Errorf("schemas directory %q must be a relative subdirectory of the project directory", schemasDir)
+	if o.SchemasDir != "" && (!filepath.IsLocal(o.SchemasDir) || filepath.Clean(o.SchemasDir) == ".") {
+		return nil, errors.Errorf("schemas directory %q must be a relative subdirectory of the project directory", o.SchemasDir)
 	}
 
 	isProject, err := IsProjectFile(fs, file)
@@ -91,11 +102,30 @@ func Load(fs afero.Fs, file, schemasDir string) (*v1alpha1.Project, error) {
 		return nil, err
 	}
 
-	if schemasDir != "" {
+	if o.SchemasDir != "" {
 		if proj.Spec.Paths == nil {
 			proj.Spec.Paths = &v1alpha1.ProjectPaths{}
 		}
-		proj.Spec.Paths.Schemas = schemasDir
+		proj.Spec.Paths.Schemas = o.SchemasDir
+	}
+	if len(o.SchemaLanguages) > 0 {
+		if proj.Spec.Schemas == nil {
+			proj.Spec.Schemas = &v1alpha1.ProjectSchemas{}
+		}
+		proj.Spec.Schemas.Languages = o.SchemaLanguages
+		if err := errors.Join(proj.Spec.Schemas.Validate()...); err != nil {
+			return nil, err
+		}
+	}
+	if o.K8sVersion != "" {
+		// Only one k8s dependency makes sense, so replace any existing one.
+		proj.Spec.Dependencies = slices.DeleteFunc(proj.Spec.Dependencies, func(d v1alpha1.Dependency) bool {
+			return d.Type == v1alpha1.DependencyTypeK8s
+		})
+		proj.Spec.Dependencies = append(proj.Spec.Dependencies, v1alpha1.Dependency{
+			Type: v1alpha1.DependencyTypeK8s,
+			K8s:  &v1alpha1.K8sDependency{Version: o.K8sVersion},
+		})
 	}
 	proj.Default()
 

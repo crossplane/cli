@@ -29,6 +29,7 @@ import (
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -41,10 +42,12 @@ var addHelp string
 
 // addCmd adds a dependency to the current project.
 type addCmd struct {
-	Package     string `arg:""                                                                                                                         help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
-	ProjectFile string `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                           optional:""                                                                                    predictor:"yaml_file" short:"f" type:"path"`
-	SchemasDir  string `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)." name:"schemas-dir"`
-	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE"                                                                                                    help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
+	CacheDir string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
+	Package  string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
+
+	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                     optional:""             predictor:"yaml_file" short:"f" type:"path"`
+	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."           name:"schemas-dir"`
+	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python). Overrides the project's schemas.languages; defaults to all." name:"schema-languages"`
 
 	// Flags for specific dependency types.
 	APIOnly bool   `help:"Mark an xpkg dependency as API-only (not a runtime dependency)." name:"api-only"`
@@ -60,7 +63,10 @@ func (c *addCmd) Help() string {
 func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
-	proj, projFS, projFile, err := loadProject(c.ProjectFile, c.SchemasDir)
+	proj, projFS, projFile, err := loadProject(c.ProjectFile, projectfile.Overrides{
+		SchemasDir:      c.SchemasDir,
+		SchemaLanguages: c.SchemaLanguages,
+	})
 	if err != nil {
 		return err
 	}

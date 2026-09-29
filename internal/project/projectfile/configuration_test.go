@@ -17,6 +17,7 @@ limitations under the License.
 package projectfile
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -70,12 +71,15 @@ func TestLoad(t *testing.T) {
 	}
 
 	tcs := map[string]struct {
-		file        string
-		content     string
-		schemasDir  string
-		wantSchemas string
-		wantDeps    []v1alpha1.Dependency
-		wantErr     bool
+		file          string
+		content       string
+		schemasDir    string
+		languages     []string
+		k8sVersion    string
+		wantSchemas   string
+		wantLanguages []string
+		wantDeps      []v1alpha1.Dependency
+		wantErr       bool
 	}{
 		"MetaDefaultSchemas": {
 			file:        "crossplane.yaml",
@@ -119,6 +123,65 @@ func TestLoad(t *testing.T) {
 			schemasDir: "./",
 			wantErr:    true,
 		},
+		"MetaLanguagesFlag": {
+			file:          "crossplane.yaml",
+			content:       testMeta,
+			languages:     []string{"python"},
+			wantSchemas:   "schemas",
+			wantLanguages: []string{"python"},
+			wantDeps:      metaDeps,
+		},
+		"ProjectLanguagesFlagOverrides": {
+			file:          "crossplane-project.yaml",
+			content:       testProject + "  schemas:\n    languages: [go]\n",
+			languages:     []string{"python", "json"},
+			wantSchemas:   "my-schemas",
+			wantLanguages: []string{"python", "json"},
+		},
+		"ProjectKeepsLanguages": {
+			file:          "crossplane-project.yaml",
+			content:       testProject + "  schemas:\n    languages: [go]\n",
+			wantSchemas:   "my-schemas",
+			wantLanguages: []string{"go"},
+		},
+		"MetaK8sVersionAdds": {
+			file:        "crossplane.yaml",
+			content:     testMeta,
+			k8sVersion:  "v1.33.0",
+			wantSchemas: "schemas",
+			wantDeps: append(slices.Clone(metaDeps), v1alpha1.Dependency{
+				Type: v1alpha1.DependencyTypeK8s, K8s: &v1alpha1.K8sDependency{Version: "v1.33.0"},
+			}),
+		},
+		"ProjectK8sVersionReplaces": {
+			file: "crossplane-project.yaml",
+			content: testProject + `  dependencies:
+  - type: k8s
+    k8s:
+      version: v1.31.0
+  - type: xpkg
+    xpkg:
+      apiVersion: pkg.crossplane.io/v1
+      kind: Provider
+      package: xpkg.crossplane.io/crossplane-contrib/provider-nop
+      version: v0.4.0
+`,
+			k8sVersion:  "v1.33.0",
+			wantSchemas: "my-schemas",
+			wantDeps: []v1alpha1.Dependency{
+				{Type: v1alpha1.DependencyTypeXpkg, Xpkg: &v1alpha1.XpkgDependency{
+					APIVersion: "pkg.crossplane.io/v1", Kind: "Provider",
+					Package: "xpkg.crossplane.io/crossplane-contrib/provider-nop", Version: "v0.4.0",
+				}},
+				{Type: v1alpha1.DependencyTypeK8s, K8s: &v1alpha1.K8sDependency{Version: "v1.33.0"}},
+			},
+		},
+		"UnsupportedLanguage": {
+			file:      "crossplane.yaml",
+			content:   testMeta,
+			languages: []string{"rust"},
+			wantErr:   true,
+		},
 		"NotAConfiguration": {
 			file:    "crossplane.yaml",
 			content: "apiVersion: meta.pkg.crossplane.io/v1\nkind: Provider\n",
@@ -135,7 +198,7 @@ func TestLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			proj, err := Load(fs, tc.file, tc.schemasDir)
+			proj, err := Load(fs, tc.file, Overrides{SchemasDir: tc.schemasDir, SchemaLanguages: tc.languages, K8sVersion: tc.k8sVersion})
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -148,6 +211,9 @@ func TestLoad(t *testing.T) {
 
 			if got := proj.Spec.Paths.Schemas; got != tc.wantSchemas {
 				t.Errorf("schemas path: want %q, got %q", tc.wantSchemas, got)
+			}
+			if diff := cmp.Diff(tc.wantLanguages, proj.Spec.Schemas.GetLanguages()); diff != "" {
+				t.Errorf("schema languages (-want +got):\n%s", diff)
 			}
 			if diff := cmp.Diff(tc.wantDeps, proj.Spec.Dependencies); diff != "" {
 				t.Errorf("dependencies (-want +got):\n%s", diff)
@@ -213,7 +279,7 @@ spec:
 	if err := yaml.Unmarshal(got, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(fs, "crossplane.yaml", ""); err != nil {
+	if _, err := Load(fs, "crossplane.yaml", Overrides{}); err != nil {
 		t.Fatalf("updated file no longer loads: %v", err)
 	}
 }

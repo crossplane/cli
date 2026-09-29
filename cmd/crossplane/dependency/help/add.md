@@ -26,7 +26,8 @@ When `-f` is not set, it uses `crossplane-project.yaml` in the current directory
 otherwise `crossplane.yaml`.
 Package metadata only supports runtime xpkg dependencies, which are added to `spec.dependsOn`.
 Kubernetes, CRD, and `--api-only` dependencies require a project file.
-Use `--schemas-dir` to choose where schemas are generated (default `schemas`).
+Use `--schemas-dir` to choose where schemas are generated (default `schemas`), and
+`--schema-languages` to generate only some languages (default all).
 
 ## Examples
 

@@ -307,3 +307,49 @@ func TestGenerateFromOpenAPIGo(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateFromCRDGoRealMetaWhenRuntimeObjectsOn(t *testing.T) {
+	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
+	schemaFS, err := goGenerator{runtimeObjects: true}.GenerateFromCRD(t.Context(), inputFS, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The local shared meta/v1 package must not be generated at all.
+	if exists, _ := afero.Exists(schemaFS, "models/io/k8s/meta/v1/meta.go"); exists {
+		t.Error("local meta/v1 mirror package must not be generated when runtimeObjects is on")
+	}
+
+	// The resource's Metadata field must reference the real apimachinery type.
+	contents, err := afero.ReadFile(schemaFS, "models/co/acme/platform/v1alpha1/accountscaffold.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), "Metadata *k8smetav1.ObjectMeta") {
+		t.Errorf("expected Metadata *k8smetav1.ObjectMeta in accountscaffold.go, got:\n%s", contents)
+	}
+	if !strings.Contains(string(contents), `k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"`) {
+		t.Errorf("expected real apimachinery meta/v1 import in accountscaffold.go, got:\n%s", contents)
+	}
+
+	// The List type's Metadata field must also reference the real type.
+	listContents, err := afero.ReadFile(schemaFS, "models/co/acme/platform/v1alpha1/accountscaffold.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(listContents), "Metadata *k8smetav1.ListMeta") {
+		t.Errorf("expected Metadata *k8smetav1.ListMeta for AccountScaffoldList, got:\n%s", listContents)
+	}
+}
+
+func TestGenerateFromCRDGoLocalMetaWhenRuntimeObjectsOff(t *testing.T) {
+	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
+	schemaFS, err := goGenerator{}.GenerateFromCRD(t.Context(), inputFS, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if exists, _ := afero.Exists(schemaFS, "models/io/k8s/meta/v1/meta.go"); !exists {
+		t.Error("local meta/v1 mirror package must still be generated when runtimeObjects is off")
+	}
+}

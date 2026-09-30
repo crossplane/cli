@@ -54,8 +54,78 @@ func applyRuntimeObjects(code string, enabled bool) (string, error) {
 	if !enabled {
 		return code, nil
 	}
+	code, err := fixListItemsFields(code)
+	if err != nil {
+		return "", err
+	}
 	out, _, err := addRuntimeObjects(code)
 	return out, err
+}
+
+// fixListItemsFields rewrites a <Kind>List's Items field from *[]Kind to
+// []Kind. goRemoveRequired clears "required" from every schema before
+// codegen, so oapi-codegen makes Items a pointer like everything else, but
+// k8s.io/apimachinery/pkg/api/meta's GetItemsPtr (used by client.List, the
+// fake client, and the informer cache) requires a literal slice. Runs before
+// addRuntimeObjects parses the code, so writeDeepCopy sees the fixed type.
+func fixListItemsFields(code string) (string, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", code, parser.ParseComments)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to parse Go code for Items field fix")
+	}
+
+	type edit struct {
+		start, end int
+		newText    string
+	}
+	var edits []edit
+
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Assign.IsValid() {
+				continue
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok || st.Fields == nil {
+				continue
+			}
+			if metadataKind(st) != "ListMeta" {
+				continue
+			}
+			for _, field := range st.Fields.List {
+				if !hasFieldName(field, "Items") {
+					continue
+				}
+				star, ok := field.Type.(*ast.StarExpr)
+				if !ok {
+					continue
+				}
+				arr, ok := star.X.(*ast.ArrayType)
+				if !ok {
+					continue
+				}
+				edits = append(edits, edit{
+					start:   fset.Position(field.Type.Pos()).Offset,
+					end:     fset.Position(field.Type.End()).Offset,
+					newText: "[]" + renderType(fset, arr.Elt),
+				})
+			}
+		}
+	}
+
+	// Apply in descending offset order so earlier edits don't invalidate the
+	// byte offsets computed for later ones.
+	sort.Slice(edits, func(i, j int) bool { return edits[i].start > edits[j].start })
+	for _, e := range edits {
+		code = code[:e.start] + e.newText + code[e.end:]
+	}
+	return code, nil
 }
 
 // addRuntimeObjects generates controller-gen-style DeepCopy methods for every
@@ -77,6 +147,7 @@ func addRuntimeObjects(code string) (string, bool, error) {
 	// Deterministic order: walk declarations in source order.
 	var b strings.Builder
 	hasRoots := false
+	usesObjectMetaAccessors := false
 	for _, decl := range f.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.TYPE {
@@ -95,7 +166,11 @@ func addRuntimeObjects(code string) (string, bool, error) {
 			writeDeepCopy(&b, fset, name, st, structs, aliases)
 			if isRootStruct(st) {
 				hasRoots = true
-				writeRuntimeObject(&b, name, st)
+				kind := metadataKind(st)
+				writeRuntimeObject(&b, name, st, kind)
+				if kind == "ObjectMeta" {
+					usesObjectMetaAccessors = true
+				}
 			}
 		}
 	}
@@ -105,14 +180,23 @@ func addRuntimeObjects(code string) (string, bool, error) {
 	}
 
 	combined := code + "\n" + b.String()
-	// DeepCopy methods need no imports; only root types reference runtime and
-	// schema. Add the imports only when roots are present so DeepCopy-only files
-	// (e.g. the shared k8s packages) don't get unused imports.
+	// Add each import only if something generated needs it, so DeepCopy-only
+	// files (e.g. shared k8s packages that aren't roots) don't get unused
+	// imports.
+	var extraImports []importSpec
 	if hasRoots {
-		combined, err = ensureImports(combined, []importSpec{
-			{alias: roRuntimeAlias, path: roRuntimeImport},
-			{path: roSchemaImport},
-		})
+		extraImports = append(extraImports,
+			importSpec{alias: roRuntimeAlias, path: roRuntimeImport},
+			importSpec{path: roSchemaImport},
+		)
+	}
+	if usesObjectMetaAccessors {
+		extraImports = append(extraImports,
+			importSpec{alias: "k8stypes", path: "k8s.io/apimachinery/pkg/types"},
+		)
+	}
+	if len(extraImports) > 0 {
+		combined, err = ensureImports(combined, extraImports)
 		if err != nil {
 			return "", false, err
 		}
@@ -128,6 +212,12 @@ func addRuntimeObjects(code string) (string, bool, error) {
 // collectStructTypes returns the set of struct type names declared in the file.
 func collectStructTypes(f *ast.File) map[string]bool {
 	out := map[string]bool{}
+	// aliases maps a type-alias name to its target ("type A = B" records
+	// aliases["A"] = "B"). oapi-codegen aliases every root type to a
+	// qualified name, and fields like a <Kind>List's Items use that alias.
+	// It must resolve to a struct too, or classifyElem treats it as a
+	// scalar and DeepCopy degrades to a shallow copy that shares pointers.
+	aliases := map[string]string{}
 	for _, decl := range f.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.TYPE {
@@ -135,11 +225,28 @@ func collectStructTypes(f *ast.File) map[string]bool {
 		}
 		for _, spec := range gen.Specs {
 			ts, ok := spec.(*ast.TypeSpec)
-			if !ok || ts.Assign.IsValid() {
+			if !ok {
+				continue
+			}
+			if ts.Assign.IsValid() {
+				if id, ok := ts.Type.(*ast.Ident); ok {
+					aliases[ts.Name.Name] = id.Name
+				}
 				continue
 			}
 			if _, ok := ts.Type.(*ast.StructType); ok {
 				out[ts.Name.Name] = true
+			}
+		}
+	}
+	// Resolve alias chains to a fixed point: an alias may point at another
+	// alias before reaching the underlying struct name.
+	for changed := true; changed; {
+		changed = false
+		for name, target := range aliases {
+			if !out[name] && out[target] {
+				out[name] = true
+				changed = true
 			}
 		}
 	}
@@ -192,6 +299,46 @@ func isRootStruct(st *ast.StructType) bool {
 	return hasAPIVersion && hasKind && hasMetadata
 }
 
+// hasFieldName reports whether field declares name among its identifiers.
+func hasFieldName(field *ast.Field, name string) bool {
+	for _, n := range field.Names {
+		if n.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// metadataKind reports whether st's Metadata field is an ObjectMeta or a
+// ListMeta, matched by the field type's base name (a bare identifier or a
+// package-qualified selector). Returns "" if neither matches. isRootStruct
+// only checks field names, so a Kind and its KindList both match it; this
+// is what lets writeRuntimeObject tell them apart.
+func metadataKind(st *ast.StructType) string {
+	for _, field := range st.Fields.List {
+		if !hasFieldName(field, "Metadata") {
+			continue
+		}
+		star, ok := field.Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		var typeName string
+		switch x := star.X.(type) {
+		case *ast.Ident:
+			typeName = x.Name
+		case *ast.SelectorExpr:
+			typeName = x.Sel.Name
+		default:
+			continue
+		}
+		if typeName == "ObjectMeta" || typeName == "ListMeta" {
+			return typeName
+		}
+	}
+	return ""
+}
+
 // fieldKind classifies how a field's element type must be deep-copied.
 type fieldKind int
 
@@ -238,6 +385,12 @@ func writeDeepCopy(b *strings.Builder, fset *token.FileSet, name string, st *ast
 			continue
 		}
 		for _, n := range field.Names {
+			if n.Name == "Items" {
+				if arr, ok := field.Type.(*ast.ArrayType); ok {
+					writeItemsFieldCopy(b, fset, arr, structs)
+					continue
+				}
+			}
 			writeFieldCopy(b, fset, n.Name, field.Type, structs, aliases)
 		}
 	}
@@ -248,6 +401,23 @@ func writeDeepCopy(b *strings.Builder, fset *token.FileSet, name string, st *ast
 	b.WriteString("\tif in == nil {\n\t\treturn nil\n\t}\n")
 	fmt.Fprintf(b, "\tout := new(%s)\n", name)
 	b.WriteString("\tin.DeepCopyInto(out)\n\treturn out\n}\n")
+}
+
+// writeItemsFieldCopy deep-copies a <Kind>List's Items field. Unlike every
+// other field, Items is a plain slice (see fixListItemsFields), so it needs
+// its own copy path instead of writeFieldCopy's pointer-unwrap logic.
+func writeItemsFieldCopy(b *strings.Builder, fset *token.FileSet, arr *ast.ArrayType, structs map[string]bool) {
+	declType := renderType(fset, arr)
+	b.WriteString("\tif in.Items != nil {\n")
+	fmt.Fprintf(b, "\t\tout.Items = make(%s, len(in.Items))\n", declType)
+	if classifyElem(arr.Elt, structs) == fkStruct {
+		b.WriteString("\t\tfor i := range in.Items {\n")
+		b.WriteString("\t\t\tin.Items[i].DeepCopyInto(&out.Items[i])\n")
+		b.WriteString("\t\t}\n")
+	} else {
+		b.WriteString("\t\tcopy(out.Items, in.Items)\n")
+	}
+	b.WriteString("\t}\n")
 }
 
 // writeFieldCopy appends the deep-copy snippet for a single field. All generated
@@ -333,7 +503,7 @@ func writeMapCopy(b *strings.Builder, fset *token.FileSet, declType string, m *a
 
 // writeRuntimeObject appends runtime.Object + schema.ObjectKind methods and a
 // scheme-registering init() for a root type.
-func writeRuntimeObject(b *strings.Builder, name string, st *ast.StructType) {
+func writeRuntimeObject(b *strings.Builder, name string, st *ast.StructType, metaKind string) {
 	// DeepCopyObject.
 	fmt.Fprintf(b, "\n// DeepCopyObject returns a deep copy of the receiver as a runtime.Object.\n")
 	fmt.Fprintf(b, "func (in *%s) DeepCopyObject() %s.Object {\n", name, roRuntimeAlias)
@@ -368,6 +538,96 @@ func writeRuntimeObject(b *strings.Builder, name string, st *ast.StructType) {
 	fmt.Fprintf(b, "\tSchemeBuilder.Register(func(s *%s.Scheme) error {\n", roRuntimeAlias)
 	fmt.Fprintf(b, "\t\ts.AddKnownTypes(GroupVersion, &%s{})\n", name)
 	b.WriteString("\t\treturn nil\n\t})\n}\n")
+
+	switch metaKind {
+	case "ObjectMeta":
+		writeObjectMetaAccessors(b, name)
+	case "ListMeta":
+		writeListInterfaceAccessors(b, name)
+	}
+}
+
+// objectMetaField describes one metav1.Object getter/setter pair: the field
+// name (used as both the JSON-schema-derived method name and the delegated
+// call on the real metav1.ObjectMeta), its exact Go type per the interface,
+// and the literal expression to return from the getter when Metadata is nil.
+type objectMetaField struct {
+	name   string
+	goType string
+	zero   string
+}
+
+// objectMetaFields is every getter/setter pair sigs.k8s.io/apimachinery's
+// metav1.Object interface declares, in its exact declared types. This table
+// drives writeObjectMetaAccessors below.
+var objectMetaFields = []objectMetaField{ //nolint:gochecknoglobals // Lookup table.
+	{"Namespace", "string", `""`},
+	{"Name", "string", `""`},
+	{"GenerateName", "string", `""`},
+	{"UID", "k8stypes.UID", `""`},
+	{"ResourceVersion", "string", `""`},
+	{"Generation", "int64", "0"},
+	{"SelfLink", "string", `""`},
+	{"CreationTimestamp", "k8smetav1.Time", "k8smetav1.Time{}"},
+	{"DeletionTimestamp", "*k8smetav1.Time", "nil"},
+	{"DeletionGracePeriodSeconds", "*int64", "nil"},
+	{"Labels", "map[string]string", "nil"},
+	{"Annotations", "map[string]string", "nil"},
+	{"Finalizers", "[]string", "nil"},
+	{"OwnerReferences", "[]k8smetav1.OwnerReference", "nil"},
+	{"ManagedFields", "[]k8smetav1.ManagedFieldsEntry", "nil"},
+}
+
+// writeObjectMetaAccessors appends the metav1.Object getter/setter pairs for
+// name, delegating to its Metadata field. Getters return the zero value when
+// Metadata is nil; setters allocate it lazily.
+func writeObjectMetaAccessors(b *strings.Builder, name string) {
+	for _, f := range objectMetaFields {
+		fmt.Fprintf(b, "\nfunc (in *%s) Get%s() %s {\n", name, f.name, f.goType)
+		b.WriteString("\tif in.Metadata == nil {\n")
+		fmt.Fprintf(b, "\t\treturn %s\n", f.zero)
+		b.WriteString("\t}\n")
+		fmt.Fprintf(b, "\treturn in.Metadata.Get%s()\n}\n", f.name)
+
+		fmt.Fprintf(b, "\nfunc (in *%s) Set%s(v %s) {\n", name, f.name, f.goType)
+		b.WriteString("\tif in.Metadata == nil {\n")
+		b.WriteString("\t\tin.Metadata = &k8smetav1.ObjectMeta{}\n")
+		b.WriteString("\t}\n")
+		fmt.Fprintf(b, "\tin.Metadata.Set%s(v)\n}\n", f.name)
+	}
+}
+
+// listMetaField is objectMetaField's counterpart for metav1.ListInterface.
+type listMetaField struct {
+	name   string
+	goType string
+	zero   string
+}
+
+// listMetaFields is every getter/setter pair metav1.ListInterface declares.
+var listMetaFields = []listMetaField{ //nolint:gochecknoglobals // Lookup table.
+	{"ResourceVersion", "string", `""`},
+	{"SelfLink", "string", `""`},
+	{"Continue", "string", `""`},
+	{"RemainingItemCount", "*int64", "nil"},
+}
+
+// writeListInterfaceAccessors is writeObjectMetaAccessors' counterpart for
+// metav1.ListInterface.
+func writeListInterfaceAccessors(b *strings.Builder, name string) {
+	for _, f := range listMetaFields {
+		fmt.Fprintf(b, "\nfunc (in *%s) Get%s() %s {\n", name, f.name, f.goType)
+		b.WriteString("\tif in.Metadata == nil {\n")
+		fmt.Fprintf(b, "\t\treturn %s\n", f.zero)
+		b.WriteString("\t}\n")
+		fmt.Fprintf(b, "\treturn in.Metadata.Get%s()\n}\n", f.name)
+
+		fmt.Fprintf(b, "\nfunc (in *%s) Set%s(v %s) {\n", name, f.name, f.goType)
+		b.WriteString("\tif in.Metadata == nil {\n")
+		b.WriteString("\t\tin.Metadata = &k8smetav1.ListMeta{}\n")
+		b.WriteString("\t}\n")
+		fmt.Fprintf(b, "\tin.Metadata.Set%s(v)\n}\n", f.name)
+	}
 }
 
 // fieldElemTypeName returns the element type name of a pointer field (e.g. for

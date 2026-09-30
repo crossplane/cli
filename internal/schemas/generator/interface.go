@@ -50,10 +50,13 @@ func WithGoModelAccessors(enabled bool) Option {
 	return func(o *options) { o.goModelAccessors = enabled }
 }
 
-// WithGoRuntimeObjects enables generation of runtime.Object methods (DeepCopy,
-// GetObjectKind, DeepCopyObject) and per-package AddToScheme helpers on the
-// generated Go models. Disabled by default; gated behind the
-// features.generateGoRuntimeObjects config flag.
+// WithGoRuntimeObjects enables generation of runtime.Object methods
+// (DeepCopy, GetObjectKind, DeepCopyObject), metav1.Object methods on root
+// types, metav1.ListInterface methods on <Kind>List types, and per-package
+// AddToScheme helpers on the generated Go models. Together these satisfy
+// sigs.k8s.io/controller-runtime's client.Object and client.ObjectList.
+// Disabled by default; gated behind the features.generateGoRuntimeObjects
+// config flag.
 func WithGoRuntimeObjects(enabled bool) Option {
 	return func(o *options) { o.goRuntimeObjects = enabled }
 }

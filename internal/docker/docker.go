@@ -26,12 +26,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
 	"path"
 	"path/filepath"
 	"slices"
 	"strings"
+
+	archive "github.com/moby/go-archive"
 
 	"github.com/docker/cli/cli/config"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -219,75 +219,36 @@ func StartContainerByID(ctx context.Context, id string) error {
 // TarDirectory creates a Docker-compatible tarball containing a directory's
 // contents.
 func TarDirectory(dir string) ([]byte, error) {
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-	defer func() { _ = tw.Close() }()
-
-	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if path == dir {
-			return nil
-		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			return errors.Errorf("refusing to copy symbolic link %q", path)
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
-		}
-		header.Name = filepath.ToSlash(rel)
-		if d.IsDir() {
-			header.Name += "/"
-		}
-		if err := tw.WriteHeader(header); err != nil {
-			return err
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-
-		in, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer in.Close() //nolint:errcheck // Best-effort close while walking the directory.
-		_, err = io.Copy(tw, in)
-		return err
-	}); err != nil {
-		return nil, errors.Wrap(err, "failed to create directory tarball")
+	rd, err := archive.TarWithOptions(dir, &archive.TarOptions{})
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to archive %s", dir)
 	}
-	if err := tw.Close(); err != nil {
-		return nil, errors.Wrap(err, "failed to close directory tarball")
+	defer rd.Close() //nolint:errcheck // Best-effort close after draining the archive.
+
+	b, err := io.ReadAll(rd)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read directory tarball")
 	}
 
-	return buf.Bytes(), nil
+	return b, nil
 }
 
 // CopyDirectoryToContainer copies a directory's contents to a container path.
 func CopyDirectoryToContainer(ctx context.Context, id, source, destination string) error {
-	tarball, err := TarDirectory(source)
-	if err != nil {
-		return err
-	}
-
 	cli, err := NewClient()
 	if err != nil {
 		return err
 	}
+
+	tarball, err := archive.TarWithOptions(source, &archive.TarOptions{})
+	if err != nil {
+		return errors.Wrapf(err, "failed to archive %s", source)
+	}
+	defer tarball.Close() //nolint:errcheck // Best-effort close after streaming the archive.
+
 	if _, err := cli.CopyToContainer(ctx, id, client.CopyToContainerOptions{
 		DestinationPath: filepath.Clean(destination),
-		Content:         bytes.NewReader(tarball),
+		Content:         tarball,
 	}); err != nil {
 		return errors.Wrapf(err, "failed to copy directory to container path %s", destination)
 	}

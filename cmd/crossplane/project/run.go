@@ -25,7 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alecthomas/kong"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/afero"
 	"golang.org/x/sync/errgroup"
@@ -161,18 +160,10 @@ func (c *runCmd) AfterApply() error {
 }
 
 // Run executes the run command.
-func (c *runCmd) Run(kongCtx *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocyclo // Main command orchestration.
+func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocyclo // Main command orchestration.
 	ctx := context.Background()
 
-	internalSet := false
-	for _, flag := range kongCtx.Flags() {
-		if flag.Name == "internal" {
-			internalSet = flag.Set
-			break
-		}
-	}
-
-	if !internalSet {
+	if !c.Internal && c.proj.Spec.Runtime.Kind.Internal {
 		c.Internal = c.proj.Spec.Runtime.Kind.Internal
 	}
 

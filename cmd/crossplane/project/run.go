@@ -164,9 +164,7 @@ func (c *RunCmd) AfterApply() error {
 func (c *RunCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocyclo // Main command orchestration.
 	ctx := context.Background()
 
-	internalSet := false
-
-	if !internalSet {
+	if !c.Internal && c.proj.Spec.Runtime.Kind.Internal {
 		c.Internal = c.proj.Spec.Runtime.Kind.Internal
 	}
 

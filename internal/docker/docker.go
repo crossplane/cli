@@ -291,7 +291,7 @@ func StartWithBindMount(hostPath, containerPath string) StartContainerOption {
 	}
 }
 
-// StartWithVolume adds a Docker-managed volume at the supplied container path.
+// StartWithVolume adds a volume when starting a container
 func StartWithVolume(path string) StartContainerOption {
 	return func(cfg *startContainerConfig) {
 		if cfg.containerConfig.Volumes == nil {

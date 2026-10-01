@@ -102,8 +102,8 @@ func (c *Cmd) AfterApply() error {
 }
 
 // Run alpha render op.
-func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocognit // Orchestration is inherently complex.
-	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocognit // Orchestration is inherently complex.
+	ctx, cancel := context.WithTimeout(baseCtx, c.Timeout)
 	defer cancel()
 
 	// Load operation (extracts Operation template from CronOperation/WatchOperation)

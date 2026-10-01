@@ -216,10 +216,10 @@ func StartContainerByID(ctx context.Context, id string) error {
 	return errors.Wrap(err, "failed to start container")
 }
 
-// TarDirectory creates a Docker-compatible tarball containing a directory's
-// contents.
+// TarDirectory tars a directory.
 func TarDirectory(dir string) ([]byte, error) {
-	rd, err := archive.TarWithOptions(dir, &archive.TarOptions{})
+	base := filepath.Base(dir)
+	rd, err := archive.TarWithOptions(filepath.Dir(dir), archive.TarResourceRebaseOpts(base, base))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to archive %s", dir)
 	}
@@ -233,14 +233,17 @@ func TarDirectory(dir string) ([]byte, error) {
 	return b, nil
 }
 
-// CopyDirectoryToContainer copies a directory's contents to a container path.
+// CopyDirectoryToContainer copies a directory tree to an existing container
+// directory, preserving its nested paths.
 func CopyDirectoryToContainer(ctx context.Context, id, source, destination string) error {
 	cli, err := NewClient()
 	if err != nil {
 		return err
 	}
 
-	tarball, err := archive.TarWithOptions(source, &archive.TarOptions{})
+	tarball, err := archive.TarWithOptions(source, &archive.TarOptions{
+		IncludeSourceDir: true,
+	})
 	if err != nil {
 		return errors.Wrapf(err, "failed to archive %s", source)
 	}

@@ -631,6 +631,10 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir str
 	}
 
 	// Find the cluster's docker network, so the registry can join it.
+	if len(strings.TrimSpace(networkName)) == 0 {
+		networkName = "kind"
+	}
+
 	nid, found, err := docker.GetNetworkIDByName(ctx, networkName)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to get docker network ID")

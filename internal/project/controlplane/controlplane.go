@@ -59,6 +59,7 @@ import (
 
 const (
 	crossplaneNamespace = "crossplane-system"
+	registryDataDir     = "/registry-data"
 )
 
 // DevControlPlane is a local development control plane.
@@ -122,6 +123,11 @@ func (l *localDevControlPlane) Sideload(ctx context.Context, imgMap project.Imag
 		return err
 	}
 
+	// Paths written below, copied to the registry container once permissions
+	// have been fixed up. Copying only these paths (rather than the whole of
+	// l.registryDir) keeps sideloading fast as the local image cache grows.
+	var written []string
+
 	for repo, images := range fnImages {
 		p := filepath.Join(l.registryDir, repo.RepositoryStr())
 		if err := os.MkdirAll(p, 0o750); err != nil {
@@ -143,6 +149,8 @@ func (l *localDevControlPlane) Sideload(ctx context.Context, imgMap project.Imag
 		})); err != nil {
 			return err
 		}
+
+		written = append(written, p)
 	}
 
 	p := filepath.Join(l.registryDir, tag.RepositoryStr())
@@ -161,6 +169,8 @@ func (l *localDevControlPlane) Sideload(ctx context.Context, imgMap project.Imag
 		return err
 	}
 
+	written = append(written, p)
+
 	// Make everything world-readable for unprivileged container access.
 	if err := filepath.WalkDir(l.registryDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -174,6 +184,17 @@ func (l *localDevControlPlane) Sideload(ctx context.Context, imgMap project.Imag
 		return os.Chmod(path, 0o644) //nolint:gosec // Container needs to read the file.
 	}); err != nil {
 		return errors.Wrap(err, "failed to adjust permissions on sideloaded images")
+	}
+
+	for _, p := range written {
+		rel, err := filepath.Rel(l.registryDir, p)
+		if err != nil {
+			return errors.Wrap(err, "failed to determine registry-relative path")
+		}
+		dest := path.Join(registryDataDir, filepath.ToSlash(rel))
+		if err := docker.CopyDirectoryToContainer(ctx, l.registryContainerID, p, dest); err != nil {
+			return errors.Wrap(err, "failed to copy images to local registry")
+		}
 	}
 
 	rewrite := path.Join(l.registryHostname, tag.RepositoryStr())
@@ -577,6 +598,9 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir str
 		//nolint:gosec // We don't do anything dangerous with the CA data.
 		caData, err := os.ReadFile(filepath.Join(certDir, "ca.crt"))
 		if err == nil && bytes.Equal(caData, certSecret.Data[certs.SecretKeyCACert]) {
+			if err := docker.CopyDirectoryToContainer(ctx, existing, certDir, path.Join(registryDataDir, ".certs")); err != nil {
+				return "", errors.Wrap(err, "failed to copy certificates to existing registry container")
+			}
 			if err := docker.StartContainerByID(ctx, existing); err != nil {
 				return "", errors.Wrap(err, "failed to start existing registry container")
 			}
@@ -601,6 +625,10 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir str
 	if err := os.WriteFile(filepath.Join(certDir, "tls.key"), certSecret.Data[corev1.TLSPrivateKeyKey], 0o644); err != nil { //nolint:gosec // Container needs to read the file.
 		return "", errors.New("failed to write tls key")
 	}
+	certTarball, err := docker.TarDirectory(certDir)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to archive registry certificates")
+	}
 
 	// Find the cluster's docker network, so the registry can join it.
 	nid, found, err := docker.GetNetworkIDByName(ctx, networkName)
@@ -613,8 +641,9 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir str
 
 	// Start the registry container.
 	cid, err := docker.StartContainer(ctx, regName, regImage,
-		docker.StartWithCommand([]string{"serve", "--dir=/registry-data", "--api-push=false", "--store-ro", "--tls-cert=/registry-data/.certs/tls.crt", "--tls-key=/registry-data/.certs/tls.key"}),
-		docker.StartWithBindMount(dir, "/registry-data"),
+		docker.StartWithCommand([]string{"serve", "--dir=" + registryDataDir, "--api-push=false", "--store-ro", "--tls-cert=" + path.Join(registryDataDir, ".certs", "tls.crt"), "--tls-key=" + path.Join(registryDataDir, ".certs", "tls.key")}),
+		docker.StartWithVolume(registryDataDir),
+		docker.StartWithCopyFiles(certTarball, path.Join(registryDataDir, ".certs")),
 		docker.StartWithNetworkID(nid),
 	)
 	if err != nil {

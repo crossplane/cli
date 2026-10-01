@@ -467,6 +467,10 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 		return nil, nil, errors.Wrap(err, "failed to attach to container")
 	}
 	defer attach.Close()
+	// StdCopy below doesn't observe ctx, so close the attach connection on
+	// cancellation to unblock it rather than waiting for the container to exit.
+	stopClose := context.AfterFunc(ctx, func() { attach.Close() })
+	defer stopClose()
 
 	if _, err := cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		return nil, nil, errors.Wrap(err, "failed to start container")
@@ -485,6 +489,9 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 
 	var stdout, stderr bytes.Buffer
 	if _, err := stdcopy.StdCopy(&stdout, &stderr, attach.Reader); err != nil {
+		if ctx.Err() != nil {
+			return nil, nil, errors.Wrap(ctx.Err(), "failed to read container output")
+		}
 		return nil, nil, errors.Wrap(err, "failed to read container output")
 	}
 

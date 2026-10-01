@@ -117,6 +117,37 @@ type ProjectSpec struct {
 	// any necessary ImageConfigs for deployment into a cluster must be created
 	// separately at deployment time.
 	ImageConfigs []pkgv1beta1.ImageConfig `json:"imageConfigs,omitempty"`
+
+	// Runtime configures the local development cluster
+	Runtime Runtime `json:"runtime,omitempty"`
+}
+
+// Runtime is the spec for project runtime configuration.
+type Runtime struct {
+	// Runtime configuration options for KinD
+	Kind RuntimeKind `json:"kind,omitempty"`
+}
+
+// RuntimeKind adds configuration options for KinD
+type RuntimeKind struct {
+	// The KinD configuration to use for local development cluster.
+	Config RuntimeConfig `json:"config,omitempty"`
+	// Use internal addresses in the exported kubeconfig.
+	// Enable if running crossplane project in a container.
+	Internal bool `json:"internal,omitempty"`
+	// The docker network to start up the local development cluster in.
+	Network RuntimeNetwork `json:"network,omitempty"`
+}
+
+// RuntimeConfig is the spec for a runtime configuration.
+type RuntimeConfig struct {
+	// The path to the configuration file.
+	Path string `json:"path,omitempty"`
+}
+
+// RuntimeNetwork is the spec for runtime network configuration.
+type RuntimeNetwork struct {
+	Name string `json:"name,omitempty"`
 }
 
 // ProjectPackageMetadata holds metadata about the project, which will become

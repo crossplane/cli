@@ -26,6 +26,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
@@ -211,6 +212,9 @@ type config struct {
 	clusterAdmin      bool
 	defaultMRAP       bool
 	log               logging.Logger
+	kindConfig        *v1alpha4.Cluster
+	internal          bool
+	dockerNetwork     string
 }
 
 // WithName sets the name of the local dev control plane.
@@ -257,6 +261,28 @@ func WithLogger(l logging.Logger) Option {
 	}
 }
 
+// WithProjectConfig sets the crossplane project configuration.
+func WithKindConfig(kc *v1alpha4.Cluster) Option {
+	return func(c *config) {
+		c.kindConfig = kc
+	}
+}
+
+// WithInternal configures the local development controlplane to use internal addresses
+// in the exported kubeconfig. Set this to true when running crossplane project in a container.
+func WithInternal(internal bool) Option {
+	return func(c *config) {
+		c.internal = internal
+	}
+}
+
+// WithDockerNetwork configures which docker network to start up the local development control plane in.
+func WithDockerNetwork(network string) Option {
+	return func(c *config) {
+		c.dockerNetwork = network
+	}
+}
+
 // EnsureLocalDevControlPlane creates or reuses a local kind-based development
 // control plane with Crossplane installed.
 func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControlPlane, error) { //nolint:gocyclo // Main orchestration function.
@@ -280,8 +306,8 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	nameLen = min(nameLen, 63-len("-control-plane"))
 	cfg.name = cfg.name[:nameLen]
 
-	cfg.log.Debug("Ensuring kind cluster", "name", cfg.name)
-	kubeconfig, err := ensureKindCluster(cfg.name)
+	cfg.log.Debug("Ensuring kind cluster", "name", cfg.name, "internal", cfg.internal, "network", cfg.dockerNetwork)
+	kubeconfig, err := ensureKindCluster(*cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +354,11 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	}
 
 	cfg.log.Debug("Ensuring local registry container")
-	cid, err := ensureLocalRegistry(ctx, cl, regName, registryDir, certSecret)
+	networkName := cfg.dockerNetwork
+	if networkName == "" {
+		networkName = "kind"
+	}
+	cid, err := ensureLocalRegistry(ctx, cl, regName, registryDir, certSecret, networkName)
 	if err != nil {
 		return nil, err
 	}
@@ -400,13 +430,14 @@ func TeardownLocalDevControlPlane(ctx context.Context, name string, registryDir 
 	return nil
 }
 
-func ensureKindCluster(clusterName string) (clientcmd.ClientConfig, error) {
+func ensureKindCluster(cfg config) (clientcmd.ClientConfig, error) {
 	provider := kind.NewProvider()
 
 	kubeconfigFile, err := os.CreateTemp("", "crossplane-*.kubeconfig")
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create temporary kubeconfig")
 	}
+
 	_ = kubeconfigFile.Close()
 	defer func() { _ = os.Remove(kubeconfigFile.Name()) }()
 
@@ -415,14 +446,14 @@ func ensureKindCluster(clusterName string) (clientcmd.ClientConfig, error) {
 		return nil, errors.Wrap(err, "failed to list kind clusters")
 	}
 
-	if slices.Contains(existing, clusterName) {
-		if err := provider.ExportKubeConfig(clusterName, kubeconfigFile.Name(), false); err != nil {
-			return nil, errors.Wrap(err, "failed to get kubeconfig for kind cluster")
-		}
-	} else {
-		if err := createNewKindCluster(provider, clusterName, kubeconfigFile.Name()); err != nil {
+	if !slices.Contains(existing, cfg.name) {
+		if err := createNewKindCluster(provider, cfg, kubeconfigFile.Name()); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := provider.ExportKubeConfig(cfg.name, kubeconfigFile.Name(), cfg.internal); err != nil {
+		return nil, errors.Wrap(err, "failed to get kubeconfig for kind cluster")
 	}
 
 	kubeconfigBytes, err := os.ReadFile(kubeconfigFile.Name())
@@ -438,16 +469,27 @@ func ensureKindCluster(clusterName string) (clientcmd.ClientConfig, error) {
 	return kubeconfig, nil
 }
 
-func createNewKindCluster(provider *kind.Provider, clusterName, kubeconfigPath string) error {
+func createNewKindCluster(provider *kind.Provider, c config, kubeconfigPath string) error {
 	cfg := createKindClusterConfig()
+
+	if c.kindConfig != nil {
+		cfg = c.kindConfig
+	}
 
 	cfgBytes, err := yaml.Marshal(cfg)
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal kind config")
 	}
 
+	if len(strings.TrimSpace(c.dockerNetwork)) > 0 {
+		err := os.Setenv("KIND_EXPERIMENTAL_DOCKER_NETWORK", c.dockerNetwork)
+		if err != nil {
+			return errors.Wrap(err, "failed to set docker network")
+		}
+	}
+
 	if err := provider.Create(
-		clusterName,
+		c.name,
 		kind.CreateWithRawConfig(cfgBytes),
 		kind.CreateWithNodeImage(defaults.Image),
 		kind.CreateWithDisplayUsage(false),
@@ -522,7 +564,7 @@ func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clus
 	return nil
 }
 
-func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir string, certSecret *corev1.Secret) (string, error) {
+func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir string, certSecret *corev1.Secret, networkName string) (string, error) {
 	const regImage = "ghcr.io/olareg/olareg:edge"
 	certDir := filepath.Join(dir, ".certs")
 
@@ -560,13 +602,13 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir str
 		return "", errors.New("failed to write tls key")
 	}
 
-	// Find kind's network.
-	nid, found, err := docker.GetNetworkIDByName(ctx, "kind")
+	// Find the cluster's docker network, so the registry can join it.
+	nid, found, err := docker.GetNetworkIDByName(ctx, networkName)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to get kind network ID")
+		return "", errors.Wrap(err, "failed to get docker network ID")
 	}
 	if !found {
-		return "", errors.New("missing kind network")
+		return "", errors.Errorf("missing docker network %q", networkName)
 	}
 
 	// Start the registry container.

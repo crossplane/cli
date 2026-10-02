@@ -281,6 +281,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 	defer func() {
 		if err := render.StopFunctionRuntimes(ctx, fnAddrs); err != nil {
 			log.Info("Error stopping function runtimes", "error", err)
+			render.WarnCleanupFailure(k.Stderr, err)
 		}
 	}()
 

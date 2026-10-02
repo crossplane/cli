@@ -2,6 +2,7 @@ package render
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -237,6 +238,35 @@ func TestStopFunctionRuntimes(t *testing.T) {
 
 			if diff := cmp.Diff(tc.want, got, cmp.AllowUnexported(want{}), cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nStopFunctionRuntimes(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestWarnCleanupFailure(t *testing.T) {
+	cases := map[string]struct {
+		reason string
+		err    error
+		want   string
+	}{
+		"NilError": {
+			reason: "No warning should be written when cleanup succeeded.",
+			err:    nil,
+			want:   "",
+		},
+		"Error": {
+			reason: "A warning including the error should be written when cleanup failed.",
+			err:    errors.New("boom"),
+			want:   "warning: failed to clean up function runtimes; some resources (e.g. containers) may need to be removed manually: boom\n",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := &strings.Builder{}
+			WarnCleanupFailure(b, tc.err)
+			if diff := cmp.Diff(tc.want, b.String()); diff != "" {
+				t.Errorf("\n%s\nWarnCleanupFailure(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

@@ -214,6 +214,7 @@ import (
 	"time"
 
 	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	{{- range .ExternalImports}}
 	{{ . }}
@@ -229,6 +230,7 @@ var (
 	_ json.RawMessage = nil
 	_ = fmt.Errorf
 	_ = runtime.JSONMerge
+	_ openapi_types.Email
 )
 `
 

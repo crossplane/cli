@@ -46,6 +46,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/controlplane"
 	"github.com/crossplane/cli/v2/internal/project/functions"
@@ -75,11 +76,11 @@ type runCmd struct {
 	Internal          bool          `help:"Use internal addresses in the exported kubeconfig. Enable if running crossplane project in a container."`
 	KindConfig        string        `help:"The path to the KinD configuration which should be used to create the local development cluster."`
 	RegistryDir       string        `help:"Directory for local registry images."`
-	ClusterAdmin      bool          `default:"true"                                                  help:"Grant Crossplane the cluster-admin role."                                               negatable:""`
-	DefaultMRAP       bool          `default:"true"                                                  help:"Install the default wildcard ManagedResourceActivationPolicy in the dev control plane." negatable:""`
-	Timeout           time.Duration `default:"5m"                                                    help:"Max wait for project readiness."`
-	InitResources     []string      `help:"Resources to apply before installing."                    type:"path"`
-	ExtraResources    []string      `help:"Resources to apply after installing."                     type:"path"`
+	ClusterAdmin      bool          `default:"true"                                                                                                             help:"Grant Crossplane the cluster-admin role."                                               negatable:""`
+	DefaultMRAP       bool          `default:"true"                                                                                                             help:"Install the default wildcard ManagedResourceActivationPolicy in the dev control plane." negatable:""`
+	Timeout           time.Duration `default:"5m"                                                                                                               help:"Max wait for project readiness."`
+	InitResources     []string      `help:"Resources to apply before installing."                                                                               type:"path"`
+	ExtraResources    []string      `help:"Resources to apply after installing."                                                                                type:"path"`
 
 	proj   *devv1alpha1.Project
 	projFS afero.Fs
@@ -87,6 +88,7 @@ type runCmd struct {
 	initResources  []runtime.RawExtension
 	extraResources []runtime.RawExtension
 	kindConfig     *v1alpha4.Cluster
+	storageType    docker.StorageType
 }
 
 func (c *runCmd) Help() string {
@@ -147,9 +149,7 @@ func (c *runCmd) AfterApply() error {
 		}
 
 		kindCfg := &v1alpha4.Cluster{}
-
-		err = yaml.Unmarshal(kindCfgBytes, kindCfg)
-		if err != nil {
+		if err := yaml.Unmarshal(kindCfgBytes, kindCfg); err != nil {
 			return errors.Wrapf(err, "failed to unmarshal KinD configuration from %q", c.KindConfig)
 		}
 
@@ -159,11 +159,9 @@ func (c *runCmd) AfterApply() error {
 	return nil
 }
 
-// Run executes the run command.
-func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocyclo // Main command orchestration.
-	ctx := context.Background()
-
-	if !c.Internal && c.proj.Spec.Runtime.Kind.Internal {
+// resolveRunOptions applies command overrides and project runtime defaults.
+func (c *runCmd) resolveRunOptions() error {
+	if !c.Internal {
 		c.Internal = c.proj.Spec.Runtime.Kind.Internal
 	}
 
@@ -181,6 +179,22 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 
 	if c.ControlPlaneName == "" {
 		c.ControlPlaneName = "crossplane-" + c.proj.Name
+	}
+
+	c.storageType = docker.StorageTypeBindMount
+	if c.proj.Spec.Runtime.Registry.Storage.Type == string(docker.StorageTypeVolume) {
+		c.storageType = docker.StorageTypeVolume
+	}
+
+	return nil
+}
+
+// Run executes the run command.
+func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocyclo // Main command orchestration.
+	ctx := context.Background()
+
+	if err := c.resolveRunOptions(); err != nil {
+		return err
 	}
 
 	concurrency := max(1, c.MaxConcurrency)
@@ -259,6 +273,7 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 				controlplane.WithDockerNetwork(c.DockerNetwork),
 				controlplane.WithInternal(c.Internal),
 				controlplane.WithKindConfig(c.kindConfig),
+				controlplane.WithStorageType(c.storageType),
 			)
 			if ctpErr != nil {
 				ch.SendEvent("Setting up control plane", async.EventStatusFailure)

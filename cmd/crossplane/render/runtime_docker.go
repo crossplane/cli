@@ -81,6 +81,36 @@ const (
 	AnnotationKeyRuntimeDockerNetwork = "render.crossplane.io/runtime-docker-network"
 )
 
+// Labels that render applies to the Docker resources it creates, so that
+// leftovers (e.g. after a crash or with an Orphan cleanup policy) can be
+// identified and swept.
+const (
+	// LabelKeyManagedBy is applied to every Docker container and network
+	// created by render. Its value is always LabelValueManagedByCrossplane.
+	LabelKeyManagedBy = "render.crossplane.io/managed-by"
+
+	// LabelValueManagedByCrossplane is the value of LabelKeyManagedBy.
+	LabelValueManagedByCrossplane = "crossplane"
+
+	// LabelKeyCleanup is applied to Function containers and records the
+	// effective DockerCleanup policy the container was created with.
+	LabelKeyCleanup = "render.crossplane.io/cleanup"
+)
+
+// managedLabels returns the labels applied to every Docker resource render
+// creates.
+func managedLabels() map[string]string {
+	return map[string]string{LabelKeyManagedBy: LabelValueManagedByCrossplane}
+}
+
+// functionContainerLabels returns the labels applied to a Function container
+// created with the supplied cleanup policy.
+func functionContainerLabels(cleanup DockerCleanup) map[string]string {
+	l := managedLabels()
+	l[LabelKeyCleanup] = string(cleanup)
+	return l
+}
+
 // DockerCleanup specifies what Docker should do with a Function container after
 // it has been run.
 type DockerCleanup string
@@ -303,6 +333,10 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli containerClient
 		Cmd:          []string{"--insecure"},
 		ExposedPorts: network.PortSet{port: struct{}{}},
 		Env:          r.Env,
+		// Labels are only set at creation time. A pre-existing named container
+		// that is reused is not relabeled, since Docker can't change labels on
+		// an existing container.
+		Labels: functionContainerLabels(r.Cleanup),
 	}
 	hcfg := &container.HostConfig{}
 	var ncfg *network.NetworkingConfig

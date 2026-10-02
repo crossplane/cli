@@ -102,13 +102,13 @@ const renderNetworkPrefix = "crossplane-render-"
 
 // createRenderNetworkReturns returns a MockNetworkCreate that returns the
 // supplied network ID and error. It returns an error instead when it is not
-// asked to create a render bridge network.
+// asked to create a render bridge network labeled as managed by render.
 func createRenderNetworkReturns(id string, err error) func(context.Context, string, client.NetworkCreateOptions) (client.NetworkCreateResult, error) {
 	return func(_ context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error) {
 		if !strings.HasPrefix(name, renderNetworkPrefix) {
 			return client.NetworkCreateResult{}, errors.Errorf("NetworkCreate(...): name %q does not have prefix %q", name, renderNetworkPrefix)
 		}
-		if diff := cmp.Diff(client.NetworkCreateOptions{Driver: "bridge"}, options); diff != "" {
+		if diff := cmp.Diff(client.NetworkCreateOptions{Driver: "bridge", Labels: map[string]string{LabelKeyManagedBy: LabelValueManagedByCrossplane}}, options); diff != "" {
 			return client.NetworkCreateResult{}, errors.Errorf("NetworkCreate(...): -want options, +got options:\n%s", diff)
 		}
 		return client.NetworkCreateResult{ID: id}, err

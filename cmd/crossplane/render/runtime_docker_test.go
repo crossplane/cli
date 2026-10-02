@@ -602,3 +602,103 @@ func TestRuntimeDockerStop(t *testing.T) {
 		})
 	}
 }
+
+func TestRuntimeDockerStartLabels(t *testing.T) {
+	const (
+		containerID   = "container-id"
+		containerName = "fn-container"
+		dockerNetwork = "render-net"
+	)
+
+	// createLabeledContainer returns a MockContainerCreate that creates a
+	// container, or returns an error when the container config doesn't carry
+	// the supplied labels.
+	createLabeledContainer := func(labels map[string]string) func(context.Context, client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+		return func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			if options.Config == nil {
+				return client.ContainerCreateResult{}, errors.New("ContainerCreate(...): called without a container config")
+			}
+			if diff := cmp.Diff(labels, options.Config.Labels); diff != "" {
+				return client.ContainerCreateResult{}, errors.Errorf("ContainerCreate(...): -want labels, +got labels:\n%s", diff)
+			}
+			return client.ContainerCreateResult{ID: containerID}, nil
+		}
+	}
+
+	type args struct {
+		cleanup DockerCleanup
+		cli     *mockContainerClient
+	}
+	type want struct {
+		err error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"Stop": {
+			reason: "Function containers should be marked as managed by render and record the Stop policy.",
+			args: args{
+				cleanup: AnnotationValueRuntimeDockerCleanupStop,
+				cli: &mockContainerClient{
+					MockContainerCreate: createLabeledContainer(map[string]string{
+						LabelKeyManagedBy: LabelValueManagedByCrossplane,
+						LabelKeyCleanup:   string(AnnotationValueRuntimeDockerCleanupStop),
+					}),
+					MockContainerStart:   startContainer(containerID),
+					MockContainerInspect: inspectContainerOnNetwork(containerID, containerName, dockerNetwork),
+				},
+			},
+		},
+		"Remove": {
+			reason: "Function containers should be marked as managed by render and record the Remove policy.",
+			args: args{
+				cleanup: AnnotationValueRuntimeDockerCleanupRemove,
+				cli: &mockContainerClient{
+					MockContainerCreate: createLabeledContainer(map[string]string{
+						LabelKeyManagedBy: LabelValueManagedByCrossplane,
+						LabelKeyCleanup:   string(AnnotationValueRuntimeDockerCleanupRemove),
+					}),
+					MockContainerStart:   startContainer(containerID),
+					MockContainerInspect: inspectContainerOnNetwork(containerID, containerName, dockerNetwork),
+				},
+			},
+		},
+		"Orphan": {
+			reason: "Function containers should record the Orphan policy so sweeps can skip them.",
+			args: args{
+				cleanup: AnnotationValueRuntimeDockerCleanupOrphan,
+				cli: &mockContainerClient{
+					MockContainerCreate: createLabeledContainer(map[string]string{
+						LabelKeyManagedBy: LabelValueManagedByCrossplane,
+						LabelKeyCleanup:   string(AnnotationValueRuntimeDockerCleanupOrphan),
+					}),
+					MockContainerStart:   startContainer(containerID),
+					MockContainerInspect: inspectContainerOnNetwork(containerID, containerName, dockerNetwork),
+				},
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := &RuntimeDocker{
+				Image:        "xpkg.crossplane.io/crossplane-contrib/function-dummy:v0.1.0",
+				Cleanup:      tc.args.cleanup,
+				PullPolicy:   AnnotationValueRuntimeDockerPullPolicyIfNotPresent,
+				Keychain:     authn.NewMultiKeychain(),
+				Network:      dockerNetwork,
+				log:          logging.NewNopLogger(),
+				dockerClient: tc.args.cli,
+			}
+
+			_, err := r.Start(t.Context())
+
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nStart(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

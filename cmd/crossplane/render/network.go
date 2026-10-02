@@ -72,6 +72,7 @@ func createRenderNetwork(ctx context.Context, cli networkClient) (string, string
 
 	resp, err := cli.NetworkCreate(ctx, name, client.NetworkCreateOptions{
 		Driver: "bridge",
+		Labels: managedLabels(),
 	})
 	if err != nil {
 		return "", "", errors.Wrapf(err, "cannot create Docker network %q", name)

@@ -156,6 +156,7 @@ func (e *dockerRenderEngine) Render(ctx context.Context, req *renderv1alpha1.Ren
 		// Let the container access any functions running in development mode on
 		// the host.
 		docker.RunWithExtraHosts([]string{"host.docker.internal:host-gateway"}),
+		docker.RunWithLabels(managedLabels()),
 	}
 	if e.network != "" {
 		opts = append(opts, docker.RunWithNetworkName(e.network))

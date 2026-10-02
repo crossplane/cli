@@ -161,7 +161,32 @@ type RuntimeDocker struct {
 	// and is reached via host port bindings. When set, the container joins
 	// the specified network and is reached via its Docker hostname on port 9443.
 	Network string
+
+	// dockerClient manages the Function's container. Production callers leave
+	// it nil and Start builds a real client from the environment. Tests
+	// substitute a fake to exercise container lifecycle and cleanup handling
+	// without a real Docker daemon.
+	dockerClient containerClient
 }
+
+// containerClient is the subset of the Docker client RuntimeDocker uses to
+// pull images and manage a Function's container.
+type containerClient interface {
+	pullClient
+	containerCleanupClient
+	ContainerInspect(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error)
+	ContainerCreate(ctx context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error)
+	ContainerStart(ctx context.Context, containerID string, options client.ContainerStartOptions) (client.ContainerStartResult, error)
+}
+
+// containerCleanupClient is the subset of the Docker client RuntimeDocker's
+// stop function uses to clean up a Function's container.
+type containerCleanupClient interface {
+	ContainerStop(ctx context.Context, containerID string, options client.ContainerStopOptions) (client.ContainerStopResult, error)
+	ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
+}
+
+var _ containerClient = (*client.Client)(nil)
 
 // GetDockerPullPolicy extracts PullPolicy configuration from the supplied
 // Function.
@@ -250,7 +275,7 @@ func GetRuntimeDocker(fn pkgv1.Function, log logging.Logger) (*RuntimeDocker, er
 
 var _ Runtime = &RuntimeDocker{}
 
-func (r *RuntimeDocker) findContainer(ctx context.Context, cli *client.Client) (string, error) {
+func (r *RuntimeDocker) findContainer(ctx context.Context, cli containerClient) (string, error) {
 	if r.Name == "" {
 		return "", nil
 	}
@@ -266,7 +291,7 @@ func (r *RuntimeDocker) findContainer(ctx context.Context, cli *client.Client) (
 	return inspect.Container.ID, nil
 }
 
-func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client) (string, error) {
+func (r *RuntimeDocker) createContainer(ctx context.Context, cli containerClient) (string, error) {
 	r.log.Debug("Starting Docker container runtime setup", "image", r.Image)
 
 	// Let Docker automatically allocate an available port on the bind address.
@@ -377,7 +402,7 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 }
 
 // startContainer ensures the container is running and returns its address.
-func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, containerID string) (string, error) {
+func (r *RuntimeDocker) startContainer(ctx context.Context, cli containerClient, containerID string) (string, error) {
 	// Start the container (idempotent - safe to call on running containers)
 	if _, err := cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{}); err != nil {
 		return "", errors.Wrap(err, "cannot start Docker container")
@@ -457,9 +482,13 @@ func (r *RuntimeDocker) getPullOptions() (client.ImagePullOptions, error) {
 
 // Start a Function as a Docker container.
 func (r *RuntimeDocker) Start(ctx context.Context) (RuntimeContext, error) {
-	cli, err := client.New(client.FromEnv)
-	if err != nil {
-		return RuntimeContext{}, errors.Wrap(err, "cannot create Docker client using environment variables")
+	cli := r.dockerClient
+	if cli == nil {
+		c, err := client.New(client.FromEnv)
+		if err != nil {
+			return RuntimeContext{}, errors.Wrap(err, "cannot create Docker client using environment variables")
+		}
+		cli = c
 	}
 
 	// Try to find an existing container with the supplied container name.

@@ -278,7 +278,11 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 	if err != nil {
 		return errors.Wrap(err, "cannot start function runtimes")
 	}
-	defer render.StopFunctionRuntimes(log, fnAddrs)
+	defer func() {
+		if err := render.StopFunctionRuntimes(ctx, fnAddrs); err != nil {
+			log.Info("Error stopping function runtimes", "error", err)
+		}
+	}()
 
 	// Build and execute the render request.
 	in := render.CompositionInputs{

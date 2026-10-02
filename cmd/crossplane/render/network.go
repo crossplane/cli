@@ -46,15 +46,28 @@ func (f *EngineFlags) SetDefaultCrossplaneDockerNetwork(fns []pkgv1.Function) {
 	}
 }
 
+// networkClient is the subset of the Docker client the render engine uses to
+// manage its temporary Docker network.
+type networkClient interface {
+	NetworkCreate(ctx context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error)
+	NetworkRemove(ctx context.Context, networkID string, options client.NetworkRemoveOptions) (client.NetworkRemoveResult, error)
+}
+
+var _ networkClient = (*client.Client)(nil)
+
+// newNetworkClient returns a real Docker client built from the environment.
+func newNetworkClient() (networkClient, error) {
+	cli, err := docker.NewClient()
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot create Docker client")
+	}
+	return cli, nil
+}
+
 // createRenderNetwork creates a temporary Docker bridge network for render.
 // Function containers and the Crossplane render container join this network so
 // they can reach each other. Returns the network ID and name.
-func createRenderNetwork(ctx context.Context) (string, string, error) {
-	cli, err := docker.NewClient()
-	if err != nil {
-		return "", "", errors.Wrap(err, "cannot create Docker client")
-	}
-
+func createRenderNetwork(ctx context.Context, cli networkClient) (string, string, error) {
 	name := fmt.Sprintf("crossplane-render-%s", rand.String(8))
 
 	resp, err := cli.NetworkCreate(ctx, name, client.NetworkCreateOptions{
@@ -68,11 +81,7 @@ func createRenderNetwork(ctx context.Context) (string, string, error) {
 }
 
 // removeRenderNetwork removes a temporary Docker network.
-func removeRenderNetwork(ctx context.Context, networkID string) error {
-	cli, err := docker.NewClient()
-	if err != nil {
-		return errors.Wrap(err, "cannot create Docker client")
-	}
-	_, err = cli.NetworkRemove(ctx, networkID, client.NetworkRemoveOptions{})
+func removeRenderNetwork(ctx context.Context, cli networkClient, networkID string) error {
+	_, err := cli.NetworkRemove(ctx, networkID, client.NetworkRemoveOptions{})
 	return errors.Wrap(err, "cannot remove Docker network")
 }

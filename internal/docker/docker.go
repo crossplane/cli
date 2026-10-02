@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"path"
 	"path/filepath"
 	"slices"
@@ -374,6 +375,16 @@ func RunWithNetworkName(name string) RunContainerOption {
 func RunWithExtraHosts(hosts []string) RunContainerOption {
 	return func(cfg *runContainerConfig) {
 		cfg.hostConfig.ExtraHosts = append(cfg.hostConfig.ExtraHosts, hosts...)
+	}
+}
+
+// RunWithLabels adds labels to the container.
+func RunWithLabels(labels map[string]string) RunContainerOption {
+	return func(cfg *runContainerConfig) {
+		if cfg.containerConfig.Labels == nil {
+			cfg.containerConfig.Labels = map[string]string{}
+		}
+		maps.Copy(cfg.containerConfig.Labels, labels)
 	}
 }
 

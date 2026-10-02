@@ -146,18 +146,24 @@ func (fa *FunctionAddresses) stop(ctx context.Context, timeout time.Duration) er
 // gRPC addresses. The caller must call Stop on the returned FunctionAddresses
 // when done.
 func StartFunctionRuntimes(ctx context.Context, log logging.Logger, fns []pkgv1.Function) (*FunctionAddresses, error) {
+	return startFunctionRuntimes(ctx, log, fns, GetRuntime)
+}
+
+// startFunctionRuntimes implements StartFunctionRuntimes, using getRuntime to
+// get each Function's runtime.
+func startFunctionRuntimes(ctx context.Context, log logging.Logger, fns []pkgv1.Function, getRuntime func(pkgv1.Function, logging.Logger) (Runtime, error)) (*FunctionAddresses, error) {
 	addrs := make(map[string]string, len(fns))
 	contexts := make(map[string]RuntimeContext, len(fns))
 
 	for _, fn := range fns {
-		rt, err := GetRuntime(fn, log)
+		rt, err := getRuntime(fn, log)
 		if err != nil {
-			return nil, errors.Wrapf(err, "cannot get runtime for Function %q", fn.GetName())
+			return nil, stopStarted(ctx, &FunctionAddresses{addrs: addrs, contexts: contexts}, errors.Wrapf(err, "cannot get runtime for Function %q", fn.GetName()))
 		}
 
 		rctx, err := rt.Start(ctx)
 		if err != nil {
-			return nil, errors.Wrapf(err, "cannot start Function %q", fn.GetName())
+			return nil, stopStarted(ctx, &FunctionAddresses{addrs: addrs, contexts: contexts}, errors.Wrapf(err, "cannot start Function %q", fn.GetName()))
 		}
 
 		addrs[fn.GetName()] = rctx.Target
@@ -165,6 +171,16 @@ func StartFunctionRuntimes(ctx context.Context, log logging.Logger, fns []pkgv1.
 	}
 
 	return &FunctionAddresses{addrs: addrs, contexts: contexts}, nil
+}
+
+// stopStarted stops the runtimes started before a later Function failed to
+// start. It returns startErr, joined with any stop errors. The stop context is
+// detached from ctx's cancellation, since ctx may be why the start failed.
+func stopStarted(ctx context.Context, fa *FunctionAddresses, startErr error) error {
+	if err := fa.stop(context.WithoutCancel(ctx), runtimeStopTimeout); err != nil {
+		return errors.Join(startErr, err)
+	}
+	return startErr
 }
 
 // RewriteAddressesForDocker rewrites function addresses so they are reachable

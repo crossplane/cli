@@ -23,10 +23,13 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/moby/moby/client"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
@@ -222,9 +225,8 @@ func TestDockerRenderEngineSetup(t *testing.T) {
 	// call on the same engine stored its created network there. The branch
 	// must annotate the supplied functions so their containers join the
 	// network, never create a second network, and always return a no-op
-	// cleanup. The create-new-network branch is not covered here because it
-	// depends on a live Docker daemon; the broader render command tests
-	// exercise it integration-style.
+	// cleanup. The create-new-network branch is covered separately by
+	// TestDockerRenderEngineSetupCreatesNetwork.
 	//
 	// The MultiBatchAnnotatesAdditionalFunctions case simulates the
 	// in-process multi-composition use case from crossplane/cli#96: a
@@ -344,6 +346,170 @@ func TestDockerRenderEngineSetup(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
+	// When e.network is unset, Setup must create a temporary network through
+	// the engine's network client, record its name, annotate the supplied
+	// functions to join it, and return a cleanup that removes it through the
+	// same client.
+	errBoom := errors.New("boom")
+
+	type args struct {
+		create func(ctx context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error)
+		// removeErr is what NetworkRemove returns. When nil, NetworkRemove
+		// returns the error of the context it is called with, so cleanup
+		// logs an error if it removes the network with a cancelled context.
+		removeErr error
+		// cancel cancels Setup's context before calling cleanup.
+		cancel bool
+	}
+	type want struct {
+		err error
+		// created is whether Setup should create a network, annotate the
+		// functions to join it, and return a cleanup that removes it.
+		created bool
+		// logErr is the error cleanup should log when it cannot remove the
+		// network. When nil, cleanup must log nothing.
+		logErr error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"CreatesNetwork": {
+			reason: "Setup should create a network, annotate the functions to join it, and return a cleanup that removes it.",
+			args: args{
+				create: createRenderNetworkReturns("network-id", nil),
+			},
+			want: want{
+				created: true,
+			},
+		},
+		"CleanupLogsRemoveError": {
+			reason: "The cleanup can't return an error, so it should log a failure to remove the network, with the network's name and ID, rather than discard it.",
+			args: args{
+				create:    createRenderNetworkReturns("network-id", nil),
+				removeErr: errBoom,
+			},
+			want: want{
+				created: true,
+				logErr:  errBoom,
+			},
+		},
+		"CleanupSurvivesCancelledContext": {
+			reason: "The cleanup typically runs after Setup's context is done, so it should still remove the network with a live context.",
+			args: args{
+				create: createRenderNetworkReturns("network-id", nil),
+				cancel: true,
+			},
+			want: want{
+				created: true,
+			},
+		},
+		"NetworkCreateError": {
+			reason: "Setup should return an error and a no-op cleanup, leaving the functions unannotated, when it cannot create the network.",
+			args: args{
+				create: createRenderNetworkReturns("", errBoom),
+			},
+			want: want{
+				err: errBoom,
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			// Cleanup discards NetworkRemove's result, so record whether it
+			// was called. A cleanup that shouldn't remove anything leaves
+			// MockNetworkRemove nil.
+			removed := false
+			cli := &mockNetworkClient{MockNetworkCreate: tc.args.create}
+			if tc.want.created {
+				cli.MockNetworkRemove = func(ctx context.Context, networkID string, _ client.NetworkRemoveOptions) (client.NetworkRemoveResult, error) {
+					if diff := cmp.Diff("network-id", networkID); diff != "" {
+						t.Errorf("\n%s\nNetworkRemove(...): -want network ID, +got network ID:\n%s", tc.reason, diff)
+					}
+					removed = true
+					if tc.args.removeErr != nil {
+						return client.NetworkRemoveResult{}, tc.args.removeErr
+					}
+					return client.NetworkRemoveResult{}, ctx.Err()
+				}
+			}
+			log := newRecordingLogger()
+			e := &dockerRenderEngine{log: log, networks: cli}
+			fns := []pkgv1.Function{functionWithAnnotations(nil)}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			cleanup, err := e.Setup(ctx, fns)
+
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nSetup(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+
+			wantFns := []pkgv1.Function{functionWithAnnotations(nil)}
+			if tc.want.created {
+				if !strings.HasPrefix(e.network, renderNetworkPrefix) {
+					t.Errorf("\n%s\nSetup(...): e.network = %q, want a network with prefix %q", tc.reason, e.network, renderNetworkPrefix)
+				}
+				wantFns = []pkgv1.Function{functionWithAnnotations(map[string]string{AnnotationKeyRuntimeDockerNetwork: e.network})}
+			} else if e.network != "" {
+				t.Errorf("\n%s\nSetup(...): e.network = %q, want it unset", tc.reason, e.network)
+			}
+			if diff := cmp.Diff(wantFns, fns); diff != "" {
+				t.Errorf("\n%s\nSetup(...): -want fns, +got fns:\n%s", tc.reason, diff)
+			}
+
+			if tc.args.cancel {
+				cancel()
+			}
+			cleanup()
+
+			if diff := cmp.Diff(tc.want.created, removed); diff != "" {
+				t.Errorf("\n%s\nSetup(...) cleanup: -want network removed, +got network removed:\n%s", tc.reason, diff)
+			}
+			var wantLog []logEntry
+			if tc.want.logErr != nil {
+				wantLog = []logEntry{{
+					Msg: "Cannot remove Docker network used for rendering",
+					KV:  []any{"network", e.network, "id", "network-id", "error", tc.want.logErr},
+				}}
+			}
+			if diff := cmp.Diff(wantLog, *log.entries, cmpopts.EquateErrors(), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nSetup(...) cleanup: -want log, +got log:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+// recordingLogger is a logging.Logger that records every Info and Debug call.
+type recordingLogger struct {
+	entries *[]logEntry
+	kv      []any
+}
+
+type logEntry struct {
+	Msg string
+	KV  []any
+}
+
+var _ logging.Logger = recordingLogger{}
+
+func newRecordingLogger() recordingLogger { return recordingLogger{entries: &[]logEntry{}} }
+
+func (l recordingLogger) Info(msg string, kv ...any) {
+	*l.entries = append(*l.entries, logEntry{Msg: msg, KV: append(append([]any{}, l.kv...), kv...)})
+}
+
+func (l recordingLogger) Debug(msg string, kv ...any) { l.Info(msg, kv...) }
+
+func (l recordingLogger) WithValues(kv ...any) logging.Logger {
+	return recordingLogger{entries: l.entries, kv: append(append([]any{}, l.kv...), kv...)}
 }
 
 // nonExitError is a stand-in for non-*ContainerExitError failures (e.g. image

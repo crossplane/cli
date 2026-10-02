@@ -21,6 +21,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -48,6 +49,10 @@ func (realContainerRunner) Run(ctx context.Context, img string, opts ...docker.R
 	return docker.RunContainer(ctx, img, opts...)
 }
 
+// networkRemoveTimeout bounds how long Setup's cleanup waits to remove the
+// temporary render network.
+const networkRemoveTimeout = 30 * time.Second
+
 // dockerRenderEngine executes crossplane internal render in a Docker container.
 type dockerRenderEngine struct {
 	// image is the Crossplane Docker image reference.
@@ -63,6 +68,13 @@ type dockerRenderEngine struct {
 	// (exit-3 partial output, *docker.ContainerExitError vs non-exit errors)
 	// without a real Docker daemon.
 	runner containerRunner
+
+	// networks creates and removes the temporary Docker network Setup owns.
+	// Production callers leave it nil and Setup builds a real client from the
+	// environment only when it needs to create a network. Tests substitute a
+	// fake to exercise the create-network branch without a real Docker
+	// daemon.
+	networks networkClient
 }
 
 func (e *dockerRenderEngine) CheckContextSupport() error {
@@ -95,7 +107,16 @@ func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (f
 		return func() {}, nil
 	}
 
-	networkID, networkName, err := createRenderNetwork(ctx)
+	cli := e.networks
+	if cli == nil {
+		c, err := newNetworkClient()
+		if err != nil {
+			return func() {}, errors.Wrap(err, "cannot create Docker network for rendering")
+		}
+		cli = c
+	}
+
+	networkID, networkName, err := createRenderNetwork(ctx, cli)
 	if err != nil {
 		return func() {}, errors.Wrap(err, "cannot create Docker network for rendering")
 	}
@@ -103,8 +124,17 @@ func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (f
 
 	injectNetworkAnnotation(fns, networkName)
 
-	cleanup := func() { //nolint:contextcheck // Detached context for cleanup.
-		_ = removeRenderNetwork(context.Background(), networkID)
+	cleanup := func() {
+		// Derive from ctx without its cancellation: cleanup typically runs after
+		// the caller's context is done, but must still be bounded so removal
+		// can't hang forever.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), networkRemoveTimeout)
+		defer cancel()
+		if err := removeRenderNetwork(rctx, cli, networkID); err != nil {
+			// The cleanup signature can't return the error, so log it rather than
+			// silently leaking the network (e.g. a container is still attached).
+			e.log.Info("Cannot remove Docker network used for rendering", "network", networkName, "id", networkID, "error", err)
+		}
 	}
 
 	return cleanup, nil

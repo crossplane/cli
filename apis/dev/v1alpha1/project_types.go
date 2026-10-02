@@ -118,17 +118,17 @@ type ProjectSpec struct {
 	// separately at deployment time.
 	ImageConfigs []pkgv1beta1.ImageConfig `json:"imageConfigs,omitempty"`
 
-	// Runtime configures the local development cluster
+	// Runtime configures the local development cluster.
 	Runtime Runtime `json:"runtime,omitempty"`
 }
 
 // Runtime is the spec for project runtime configuration.
 type Runtime struct {
-	// Runtime configuration options for KinD
-	Kind RuntimeKind `json:"kind,omitempty"`
+	Kind     RuntimeKind    `json:"kind,omitempty"`
+	Registry RegistryConfig `json:"registry,omitempty"`
 }
 
-// RuntimeKind adds configuration options for KinD
+// RuntimeKind is the runtime configuration options for KinD.
 type RuntimeKind struct {
 	// The KinD configuration to use for local development cluster.
 	Config RuntimeConfig `json:"config,omitempty"`
@@ -148,6 +148,18 @@ type RuntimeConfig struct {
 // RuntimeNetwork is the spec for runtime network configuration.
 type RuntimeNetwork struct {
 	Name string `json:"name,omitempty"`
+}
+
+// RegistryConfig is the configuration options for the local registry
+type RegistryConfig struct {
+	Storage StorageConfig `json:"storage,omitempty"`
+}
+
+// StorageConfig is the configuration options for storage
+type StorageConfig struct {
+	// The type of storage to use.
+	// Options: "bindMount" (default), "volume".
+	Type string `json:"type,omitempty"`
 }
 
 // ProjectPackageMetadata holds metadata about the project, which will become

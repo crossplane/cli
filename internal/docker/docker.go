@@ -216,25 +216,7 @@ func StartContainerByID(ctx context.Context, id string) error {
 	return errors.Wrap(err, "failed to start container")
 }
 
-// TarDirectory tars a directory.
-func TarDirectory(dir string) ([]byte, error) {
-	base := filepath.Base(dir)
-	rd, err := archive.TarWithOptions(filepath.Dir(dir), archive.TarResourceRebaseOpts(base, base))
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to archive %s", dir)
-	}
-	defer rd.Close() //nolint:errcheck // Best-effort close after draining the archive.
-
-	b, err := io.ReadAll(rd)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to read directory tarball")
-	}
-
-	return b, nil
-}
-
-// CopyDirectoryToContainer copies a directory tree to an existing container
-// directory, preserving its nested paths.
+// CopyDirectoryToContainer copies a directory tree to an existing container directory.
 func CopyDirectoryToContainer(ctx context.Context, id, source, destination string) error {
 	cli, err := NewClient()
 	if err != nil {
@@ -641,6 +623,22 @@ func TarFromContainer(ctx context.Context, cid, path string) ([]byte, error) {
 	defer func() { _ = resp.Content.Close() }()
 
 	return io.ReadAll(resp.Content)
+}
+
+// TarDirectory tars a directory.
+func TarDirectory(dir string) ([]byte, error) {
+	rd, err := archive.TarWithOptions(dir, &archive.TarOptions{}) //archive.TarResourceRebaseOpts(base, base))
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to archive %s", dir)
+	}
+	defer rd.Close() //nolint:errcheck // Best-effort close after draining the archive.
+
+	b, err := io.ReadAll(rd)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read directory tarball")
+	}
+
+	return b, nil
 }
 
 // NewClient creates a new Docker client configured from environment variables.

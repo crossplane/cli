@@ -73,7 +73,13 @@ type DevControlPlane interface {
 	Teardown(ctx context.Context) error
 	// Sideload sideloads packages into the control plane.
 	Sideload(ctx context.Context, imgMap project.ImageTagMap, tag name.Tag) error
+	// Returns the storage used by the control plane registry container.
+	Storage() docker.Storage
+	// Returns the container id of the control plane registry.
+	RegistryContainerID() string
 }
+
+var _ DevControlPlane = (*localDevControlPlane)(nil)
 
 type localDevControlPlane struct {
 	name                string
@@ -82,6 +88,7 @@ type localDevControlPlane struct {
 	registryDir         string
 	registryContainerID string
 	registryHostname    string
+	registryStorage     docker.Storage
 }
 
 func (l *localDevControlPlane) Info() string {
@@ -143,7 +150,6 @@ func (l *localDevControlPlane) Sideload(ctx context.Context, imgMap project.Imag
 		})); err != nil {
 			return err
 		}
-
 	}
 
 	p := filepath.Join(l.registryDir, tag.RepositoryStr())
@@ -177,10 +183,6 @@ func (l *localDevControlPlane) Sideload(ctx context.Context, imgMap project.Imag
 		return errors.Wrap(err, "failed to adjust permissions on sideloaded images")
 	}
 
-	if err := docker.CopyDirectoryToContainer(ctx, l.registryContainerID, l.registryDir, l.registryDir); err != nil {
-		return errors.Wrap(err, "failed to copy images to local registry")
-	}
-
 	rewrite := path.Join(l.registryHostname, tag.RepositoryStr())
 	imgcfg := &pkgv1beta1.ImageConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -207,6 +209,14 @@ func (l *localDevControlPlane) Sideload(ctx context.Context, imgMap project.Imag
 	return nil
 }
 
+func (l *localDevControlPlane) Storage() docker.Storage {
+	return l.registryStorage
+}
+
+func (l *localDevControlPlane) RegistryContainerID() string {
+	return l.registryContainerID
+}
+
 // Option configures EnsureLocalDevControlPlane.
 type Option func(*config)
 
@@ -220,6 +230,7 @@ type config struct {
 	kindConfig        *v1alpha4.Cluster
 	internal          bool
 	dockerNetwork     string
+	storageType       docker.StorageType
 }
 
 // WithName sets the name of the local dev control plane.
@@ -288,6 +299,17 @@ func WithDockerNetwork(network string) Option {
 	}
 }
 
+// WithStorageType configures which kind of storage type to use in the local registry.
+func WithStorageType(storageType docker.StorageType) Option {
+	return func(c *config) {
+		c.storageType = storageType
+	}
+}
+
+const (
+	certDirName string = ".certs"
+)
+
 // EnsureLocalDevControlPlane creates or reuses a local kind-based development
 // control plane with Crossplane installed.
 func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControlPlane, error) { //nolint:gocyclo // Main orchestration function.
@@ -295,6 +317,7 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 		clusterAdmin: true,
 		defaultMRAP:  true,
 		log:          logging.NewNopLogger(),
+		storageType:  docker.StorageTypeBindMount,
 	}
 	for _, opt := range opts {
 		opt(cfg)
@@ -347,8 +370,7 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 		return nil, errors.Wrap(err, "cannot generate certificate for registry")
 	}
 
-	// Create a directory to store sideloaded images and spin up a registry
-	// container that uses it.
+	// Create a directory to store cert and sideloaded images.
 	registryDir := cfg.registryDir
 	if registryDir == "" {
 		registryDir = filepath.Join(os.TempDir(), "crossplane-local-registry")
@@ -358,12 +380,44 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 		return nil, err
 	}
 
+	// Write the TLS cert and key files.
+	certDir := filepath.Join(registryDir, certDirName)
+	if err := os.MkdirAll(certDir, 0o755); err != nil { //nolint:gosec // Container needs to read the dir.
+		return nil, errors.New("failed to create cert directory")
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "ca.crt"), certSecret.Data[certs.SecretKeyCACert], 0o644); err != nil { //nolint:gosec // Container needs to read the file.
+		return nil, errors.New("failed to write ca cert")
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "tls.crt"), certSecret.Data[corev1.TLSCertKey], 0o644); err != nil { //nolint:gosec // Container needs to read the file.
+		return nil, errors.New("failed to write tls cert")
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "tls.key"), certSecret.Data[corev1.TLSPrivateKeyKey], 0o644); err != nil { //nolint:gosec // Container needs to read the file.
+		return nil, errors.New("failed to write tls key")
+	}
+
+	// Create docker registry storage of the specified type (bind-mount or volume).
+	destDir := "/registry-data"
+	var storage docker.Storage
+	switch cfg.storageType {
+	case docker.StorageTypeBindMount:
+		storage = docker.NewBindMountStorage(registryDir, destDir)
+	case docker.StorageTypeVolume:
+		certTarball, err := docker.TarDirectory(registryDir)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to tar cert-directory")
+		}
+		storage = docker.NewVolumeStorage(registryDir, destDir, certTarball)
+	default:
+		return nil, errors.Errorf("unknown registry storage type %q", cfg.storageType)
+	}
+
 	cfg.log.Debug("Ensuring local registry container")
 	networkName := cfg.dockerNetwork
 	if networkName == "" {
 		networkName = "kind"
 	}
-	cid, err := ensureLocalRegistry(ctx, cl, regName, registryDir, certSecret, networkName)
+
+	cid, err := ensureLocalRegistry(ctx, cl, storage, regName, registryDir, certSecret, networkName)
 	if err != nil {
 		return nil, err
 	}
@@ -381,6 +435,7 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 		registryDir:         registryDir,
 		registryContainerID: cid,
 		registryHostname:    regName + ":5000",
+		registryStorage:     storage,
 	}, nil
 }
 
@@ -442,7 +497,6 @@ func ensureKindCluster(cfg config) (clientcmd.ClientConfig, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create temporary kubeconfig")
 	}
-
 	_ = kubeconfigFile.Close()
 	defer func() { _ = os.Remove(kubeconfigFile.Name()) }()
 
@@ -569,9 +623,9 @@ func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clus
 	return nil
 }
 
-func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir string, certSecret *corev1.Secret, networkName string) (string, error) {
+func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.Storage, regName, dir string, certSecret *corev1.Secret, networkName string) (string, error) {
 	const regImage = "ghcr.io/olareg/olareg:edge"
-	certDir := filepath.Join(dir, ".certs")
+	var certDir string = filepath.Join(dir, certDirName)
 
 	// Check for existing registry container.
 	existing, found, err := docker.GetContainerIDByName(ctx, regName, true)
@@ -582,9 +636,6 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir str
 		//nolint:gosec // We don't do anything dangerous with the CA data.
 		caData, err := os.ReadFile(filepath.Join(certDir, "ca.crt"))
 		if err == nil && bytes.Equal(caData, certSecret.Data[certs.SecretKeyCACert]) {
-			if err := docker.CopyDirectoryToContainer(ctx, existing, dir, dir); err != nil {
-				return "", errors.Wrap(err, "failed to copy certificates to existing registry container")
-			}
 			if err := docker.StartContainerByID(ctx, existing); err != nil {
 				return "", errors.Wrap(err, "failed to start existing registry container")
 			}
@@ -594,24 +645,6 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir str
 		if err := teardownLocalRegistry(ctx, existing); err != nil {
 			return "", errors.Wrap(err, "failed to tear down outdated registry")
 		}
-	}
-
-	// Write the TLS cert and key files.
-	if err := os.MkdirAll(certDir, 0o755); err != nil { //nolint:gosec // Container needs to read the dir.
-		return "", errors.New("failed to create cert directory")
-	}
-	if err := os.WriteFile(filepath.Join(certDir, "ca.crt"), certSecret.Data[certs.SecretKeyCACert], 0o644); err != nil { //nolint:gosec // Container needs to read the file.
-		return "", errors.New("failed to write ca cert")
-	}
-	if err := os.WriteFile(filepath.Join(certDir, "tls.crt"), certSecret.Data[corev1.TLSCertKey], 0o644); err != nil { //nolint:gosec // Container needs to read the file.
-		return "", errors.New("failed to write tls cert")
-	}
-	if err := os.WriteFile(filepath.Join(certDir, "tls.key"), certSecret.Data[corev1.TLSPrivateKeyKey], 0o644); err != nil { //nolint:gosec // Container needs to read the file.
-		return "", errors.New("failed to write tls key")
-	}
-	certTar, err := docker.TarDirectory(certDir)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to archive registry certificates")
 	}
 
 	// Find the cluster's docker network, so the registry can join it.
@@ -628,12 +661,20 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir str
 	}
 
 	// Start the registry container.
-	cid, err := docker.StartContainer(ctx, regName, regImage,
-		docker.StartWithCommand([]string{"serve", "--dir=" + dir, "--api-push=false", "--store-ro", "--tls-cert=" + path.Join(dir, ".certs", "tls.crt"), "--tls-key=" + path.Join(dir, ".certs", "tls.key")}),
-		docker.StartWithVolume(dir),
-		docker.StartWithCopyFiles(certTar, dir),
+	startOptions := []docker.StartContainerOption{
+		docker.StartWithCommand([]string{
+			"serve",
+			"--dir=" + storage.DestDir(),
+			"--api-push=false",
+			"--store-ro",
+			"--tls-cert=" + filepath.Join(storage.DestDir(), certDirName, "tls.crt"),
+			"--tls-key=" + filepath.Join(storage.DestDir(), certDirName, "tls.key"),
+		}),
 		docker.StartWithNetworkID(nid),
-	)
+	}
+	startOptions = append(startOptions, storage.ContainerOptions()...)
+
+	cid, err := docker.StartContainer(ctx, regName, regImage, startOptions...)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to start registry container")
 	}

@@ -63,6 +63,13 @@ type dockerRenderEngine struct {
 	// (exit-3 partial output, *docker.ContainerExitError vs non-exit errors)
 	// without a real Docker daemon.
 	runner containerRunner
+
+	// networks creates and removes the temporary Docker network Setup owns.
+	// Production callers leave it nil and Setup builds a real client from the
+	// environment only when it needs to create a network. Tests substitute a
+	// fake to exercise the create-network branch without a real Docker
+	// daemon.
+	networks networkClient
 }
 
 func (e *dockerRenderEngine) CheckContextSupport() error {
@@ -95,7 +102,16 @@ func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (f
 		return func() {}, nil
 	}
 
-	networkID, networkName, err := createRenderNetwork(ctx)
+	cli := e.networks
+	if cli == nil {
+		c, err := newNetworkClient()
+		if err != nil {
+			return func() {}, errors.Wrap(err, "cannot create Docker network for rendering")
+		}
+		cli = c
+	}
+
+	networkID, networkName, err := createRenderNetwork(ctx, cli)
 	if err != nil {
 		return func() {}, errors.Wrap(err, "cannot create Docker network for rendering")
 	}
@@ -104,7 +120,7 @@ func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (f
 	injectNetworkAnnotation(fns, networkName)
 
 	cleanup := func() { //nolint:contextcheck // Detached context for cleanup.
-		_ = removeRenderNetwork(context.Background(), networkID)
+		_ = removeRenderNetwork(context.Background(), cli, networkID)
 	}
 
 	return cleanup, nil

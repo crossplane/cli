@@ -92,6 +92,13 @@ func TestIdentify(t *testing.T) {
 			},
 			expectedBuilder: &goTemplatingBuilder{},
 		},
+		"TypeScript": {
+			files: map[string]string{
+				"package.json":  "{}",
+				"tsconfig.json": "{}",
+			},
+			expectedBuilder: &typescriptBuilder{},
+		},
 		"GoTemplatingInvalidFiles": {
 			files: map[string]string{
 				"template1.gotmpl": "",

@@ -469,9 +469,12 @@ func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, 
 		return nil, err
 	}
 
-	generators := generator.AllLanguages(
-		generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-		generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+	generators := generator.Filter(
+		generator.AllLanguages(
+			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+		),
+		proj.Spec.Schemas.GetLanguages(),
 	)
 
 	depMgr := dependency.NewManager(proj, projFS,

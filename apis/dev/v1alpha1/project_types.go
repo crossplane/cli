@@ -49,15 +49,30 @@ const (
 // ProjectSchemas.Languages. Each corresponds to a schema generator in
 // internal/schemas/generator.
 const (
-	SchemaLanguageGo     = "go"
-	SchemaLanguageJSON   = "json"
-	SchemaLanguageKCL    = "kcl"
-	SchemaLanguagePython = "python"
+	SchemaLanguageGo         = "go"
+	SchemaLanguageJSON       = "json"
+	SchemaLanguageKCL        = "kcl"
+	SchemaLanguagePython     = "python"
+	SchemaLanguageTypeScript = "typescript"
 )
 
 // SupportedSchemaLanguages returns the set of language identifiers accepted
 // in ProjectSchemas.Languages.
 func SupportedSchemaLanguages() []string {
+	return []string{
+		SchemaLanguageGo,
+		SchemaLanguageJSON,
+		SchemaLanguageKCL,
+		SchemaLanguagePython,
+		SchemaLanguageTypeScript,
+	}
+}
+
+// DefaultSchemaLanguages returns the languages generated when
+// ProjectSchemas.Languages is not specified. TypeScript is excluded:
+// generating it starts a Docker container running a Node.js toolchain, so a
+// project must opt in by listing "typescript" explicitly.
+func DefaultSchemaLanguages() []string {
 	return []string{
 		SchemaLanguageGo,
 		SchemaLanguageJSON,
@@ -133,16 +148,19 @@ type ProjectPackageMetadata struct {
 // produced both for the project's own XRDs and for its declared dependencies.
 type ProjectSchemas struct {
 	// Languages restricts schema generation to the listed languages.
-	// Supported values are "go", "json", "kcl", and "python". If not
-	// specified, schemas are generated for all supported languages.
+	// If not specified, schemas are generated for DefaultSchemaLanguages().
+	// TypeScript generation starts a Docker container running a Node.js
+	// toolchain, so it must be listed explicitly to be included.
+	// +kubebuilder:validation:items:Enum=go;json;kcl;python;typescript
 	Languages []string `json:"languages,omitempty"`
 }
 
-// GetLanguages returns the configured schema languages, or nil if no Schemas
-// config is set. It is safe to call on a nil receiver.
+// GetLanguages returns the effective set of schema languages: the configured
+// Languages if any are set, or DefaultSchemaLanguages() otherwise. It is safe
+// to call on a nil receiver.
 func (s *ProjectSchemas) GetLanguages() []string {
-	if s == nil {
-		return nil
+	if s == nil || len(s.Languages) == 0 {
+		return DefaultSchemaLanguages()
 	}
 	return s.Languages
 }

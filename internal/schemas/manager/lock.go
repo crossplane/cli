@@ -19,8 +19,15 @@ package manager
 const lockFileName = ".lock.json"
 
 // lock tracks the versions of sources whose schemas are present in the
-// manager. It is persisted to the manager's filesystem.
+// manager, and the languages those schemas were generated for.
 type lock struct {
+	// Languages the schemas on disk were generated for, sorted.
+	Languages []string `json:"languages,omitempty"`
+
+	// FromMergedPass is true when the language directories were produced by a
+	// single merged generation pass over every source in Packages.
+	FromMergedPass bool `json:"fromMergedPass,omitempty"`
+
 	Packages map[string]string `json:"packages"`
 }
 

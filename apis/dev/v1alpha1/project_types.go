@@ -53,6 +53,7 @@ const (
 	SchemaLanguageJSON   = "json"
 	SchemaLanguageKCL    = "kcl"
 	SchemaLanguagePython = "python"
+	SchemaLanguageRust   = "rust"
 )
 
 // SupportedSchemaLanguages returns the set of language identifiers accepted
@@ -63,6 +64,7 @@ func SupportedSchemaLanguages() []string {
 		SchemaLanguageJSON,
 		SchemaLanguageKCL,
 		SchemaLanguagePython,
+		SchemaLanguageRust,
 	}
 }
 
@@ -133,7 +135,7 @@ type ProjectPackageMetadata struct {
 // produced both for the project's own XRDs and for its declared dependencies.
 type ProjectSchemas struct {
 	// Languages restricts schema generation to the listed languages.
-	// Supported values are "go", "json", "kcl", and "python". If not
+	// Supported values are "go", "json", "kcl", "python", and "rust". If not
 	// specified, schemas are generated for all supported languages.
 	Languages []string `json:"languages,omitempty"`
 }

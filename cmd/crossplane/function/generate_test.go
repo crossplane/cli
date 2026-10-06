@@ -233,6 +233,75 @@ func TestGeneratePythonFiles(t *testing.T) {
 	}
 }
 
+func TestGenerateRustFiles(t *testing.T) {
+	cases := map[string]struct {
+		seedSchemas     map[string][]byte
+		seedSchemaDirs  []string
+		wantFiles       []string
+		wantContains    map[string][]byte
+		wantNotContains map[string][]byte
+	}{
+		"NoSchemas": {
+			wantFiles: []string{
+				".gitignore",
+				"Cargo.toml",
+				"README.md",
+				"rust-toolchain.toml",
+				"src/main.rs",
+				"src/function.rs",
+			},
+			wantContains: map[string][]byte{
+				"Cargo.toml": []byte(`name = "my-func"`),
+				"README.md":  []byte("# my-func"),
+			},
+			wantNotContains: map[string][]byte{
+				"Cargo.toml":      []byte("crossplane-models"),
+				"README.md":       []byte("crossplane-models"),
+				"src/function.rs": []byte("crossplane_models"),
+			},
+		},
+		"WithSchemas": {
+			seedSchemas: map[string][]byte{
+				"rust/Cargo.toml": nil,
+			},
+			wantContains: map[string][]byte{
+				"Cargo.toml":      []byte(`crossplane-models = { path = "../../schemas/rust" }`),
+				"README.md":       []byte("`../../schemas/rust`"),
+				"src/function.rs": []byte("use crossplane_models::"),
+			},
+		},
+		"EmptySchemasDirectory": {
+			seedSchemaDirs: []string{"rust"},
+			wantNotContains: map[string][]byte{
+				"Cargo.toml": []byte("crossplane-models"),
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			schemasFS := seedFS(t, tc.seedSchemas)
+			for _, dir := range tc.seedSchemaDirs {
+				if err := schemasFS.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			c := &generateCmd{
+				Name:      "my-func",
+				schemasFS: schemasFS,
+				proj:      testProject(),
+			}
+			fs := afero.NewMemMapFs()
+			if err := c.generateRustFiles(fs); err != nil {
+				t.Fatal(err)
+			}
+			assertFiles(t, fs, tc.wantFiles)
+			assertContains(t, fs, tc.wantContains, tc.wantNotContains)
+		})
+	}
+}
+
 func TestGenerateGoFiles(t *testing.T) {
 	cases := map[string]struct {
 		seedSchemas  map[string][]byte

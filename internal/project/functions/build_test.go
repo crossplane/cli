@@ -70,6 +70,29 @@ func TestIdentify(t *testing.T) {
 			},
 			expectedBuilder: &pythonBuilder{},
 		},
+		"RustOnly": {
+			files: map[string]string{
+				"Cargo.toml":  "[package]",
+				"src/main.rs": "fn main() {}",
+			},
+			expectedBuilder: &rustBuilder{},
+		},
+		"RustManifestOnly": {
+			files: map[string]string{
+				"Cargo.toml":          "[package]",
+				"src/bin/function.rs": "fn main() {}",
+			},
+			expectedBuilder: &rustBuilder{},
+		},
+		"PythonWithRustExtension": {
+			files: map[string]string{
+				"pyproject.toml": "[project]",
+				"function/fn.py": "",
+				"Cargo.toml":     "[package]",
+			},
+			// pythonBuilder has precedence.
+			expectedBuilder: &pythonBuilder{},
+		},
 		"GoOnly": {
 			files: map[string]string{
 				"go.mod": "module example.com/fake/module",

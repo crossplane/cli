@@ -182,8 +182,12 @@ func (c *runCmd) resolveRunOptions() error {
 	}
 
 	c.storageType = docker.StorageTypeBindMount
-	if c.proj.Spec.Runtime.Registry.Storage.Type == string(docker.StorageTypeVolume) {
-		c.storageType = docker.StorageTypeVolume
+	storageType := c.proj.Spec.Runtime.Registry.Storage.Type
+	if len(strings.TrimSpace(storageType)) > 0 {
+		if !docker.IsValidStorageType(storageType) {
+			return errors.Errorf("%q is an invalid storage type. Supported storage types: %v", storageType, docker.ValidStorageTypes)
+		}
+		c.storageType = docker.StorageType(storageType)
 	}
 
 	return nil

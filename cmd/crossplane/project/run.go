@@ -73,7 +73,7 @@ type runCmd struct {
 	ControlPlaneName  string        `help:"Name of the dev control plane. Defaults to project name."`
 	CrossplaneVersion string        `help:"Version of Crossplane to install."`
 	DockerNetwork     string        `help:"The docker network to start up the dev control plane in. Defaults to kind. This is an experimental feature in KinD."`
-	Internal          bool          `help:"Use internal addresses in the exported kubeconfig. Enable if running crossplane project in a container."`
+	Internal          *bool         `help:"Use internal addresses in the exported kubeconfig. Enable if running crossplane project in a container."`
 	KindConfig        string        `help:"The path to the KinD configuration which should be used to create the local development cluster."`
 	RegistryDir       string        `help:"Directory for local registry images."`
 	ClusterAdmin      bool          `default:"true"                                                                                                             help:"Grant Crossplane the cluster-admin role."                                               negatable:""`
@@ -161,8 +161,8 @@ func (c *runCmd) AfterApply() error {
 
 // resolveRunOptions applies command overrides and project runtime defaults.
 func (c *runCmd) resolveRunOptions() error {
-	if !c.Internal {
-		c.Internal = c.proj.Spec.Runtime.Kind.Internal
+	if c.Internal == nil {
+		c.Internal = &c.proj.Spec.Runtime.Kind.Internal
 	}
 
 	if c.DockerNetwork == "" && len(strings.TrimSpace(c.proj.Spec.Runtime.Kind.Network.Name)) > 0 {
@@ -275,7 +275,7 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 				controlplane.WithDefaultMRAP(c.DefaultMRAP),
 				controlplane.WithLogger(logger),
 				controlplane.WithDockerNetwork(c.DockerNetwork),
-				controlplane.WithInternal(c.Internal),
+				controlplane.WithInternal(*c.Internal),
 				controlplane.WithKindConfig(c.kindConfig),
 				controlplane.WithStorageType(c.storageType),
 			)

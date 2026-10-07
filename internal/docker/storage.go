@@ -16,6 +16,21 @@ const (
 	StorageTypeVolume    StorageType = "volume"
 )
 
+var ValidStorageTypes = []string{
+	string(StorageTypeBindMount),
+	string(StorageTypeVolume),
+}
+
+func IsValidStorageType(storageType string) bool {
+	for _, s := range ValidStorageTypes {
+		if s == storageType {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Storage configures container storage and synchronizes files to it.
 type Storage interface {
 	// ContainerOptions returns the required docker start options for its storage type.

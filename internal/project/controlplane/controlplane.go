@@ -691,6 +691,32 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.S
 		return "", errors.Wrap(err, "failed to look up existing registry container")
 	}
 	if found {
+		if len(strings.TrimSpace(networkName)) == 0 {
+			networkName = "kind"
+		}
+
+		networkID, found, err := docker.GetNetworkIDByName(ctx, networkName)
+		if err != nil {
+			return "", errors.Wrap(err, "failed to get docker network ID for existing registry")
+		}
+		if !found {
+			return "", errors.Errorf("missing docker network %q", networkName)
+		}
+
+		cli, err := docker.NewClient()
+		if err != nil {
+			return "", errors.Wrap(err, "failed to connect to Docker to reconcile existing registry network")
+		}
+		inspect, err := cli.ContainerInspect(ctx, existing, mobyclient.ContainerInspectOptions{})
+		if err != nil {
+			return "", errors.Wrap(err, "failed to inspect existing registry container")
+		}
+		if _, connected := inspect.Container.NetworkSettings.Networks[networkName]; !connected {
+			if _, err := cli.NetworkConnect(ctx, networkID, mobyclient.NetworkConnectOptions{Container: existing}); err != nil {
+				return "", errors.Wrapf(err, "failed to connect existing registry container to Docker network %q", networkName)
+			}
+		}
+
 		if err := docker.StartContainerByID(ctx, existing); err != nil {
 			return "", errors.Wrap(err, "failed to start existing registry container")
 		}

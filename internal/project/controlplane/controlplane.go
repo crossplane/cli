@@ -31,6 +31,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
+	mobyclient "github.com/moby/moby/client"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -331,7 +332,7 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	cfg.name = cfg.name[:nameLen]
 
 	cfg.log.Debug("Ensuring kind cluster", "name", cfg.name, "internal", cfg.internal, "network", cfg.dockerNetwork)
-	kubeconfig, err := ensureKindCluster(*cfg)
+	kubeconfig, err := ensureKindCluster(ctx, *cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -502,7 +503,7 @@ func TeardownLocalDevControlPlane(ctx context.Context, name string, registryDir 
 	return nil
 }
 
-func ensureKindCluster(cfg config) (clientcmd.ClientConfig, error) {
+func ensureKindCluster(ctx context.Context, cfg config) (clientcmd.ClientConfig, error) {
 	provider := kind.NewProvider()
 
 	kubeconfigFile, err := os.CreateTemp("", "crossplane-*.kubeconfig")
@@ -519,6 +520,14 @@ func ensureKindCluster(cfg config) (clientcmd.ClientConfig, error) {
 
 	if !slices.Contains(existing, cfg.name) {
 		if err := createNewKindCluster(provider, cfg, kubeconfigFile.Name()); err != nil {
+			return nil, err
+		}
+	} else {
+		networkName := cfg.dockerNetwork
+		if networkName == "" {
+			networkName = "kind"
+		}
+		if err := ensureKindClusterNetwork(ctx, provider, cfg.name, networkName); err != nil {
 			return nil, err
 		}
 	}
@@ -538,6 +547,44 @@ func ensureKindCluster(cfg config) (clientcmd.ClientConfig, error) {
 	}
 
 	return kubeconfig, nil
+}
+
+func ensureKindClusterNetwork(ctx context.Context, provider *kind.Provider, clusterName, networkName string) error {
+	nodes, err := provider.ListNodes(clusterName)
+	if err != nil {
+		return errors.Wrapf(err, "failed to list nodes in kind cluster %q", clusterName)
+	}
+	if len(nodes) == 0 {
+		return errors.Errorf("kind cluster %q has no nodes to connect to Docker network %q", clusterName, networkName)
+	}
+
+	networkID, found, err := docker.GetNetworkIDByName(ctx, networkName)
+	if err != nil {
+		return errors.Wrapf(err, "failed to look up Docker network %q", networkName)
+	}
+	if !found {
+		return errors.Errorf("missing Docker network %q", networkName)
+	}
+
+	cli, err := docker.NewClient()
+	if err != nil {
+		return errors.Wrap(err, "failed to connect to Docker to ensure kind cluster network")
+	}
+
+	for _, node := range nodes {
+		inspect, err := cli.ContainerInspect(ctx, node.String(), mobyclient.ContainerInspectOptions{})
+		if err != nil {
+			return errors.Wrapf(err, "failed to inspect kind cluster node %q", node.String())
+		}
+		if _, ok := inspect.Container.NetworkSettings.Networks[networkName]; ok {
+			continue
+		}
+		if _, err := cli.NetworkConnect(ctx, networkID, mobyclient.NetworkConnectOptions{Container: node.String()}); err != nil {
+			return errors.Wrapf(err, "failed to connect kind cluster node %q to Docker network %q", node.String(), networkName)
+		}
+	}
+
+	return nil
 }
 
 func createNewKindCluster(provider *kind.Provider, c config, kubeconfigPath string) error {

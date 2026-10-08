@@ -12,7 +12,7 @@ type StorageType string
 
 // Supported container storage backends.
 const (
-	StorageTypeBindMount StorageType = "bindMount"
+	StorageTypeBindMount StorageType = "bind"
 	StorageTypeVolume    StorageType = "volume"
 )
 

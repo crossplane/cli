@@ -684,6 +684,9 @@ func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clus
 
 func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.Storage, regName, dir string, certSecret *corev1.Secret, networkName string) (string, error) {
 	const regImage = "ghcr.io/olareg/olareg:edge"
+	if len(strings.TrimSpace(networkName)) == 0 {
+		networkName = "kind"
+	}
 
 	// Check for existing registry container.
 	existing, found, err := docker.GetContainerIDByName(ctx, regName, true)
@@ -691,18 +694,6 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.S
 		return "", errors.Wrap(err, "failed to look up existing registry container")
 	}
 	if found {
-		if len(strings.TrimSpace(networkName)) == 0 {
-			networkName = "kind"
-		}
-
-		networkID, found, err := docker.GetNetworkIDByName(ctx, networkName)
-		if err != nil {
-			return "", errors.Wrap(err, "failed to get docker network ID for existing registry")
-		}
-		if !found {
-			return "", errors.Errorf("missing docker network %q", networkName)
-		}
-
 		cli, err := docker.NewClient()
 		if err != nil {
 			return "", errors.Wrap(err, "failed to connect to Docker to reconcile existing registry network")
@@ -711,23 +702,51 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.S
 		if err != nil {
 			return "", errors.Wrap(err, "failed to inspect existing registry container")
 		}
-		if _, connected := inspect.Container.NetworkSettings.Networks[networkName]; !connected {
-			if _, err := cli.NetworkConnect(ctx, networkID, mobyclient.NetworkConnectOptions{Container: existing}); err != nil {
-				return "", errors.Wrapf(err, "failed to connect existing registry container to Docker network %q", networkName)
+
+		mountType := ""
+		switch storage.Type() {
+		case docker.StorageTypeBindMount:
+			mountType = "bind"
+		case docker.StorageTypeVolume:
+			mountType = "volume"
+		default:
+			return "", errors.Errorf("unknown registry storage type %q", storage.Type())
+		}
+		storageMatches := false
+		for _, mount := range inspect.Container.Mounts {
+			if mount.Destination == storage.DestDir() && string(mount.Type) == mountType {
+				storageMatches = true
+				break
 			}
 		}
 
-		if err := docker.StartContainerByID(ctx, existing); err != nil {
-			return "", errors.Wrap(err, "failed to start existing registry container")
+		if !storageMatches {
+			if err := teardownLocalRegistry(ctx, existing); err != nil {
+				return "", errors.Wrap(err, "failed to recreate registry with selected storage backend")
+			}
+		} else {
+			networkID, found, err := docker.GetNetworkIDByName(ctx, networkName)
+			if err != nil {
+				return "", errors.Wrap(err, "failed to get docker network ID for existing registry")
+			}
+			if !found {
+				return "", errors.Errorf("missing docker network %q", networkName)
+			}
+
+			if _, connected := inspect.Container.NetworkSettings.Networks[networkName]; !connected {
+				if _, err := cli.NetworkConnect(ctx, networkID, mobyclient.NetworkConnectOptions{Container: existing}); err != nil {
+					return "", errors.Wrapf(err, "failed to connect existing registry container to Docker network %q", networkName)
+				}
+			}
+
+			if err := docker.StartContainerByID(ctx, existing); err != nil {
+				return "", errors.Wrap(err, "failed to start existing registry container")
+			}
+			return existing, nil
 		}
-		return existing, nil
 	}
 
 	// Find the cluster's docker network, so the registry can join it.
-	if len(strings.TrimSpace(networkName)) == 0 {
-		networkName = "kind"
-	}
-
 	nid, found, err := docker.GetNetworkIDByName(ctx, networkName)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to get docker network ID")

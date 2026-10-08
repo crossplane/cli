@@ -16,7 +16,6 @@ const (
 	StorageTypeVolume    StorageType = "volume"
 )
 
-// 
 var ValidStorageTypes = []string{
 	string(StorageTypeBindMount),
 	string(StorageTypeVolume),
@@ -35,6 +34,9 @@ func IsValidStorageType(storageType string) bool {
 
 // Storage configures container storage and synchronizes files to it.
 type Storage interface {
+	// Type identifies the storage backend.
+	Type() StorageType
+
 	// ContainerOptions returns the required docker start options for its storage type.
 	ContainerOptions() []StartContainerOption
 
@@ -62,6 +64,11 @@ func NewBindMountStorage(sourceDir, destDir string) *BindMountStorage {
 		sourceDir: sourceDir,
 		destDir:   destDir,
 	}
+}
+
+// Type returns the bind-mount storage type.
+func (s BindMountStorage) Type() StorageType {
+	return StorageTypeBindMount
 }
 
 // ContainerOptions returns the options for bind-mounting the source directory.
@@ -97,6 +104,11 @@ func NewVolumeStorage(sourceDir, destDir string, initFiles []byte) *VolumeStorag
 		destDir:   destDir,
 		initFiles: initFiles,
 	}
+}
+
+// Type returns the volume storage type.
+func (s VolumeStorage) Type() StorageType {
+	return StorageTypeVolume
 }
 
 // ContainerOptions returns the options for mounting and initializing the volume.

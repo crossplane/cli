@@ -16,11 +16,13 @@ const (
 	StorageTypeVolume    StorageType = "volume"
 )
 
+// 
 var ValidStorageTypes = []string{
 	string(StorageTypeBindMount),
 	string(StorageTypeVolume),
 }
 
+// IsValidStorageType returns true if the supplied storageType string is one of the supported storagetypes.
 func IsValidStorageType(storageType string) bool {
 	for _, s := range ValidStorageTypes {
 		if s == storageType {

@@ -600,6 +600,14 @@ func createNewKindCluster(provider *kind.Provider, c config, kubeconfigPath stri
 	}
 
 	if len(strings.TrimSpace(c.dockerNetwork)) > 0 {
+		prev, had := os.LookupEnv("KIND_EXPERIMENTAL_DOCKER_NETWORK")
+		defer func() {
+			if had {
+				_ = os.Setenv("KIND_EXPERIMENTAL_DOCKER_NETWORK", prev)
+			} else {
+				_ = os.Unsetenv("KIND_EXPERIMENTAL_DOCKER_NETWORK")
+			}
+		}()
 		err := os.Setenv("KIND_EXPERIMENTAL_DOCKER_NETWORK", c.dockerNetwork)
 		if err != nil {
 			return errors.Wrap(err, "failed to set docker network")

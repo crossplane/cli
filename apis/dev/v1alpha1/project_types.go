@@ -158,7 +158,7 @@ type RegistryConfig struct {
 // StorageConfig is the configuration options for storage.
 type StorageConfig struct {
 	// The type of storage to use.
-	// Options: "bindMount" (default), "volume".
+	// Options: "bind" (default), "volume".
 	Type string `json:"type,omitempty"`
 }
 

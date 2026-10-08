@@ -381,6 +381,22 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	if err := os.MkdirAll(certDir, 0o755); err != nil { //nolint:gosec // Container needs to read the dir.
 		return nil, errors.New("failed to create cert directory")
 	}
+	// Check the persisted CA before replacing it. A registry initialized with a
+	// different CA must be recreated so its storage and the cluster trust agree.
+	existing, found, err := docker.GetContainerIDByName(ctx, regName, true)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to look up existing registry container")
+	}
+	if found {
+		//nolint:gosec // We don't do anything dangerous with the CA data.
+		caData, err := os.ReadFile(filepath.Join(certDir, "ca.crt"))
+		if err != nil || !bytes.Equal(caData, certSecret.Data[certs.SecretKeyCACert]) {
+			if err := teardownLocalRegistry(ctx, existing); err != nil {
+				return nil, errors.Wrap(err, "failed to tear down outdated registry")
+			}
+		}
+	}
+
 	if err := os.WriteFile(filepath.Join(certDir, "ca.crt"), certSecret.Data[certs.SecretKeyCACert], 0o644); err != nil { //nolint:gosec // Container needs to read the file.
 		return nil, errors.New("failed to write ca cert")
 	}
@@ -621,7 +637,6 @@ func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clus
 
 func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.Storage, regName, dir string, certSecret *corev1.Secret, networkName string) (string, error) {
 	const regImage = "ghcr.io/olareg/olareg:edge"
-	certDir := filepath.Join(dir, certDirName)
 
 	// Check for existing registry container.
 	existing, found, err := docker.GetContainerIDByName(ctx, regName, true)
@@ -629,18 +644,10 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.S
 		return "", errors.Wrap(err, "failed to look up existing registry container")
 	}
 	if found {
-		//nolint:gosec // We don't do anything dangerous with the CA data.
-		caData, err := os.ReadFile(filepath.Join(certDir, "ca.crt"))
-		if err == nil && bytes.Equal(caData, certSecret.Data[certs.SecretKeyCACert]) {
-			if err := docker.StartContainerByID(ctx, existing); err != nil {
-				return "", errors.Wrap(err, "failed to start existing registry container")
-			}
-			return existing, nil
+		if err := docker.StartContainerByID(ctx, existing); err != nil {
+			return "", errors.Wrap(err, "failed to start existing registry container")
 		}
-
-		if err := teardownLocalRegistry(ctx, existing); err != nil {
-			return "", errors.Wrap(err, "failed to tear down outdated registry")
-		}
+		return existing, nil
 	}
 
 	// Find the cluster's docker network, so the registry can join it.

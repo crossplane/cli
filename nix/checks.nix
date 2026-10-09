@@ -1,34 +1,37 @@
 # CI check builders for Crossplane CLI.
 #
 # Checks run inside the Nix sandbox without network or filesystem access. This
-# makes them fully reproducible but means Go modules must come from gomod2nix.
+# makes them fully reproducible but means Go modules must come from the module
+# cache pinned by nix/vendor-hashes.nix.
 #
-# Most checks use buildGoApplication, which sets up the Go environment with
-# modules from gomod2nix.toml. This is different from apps, which run outside
-# the sandbox and can access Go modules normally.
+# Most checks use buildGoModule with proxyVendor, which makes the full module
+# graph available offline (so the sandboxed checkPhase can `go test`/`go
+# generate`). This is different from apps, which run outside the sandbox and
+# can access Go modules normally.
 #
 # All checks are builder functions that take an attrset of arguments and return
 # a derivation. The actual check definitions live in flake.nix.
 { pkgs, self }:
+let
+  # Go builders backed by a single shared per-module vendor cache.
+  # See nix/go-builders.nix.
+  inherit (import ./go-builders.nix { inherit pkgs self; }) buildRoot;
+in
 {
   # Run Go unit tests with coverage
   test =
     { version }:
-    pkgs.buildGoApplication {
+    buildRoot {
       pname = "crossplane-cli-test";
       inherit version;
       src = self;
-      pwd = self;
-      modules = ../gomod2nix.toml;
-      go = pkgs.unstable.go_1_26;
 
-      CGO_ENABLED = "0";
+      env.CGO_ENABLED = "0";
 
       dontBuild = true;
 
       checkPhase = ''
         runHook preCheck
-        export HOME=$TMPDIR
         go test -covermode=count -coverprofile=coverage.txt ./...
         runHook postCheck
       '';
@@ -42,15 +45,12 @@
   # Run golangci-lint (without --fix, since source is read-only)
   goLint =
     { version }:
-    pkgs.buildGoApplication {
+    buildRoot {
       pname = "crossplane-cli-go-lint";
       inherit version;
       src = self;
-      pwd = self;
-      modules = ../gomod2nix.toml;
-      go = pkgs.unstable.go_1_26;
 
-      CGO_ENABLED = "0";
+      env.CGO_ENABLED = "0";
 
       nativeBuildInputs = [ pkgs.unstable.golangci-lint ];
 
@@ -58,7 +58,6 @@
 
       checkPhase = ''
         runHook preCheck
-        export HOME=$TMPDIR
         export GOLANGCI_LINT_CACHE=$TMPDIR/.cache/golangci-lint
         golangci-lint run
         runHook postCheck
@@ -73,15 +72,12 @@
   # Verify generated code matches committed code
   generate =
     { version }:
-    pkgs.buildGoApplication {
+    buildRoot {
       pname = "crossplane-cli-generate-check";
       inherit version;
       src = self;
-      pwd = self;
-      modules = ../gomod2nix.toml;
-      go = pkgs.unstable.go_1_26;
 
-      CGO_ENABLED = "0";
+      env.CGO_ENABLED = "0";
 
       nativeBuildInputs = [
         pkgs.buf
@@ -95,7 +91,6 @@
 
       checkPhase = ''
         runHook preCheck
-        export HOME=$TMPDIR
 
         echo "Running go generate..."
         go generate -tags generate .

@@ -4,10 +4,17 @@
 # This makes dependencies explicit and keeps flake.nix as a clean manifest.
 #
 # Key primitives used here:
-#   pkgs.buildGoApplication - gomod2nix's Go builder (https://github.com/nix-community/gomod2nix)
+#   pkgs.buildGoModule      - nixpkgs' Go builder, vendors deps (https://nixos.org/manual/nixpkgs/stable/#ssec-go-modules)
 #   pkgs.runCommand         - Run a shell script, capture output directory as $out
 { pkgs, self }:
 let
+  # Go builders backed by a single shared per-module vendor cache.
+  # See nix/go-builders.nix.
+  inherit (import ./go-builders.nix { inherit pkgs self; })
+    buildRootFor
+    rootVendor
+    ;
+
   # Build a Go binary for a specific platform.
   goBinary =
     {
@@ -19,26 +26,20 @@ let
     let
       ext = if platform.os == "windows" then ".exe" else "";
     in
-    pkgs.buildGoApplication {
+    (buildRootFor platform) {
       pname = "${pname}-${platform.os}-${platform.arch}";
       inherit version;
       src = self;
-      pwd = self;
-      modules = "${self}/gomod2nix.toml";
       subPackages = [ subPackage ];
 
-      # Cross-compile by merging GOOS/GOARCH into Go's attrset (// merges attrsets).
-      go = pkgs.unstable.go_1_26 // {
-        GOOS = platform.os;
-        GOARCH = platform.arch;
-      };
-
-      CGO_ENABLED = "0";
+      env.CGO_ENABLED = "0";
       doCheck = false;
 
-      preBuild = ''
-        ldflags="-s -w -X=github.com/crossplane/crossplane-runtime/v2/pkg/version.version=${version}"
-      '';
+      ldflags = [
+        "-s"
+        "-w"
+        "-X=github.com/crossplane/crossplane-runtime/v2/pkg/version.version=${version}"
+      ];
 
       postInstall = ''
         if [ -d $out/bin/${platform.os}_${platform.arch} ]; then
@@ -90,6 +91,13 @@ let
 
 in
 {
+  # Vendored-dependency derivation. Exposed so `nix run .#tidy` can rebuild it
+  # to capture a fresh vendor hash. Building this realises only the vendor dir,
+  # not the binaries.
+  vendor = {
+    root = rootVendor;
+  };
+
   # Host-native CLI binary. This is the default package, so nix build and nix
   # run give you a binary for your own machine rather than the full release.
   binary =

@@ -94,6 +94,17 @@ type OperationOutputs struct {
 	RequiredSchemas   []*fnv1.SchemaSelector
 }
 
+const (
+	// runtimeStopMargin is how much longer than containerStopGracePeriod
+	// StopFunctionRuntimes waits for each runtime to stop. It covers killing
+	// and removing the container once the grace period has expired.
+	runtimeStopMargin = 5 * time.Second
+
+	// runtimeStopTimeout bounds how long StopFunctionRuntimes waits for each
+	// runtime to stop.
+	runtimeStopTimeout = containerStopGracePeriod + runtimeStopMargin
+)
+
 // FunctionAddresses maps function names to their gRPC target addresses.
 type FunctionAddresses struct {
 	addrs    map[string]string
@@ -105,32 +116,54 @@ func (fa *FunctionAddresses) Addresses() map[string]string {
 	return fa.addrs
 }
 
-// Stop all function runtimes.
+// Stop all function runtimes. Every runtime is stopped even if some fail; the
+// returned error joins all failures.
 func (fa *FunctionAddresses) Stop(ctx context.Context) error {
+	return fa.stop(ctx, 0)
+}
+
+// stop stops every function runtime and returns all failures joined. If
+// timeout is positive each runtime gets its own timeout derived from ctx.
+func (fa *FunctionAddresses) stop(ctx context.Context, timeout time.Duration) error {
+	var errs []error
 	for name, rctx := range fa.contexts {
-		if err := rctx.Stop(ctx); err != nil {
-			return errors.Wrapf(err, "cannot stop function %q runtime (target %q)", name, rctx.Target)
+		sctx, cancel := ctx, context.CancelFunc(func() {})
+		if timeout > 0 {
+			sctx, cancel = context.WithTimeout(ctx, timeout)
 		}
+		if err := rctx.Stop(sctx); err != nil {
+			errs = append(errs, errors.Wrapf(err, "cannot stop function %q runtime (target %q)", name, rctx.Target))
+		}
+		cancel()
 	}
-	return nil
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(errs...)
 }
 
 // StartFunctionRuntimes starts the runtime for each function and returns their
 // gRPC addresses. The caller must call Stop on the returned FunctionAddresses
 // when done.
 func StartFunctionRuntimes(ctx context.Context, log logging.Logger, fns []pkgv1.Function) (*FunctionAddresses, error) {
+	return startFunctionRuntimes(ctx, log, fns, GetRuntime)
+}
+
+// startFunctionRuntimes implements StartFunctionRuntimes, using getRuntime to
+// get each Function's runtime.
+func startFunctionRuntimes(ctx context.Context, log logging.Logger, fns []pkgv1.Function, getRuntime func(pkgv1.Function, logging.Logger) (Runtime, error)) (*FunctionAddresses, error) {
 	addrs := make(map[string]string, len(fns))
 	contexts := make(map[string]RuntimeContext, len(fns))
 
 	for _, fn := range fns {
-		rt, err := GetRuntime(fn, log)
+		rt, err := getRuntime(fn, log)
 		if err != nil {
-			return nil, errors.Wrapf(err, "cannot get runtime for Function %q", fn.GetName())
+			return nil, stopStarted(ctx, &FunctionAddresses{addrs: addrs, contexts: contexts}, errors.Wrapf(err, "cannot get runtime for Function %q", fn.GetName()))
 		}
 
 		rctx, err := rt.Start(ctx)
 		if err != nil {
-			return nil, errors.Wrapf(err, "cannot start Function %q", fn.GetName())
+			return nil, stopStarted(ctx, &FunctionAddresses{addrs: addrs, contexts: contexts}, errors.Wrapf(err, "cannot start Function %q", fn.GetName()))
 		}
 
 		addrs[fn.GetName()] = rctx.Target
@@ -138,6 +171,16 @@ func StartFunctionRuntimes(ctx context.Context, log logging.Logger, fns []pkgv1.
 	}
 
 	return &FunctionAddresses{addrs: addrs, contexts: contexts}, nil
+}
+
+// stopStarted stops the runtimes started before a later Function failed to
+// start. It returns startErr, joined with any stop errors. The stop context is
+// detached from ctx's cancellation, since ctx may be why the start failed.
+func stopStarted(ctx context.Context, fa *FunctionAddresses, startErr error) error {
+	if err := fa.stop(context.WithoutCancel(ctx), runtimeStopTimeout); err != nil {
+		return errors.Join(startErr, err)
+	}
+	return startErr
 }
 
 // RewriteAddressesForDocker rewrites function addresses so they are reachable
@@ -167,16 +210,15 @@ func injectNetworkAnnotation(fns []pkgv1.Function, networkName string) {
 	}
 }
 
-// StopFunctionRuntimes stops all function runtimes with a timeout.
-func StopFunctionRuntimes(log logging.Logger, fa *FunctionAddresses) {
+// StopFunctionRuntimes stops all function runtimes and returns all failures
+// joined. Cleanup runs even if ctx is already cancelled: each runtime gets its
+// own timeout derived from ctx without its cancellation, so a slow runtime
+// can't starve the others and cleanup stays bounded.
+func StopFunctionRuntimes(ctx context.Context, fa *FunctionAddresses) error {
 	if fa == nil {
-		return
+		return nil
 	}
-	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := fa.Stop(stopCtx); err != nil {
-		log.Info("Error stopping function runtimes", "error", err)
-	}
+	return fa.stop(context.WithoutCancel(ctx), runtimeStopTimeout)
 }
 
 // OverrideFunctionAnnotations applies annotation overrides from flags to

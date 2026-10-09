@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/containerd/errdefs"
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -87,12 +88,15 @@ type DockerCleanup string
 
 // Supported AnnotationKeyRuntimeDockerCleanup values.
 const (
-	// AnnotationValueRuntimeDockerCleanupStop is the default. It stops the
-	// container once rendering is done.
+	// AnnotationValueRuntimeDockerCleanupStop stops the container once
+	// rendering is done, waiting up to containerStopGracePeriod for it to exit
+	// on SIGTERM before Docker kills it.
 	AnnotationValueRuntimeDockerCleanupStop DockerCleanup = "Stop"
 
-	// AnnotationValueRuntimeDockerCleanupRemove stops and removes the
-	// container once rendering is done.
+	// AnnotationValueRuntimeDockerCleanupRemove is the default. It stops the
+	// container once rendering is done, waiting up to containerStopGracePeriod
+	// for it to exit on SIGTERM, then force removes it. The container is
+	// removed even if the graceful stop fails.
 	AnnotationValueRuntimeDockerCleanupRemove DockerCleanup = "Remove"
 
 	// AnnotationValueRuntimeDockerCleanupOrphan leaves the container running
@@ -101,6 +105,10 @@ const (
 
 	AnnotationValueRuntimeDockerCleanupDefault = AnnotationValueRuntimeDockerCleanupRemove
 )
+
+// containerStopGracePeriod is how long the Stop and Remove cleanup policies
+// wait for a Function container to exit on SIGTERM before Docker kills it.
+const containerStopGracePeriod = 3 * time.Second
 
 // AnnotationKeyRuntimeDockerPullPolicy can be added to a Function to control how its runtime
 // image is pulled.
@@ -512,19 +520,27 @@ func (r *RuntimeDocker) Start(ctx context.Context) (RuntimeContext, error) {
 
 	// Inline stop function
 	stop := func(ctx context.Context) error {
+		grace := int(containerStopGracePeriod / time.Second)
+		stopOpts := client.ContainerStopOptions{Timeout: &grace}
+
 		switch r.Cleanup {
 		case AnnotationValueRuntimeDockerCleanupOrphan:
 			return nil
 		case AnnotationValueRuntimeDockerCleanupStop:
-			if _, err := cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{}); err != nil {
+			if _, err := cli.ContainerStop(ctx, containerID, stopOpts); err != nil {
 				return errors.Wrap(err, "cannot stop Docker container")
 			}
 		case AnnotationValueRuntimeDockerCleanupRemove:
-			if _, err := cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{}); err != nil {
-				return errors.Wrap(err, "cannot stop Docker container")
+			// Give the container a chance to exit gracefully, then force
+			// remove it whether or not the stop succeeded, so a container
+			// that's slow to exit on SIGTERM can't cause removal to be
+			// skipped. A stop failure only matters if removal fails too.
+			var stopErr error
+			if _, err := cli.ContainerStop(ctx, containerID, stopOpts); err != nil {
+				stopErr = errors.Wrap(err, "cannot stop Docker container")
 			}
-			if _, err := cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{}); err != nil {
-				return errors.Wrap(err, "cannot remove Docker container")
+			if _, err := cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true}); err != nil {
+				return errors.Join(errors.Wrap(err, "cannot remove Docker container"), stopErr)
 			}
 		}
 

@@ -23,7 +23,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
@@ -39,10 +38,10 @@ const (
 // FetchCrossplaneVersion initializes a Kubernetes client and fetches
 // and returns the version of the Crossplane deployment. If the version
 // does not have a leading 'v', it prepends it.
-func FetchCrossplaneVersion(ctx context.Context, imp kube.ImpersonationFlags) (string, error) {
+func FetchCrossplaneVersion(ctx context.Context, kc kube.ConfigFlags, imp kube.ImpersonationFlags) (string, error) {
 	var version string
 
-	config, err := ctrl.GetConfig()
+	config, err := kc.RESTConfig()
 	if err != nil {
 		return "", errors.Wrap(err, errKubeConfig)
 	}

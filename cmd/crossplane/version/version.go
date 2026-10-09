@@ -38,6 +38,7 @@ const (
 type Cmd struct {
 	Client bool `env:"" help:"If true, shows client version only (no server required)."`
 
+	Config        kube.ConfigFlags        `embed:""`
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
 
@@ -52,7 +53,7 @@ func (c *Cmd) Run(k *kong.Context) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	vxp, err := FetchCrossplaneVersion(ctx, c.Impersonation)
+	vxp, err := FetchCrossplaneVersion(ctx, c.Config, c.Impersonation)
 	if err != nil {
 		return errors.Wrap(err, errGetCrossplaneVersion)
 	}

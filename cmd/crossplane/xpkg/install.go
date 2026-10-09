@@ -29,7 +29,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -70,6 +69,7 @@ type installCmd struct {
 	RevisionHistoryLimit int64         `help:"Number of package revisions that can exist before garbage collection."                                   placeholder:"LIMIT"                                                                                       short:"r"`
 	Wait                 time.Duration `default:"0s"                                                                                                   help:"How long to wait for the package to install before returning. The command doesn't wait by default." short:"w"`
 
+	Config        kube.ConfigFlags        `embed:""`
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
 
@@ -147,7 +147,7 @@ func (c *installCmd) Run(k *kong.Context, logger logging.Logger) error {
 		rpkg.SetRuntimeConfigRef(&v1.RuntimeConfigReference{Name: c.RuntimeConfig})
 	}
 
-	cfg, err := ctrl.GetConfig()
+	cfg, err := c.Config.RESTConfig()
 	if err != nil {
 		return errors.Wrap(err, errKubeConfig)
 	}

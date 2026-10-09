@@ -26,7 +26,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -52,6 +51,7 @@ type updateCmd struct {
 	Package string `arg:"" help:"The package to update to. Must be fully qualified, including the registry, repository, and tag."                  placeholder:"REGISTRY/REPOSITORY:TAG"`
 	Name    string `arg:"" help:"The name of the package to update in the Crossplane API. Derived from the package repository and tag by default." optional:""`
 
+	Config        kube.ConfigFlags        `embed:""`
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
 
@@ -92,7 +92,7 @@ func (c *updateCmd) Run(k *kong.Context, logger logging.Logger) error {
 		return errors.Errorf("unsupported package kind %q", c.Kind)
 	}
 
-	cfg, err := ctrl.GetConfig()
+	cfg, err := c.Config.RESTConfig()
 	if err != nil {
 		return errors.Wrap(err, errKubeConfig)
 	}

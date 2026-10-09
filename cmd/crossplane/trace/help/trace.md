@@ -15,7 +15,8 @@ You can further specify the kind as `TYPE[.VERSION][.GROUP]` if needed; for
 example, `mykind.example.org` or `mykind.v1alpha1.example.org`.
 
 By default, `crossplane resource trace` uses the Kubernetes configuration at
-`~/.kube/config`. Override with the `KUBECONFIG` environment variable.
+`~/.kube/config`. Override with the `--kubeconfig` flag or the `KUBECONFIG`
+environment variable.
 
 ## Output options
 

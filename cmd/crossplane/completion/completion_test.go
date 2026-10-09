@@ -9,6 +9,39 @@ import (
 	"github.com/crossplane/cli/v2/internal/kube"
 )
 
+func TestParseConfigFlags(t *testing.T) {
+	cases := map[string]struct {
+		reason string
+		args   []string
+		want   kube.ConfigFlags
+	}{
+		"Equals": {
+			reason: "The --flag=value form is parsed.",
+			args:   []string{"trace", "x", "--kubeconfig=/tmp/kubeconfig"},
+			want:   kube.ConfigFlags{Kubeconfig: "/tmp/kubeconfig"},
+		},
+		"Space": {
+			reason: "The --flag value form is parsed.",
+			args:   []string{"--kubeconfig", "/tmp/kubeconfig"},
+			want:   kube.ConfigFlags{Kubeconfig: "/tmp/kubeconfig"},
+		},
+		"None": {
+			reason: "No --kubeconfig flag yields the zero value.",
+			args:   []string{"trace", "x"},
+			want:   kube.ConfigFlags{},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := parseConfigFlags(complete.Args{All: tc.args})
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("%s\nparseConfigFlags(): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
 func TestParseImpersonation(t *testing.T) {
 	cases := map[string]struct {
 		reason string

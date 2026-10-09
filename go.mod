@@ -26,8 +26,8 @@ require (
 	github.com/google/ko v0.18.1
 	github.com/invopop/jsonschema v0.14.0
 	github.com/kubernetes-sigs/kro v0.9.2
-	github.com/moby/moby/api v1.56.0
-	github.com/moby/moby/client v0.5.1
+	github.com/moby/moby/api v1.56.1
+	github.com/moby/moby/client v0.6.2
 	github.com/muesli/termenv v0.16.0
 	github.com/oapi-codegen/oapi-codegen/v2 v2.8.0
 	github.com/pkg/errors v0.9.1
@@ -62,7 +62,7 @@ require (
 	cel.dev/expr v0.25.2 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/Azure/azure-sdk-for-go v68.0.0+incompatible // indirect
-	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
+	github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4 // indirect
 	github.com/Azure/go-autorest v14.2.0+incompatible // indirect
 	github.com/Azure/go-autorest/autorest v0.11.30 // indirect
 	github.com/Azure/go-autorest/autorest/adal v0.9.24 // indirect
@@ -132,7 +132,7 @@ require (
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/docker/docker-credential-helpers v0.9.6 // indirect
-	github.com/docker/go-connections v0.8.1 // indirect
+	github.com/docker/go-connections v0.8.2 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dprotaso/go-yit v0.0.0-20250513223454-5ece0c5aa76c // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

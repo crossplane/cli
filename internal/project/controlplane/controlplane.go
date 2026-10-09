@@ -30,6 +30,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
+	"github.com/moby/go-archive"
 	mobyclient "github.com/moby/moby/client"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -422,7 +423,9 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	case docker.StorageTypeBindMount:
 		storage = docker.NewBindMountStorage(registryDir, destDir)
 	case docker.StorageTypeVolume:
-		certTarball, err := docker.TarDirectory(registryDir)
+		certTarball, err := docker.TarDirectory(registryDir, archive.TarOptions{
+			IncludeFiles: []string{certDirName},
+		})
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to tar cert-directory")
 		}

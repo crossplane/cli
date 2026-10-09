@@ -113,8 +113,8 @@ func (c *Cmd) AfterApply() error {
 }
 
 // Run render.
-func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocognit // Orchestration is inherently complex.
-	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocognit // Orchestration is inherently complex.
+	ctx, cancel := context.WithTimeout(baseCtx, c.Timeout)
 	defer cancel()
 
 	xr, err := render.LoadCompositeResource(c.fs, c.CompositeResource)
@@ -278,7 +278,12 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 	if err != nil {
 		return errors.Wrap(err, "cannot start function runtimes")
 	}
-	defer render.StopFunctionRuntimes(log, fnAddrs)
+	defer func() {
+		if err := render.StopFunctionRuntimes(ctx, fnAddrs); err != nil {
+			log.Info("Error stopping function runtimes", "error", err)
+			render.WarnCleanupFailure(k.Stderr, err)
+		}
+	}()
 
 	// Build and execute the render request.
 	in := render.CompositionInputs{

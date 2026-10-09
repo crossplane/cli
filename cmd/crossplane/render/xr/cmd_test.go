@@ -607,7 +607,7 @@ func TestCmdRun(t *testing.T) {
 			buf := &bytes.Buffer{}
 			kctx := &kong.Context{Kong: &kong.Kong{Stdout: buf, Stderr: io.Discard}}
 
-			err := tc.args.cmd.Run(kctx, logging.NewNopLogger(), terminal.NewSpinnerPrinter(io.Discard, false), &config.Config{})
+			err := tc.args.cmd.Run(t.Context(), kctx, logging.NewNopLogger(), terminal.NewSpinnerPrinter(io.Discard, false), &config.Config{})
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nRun(...): -want error, +got error:\n%s", tc.reason, diff)
 			}

@@ -21,10 +21,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	bspinner "charm.land/bubbles/v2/spinner"
@@ -283,24 +281,16 @@ func (m *MultiSpinner) Start() {
 		tea.WithOutput(m.out),
 	)
 
-	go runProgramWithSignalHandler(m.program)
+	go runProgram(m.program)
 }
 
-func runProgramWithSignalHandler(p *tea.Program) {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	defer func() {
-		signal.Stop(sigCh)
-		close(sigCh)
-	}()
-	go func() {
-		_, ok := <-sigCh
-		if ok {
-			_ = p.ReleaseTerminal()
-			os.Exit(130)
-		}
-	}()
-
+// runProgram runs p until it quits. It doesn't handle signals: main's
+// signal.NotifyContext does that once for all commands by cancelling the
+// command context. Spinner lifetime is handled once by the SpinnerPrinter
+// wrappers, which start the spinner, run the wrapped func, then stop it, so a
+// spinner stops when cancellation makes the wrapped func return. Exiting here
+// would skip the command's deferred cleanup.
+func runProgram(p *tea.Program) {
 	_, _ = p.Run()
 }
 
@@ -429,7 +419,7 @@ func (ss *SuccessSpinner) Start() {
 		tea.WithoutSignalHandler(),
 	)
 
-	go runProgramWithSignalHandler(ss.program)
+	go runProgram(ss.program)
 }
 
 func (ss *SuccessSpinner) stop() {

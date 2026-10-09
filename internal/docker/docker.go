@@ -464,6 +464,10 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 		return nil, nil, err
 	}
 	defer attach.Close()
+	// StdCopy below doesn't observe ctx, so close the attach connection on
+	// cancellation to unblock it rather than waiting for the container to exit.
+	stopClose := context.AfterFunc(ctx, func() { attach.Close() })
+	defer stopClose()
 
 	// Write stdin data if provided, then close the write side so the
 	// container sees EOF.
@@ -478,6 +482,9 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 
 	var stdout, stderr bytes.Buffer
 	if _, err := stdcopy.StdCopy(&stdout, &stderr, attach.Reader); err != nil {
+		if ctx.Err() != nil {
+			return nil, nil, errors.Wrap(ctx.Err(), "failed to read container output")
+		}
 		return nil, nil, errors.Wrap(err, "failed to read container output")
 	}
 

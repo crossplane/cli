@@ -625,8 +625,8 @@ func TarFromContainer(ctx context.Context, cid, path string) ([]byte, error) {
 }
 
 // TarDirectory tars a directory.
-func TarDirectory(dir string) ([]byte, error) {
-	rd, err := archive.TarWithOptions(dir, &archive.TarOptions{}) // archive.TarResourceRebaseOpts(base, base))
+func TarDirectory(dir string, tarOptions archive.TarOptions) ([]byte, error) {
+	rd, err := archive.TarWithOptions(dir, &tarOptions) // archive.TarResourceRebaseOpts(base, base))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to archive %s", dir)
 	}

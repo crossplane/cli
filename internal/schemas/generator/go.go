@@ -65,6 +65,18 @@ const (
 	k8sPkgNameAutoscaling = "autoscaling"
 )
 
+// isK8sSharedTypeRef reports whether ref names one of the k8s API machinery
+// types goReferenceK8sTypeWithMetaPath moves into a separately generated
+// shared package.
+func isK8sSharedTypeRef(ref string) bool {
+	return strings.Contains(ref, k8sPkgMetaV1) ||
+		strings.Contains(ref, k8sPkgCoreV1) ||
+		strings.Contains(ref, k8sPkgRuntime) ||
+		strings.Contains(ref, k8sPkgIntStr) ||
+		strings.Contains(ref, k8sPkgResource) ||
+		strings.Contains(ref, k8sPkgAutoscalingV1)
+}
+
 // goModContents is the contents of the go.mod we write for our generated models
 // module. All generated models share the same module so that we can generate a
 // single dependency from embedded Go functions. We always resolve this
@@ -237,10 +249,24 @@ var (
 // goGenerator generates Go models. accessors controls whether GetX/SetX
 // accessor methods are emitted for the generated structs; runtimeObjects
 // controls whether DeepCopy / runtime.Object methods and per-package
-// AddToScheme helpers are emitted.
+// AddToScheme helpers are emitted; requiredObjectFields controls whether a
+// required object-typed property generates as a non-pointer value (see
+// goRemoveRequired) instead of the all-pointer/all-optional default.
 type goGenerator struct {
-	accessors      bool
-	runtimeObjects bool
+	accessors            bool
+	runtimeObjects       bool
+	requiredObjectFields bool
+}
+
+// requiredMutator returns the required-field mutator matching g's
+// requiredObjectFields setting: goRemoveRequired when enabled, or
+// goRemoveRequiredAll (the pre-existing, all-fields-optional behavior)
+// when disabled.
+func (g goGenerator) requiredMutator() func(*spec3.OpenAPI) {
+	if g.requiredObjectFields {
+		return goRemoveRequired
+	}
+	return goRemoveRequiredAll
 }
 
 func (goGenerator) Language() string {
@@ -296,7 +322,7 @@ func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 			goRenameTypes,
 			goRenameEnums,
 			goReplaceNumberWithInt,
-			goRemoveRequired,
+			g.requiredMutator(),
 			goReferenceK8sTypesForCRDs,
 			goRemoveK8s,
 			goKeepOnlyComponents,
@@ -376,7 +402,7 @@ func (g goGenerator) generateSharedK8sPackage(schemaFS afero.Fs, pkg string, sch
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,
-		goRemoveRequired,
+		g.requiredMutator(),
 		refMutator,
 	)
 	if err != nil {
@@ -961,30 +987,239 @@ func goSchemaIsValidationOnly(s *spec.Schema) bool {
 	return true
 }
 
-// goRemoveRequired removes the required fields from schemas. We want all fields
-// in our generated models to be optional (so functions can set only the fields
-// they wish to own).
+// goRemoveRequired removes required-ness from every field except required
+// object-typed properties, which keep it so oapi-codegen generates them as
+// non-pointer values. That matches how real Kubernetes types declare
+// required nested objects (e.g. a managed resource's Spec.ForProvider): the
+// zero value marshals as `{}`, satisfying the CRD's required-key check
+// without a caller ever setting it. Everything else keeps this generator's
+// all-pointer/all-optional convention, since DeepCopy and accessor
+// generation assume it.
+//
+// Gated behind the features.generateGoRequiredObjectFields config flag (see
+// goGenerator.requiredObjectFields); goRemoveRequiredAll is used instead when
+// the flag is disabled.
 func goRemoveRequired(s *spec3.OpenAPI) {
-	for _, schema := range s.Components.Schemas {
-		schema.Required = nil
-		goRemovePropertiesRequired(schema.Properties)
+	schemas := s.Components.Schemas
+	reaches := goRequiredValueReachability(schemas)
+	for name, schema := range schemas {
+		schema.Required = filterRequiredObjectFields(name, schema.Required, schema.Properties, schemas, reaches)
+		goRemovePropertiesRequired(name, schema.Properties, schemas, reaches)
 		if schema.Items != nil {
-			goRemovePropertiesRequired(schema.Items.Schema.Properties)
+			// Items sit behind a slice, which already breaks value
+			// containment, so there's no root to defend against here.
+			goRemovePropertiesRequired("", schema.Items.Schema.Properties, schemas, reaches)
 		}
 	}
 }
 
-func goRemovePropertiesRequired(props map[string]spec.Schema) {
+// goRemovePropertiesRequired filters props' nested required lists. root is
+// the named component schema these properties are, by value, ultimately
+// part of; it's threaded through unchanged into nested inline properties,
+// and cleared (disabling the cycle check in filterRequiredObjectFields) when
+// descending into an Items schema, since a slice element doesn't contribute
+// to its container's size.
+func goRemovePropertiesRequired(root string, props map[string]spec.Schema, schemas map[string]*spec.Schema, reaches map[string]map[string]bool) {
 	for name, prop := range props {
-		prop.Required = nil
-		goRemovePropertiesRequired(prop.Properties)
+		prop.Required = filterRequiredObjectFields(root, prop.Required, prop.Properties, schemas, reaches)
+		goRemovePropertiesRequired(root, prop.Properties, schemas, reaches)
 		if prop.Items != nil {
-			prop.Items.Schema.Required = nil
-			goRemovePropertiesRequired(prop.Items.Schema.Properties)
+			prop.Items.Schema.Required = filterRequiredObjectFields("", prop.Items.Schema.Required, prop.Items.Schema.Properties, schemas, reaches)
+			goRemovePropertiesRequired("", prop.Items.Schema.Properties, schemas, reaches)
 		}
 
 		props[name] = prop
 	}
+}
+
+// goRemoveRequiredAll unconditionally clears every schema's required list, so
+// every generated field is optional and callers can set only the fields they
+// wish to own. This is goRemoveRequired's behavior with
+// features.generateGoRequiredObjectFields disabled.
+func goRemoveRequiredAll(s *spec3.OpenAPI) {
+	for _, schema := range s.Components.Schemas {
+		schema.Required = nil
+		goRemoveAllPropertiesRequired(schema.Properties)
+		if schema.Items != nil {
+			goRemoveAllPropertiesRequired(schema.Items.Schema.Properties)
+		}
+	}
+}
+
+func goRemoveAllPropertiesRequired(props map[string]spec.Schema) {
+	for name, prop := range props {
+		prop.Required = nil
+		goRemoveAllPropertiesRequired(prop.Properties)
+		if prop.Items != nil {
+			prop.Items.Schema.Required = nil
+			goRemoveAllPropertiesRequired(prop.Items.Schema.Properties)
+		}
+
+		props[name] = prop
+	}
+}
+
+// filterRequiredObjectFields returns the subset of required naming a
+// struct-shaped property (see isStructShapedProperty) that doesn't also
+// close a value cycle back to root; those are the only properties allowed
+// to stay required. Returns nil, not an empty slice, so the emitted OpenAPI
+// has no empty `required: []`.
+func filterRequiredObjectFields(root string, required []string, props map[string]spec.Schema, schemas map[string]*spec.Schema, reaches map[string]map[string]bool) []string {
+	var kept []string
+	for _, name := range required {
+		prop, ok := props[name]
+		if !ok || !isStructShapedProperty(prop, schemas) {
+			continue
+		}
+		if root != "" {
+			if target := schemaRefName(prop); target != "" && (target == root || reaches[target][root]) {
+				continue
+			}
+		}
+		kept = append(kept, name)
+	}
+	return kept
+}
+
+// isStructShapedProperty reports whether prop is the kind of object schema
+// oapi-codegen generates as a Go struct rather than a bare map. That's true
+// whenever it has named properties, whether or not it also allows additional
+// properties: oapi-codegen v2 emits a struct with a field per named property
+// plus an extra AdditionalProperties map field, not a plain map, once any
+// named properties are present. Only a map-only object (additionalProperties
+// with no named properties), or a scalar/array, is excluded.
+//
+// A direct $ref, or an allOf with exactly one element that is itself a $ref,
+// has no inline properties of its own (e.g. Kubernetes' OpenAPI shapes a
+// required nested object as `{allOf: [{$ref: "#/components/schemas/Foo"}]}`
+// to attach a description/default alongside the reference), so it's resolved
+// against schemas first — but only when prop has no properties of its own.
+// A $ref or allOf alongside sibling inline properties, or an allOf with more
+// than one element, is excluded even though oapi-codegen v2.8 may resolve
+// one of its members to a struct: in either shape, oapi-codegen merges the
+// result into an anonymous inline struct literal, not a reference to a named
+// local type. An anonymous struct can't be given a DeepCopyInto method and
+// isn't a locally declared struct this generator's accessors/DeepCopy code
+// can recognize, so treating it as struct-shaped would produce a shallow,
+// aliasing DeepCopy. Only a lone $ref (direct, or the sole allOf member)
+// with no sibling properties resolves to a named type and is safe.
+//
+// A ref to one of the k8s API machinery types goReferenceK8sType moves into a
+// separately generated shared package is excluded even though it resolves to
+// a struct: it becomes a cross-package value type, and this generator's
+// accessors and DeepCopy machinery only special-case a non-pointer field that
+// is a locally declared struct, so such a field must stay a pointer.
+func isStructShapedProperty(prop spec.Schema, schemas map[string]*spec.Schema) bool {
+	if ref := schemaRef(prop); ref.String() != "" && isK8sSharedTypeRef(ref.String()) {
+		return false
+	}
+	if len(prop.Properties) > 0 {
+		return prop.Ref.String() == "" && len(prop.AllOf) == 0
+	}
+	if len(prop.AllOf) > 1 {
+		return false
+	}
+	return len(resolveLocalSchemaRef(prop, schemas).Properties) > 0
+}
+
+// schemaRef returns prop's direct $ref, or the $ref of an allOf with exactly
+// one element, or the zero Ref if prop isn't ref-shaped.
+func schemaRef(prop spec.Schema) spec.Ref {
+	if prop.Ref.String() != "" {
+		return prop.Ref
+	}
+	if len(prop.AllOf) == 1 {
+		return prop.AllOf[0].Ref
+	}
+	return spec.Ref{}
+}
+
+// schemaRefName returns the component name schemaRef(prop) names, or "" if
+// prop isn't ref-shaped.
+func schemaRefName(prop spec.Schema) string {
+	ref := schemaRef(prop)
+	return strings.TrimPrefix(ref.String(), "#/components/schemas/")
+}
+
+// resolveLocalSchemaRef follows prop's direct $ref, or the $ref of an allOf
+// with exactly one element, to the schema it names in schemas. Returns prop
+// unchanged if it isn't ref-shaped, or if the ref doesn't resolve locally.
+func resolveLocalSchemaRef(prop spec.Schema, schemas map[string]*spec.Schema) spec.Schema {
+	name := schemaRefName(prop)
+	if name == "" {
+		return prop
+	}
+	if resolved, ok := schemas[name]; ok && resolved != nil {
+		return *resolved
+	}
+	return prop
+}
+
+// goRequiredValueReachability returns, for each named component schema, the
+// set of other named component schemas it would contain by value if every
+// eligible required object-typed field were kept non-pointer. It's computed
+// once, up front, over the unmodified schema graph, so the result doesn't
+// depend on the order goRemoveRequired happens to visit schemas in.
+//
+// filterRequiredObjectFields uses it to keep a required $ref pointer-shaped
+// when the alternative would make oapi-codegen emit a Go struct that
+// contains itself by value — directly, or through another schema's own
+// required fields (e.g. two schemas requiring each other) — which doesn't
+// compile.
+func goRequiredValueReachability(schemas map[string]*spec.Schema) map[string]map[string]bool {
+	edges := make(map[string]map[string]bool, len(schemas))
+	for name, schema := range schemas {
+		edges[name] = requiredValueEdges(schema.Properties, schema.Required, schemas)
+	}
+
+	reaches := make(map[string]map[string]bool, len(edges))
+	for name := range edges {
+		reaches[name] = reachableFrom(name, edges)
+	}
+	return reaches
+}
+
+// requiredValueEdges returns the component schema names that required's
+// struct-shaped fields (see isStructShapedProperty) reference by value,
+// following nested inline structs but stopping at the first $ref — that's
+// the next node in the graph, walked separately. It doesn't follow Items or
+// AdditionalProperties: a slice or map already breaks value containment, so
+// they can't be part of a value cycle.
+func requiredValueEdges(props map[string]spec.Schema, required []string, schemas map[string]*spec.Schema) map[string]bool {
+	edges := map[string]bool{}
+	for _, name := range required {
+		prop, ok := props[name]
+		if !ok || !isStructShapedProperty(prop, schemas) {
+			continue
+		}
+		if target := schemaRefName(prop); target != "" {
+			edges[target] = true
+			continue
+		}
+		for target := range requiredValueEdges(prop.Properties, prop.Required, schemas) {
+			edges[target] = true
+		}
+	}
+	return edges
+}
+
+// reachableFrom returns every node reachable from start by following edges,
+// including start itself if some path cycles back to it.
+func reachableFrom(start string, edges map[string]map[string]bool) map[string]bool {
+	seen := map[string]bool{}
+	queue := []string{start}
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		for target := range edges[next] {
+			if seen[target] {
+				continue
+			}
+			seen[target] = true
+			queue = append(queue, target)
+		}
+	}
+	return seen
 }
 
 // goReferenceK8sTypes converts all references to k8s meta/v1 schemas in the
@@ -1012,19 +1247,9 @@ func goReferenceK8sType(schema *spec.Schema) {
 }
 
 func goReferenceK8sTypeWithMetaPath(schema *spec.Schema, useCorePath bool) {
-	// Helper function to check if a reference is a k8s type
-	isK8sRef := func(ref string) bool {
-		return strings.Contains(ref, k8sPkgMetaV1) ||
-			strings.Contains(ref, k8sPkgCoreV1) ||
-			strings.Contains(ref, k8sPkgRuntime) ||
-			strings.Contains(ref, k8sPkgIntStr) ||
-			strings.Contains(ref, k8sPkgResource) ||
-			strings.Contains(ref, k8sPkgAutoscalingV1)
-	}
-
 	// Handle direct reference
 	ref := schema.Ref.String()
-	if isK8sRef(ref) {
+	if isK8sSharedTypeRef(ref) {
 		tryReplaceK8sTypeWithMetaPath(schema, ref, useCorePath)
 		// Clear the original reference after replacement
 		schema.Ref = spec.Ref{}
@@ -1033,7 +1258,7 @@ func goReferenceK8sTypeWithMetaPath(schema *spec.Schema, useCorePath bool) {
 	// Handle AllOf - if all schemas in AllOf are k8s refs, we can replace the whole schema
 	allK8s := true
 	for _, one := range schema.AllOf {
-		if one.Ref.String() == "" || !isK8sRef(one.Ref.String()) {
+		if one.Ref.String() == "" || !isK8sSharedTypeRef(one.Ref.String()) {
 			allK8s = false
 			break
 		}
@@ -1554,7 +1779,7 @@ func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaF
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,
-		goRemoveRequired,
+		g.requiredMutator(),
 		goReferenceK8sTypes,
 		goAddDefaults,
 	)
@@ -1738,7 +1963,7 @@ func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAP
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,
-		goRemoveRequired,
+		g.requiredMutator(),
 		goReferenceK8sTypes,
 		goRemoveK8s,
 		goKeepOnlyComponents,

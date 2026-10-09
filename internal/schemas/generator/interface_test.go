@@ -106,8 +106,14 @@ func TestFilter(t *testing.T) {
 		want  []string
 	}{
 		"Empty": {
-			// An empty filter returns all languages unchanged.
-			want: devv1alpha1.SupportedSchemaLanguages(),
+			// An empty filter returns every generator unchanged.
+			want: []string{
+				devv1alpha1.SchemaLanguageGo,
+				devv1alpha1.SchemaLanguageJSON,
+				devv1alpha1.SchemaLanguageKCL,
+				devv1alpha1.SchemaLanguagePython,
+				devv1alpha1.SchemaLanguageTypeScript,
+			},
 		},
 		"SingleLanguage": {
 			langs: []string{devv1alpha1.SchemaLanguagePython},

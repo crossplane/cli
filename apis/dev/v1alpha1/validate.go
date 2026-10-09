@@ -102,9 +102,9 @@ func (s *ProjectSpec) Validate() error {
 }
 
 // Validate returns errors for an invalid ProjectSchemas. A nil receiver is
-// valid (it means "generate schemas for all languages"); an explicitly empty
-// Languages list is rejected because it would disable all schema generation,
-// which is almost certainly a mistake.
+// valid (it means "generate schemas for DefaultSchemaLanguages()"); an
+// explicitly empty Languages list is rejected because it would disable all
+// schema generation, which is almost certainly a mistake.
 func (s *ProjectSchemas) Validate() []error {
 	if s == nil {
 		return nil

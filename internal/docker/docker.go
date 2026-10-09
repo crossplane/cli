@@ -33,6 +33,7 @@ import (
 
 	"github.com/docker/cli/cli/config"
 	"github.com/google/go-containerregistry/pkg/name"
+	archive "github.com/moby/go-archive"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
@@ -214,6 +215,31 @@ func StartContainerByID(ctx context.Context, id string) error {
 	return errors.Wrap(err, "failed to start container")
 }
 
+// CopyDirectoryToContainer copies a directory tree to an existing container directory.
+func CopyDirectoryToContainer(ctx context.Context, id, source, destination string) error {
+	cli, err := NewClient()
+	if err != nil {
+		return err
+	}
+
+	tarball, err := archive.TarWithOptions(source, &archive.TarOptions{
+		IncludeSourceDir: true,
+	})
+	if err != nil {
+		return errors.Wrapf(err, "failed to archive %s", source)
+	}
+	defer tarball.Close() //nolint:errcheck // Best-effort close after streaming the archive.
+
+	if _, err := cli.CopyToContainer(ctx, id, client.CopyToContainerOptions{
+		DestinationPath: filepath.Clean(destination),
+		Content:         tarball,
+	}); err != nil {
+		return errors.Wrapf(err, "failed to copy directory to container path %s", destination)
+	}
+
+	return nil
+}
+
 type startContainerConfig struct {
 	containerConfig *container.Config
 	hostConfig      *container.HostConfig
@@ -246,6 +272,16 @@ func StartWithBindMount(hostPath, containerPath string) StartContainerOption {
 			cfg.hostConfig = &container.HostConfig{}
 		}
 		cfg.hostConfig.Binds = append(cfg.hostConfig.Binds, fmt.Sprintf("%s:%s", hostPath, containerPath))
+	}
+}
+
+// StartWithVolume adds a volume when starting a container.
+func StartWithVolume(path string) StartContainerOption {
+	return func(cfg *startContainerConfig) {
+		if cfg.containerConfig.Volumes == nil {
+			cfg.containerConfig.Volumes = map[string]struct{}{}
+		}
+		cfg.containerConfig.Volumes[path] = struct{}{}
 	}
 }
 
@@ -586,6 +622,64 @@ func TarFromContainer(ctx context.Context, cid, path string) ([]byte, error) {
 	defer func() { _ = resp.Content.Close() }()
 
 	return io.ReadAll(resp.Content)
+}
+
+// TarDirectory tars a directory.
+func TarDirectory(dir string, tarOptions archive.TarOptions) ([]byte, error) {
+	rd, err := archive.TarWithOptions(dir, &tarOptions) // archive.TarResourceRebaseOpts(base, base))
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to archive %s", dir)
+	}
+	defer rd.Close() //nolint:errcheck // Best-effort close after draining the archive.
+
+	b, err := io.ReadAll(rd)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read directory tarball")
+	}
+
+	return b, nil
+}
+
+// ConnectContainerToNetwork connects a container to a docker-network.
+// containerRef accepts a Docker container name or ID.
+// If the container is already connected, returns nil.
+func ConnectContainerToNetwork(ctx context.Context, containerRef, networkName string) error {
+	cli, err := NewClient()
+	if err != nil {
+		return err
+	}
+
+	networkList, err := cli.NetworkList(ctx, client.NetworkListOptions{})
+	if err != nil {
+		return errors.Wrap(err, "failed to list networks")
+	}
+
+	networkID := ""
+	for _, network := range networkList.Items {
+		if network.Name == networkName {
+			networkID = network.ID
+		}
+	}
+
+	if networkID == "" {
+		return errors.Errorf("failed to find network ID for %q. Does it exist?", networkName)
+	}
+
+	inspectResult, err := cli.ContainerInspect(ctx, containerRef, client.ContainerInspectOptions{})
+	if err != nil {
+		return errors.Wrapf(err, "failed to inspect container %q", containerRef)
+	}
+
+	if _, connected := inspectResult.Container.NetworkSettings.Networks[networkName]; !connected {
+		_, err := cli.NetworkConnect(ctx, networkID, client.NetworkConnectOptions{
+			Container: inspectResult.Container.ID,
+		})
+		if err != nil {
+			return errors.Wrapf(err, "failed to connect container %q to %q", containerRef, networkName)
+		}
+	}
+
+	return nil
 }
 
 // NewClient creates a new Docker client configured from environment variables.

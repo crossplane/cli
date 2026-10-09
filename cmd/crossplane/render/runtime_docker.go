@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/containerd/errdefs"
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -87,12 +88,15 @@ type DockerCleanup string
 
 // Supported AnnotationKeyRuntimeDockerCleanup values.
 const (
-	// AnnotationValueRuntimeDockerCleanupStop is the default. It stops the
-	// container once rendering is done.
+	// AnnotationValueRuntimeDockerCleanupStop stops the container once
+	// rendering is done, waiting up to containerStopGracePeriod for it to exit
+	// on SIGTERM before Docker kills it.
 	AnnotationValueRuntimeDockerCleanupStop DockerCleanup = "Stop"
 
-	// AnnotationValueRuntimeDockerCleanupRemove stops and removes the
-	// container once rendering is done.
+	// AnnotationValueRuntimeDockerCleanupRemove is the default. It stops the
+	// container once rendering is done, waiting up to containerStopGracePeriod
+	// for it to exit on SIGTERM, then force removes it. The container is
+	// removed even if the graceful stop fails.
 	AnnotationValueRuntimeDockerCleanupRemove DockerCleanup = "Remove"
 
 	// AnnotationValueRuntimeDockerCleanupOrphan leaves the container running
@@ -100,6 +104,19 @@ const (
 	AnnotationValueRuntimeDockerCleanupOrphan DockerCleanup = "Orphan"
 
 	AnnotationValueRuntimeDockerCleanupDefault = AnnotationValueRuntimeDockerCleanupRemove
+)
+
+const (
+	// containerStopGracePeriod is how long the Stop and Remove cleanup
+	// policies wait for a Function container to exit on SIGTERM before Docker
+	// kills it.
+	containerStopGracePeriod = 3 * time.Second
+
+	// containerStopTimeout bounds the ContainerStop request: the grace period
+	// plus time for Docker to kill the container. A stop that hangs therefore
+	// can't use up the caller's whole deadline, so Remove's force removal
+	// still has time to run.
+	containerStopTimeout = containerStopGracePeriod + 2*time.Second
 )
 
 // AnnotationKeyRuntimeDockerPullPolicy can be added to a Function to control how its runtime
@@ -512,19 +529,27 @@ func (r *RuntimeDocker) Start(ctx context.Context) (RuntimeContext, error) {
 
 	// Inline stop function
 	stop := func(ctx context.Context) error {
+		grace := int(containerStopGracePeriod / time.Second)
+		stopOpts := client.ContainerStopOptions{Timeout: &grace}
+
 		switch r.Cleanup {
 		case AnnotationValueRuntimeDockerCleanupOrphan:
 			return nil
 		case AnnotationValueRuntimeDockerCleanupStop:
-			if _, err := cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{}); err != nil {
+			if err := stopContainer(ctx, cli, containerID, stopOpts); err != nil {
 				return errors.Wrap(err, "cannot stop Docker container")
 			}
 		case AnnotationValueRuntimeDockerCleanupRemove:
-			if _, err := cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{}); err != nil {
-				return errors.Wrap(err, "cannot stop Docker container")
+			// Give the container a chance to exit gracefully, then force
+			// remove it whether or not the stop succeeded, so a container
+			// that's slow to exit on SIGTERM can't cause removal to be
+			// skipped. A stop failure only matters if removal fails too.
+			var stopErr error
+			if err := stopContainer(ctx, cli, containerID, stopOpts); err != nil {
+				stopErr = errors.Wrap(err, "cannot stop Docker container")
 			}
-			if _, err := cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{}); err != nil {
-				return errors.Wrap(err, "cannot remove Docker container")
+			if _, err := cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true}); err != nil {
+				return errors.Join(errors.Wrap(err, "cannot remove Docker container"), stopErr)
 			}
 		}
 
@@ -532,6 +557,16 @@ func (r *RuntimeDocker) Start(ctx context.Context) (RuntimeContext, error) {
 	}
 
 	return RuntimeContext{Target: containerAddr, Stop: stop}, nil
+}
+
+// stopContainer stops a container, bounding the request by
+// containerStopTimeout within ctx.
+func stopContainer(ctx context.Context, cli containerCleanupClient, containerID string, opts client.ContainerStopOptions) error {
+	ctx, cancel := context.WithTimeout(ctx, containerStopTimeout)
+	defer cancel()
+
+	_, err := cli.ContainerStop(ctx, containerID, opts)
+	return err
 }
 
 type pullClient interface {

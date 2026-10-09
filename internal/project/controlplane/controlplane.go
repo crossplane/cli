@@ -559,14 +559,17 @@ func createNewKindCluster(provider *kind.Provider, c config, kubeconfigPath stri
 		return errors.Wrap(err, "failed to marshal kind config")
 	}
 
-	if err := provider.Create(
-		c.name,
+	options := []kind.CreateOption{
 		kind.CreateWithRawConfig(cfgBytes),
-		kind.CreateWithNodeImage(defaults.Image),
 		kind.CreateWithDisplayUsage(false),
 		kind.CreateWithDisplaySalutation(false),
 		kind.CreateWithKubeconfigPath(kubeconfigPath),
-	); err != nil {
+	}
+	if c.kindConfig == nil {
+		options = append(options, kind.CreateWithNodeImage(defaults.Image))
+	}
+
+	if err := provider.Create(c.name, options...); err != nil {
 		return errors.Wrap(err, "failed to create kind cluster")
 	}
 

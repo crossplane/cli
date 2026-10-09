@@ -54,6 +54,9 @@ func LoadFunctionDependencies(resolver Resolver, proj *devv1alpha1.Project) ([]p
 		if dep.Xpkg == nil || dep.Xpkg.APIOnly {
 			continue
 		}
+		if dep.Xpkg.Kind != pkgv1.FunctionKind {
+			continue
+		}
 
 		var ref string
 		if _, err := v1.NewHash(dep.Xpkg.Version); err == nil {

@@ -377,7 +377,7 @@ schemas are enabled. It will look like:
     "local": "node dist/main.js --insecure --debug"
   },
   "dependencies": {
-    "@crossplane-org/function-sdk-typescript": "^0.7.0",
+    "@crossplane-org/function-sdk-typescript": "^0.8.0",
     "@types/node": "^24.0.0",
     "crossplane-models": "file:../../schemas/typescript"
   },

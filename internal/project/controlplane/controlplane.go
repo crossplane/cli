@@ -26,7 +26,6 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
@@ -226,7 +225,7 @@ type config struct {
 	log               logging.Logger
 	kindConfig        *v1alpha4.Cluster
 	internal          bool
-	dockerNetwork     string
+	attachContainers  []string
 	storageType       docker.StorageType
 }
 
@@ -289,10 +288,11 @@ func WithInternal(internal bool) Option {
 	}
 }
 
-// WithDockerNetwork configures which docker network to start up the local development control plane in.
-func WithDockerNetwork(network string) Option {
+// WithAttachContainers sets the existing containers to attach to the KinD
+// network. Each entry accepts a Docker container name or ID.
+func WithAttachContainers(attachContainers []string) Option {
 	return func(c *config) {
-		c.dockerNetwork = network
+		c.attachContainers = attachContainers
 	}
 }
 
@@ -331,10 +331,17 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	nameLen = min(nameLen, 63-len("-control-plane"))
 	cfg.name = cfg.name[:nameLen]
 
-	cfg.log.Debug("Ensuring kind cluster", "name", cfg.name, "internal", cfg.internal, "network", cfg.dockerNetwork)
-	kubeconfig, err := ensureKindCluster(ctx, *cfg)
+	cfg.log.Debug("Ensuring kind cluster", "name", cfg.name, "internal", cfg.internal)
+	kubeconfig, err := ensureKindCluster(*cfg)
 	if err != nil {
 		return nil, err
+	}
+
+	for _, containerRef := range cfg.attachContainers {
+		err := docker.ConnectContainerToNetwork(ctx, containerRef, "kind")
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	restConfig, err := kubeconfig.ClientConfig()
@@ -425,12 +432,8 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	}
 
 	cfg.log.Debug("Ensuring local registry container")
-	networkName := cfg.dockerNetwork
-	if networkName == "" {
-		networkName = "kind"
-	}
 
-	cid, err := ensureLocalRegistry(ctx, cl, storage, regName, registryDir, certSecret, networkName)
+	cid, err := ensureLocalRegistry(ctx, cl, storage, regName, certSecret)
 	if err != nil {
 		return nil, err
 	}
@@ -503,7 +506,7 @@ func TeardownLocalDevControlPlane(ctx context.Context, name string, registryDir 
 	return nil
 }
 
-func ensureKindCluster(ctx context.Context, cfg config) (clientcmd.ClientConfig, error) {
+func ensureKindCluster(cfg config) (clientcmd.ClientConfig, error) {
 	provider := kind.NewProvider()
 
 	kubeconfigFile, err := os.CreateTemp("", "crossplane-*.kubeconfig")
@@ -520,14 +523,6 @@ func ensureKindCluster(ctx context.Context, cfg config) (clientcmd.ClientConfig,
 
 	if !slices.Contains(existing, cfg.name) {
 		if err := createNewKindCluster(provider, cfg, kubeconfigFile.Name()); err != nil {
-			return nil, err
-		}
-	} else {
-		networkName := cfg.dockerNetwork
-		if networkName == "" {
-			networkName = "kind"
-		}
-		if err := ensureKindClusterNetwork(ctx, provider, cfg.name, networkName); err != nil {
 			return nil, err
 		}
 	}
@@ -549,44 +544,6 @@ func ensureKindCluster(ctx context.Context, cfg config) (clientcmd.ClientConfig,
 	return kubeconfig, nil
 }
 
-func ensureKindClusterNetwork(ctx context.Context, provider *kind.Provider, clusterName, networkName string) error {
-	nodes, err := provider.ListNodes(clusterName)
-	if err != nil {
-		return errors.Wrapf(err, "failed to list nodes in kind cluster %q", clusterName)
-	}
-	if len(nodes) == 0 {
-		return errors.Errorf("kind cluster %q has no nodes to connect to Docker network %q", clusterName, networkName)
-	}
-
-	networkID, found, err := docker.GetNetworkIDByName(ctx, networkName)
-	if err != nil {
-		return errors.Wrapf(err, "failed to look up Docker network %q", networkName)
-	}
-	if !found {
-		return errors.Errorf("missing Docker network %q", networkName)
-	}
-
-	cli, err := docker.NewClient()
-	if err != nil {
-		return errors.Wrap(err, "failed to connect to Docker to ensure kind cluster network")
-	}
-
-	for _, node := range nodes {
-		inspect, err := cli.ContainerInspect(ctx, node.String(), mobyclient.ContainerInspectOptions{})
-		if err != nil {
-			return errors.Wrapf(err, "failed to inspect kind cluster node %q", node.String())
-		}
-		if _, ok := inspect.Container.NetworkSettings.Networks[networkName]; ok {
-			continue
-		}
-		if _, err := cli.NetworkConnect(ctx, networkID, mobyclient.NetworkConnectOptions{Container: node.String()}); err != nil {
-			return errors.Wrapf(err, "failed to connect kind cluster node %q to Docker network %q", node.String(), networkName)
-		}
-	}
-
-	return nil
-}
-
 func createNewKindCluster(provider *kind.Provider, c config, kubeconfigPath string) error {
 	cfg := createKindClusterConfig()
 
@@ -597,21 +554,6 @@ func createNewKindCluster(provider *kind.Provider, c config, kubeconfigPath stri
 	cfgBytes, err := yaml.Marshal(cfg)
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal kind config")
-	}
-
-	if len(strings.TrimSpace(c.dockerNetwork)) > 0 {
-		prev, had := os.LookupEnv("KIND_EXPERIMENTAL_DOCKER_NETWORK")
-		defer func() {
-			if had {
-				_ = os.Setenv("KIND_EXPERIMENTAL_DOCKER_NETWORK", prev)
-			} else {
-				_ = os.Unsetenv("KIND_EXPERIMENTAL_DOCKER_NETWORK")
-			}
-		}()
-		err := os.Setenv("KIND_EXPERIMENTAL_DOCKER_NETWORK", c.dockerNetwork)
-		if err != nil {
-			return errors.Wrap(err, "failed to set docker network")
-		}
 	}
 
 	if err := provider.Create(
@@ -690,11 +632,11 @@ func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clus
 	return nil
 }
 
-func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.Storage, regName, dir string, certSecret *corev1.Secret, networkName string) (string, error) {
-	const regImage = "ghcr.io/olareg/olareg:edge"
-	if len(strings.TrimSpace(networkName)) == 0 {
+func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.Storage, regName string, certSecret *corev1.Secret) (string, error) {
+	const (
+		regImage    = "ghcr.io/olareg/olareg:edge"
 		networkName = "kind"
-	}
+	)
 
 	// Check for existing registry container.
 	existing, found, err := docker.GetContainerIDByName(ctx, regName, true)
@@ -711,7 +653,7 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.S
 			return "", errors.Wrap(err, "failed to inspect existing registry container")
 		}
 
-		mountType := ""
+		var mountType string
 		switch storage.Type() {
 		case docker.StorageTypeBindMount:
 			mountType = "bind"
@@ -733,20 +675,6 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.S
 				return "", errors.Wrap(err, "failed to recreate registry with selected storage backend")
 			}
 		} else {
-			networkID, found, err := docker.GetNetworkIDByName(ctx, networkName)
-			if err != nil {
-				return "", errors.Wrap(err, "failed to get docker network ID for existing registry")
-			}
-			if !found {
-				return "", errors.Errorf("missing docker network %q", networkName)
-			}
-
-			if _, connected := inspect.Container.NetworkSettings.Networks[networkName]; !connected {
-				if _, err := cli.NetworkConnect(ctx, networkID, mobyclient.NetworkConnectOptions{Container: existing}); err != nil {
-					return "", errors.Wrapf(err, "failed to connect existing registry container to Docker network %q", networkName)
-				}
-			}
-
 			if err := docker.StartContainerByID(ctx, existing); err != nil {
 				return "", errors.Wrap(err, "failed to start existing registry container")
 			}

@@ -19,7 +19,6 @@ package dependency
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
@@ -42,10 +41,14 @@ var updateHelp string
 
 // updateCacheCmd updates the dependency cache by regenerating all schemas.
 type updateCacheCmd struct {
-	ProjectFile string `default:"${project_file}"   help:"Path to project definition file."            short:"f"`
 	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents." name:"cache-dir"`
 	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"  help:"Token for git HTTPS authentication."`
 	GitUsername string `default:"x-access-token"    env:"CROSSPLANE_GIT_USERNAME"                      help:"Username for git HTTPS authentication."`
+
+	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                                      optional:""             predictor:"yaml_file" short:"f" type:"path"`
+	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."                            name:"schemas-dir"`
+	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python). Overrides the project's schemas.languages; defaults to all."                  name:"schema-languages"`
+	K8sVersion      string   `help:"Kubernetes version to generate core API schemas for (e.g. v1.33.0). Replaces the project's k8s dependency for this run; never written to the file." name:"k8s-version"`
 }
 
 func (c *updateCacheCmd) Help() string {
@@ -56,14 +59,11 @@ func (c *updateCacheCmd) Help() string {
 func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
-	projFilePath, err := filepath.Abs(c.ProjectFile)
-	if err != nil {
-		return err
-	}
-	projDirPath := filepath.Dir(projFilePath)
-	projFS := afero.NewBasePathFs(afero.NewOsFs(), projDirPath)
-
-	proj, err := projectfile.Parse(projFS, filepath.Base(c.ProjectFile))
+	proj, projFS, projFile, err := loadProject(c.ProjectFile, projectfile.Overrides{
+		SchemasDir:      c.SchemasDir,
+		SchemaLanguages: c.SchemaLanguages,
+		K8sVersion:      c.K8sVersion,
+	})
 	if err != nil {
 		return err
 	}
@@ -84,7 +84,7 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 	resolver := clixpkg.NewResolver(client)
 
 	opts := []dependency.ManagerOption{
-		dependency.WithProjectFile(c.ProjectFile),
+		dependency.WithProjectFile(projFile),
 		dependency.WithSchemaGenerators(generator.Filter(
 			generator.AllLanguages(
 				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
@@ -116,9 +116,11 @@ var cleanHelp string
 
 // cleanCacheCmd removes all generated schemas.
 type cleanCacheCmd struct {
-	ProjectFile  string `default:"${project_file}"                                                help:"Path to project definition file."            short:"f"`
 	CacheDir     string `env:"CROSSPLANE_XPKG_CACHE"                                              help:"Directory for cached xpkg package contents." name:"cache-dir"`
 	KeepPackages bool   `help:"Keep cached xpkg package contents; remove only generated schemas." name:"keep-packages"`
+
+	ProjectFile string `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                           optional:""        predictor:"yaml_file" short:"f" type:"path"`
+	SchemasDir  string `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)." name:"schemas-dir"`
 }
 
 func (c *cleanCacheCmd) Help() string {
@@ -127,20 +129,13 @@ func (c *cleanCacheCmd) Help() string {
 
 // Run executes the clean-cache command.
 func (c *cleanCacheCmd) Run(k *kong.Context, _ logging.Logger) error {
-	projFilePath, err := filepath.Abs(c.ProjectFile)
-	if err != nil {
-		return err
-	}
-	projDirPath := filepath.Dir(projFilePath)
-	projFS := afero.NewBasePathFs(afero.NewOsFs(), projDirPath)
-
-	proj, err := projectfile.Parse(projFS, filepath.Base(c.ProjectFile))
+	proj, projFS, projFile, err := loadProject(c.ProjectFile, projectfile.Overrides{SchemasDir: c.SchemasDir})
 	if err != nil {
 		return err
 	}
 
 	m := dependency.NewManager(proj, projFS,
-		dependency.WithProjectFile(c.ProjectFile),
+		dependency.WithProjectFile(projFile),
 	)
 
 	if err := m.Clean(); err != nil {

@@ -466,6 +466,12 @@ func TestRuntimeDockerStop(t *testing.T) {
 	errStop := errors.New("stop boom")
 	errRemove := errors.New("remove boom")
 
+	// The Stop and Remove policies give the container containerStopGracePeriod
+	// (3s) to exit, and Remove force removes it.
+	grace := 3
+	wantStopOptions := client.ContainerStopOptions{Timeout: &grace}
+	wantRemoveOptions := client.ContainerRemoveOptions{Force: true}
+
 	type args struct {
 		cleanup DockerCleanup
 		// stop and remove are the cleanup client's ContainerStop and
@@ -475,7 +481,9 @@ func TestRuntimeDockerStop(t *testing.T) {
 		remove func(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	}
 	type want struct {
-		err error
+		// errs are the errors the returned error must wrap. When empty, Stop
+		// must return nil.
+		errs []error
 	}
 
 	cases := map[string]struct {
@@ -484,7 +492,7 @@ func TestRuntimeDockerStop(t *testing.T) {
 		want   want
 	}{
 		"Stop": {
-			reason: "The Stop cleanup policy should stop the container and leave it in place.",
+			reason: "The Stop cleanup policy should stop the container with the grace period and leave it in place.",
 			args: args{
 				cleanup: AnnotationValueRuntimeDockerCleanupStop,
 				stop: func(context.Context, string, client.ContainerStopOptions) (client.ContainerStopResult, error) {
@@ -501,11 +509,11 @@ func TestRuntimeDockerStop(t *testing.T) {
 				},
 			},
 			want: want{
-				err: errStop,
+				errs: []error{errStop},
 			},
 		},
 		"Remove": {
-			reason: "The Remove cleanup policy should stop the container, then remove it.",
+			reason: "The Remove cleanup policy should stop the container with the grace period, then force remove it.",
 			args: args{
 				cleanup: AnnotationValueRuntimeDockerCleanupRemove,
 				stop: func(context.Context, string, client.ContainerStopOptions) (client.ContainerStopResult, error) {
@@ -517,15 +525,15 @@ func TestRuntimeDockerStop(t *testing.T) {
 			},
 		},
 		"RemoveStopError": {
-			reason: "The Remove cleanup policy should stop the container before removing it, and return an error without removing it when it cannot be stopped.",
+			reason: "The Remove cleanup policy should still force remove the container when the graceful stop fails, and succeed if removal does.",
 			args: args{
 				cleanup: AnnotationValueRuntimeDockerCleanupRemove,
 				stop: func(context.Context, string, client.ContainerStopOptions) (client.ContainerStopResult, error) {
 					return client.ContainerStopResult{}, errStop
 				},
-			},
-			want: want{
-				err: errStop,
+				remove: func(context.Context, string, client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
+					return client.ContainerRemoveResult{}, nil
+				},
 			},
 		},
 		"RemoveError": {
@@ -540,7 +548,22 @@ func TestRuntimeDockerStop(t *testing.T) {
 				},
 			},
 			want: want{
-				err: errRemove,
+				errs: []error{errRemove},
+			},
+		},
+		"RemoveStopAndRemoveError": {
+			reason: "The Remove cleanup policy should return both errors when the container can be neither stopped nor removed.",
+			args: args{
+				cleanup: AnnotationValueRuntimeDockerCleanupRemove,
+				stop: func(context.Context, string, client.ContainerStopOptions) (client.ContainerStopResult, error) {
+					return client.ContainerStopResult{}, errStop
+				},
+				remove: func(context.Context, string, client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
+					return client.ContainerRemoveResult{}, errRemove
+				},
+			},
+			want: want{
+				errs: []error{errRemove, errStop},
 			},
 		},
 		"Orphan": {
@@ -558,12 +581,14 @@ func TestRuntimeDockerStop(t *testing.T) {
 				MockContainerStart:   startContainer(containerID),
 				MockContainerInspect: inspectContainerOnNetwork(containerID, containerName, dockerNetwork),
 			}
+			// A stop error is discarded when removal succeeds, so report
+			// unexpected arguments with t.Errorf rather than as an error.
 			if stop := tc.args.stop; stop != nil {
 				cli.MockContainerStop = func(ctx context.Context, id string, options client.ContainerStopOptions) (client.ContainerStopResult, error) {
 					if diff := cmp.Diff(containerID, id); diff != "" {
 						t.Errorf("\n%s\nContainerStop(...): -want container ID, +got container ID:\n%s", tc.reason, diff)
 					}
-					if diff := cmp.Diff(client.ContainerStopOptions{}, options); diff != "" {
+					if diff := cmp.Diff(wantStopOptions, options); diff != "" {
 						t.Errorf("\n%s\nContainerStop(...): -want options, +got options:\n%s", tc.reason, diff)
 					}
 					return stop(ctx, id, options)
@@ -574,7 +599,7 @@ func TestRuntimeDockerStop(t *testing.T) {
 					if diff := cmp.Diff(containerID, id); diff != "" {
 						t.Errorf("\n%s\nContainerRemove(...): -want container ID, +got container ID:\n%s", tc.reason, diff)
 					}
-					if diff := cmp.Diff(client.ContainerRemoveOptions{}, options); diff != "" {
+					if diff := cmp.Diff(wantRemoveOptions, options); diff != "" {
 						t.Errorf("\n%s\nContainerRemove(...): -want options, +got options:\n%s", tc.reason, diff)
 					}
 					return remove(ctx, id, options)
@@ -596,8 +621,17 @@ func TestRuntimeDockerStop(t *testing.T) {
 			}
 
 			err = rctx.Stop(t.Context())
-			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
-				t.Errorf("\n%s\nStop(...): -want error, +got error:\n%s", tc.reason, diff)
+
+			// The returned error may join several errors, so check that it
+			// wraps each wanted error in turn.
+			wantErrs := tc.want.errs
+			if len(wantErrs) == 0 {
+				wantErrs = []error{nil}
+			}
+			for _, want := range wantErrs {
+				if diff := cmp.Diff(want, err, cmpopts.EquateErrors()); diff != "" {
+					t.Errorf("\n%s\nStop(...): -want error, +got error:\n%s", tc.reason, diff)
+				}
 			}
 		})
 	}

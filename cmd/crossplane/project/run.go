@@ -72,15 +72,14 @@ type runCmd struct {
 
 	ControlPlaneName  string        `help:"Name of the dev control plane. Defaults to project name."`
 	CrossplaneVersion string        `help:"Version of Crossplane to install."`
-	DockerNetwork     string        `help:"The docker network to start up the dev control plane in. Defaults to kind. This is an experimental feature in KinD."`
 	Internal          *bool         `help:"Use internal addresses in the exported kubeconfig. Enable if running crossplane project in a container."`
 	KindConfig        string        `help:"The path to the KinD configuration which should be used to create the local development cluster."`
 	RegistryDir       string        `help:"Directory for local registry images."`
-	ClusterAdmin      bool          `default:"true"                                                                                                             help:"Grant Crossplane the cluster-admin role."                                               negatable:""`
-	DefaultMRAP       bool          `default:"true"                                                                                                             help:"Install the default wildcard ManagedResourceActivationPolicy in the dev control plane." negatable:""`
-	Timeout           time.Duration `default:"5m"                                                                                                               help:"Max wait for project readiness."`
-	InitResources     []string      `help:"Resources to apply before installing."                                                                               type:"path"`
-	ExtraResources    []string      `help:"Resources to apply after installing."                                                                                type:"path"`
+	ClusterAdmin      bool          `default:"true"                                                                                                 help:"Grant Crossplane the cluster-admin role."                                               negatable:""`
+	DefaultMRAP       bool          `default:"true"                                                                                                 help:"Install the default wildcard ManagedResourceActivationPolicy in the dev control plane." negatable:""`
+	Timeout           time.Duration `default:"5m"                                                                                                   help:"Max wait for project readiness."`
+	InitResources     []string      `help:"Resources to apply before installing."                                                                   type:"path"`
+	ExtraResources    []string      `help:"Resources to apply after installing."                                                                    type:"path"`
 
 	proj   *devv1alpha1.Project
 	projFS afero.Fs
@@ -165,10 +164,6 @@ func (c *runCmd) resolveRunOptions() error {
 		c.Internal = &c.proj.Spec.Runtime.Kind.Internal
 	}
 
-	if c.DockerNetwork == "" && len(strings.TrimSpace(c.proj.Spec.Runtime.Kind.Network.Name)) > 0 {
-		c.DockerNetwork = c.proj.Spec.Runtime.Kind.Network.Name
-	}
-
 	if c.Repository != "" {
 		ref, err := name.NewRepository(c.Repository)
 		if err != nil {
@@ -185,7 +180,7 @@ func (c *runCmd) resolveRunOptions() error {
 	storageType := c.proj.Spec.Runtime.Registry.Storage.Type
 	if len(strings.TrimSpace(storageType)) > 0 {
 		if !docker.IsValidStorageType(storageType) {
-			return errors.Errorf("%q is an invalid storage type. Supported storage types: %v", storageType, docker.ValidStorageTypes)
+			return errors.Errorf("%q is an invalid storage type. Supported storage types: %v", storageType, docker.ValidStorageTypes())
 		}
 		c.storageType = docker.StorageType(storageType)
 	}
@@ -274,7 +269,7 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 				controlplane.WithClusterAdmin(c.ClusterAdmin),
 				controlplane.WithDefaultMRAP(c.DefaultMRAP),
 				controlplane.WithLogger(logger),
-				controlplane.WithDockerNetwork(c.DockerNetwork),
+				controlplane.WithAttachContainers(c.proj.Spec.Runtime.Kind.Network.AttachContainers),
 				controlplane.WithInternal(*c.Internal),
 				controlplane.WithKindConfig(c.kindConfig),
 				controlplane.WithStorageType(c.storageType),

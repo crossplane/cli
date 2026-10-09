@@ -135,7 +135,7 @@ type RuntimeKind struct {
 	// Use internal addresses in the exported kubeconfig.
 	// Enable if running crossplane project in a container.
 	Internal bool `json:"internal,omitempty"`
-	// The docker network to start up the local development cluster in.
+	// Network configuration options
 	Network RuntimeNetwork `json:"network,omitempty"`
 }
 
@@ -147,7 +147,11 @@ type RuntimeConfig struct {
 
 // RuntimeNetwork is the spec for runtime network configuration.
 type RuntimeNetwork struct {
-	Name string `json:"name,omitempty"`
+	// AttachContainers lists existing containers to attach to the KinD network.
+	// Each entry accepts a Docker container name or ID. Containers already
+	// attached are left unchanged. Use this when running crossplane project
+	// in a container to give it access to the local development cluster.
+	AttachContainers []string `json:"attachContainers,omitempty"`
 }
 
 // RegistryConfig is the configuration options for the local registry.

@@ -640,6 +640,48 @@ func TarDirectory(dir string) ([]byte, error) {
 	return b, nil
 }
 
+// ConnectContainerToNetwork connects a container to a docker-network.
+// containerRef accepts a Docker container name or ID.
+// If the container is already connected, returns nil.
+func ConnectContainerToNetwork(ctx context.Context, containerRef, networkName string) error {
+	cli, err := NewClient()
+	if err != nil {
+		return err
+	}
+
+	networkList, err := cli.NetworkList(ctx, client.NetworkListOptions{})
+	if err != nil {
+		return errors.Wrap(err, "failed to list networks")
+	}
+
+	networkID := ""
+	for _, network := range networkList.Items {
+		if network.Name == networkName {
+			networkID = network.ID
+		}
+	}
+
+	if networkID == "" {
+		return errors.Errorf("failed to find network ID for %q. Does it exist?", networkName)
+	}
+
+	inspectResult, err := cli.ContainerInspect(ctx, containerRef, client.ContainerInspectOptions{})
+	if err != nil {
+		return errors.Wrapf(err, "failed to inspect container %q", containerRef)
+	}
+
+	if _, connected := inspectResult.Container.NetworkSettings.Networks[networkName]; !connected {
+		_, err := cli.NetworkConnect(ctx, networkID, client.NetworkConnectOptions{
+			Container: inspectResult.Container.ID,
+		})
+		if err != nil {
+			return errors.Wrapf(err, "failed to connect container %q to %q", containerRef, networkName)
+		}
+	}
+
+	return nil
+}
+
 // NewClient creates a new Docker client configured from environment variables.
 func NewClient() (*client.Client, error) {
 	cli, err := client.New(client.FromEnv)

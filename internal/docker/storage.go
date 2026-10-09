@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
@@ -16,20 +17,17 @@ const (
 	StorageTypeVolume    StorageType = "volume"
 )
 
-var ValidStorageTypes = []string{
-	string(StorageTypeBindMount),
-	string(StorageTypeVolume),
+// ValidStorageTypes lists the supported container storage backend names.
+func ValidStorageTypes() []string {
+	return []string{
+		string(StorageTypeBindMount),
+		string(StorageTypeVolume),
+	}
 }
 
 // IsValidStorageType returns true if the supplied storageType string is one of the supported storagetypes.
 func IsValidStorageType(storageType string) bool {
-	for _, s := range ValidStorageTypes {
-		if s == storageType {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(ValidStorageTypes(), storageType)
 }
 
 // Storage configures container storage and synchronizes files to it.

@@ -38,6 +38,8 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
+	"github.com/crossplane/cli/v2/internal/terminal"
+
 	_ "embed"
 )
 
@@ -85,7 +87,7 @@ func (c *pushCmd) AfterApply() error {
 }
 
 // Run runs the push cmd.
-func (c *pushCmd) Run(logger logging.Logger) error {
+func (c *pushCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
 	anns, err := parseAnnotations(c.OCIAnnotation)
 	if err != nil {
 		return errors.Wrap(err, errParseAnnotations)
@@ -110,15 +112,21 @@ func (c *pushCmd) Run(logger logging.Logger) error {
 
 	// load images from all the provided package files
 	images := make([]packageImage, 0, len(c.PackageFiles))
-	for _, p := range c.PackageFiles {
-		cleanPath := filepath.Clean(p)
+	if err := sp.WrapWithSuccessSpinner("Reading packages", func() error {
+		for _, p := range c.PackageFiles {
+			cleanPath := filepath.Clean(p)
 
-		img, err := tarball.ImageFromPath(cleanPath, nil)
-		if err != nil {
-			return err
+			img, err := tarball.ImageFromPath(cleanPath, nil)
+			if err != nil {
+				return err
+			}
+
+			images = append(images, packageImage{Image: img, Path: cleanPath})
 		}
 
-		images = append(images, packageImage{Image: img, Path: cleanPath})
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	t := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // http.DefaultTransport is always *http.Transport
@@ -133,7 +141,7 @@ func (c *pushCmd) Run(logger logging.Logger) error {
 		remote.WithTransport(t),
 	}
 
-	return pushImages(logger, images, c.Package, anns, options...)
+	return pushImages(logger, sp, images, c.Package, anns, options...)
 }
 
 // packageImage describes a package image that will be pushed.
@@ -147,7 +155,7 @@ type packageImage struct {
 }
 
 // pushImages pushes package images to the given URL using the provided options.
-func pushImages(logger logging.Logger, images []packageImage, url string, annotations map[string]string, options ...remote.Option) error {
+func pushImages(logger logging.Logger, sp terminal.SpinnerPrinter, images []packageImage, url string, annotations map[string]string, options ...remote.Option) error {
 	if len(options) == 0 {
 		options = []remote.Option{
 			remote.WithAuthFromKeychain(authn.DefaultKeychain),
@@ -170,13 +178,20 @@ func pushImages(logger logging.Logger, images []packageImage, url string, annota
 
 		img = annotateImage(img, annotations)
 
-		if err := remote.Write(tag, img, options...); err != nil {
-			return errors.Wrapf(err, errFmtPushPackage, pi.Path)
+		push := func() error {
+			if err := remote.Write(tag, img, options...); err != nil {
+				return errors.Wrapf(err, errFmtPushPackage, pi.Path)
+			}
+
+			logger.Debug("Pushed package", "path", pi.Path, "ref", tag.String())
+
+			return nil
 		}
 
-		logger.Debug("Pushed package", "path", pi.Path, "ref", tag.String())
-
-		return nil
+		if sp != nil {
+			return sp.WrapWithSuccessSpinner("Pushing package", push)
+		}
+		return push()
 	}
 
 	// If there's more than one package file we'll write (push) them all by
@@ -237,16 +252,29 @@ func pushImages(logger logging.Logger, images []packageImage, url string, annota
 		})
 	}
 
-	if err := g.Wait(); err != nil {
+	if sp != nil {
+		if err := sp.WrapWithSuccessSpinner("Pushing packages", func() error {
+			return g.Wait()
+		}); err != nil {
+			return err
+		}
+	} else if err := g.Wait(); err != nil {
 		return err
 	}
 
-	idx := annotateIndex(mutate.AppendManifests(empty.Index, adds...), annotations)
-	if err := remote.WriteIndex(tag, idx, options...); err != nil {
-		return errors.Wrapf(err, errFmtWriteIndex, len(adds))
+	pushIndex := func() error {
+		idx := annotateIndex(mutate.AppendManifests(empty.Index, adds...), annotations)
+		if err := remote.WriteIndex(tag, idx, options...); err != nil {
+			return errors.Wrapf(err, errFmtWriteIndex, len(adds))
+		}
+
+		logger.Debug("Wrote OCI index", "ref", tag.String(), "manifests", len(adds))
+
+		return nil
 	}
 
-	logger.Debug("Wrote OCI index", "ref", tag.String(), "manifests", len(adds))
-
-	return nil
+	if sp != nil {
+		return sp.WrapWithSuccessSpinner("Pushing package index", pushIndex)
+	}
+	return pushIndex()
 }

@@ -357,12 +357,21 @@ func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
 
 	type args struct {
 		create func(ctx context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error)
+		// removeErr is what NetworkRemove returns. When nil, NetworkRemove
+		// returns the error of the context it is called with, so cleanup
+		// logs an error if it removes the network with a cancelled context.
+		removeErr error
+		// cancel cancels Setup's context before calling cleanup.
+		cancel bool
 	}
 	type want struct {
 		err error
 		// created is whether Setup should create a network, annotate the
 		// functions to join it, and return a cleanup that removes it.
 		created bool
+		// logErr is the error cleanup should log when it cannot remove the
+		// network. When nil, cleanup must log nothing.
+		logErr error
 	}
 
 	cases := map[string]struct {
@@ -374,6 +383,27 @@ func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
 			reason: "Setup should create a network, annotate the functions to join it, and return a cleanup that removes it.",
 			args: args{
 				create: createRenderNetworkReturns("network-id", nil),
+			},
+			want: want{
+				created: true,
+			},
+		},
+		"CleanupLogsRemoveError": {
+			reason: "The cleanup can't return an error, so it should log a failure to remove the network, with the network's name and ID, rather than discard it.",
+			args: args{
+				create:    createRenderNetworkReturns("network-id", nil),
+				removeErr: errBoom,
+			},
+			want: want{
+				created: true,
+				logErr:  errBoom,
+			},
+		},
+		"CleanupSurvivesCancelledContext": {
+			reason: "The cleanup typically runs after Setup's context is done, so it should still remove the network with a live context.",
+			args: args{
+				create: createRenderNetworkReturns("network-id", nil),
+				cancel: true,
 			},
 			want: want{
 				created: true,
@@ -398,18 +428,25 @@ func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
 			removed := false
 			cli := &mockNetworkClient{MockNetworkCreate: tc.args.create}
 			if tc.want.created {
-				cli.MockNetworkRemove = func(_ context.Context, networkID string, _ client.NetworkRemoveOptions) (client.NetworkRemoveResult, error) {
+				cli.MockNetworkRemove = func(ctx context.Context, networkID string, _ client.NetworkRemoveOptions) (client.NetworkRemoveResult, error) {
 					if diff := cmp.Diff("network-id", networkID); diff != "" {
 						t.Errorf("\n%s\nNetworkRemove(...): -want network ID, +got network ID:\n%s", tc.reason, diff)
 					}
 					removed = true
-					return client.NetworkRemoveResult{}, nil
+					if tc.args.removeErr != nil {
+						return client.NetworkRemoveResult{}, tc.args.removeErr
+					}
+					return client.NetworkRemoveResult{}, ctx.Err()
 				}
 			}
-			e := &dockerRenderEngine{log: logging.NewNopLogger(), networks: cli}
+			log := newRecordingLogger()
+			e := &dockerRenderEngine{log: log, networks: cli}
 			fns := []pkgv1.Function{functionWithAnnotations(nil)}
 
-			cleanup, err := e.Setup(t.Context(), fns)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			cleanup, err := e.Setup(ctx, fns)
 
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nSetup(...): -want error, +got error:\n%s", tc.reason, diff)
@@ -428,13 +465,51 @@ func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
 				t.Errorf("\n%s\nSetup(...): -want fns, +got fns:\n%s", tc.reason, diff)
 			}
 
+			if tc.args.cancel {
+				cancel()
+			}
 			cleanup()
 
 			if diff := cmp.Diff(tc.want.created, removed); diff != "" {
 				t.Errorf("\n%s\nSetup(...) cleanup: -want network removed, +got network removed:\n%s", tc.reason, diff)
 			}
+			var wantLog []logEntry
+			if tc.want.logErr != nil {
+				wantLog = []logEntry{{
+					Msg: "Cannot remove Docker network used for rendering",
+					KV:  []any{"network", e.network, "id", "network-id", "error", tc.want.logErr},
+				}}
+			}
+			if diff := cmp.Diff(wantLog, *log.entries, cmpopts.EquateErrors(), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nSetup(...) cleanup: -want log, +got log:\n%s", tc.reason, diff)
+			}
 		})
 	}
+}
+
+// recordingLogger is a logging.Logger that records every Info and Debug call.
+type recordingLogger struct {
+	entries *[]logEntry
+	kv      []any
+}
+
+type logEntry struct {
+	Msg string
+	KV  []any
+}
+
+var _ logging.Logger = recordingLogger{}
+
+func newRecordingLogger() recordingLogger { return recordingLogger{entries: &[]logEntry{}} }
+
+func (l recordingLogger) Info(msg string, kv ...any) {
+	*l.entries = append(*l.entries, logEntry{Msg: msg, KV: append(append([]any{}, l.kv...), kv...)})
+}
+
+func (l recordingLogger) Debug(msg string, kv ...any) { l.Info(msg, kv...) }
+
+func (l recordingLogger) WithValues(kv ...any) logging.Logger {
+	return recordingLogger{entries: l.entries, kv: append(append([]any{}, l.kv...), kv...)}
 }
 
 // nonExitError is a stand-in for non-*ContainerExitError failures (e.g. image

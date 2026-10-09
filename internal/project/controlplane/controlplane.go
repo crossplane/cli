@@ -388,7 +388,7 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	// Write the TLS cert and key files.
 	certDir := filepath.Join(registryDir, certDirName)
 	if err := os.MkdirAll(certDir, 0o755); err != nil { //nolint:gosec // Container needs to read the dir.
-		return nil, errors.New("failed to create cert directory")
+		return nil, errors.Wrap(err, "failed to create cert directory")
 	}
 	// Check the persisted CA before replacing it. A registry initialized with a
 	// different CA must be recreated so its storage and the cluster trust agree.

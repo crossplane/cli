@@ -35,6 +35,10 @@ const (
 	roRuntimeAlias  = "k8sruntime"
 	roRuntimeImport = "k8s.io/apimachinery/pkg/runtime"
 	roSchemaImport  = "k8s.io/apimachinery/pkg/runtime/schema"
+
+	// roOpenAPITypesAlias is the alias oapi-codegen uses for its formatted
+	// string types (Email, Date, File, UUID).
+	roOpenAPITypesAlias = "openapi_types"
 )
 
 // roScalarSelectorTypes are k8s types referenced via a package selector that are
@@ -216,7 +220,11 @@ func classifyElem(e ast.Expr, structs map[string]bool) fieldKind {
 		// pkg.Type — time.* and known alias types (Time, MicroTime, FieldsV1)
 		// are scalars; every other referenced package type is a generated struct
 		// with a DeepCopyInto method.
-		if pkg, ok := x.X.(*ast.Ident); ok && pkg.Name == "time" {
+		if pkg, ok := x.X.(*ast.Ident); ok && (pkg.Name == "time" || pkg.Name == roOpenAPITypesAlias) {
+			// oapi-codegen emits openapi_types.Email, Date, File and UUID for
+			// formatted strings. None of them has a DeepCopyInto method:
+			// Email is a string, UUID is an array, Date wraps a time.Time and
+			// File holds unexported fields. They copy by value.
 			return fkScalar
 		}
 		if roScalarSelectorTypes[x.Sel.Name] {

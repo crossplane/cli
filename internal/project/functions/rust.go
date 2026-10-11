@@ -60,11 +60,28 @@ const (
 	// a known place whatever the function's cargo configuration says.
 	rustTargetDir = "/build/target"
 
+	// rustAuditableVersion is the release of cargo-auditable we build with. It
+	// embeds the function's dependency tree in the binary, in a .dep-v0
+	// section, which is how image scanners such as syft, grype and Trivy find
+	// the crates a function was built from. Without it they see only the
+	// runtime image's Debian packages.
+	rustAuditableVersion = "0.7.7"
+	// rustAuditableSHA256AMD64 and rustAuditableSHA256ARM64 are the digests of
+	// that release's x86_64 and aarch64 Linux builds, which the build container
+	// checks its download against. They are the static (musl) builds, which do
+	// not depend on the build image's glibc.
+	rustAuditableSHA256AMD64 = "7676443367c5e33d9fb22acef63cccb5e9202de12dae1b0579995eb3e2bc7a18"
+	rustAuditableSHA256ARM64 = "c324af56990601354bbf40080f582ba46f8ec8b807a1388e25bb7e429d285c18"
+
 	// rustBuildScript runs in the build container. Rust itself cross-compiles
 	// to any installed target, but linking and the C code some crates build
 	// (aws-lc-sys, which function-sdk-rust's TLS stack pulls in) need a C
 	// toolchain for the target, so an architecture other than the container's
 	// own gets Debian's cross gcc.
+	//
+	// cargo-auditable wraps rustc, so it runs on the container's architecture
+	// whatever the target, and that is the build of it we fetch. Releases
+	// carry one for x86_64 and aarch64; on any other host we compile it.
 	//
 	// We let cargo decide what the package's binaries are rather than reading
 	// Cargo.toml: a binary can come from [[bin]], from src/main.rs under the
@@ -76,6 +93,21 @@ export DEBIAN_FRONTEND=noninteractive
 RUSTUP_TOOLCHAIN=$(rustup default | cut -d' ' -f1)
 export RUSTUP_TOOLCHAIN
 host=$(uname -m)
+case "$host" in
+  x86_64) auditable_sha256=$AUDITABLE_SHA256_AMD64 ;;
+  aarch64) auditable_sha256=$AUDITABLE_SHA256_ARM64 ;;
+  *) auditable_sha256= ;;
+esac
+if [ -n "$auditable_sha256" ] ; then
+  auditable=cargo-auditable-$host-unknown-linux-musl
+  curl --fail --silent --show-error --location --output "/tmp/$auditable.tar.xz" \
+    "https://github.com/rust-secure-code/cargo-auditable/releases/download/v$AUDITABLE_VERSION/$auditable.tar.xz"
+  echo "$auditable_sha256  /tmp/$auditable.tar.xz" | sha256sum --check --quiet
+  tar --extract --file "/tmp/$auditable.tar.xz" --directory "$CARGO_HOME/bin" \
+    --strip-components=1 "$auditable/cargo-auditable"
+else
+  cargo install --quiet --locked "cargo-auditable@$AUDITABLE_VERSION"
+fi
 for arch in $ARCHS ; do
   case "$arch" in
     amd64) cpu=x86_64 ;;
@@ -92,7 +124,7 @@ for arch in $ARCHS ; do
     export "CARGO_TARGET_${env_target^^}_LINKER=$cpu-linux-gnu-gcc"
     export "CC_$env_target=$cpu-linux-gnu-gcc"
   fi
-  cargo build --quiet --release --bins --target "$target"
+  cargo auditable build --quiet --release --bins --target "$target"
   mapfile -t bins < <(find "$CARGO_TARGET_DIR/$target/release" -maxdepth 1 -type f -executable ! -name '*.so')
   if [ "${#bins[@]}" -ne 1 ] ; then
     echo "a function must build exactly one binary, found ${#bins[@]}: ${bins[*]##*/}" >&2
@@ -110,6 +142,8 @@ done
 // does, with cargo in the official Rust image, and put the resulting binary on
 // a distroless base. Unlike a Dockerfile build we compile every architecture in
 // one container of the host's architecture, so nothing runs under emulation.
+// We also build with cargo-auditable, which that Dockerfile does not, so that
+// image scanners can list the crates in the binary.
 type rustBuilder struct {
 	buildImage   string
 	runtimeImage string
@@ -230,6 +264,9 @@ func (b *rustBuilder) buildBinaries(ctx context.Context, buildImage string, c Bu
 			"ARCHS="+strings.Join(c.Architectures, " "),
 			"OUTPUT="+rustBuildOutput,
 			"CARGO_TARGET_DIR="+rustTargetDir,
+			"AUDITABLE_VERSION="+rustAuditableVersion,
+			"AUDITABLE_SHA256_AMD64="+rustAuditableSHA256AMD64,
+			"AUDITABLE_SHA256_ARM64="+rustAuditableSHA256ARM64,
 		),
 		docker.StartWithCommand([]string{"bash", "-c", rustBuildScript}),
 		docker.StartWithWorkingDirectory("/" + filepath.ToSlash(c.FunctionPath)),

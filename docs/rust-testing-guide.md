@@ -541,13 +541,23 @@ crossplane project build
 This will:
 
 1. Generate Rust schemas from all dependencies (provider-aws-s3, your XRD)
-2. Compile the Rust function in a `rust:1-bookworm` container, together with the `crossplane-models`
-   crate it depends on, once for each architecture in `spec.architectures` (amd64 and arm64 by
-   default)
+2. Compile the Rust function with `cargo auditable build` in a `rust:1-bookworm` container,
+   together with the `crossplane-models` crate it depends on, once for each architecture in
+   `spec.architectures` (amd64 and arm64 by default)
 3. Put the binary on `gcr.io/distroless/cc-debian12:nonroot` as `/function`
 4. Package everything into a Crossplane configuration package
 
 The output is `_output/configuration-aws-bucket-rust.xpkg`.
+
+The binary is built with [cargo-auditable](https://github.com/rust-secure-code/cargo-auditable), so
+it carries the list of crates it was built from. Image scanners such as syft, grype and Trivy report
+those crates next to the runtime image's Debian packages. To see them, load the package into Docker
+and scan a function image:
+
+```bash
+docker load --input _output/configuration-aws-bucket-rust.xpkg
+syft xpkg.upbound.io/your-org/configuration-aws-bucket-rust_compose-bucket:amd64
+```
 
 Nothing is cached between builds yet: every build downloads and compiles all of the function's
 dependencies. Expect a minute or two.
@@ -781,9 +791,9 @@ recognizes a function by the `Cargo.toml` at the root of its directory.
 
 ### A function must build exactly one binary
 
-The builder runs `cargo build --release --bins` and ships the binary it produces. A package with no
-binary target, or with more than one, fails with this message and the names it found. The scaffold
-declares one `[[bin]]` named `function`.
+The builder runs `cargo auditable build --release --bins` and ships the binary it produces. A
+package with no binary target, or with more than one, fails with this message and the names it
+found. The scaffold declares one `[[bin]]` named `function`.
 
 ### Workspaces and code shared between functions
 

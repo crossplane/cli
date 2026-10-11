@@ -46,10 +46,10 @@ const (
 	// rustBuildImage is the image in which we build the function. Its Debian
 	// release must match rustRuntimeImage's: the binary links dynamically
 	// against the build image's glibc, and only runs on that version or newer.
-	rustBuildImage = "docker.io/library/rust:1-bookworm"
+	rustBuildImage = "docker.io/library/rust:1-trixie"
 	// rustRuntimeImage is the distroless base used at runtime. The cc flavor
 	// carries glibc and libgcc, which is all a Rust binary links against.
-	rustRuntimeImage = "gcr.io/distroless/cc-debian12:nonroot"
+	rustRuntimeImage = "gcr.io/distroless/cc-debian13:nonroot"
 
 	// rustBinaryPath is where the function's binary lives in the runtime image.
 	rustBinaryPath = "/function"

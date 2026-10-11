@@ -541,10 +541,10 @@ crossplane project build
 This will:
 
 1. Generate Rust schemas from all dependencies (provider-aws-s3, your XRD)
-2. Compile the Rust function with `cargo auditable build` in a `rust:1-bookworm` container,
+2. Compile the Rust function with `cargo auditable build` in a `rust:1-trixie` container,
    together with the `crossplane-models` crate it depends on, once for each architecture in
    `spec.architectures` (amd64 and arm64 by default)
-3. Put the binary on `gcr.io/distroless/cc-debian12:nonroot` as `/function`
+3. Put the binary on `gcr.io/distroless/cc-debian13:nonroot` as `/function`
 4. Package everything into a Crossplane configuration package
 
 The output is `_output/configuration-aws-bucket-rust.xpkg`.

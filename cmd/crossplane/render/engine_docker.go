@@ -96,7 +96,7 @@ func (e *dockerRenderEngine) CheckContextSupport() error {
 // it only annotates fns with the existing network and returns a no-op
 // cleanup, leaving network ownership to whoever created it. fns whose
 // runtime-docker-network annotation is already set are left untouched.
-func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (func(), error) {
+func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (func() error, error) {
 	if e.network != "" {
 		// Either the user pre-configured the network via the --crossplane-docker-network flag
 		// (we don't own it), or a prior Setup call on this engine already created one (the
@@ -104,37 +104,33 @@ func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (f
 		// the supplied fns so their containers join the network — injectNetworkAnnotation
 		// won't overwrite an annotation a fn already carries.
 		injectNetworkAnnotation(fns, e.network)
-		return func() {}, nil
+		return func() error { return nil }, nil
 	}
 
 	cli := e.networks
 	if cli == nil {
 		c, err := newNetworkClient()
 		if err != nil {
-			return func() {}, errors.Wrap(err, "cannot create Docker network for rendering")
+			return func() error { return nil }, errors.Wrap(err, "cannot create Docker network for rendering")
 		}
 		cli = c
 	}
 
 	networkID, networkName, err := createRenderNetwork(ctx, cli)
 	if err != nil {
-		return func() {}, errors.Wrap(err, "cannot create Docker network for rendering")
+		return func() error { return nil }, errors.Wrap(err, "cannot create Docker network for rendering")
 	}
 	e.network = networkName
 
 	injectNetworkAnnotation(fns, networkName)
 
-	cleanup := func() {
+	cleanup := func() error {
 		// Derive from ctx without its cancellation: cleanup typically runs after
 		// the caller's context is done, but must still be bounded so removal
 		// can't hang forever.
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), networkRemoveTimeout)
 		defer cancel()
-		if err := removeRenderNetwork(rctx, cli, networkID); err != nil {
-			// The cleanup signature can't return the error, so log it rather than
-			// silently leaking the network (e.g. a container is still attached).
-			e.log.Info("Cannot remove Docker network used for rendering", "network", networkName, "id", networkID, "error", err)
-		}
+		return errors.Wrap(removeRenderNetwork(rctx, cli, networkID), "cannot remove Docker network used for rendering")
 	}
 
 	return cleanup, nil

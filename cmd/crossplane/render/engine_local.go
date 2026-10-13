@@ -42,8 +42,8 @@ func (e *localRenderEngine) CheckContextSupport() error {
 
 // Setup is a no-op for the local engine. Function containers publish ports to
 // localhost, so there's nothing extra to configure.
-func (e *localRenderEngine) Setup(_ context.Context, _ []pkgv1.Function) (func(), error) {
-	return func() {}, nil
+func (e *localRenderEngine) Setup(_ context.Context, _ []pkgv1.Function) (func() error, error) {
+	return func() error { return nil }, nil
 }
 
 // Render marshals the request, runs it through a local binary, and returns

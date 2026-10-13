@@ -318,8 +318,8 @@ func TestCmdRun(t *testing.T) {
 							t.Errorf("CrossplaneDockerNetwork: -want, +got:\n%s", diff)
 						}
 						return &render.MockEngine{
-							MockSetup: func(_ context.Context, _ []pkgv1.Function) (func(), error) {
-								return func() {}, errors.New("setup blew up")
+							MockSetup: func(_ context.Context, _ []pkgv1.Function) (func() error, error) {
+								return func() error { return nil }, errors.New("setup blew up")
 							},
 						}
 					},
@@ -439,8 +439,8 @@ func TestCmdRun(t *testing.T) {
 					Timeout:           time.Minute,
 					fs:                newTestFS(nil),
 					newEngine: newEngineFunc(&render.MockEngine{
-						MockSetup: func(_ context.Context, _ []pkgv1.Function) (func(), error) {
-							return func() {}, errors.New("setup blew up")
+						MockSetup: func(_ context.Context, _ []pkgv1.Function) (func() error, error) {
+							return func() error { return nil }, errors.New("setup blew up")
 						},
 					}),
 				},

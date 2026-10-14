@@ -240,6 +240,13 @@ func (goGenerator) Language() string {
 	return devv1alpha1.SchemaLanguageGo
 }
 
+// Fingerprint describes the output-affecting options of this generator: the
+// accessor and runtime-object emission settings. The generation logic itself
+// changes only with the CLI version, which the lock fingerprints separately.
+func (g goGenerator) Fingerprint() string {
+	return fmt.Sprintf("accessors=%t,runtimeobjects=%t", g.accessors, g.runtimeObjects)
+}
+
 // GenerateFromCRD generates Go schemas for the CRDs in the given filesystem.
 func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
 	openAPIs, err := collectCRDOpenAPIs(fromFS)

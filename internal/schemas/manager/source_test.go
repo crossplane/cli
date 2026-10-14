@@ -17,6 +17,9 @@ limitations under the License.
 package manager
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/go-git/go-billy/v5"
@@ -678,5 +681,202 @@ func TestCalculateFilesystemHashDifferentContent(t *testing.T) {
 				t.Errorf("different content should produce different hashes")
 			}
 		})
+	}
+}
+
+// A filesystem source whose directory does not exist yet must behave as an
+// empty source, not an error: projects declare apis/ before creating it.
+func TestFSSourceMissingDirectory(t *testing.T) {
+	t.Parallel()
+
+	projFS := afero.NewMemMapFs()
+	src := NewFSSource("apis", afero.NewBasePathFs(projFS, "apis"))
+
+	if _, err := src.Version(context.Background()); err != nil {
+		t.Errorf("Version: %v", err)
+	}
+
+	resources, err := src.Resources(context.Background())
+	if err != nil {
+		t.Fatalf("Resources: %v", err)
+	}
+	empty, err := afero.IsEmpty(resources, ".")
+	if err != nil {
+		t.Fatalf("checking resources emptiness: %v", err)
+	}
+	if !empty {
+		t.Error("resources should be empty for a missing directory")
+	}
+
+	// A missing directory hashes the same as an existing empty one, so
+	// creating the directory alone never triggers regeneration.
+	emptyFS := afero.NewMemMapFs()
+	hashMissing, err := src.Version(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashEmpty, err := calculateFilesystemHash(emptyFS, SourceTypeCRD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashMissing != hashEmpty {
+		t.Errorf("missing directory hash %q != empty directory hash %q", hashMissing, hashEmpty)
+	}
+}
+
+// A project whose APIs live at its root (`apis: .`) must hand the generators
+// only its own YAML files: not the other project directories, the generated
+// schemas, or hidden directories such as .git. Changes there must not read as
+// an API change either.
+func TestProjectAPIsSourceAtRoot(t *testing.T) {
+	for _, apis := range []string{".", "/", "./"} {
+		t.Run(apis, func(t *testing.T) {
+			testProjectAPIsSourceAtRoot(t, apis)
+		})
+	}
+}
+
+func testProjectAPIsSourceAtRoot(t *testing.T, apis string) {
+	t.Helper()
+	ctx := context.Background()
+	projFS := afero.NewMemMapFs()
+	files := map[string]string{
+		"xrd.yaml":                               "kind: CompositeResourceDefinition",
+		"nested/composition.yml":                 "kind: Composition",
+		"README.md":                              "not yaml",
+		"functions/fn/node_modules/pkg/a.yaml":   "dependency",
+		"examples/xr.yaml":                       "example",
+		"operations/op.yaml":                     "operation",
+		"tests/test.yaml":                        "test",
+		"schemas/.cache/apis/json/x.schema.yaml": "generated",
+		"schemas/python/models/pyproject.yaml":   "generated",
+		".github/workflows/ci.yaml":              "workflow",
+		"functions-and-more/kept.yaml":           "a sibling that only shares a prefix",
+	}
+	for p, c := range files {
+		if err := afero.WriteFile(projFS, p, []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	paths := &v1alpha1.ProjectPaths{APIs: apis}
+	paths.Default()
+	src := NewProjectAPIsSource(projFS, paths)
+
+	res, err := src.Resources(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	if err := afero.Walk(res, ".", func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			got = append(got, filepath.ToSlash(p))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"functions-and-more/kept.yaml", "nested/composition.yml", "xrd.yaml"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("resources (-want +got):\n%s", diff)
+	}
+
+	before, err := src.Version(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := afero.WriteFile(projFS, "schemas/.cache/apis/json/x.schema.yaml", []byte("regenerated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := afero.WriteFile(projFS, "functions/fn/node_modules/pkg/b.yaml", []byte("new dependency"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after, err := src.Version(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Error("a change outside the project's APIs changed the APIs source version")
+	}
+
+	if err := afero.WriteFile(projFS, "xrd.yaml", []byte("kind: CompositeResourceDefinition # edited"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edited, err := src.Version(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited == after {
+		t.Error("an XRD edit did not change the APIs source version")
+	}
+}
+
+// A project with its own apis/ directory reads only that directory, and a
+// directory that does not exist yet is an empty source.
+func TestProjectAPIsSourceSubdir(t *testing.T) {
+	ctx := context.Background()
+	projFS := afero.NewMemMapFs()
+
+	paths := &v1alpha1.ProjectPaths{}
+	paths.Default()
+	src := NewProjectAPIsSource(projFS, paths)
+	if got, want := src.ID(), "fs://apis"; got != want {
+		t.Errorf("ID() = %q, want %q", got, want)
+	}
+
+	empty, err := src.Version(ctx)
+	if err != nil {
+		t.Fatalf("missing apis/ directory: %v", err)
+	}
+
+	if err := afero.WriteFile(projFS, "apis/xrd.yaml", []byte("kind: CompositeResourceDefinition"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := afero.WriteFile(projFS, "examples/xr.yaml", []byte("example"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := src.Resources(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := afero.Exists(res, "xrd.yaml"); !ok {
+		t.Error("xrd.yaml is missing from the APIs source")
+	}
+	if ok, _ := afero.Exists(res, "examples/xr.yaml"); ok {
+		t.Error("the APIs source read outside apis/")
+	}
+	if v, _ := src.Version(ctx); v == empty {
+		t.Error("adding an XRD did not change the APIs source version")
+	}
+}
+
+// Project directories nested inside the APIs directory are excluded too.
+func TestProjectAPIsSourceNestedDirs(t *testing.T) {
+	ctx := context.Background()
+	projFS := afero.NewMemMapFs()
+	for p, c := range map[string]string{
+		"src/xrd.yaml":            "kind: CompositeResourceDefinition",
+		"src/examples/xr.yaml":    "example",
+		"src/fns/fn/a.yaml":       "function",
+		"examples-top/other.yaml": "outside src, never read",
+	} {
+		if err := afero.WriteFile(projFS, p, []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	paths := &v1alpha1.ProjectPaths{APIs: "src", Examples: "src/examples", Functions: "./src/fns/"}
+	paths.Default()
+	res, err := NewProjectAPIsSource(projFS, paths).Resources(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]bool{"xrd.yaml": true, "examples/xr.yaml": false, "fns/fn/a.yaml": false} {
+		if got, _ := afero.Exists(res, p); got != want {
+			t.Errorf("%s present = %v, want %v", p, got, want)
+		}
 	}
 }

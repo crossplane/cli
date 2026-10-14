@@ -17,6 +17,7 @@ limitations under the License.
 package dependency
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -69,46 +70,6 @@ spec:
     schema:
       openAPIV3Schema:
         type: object
-`
-
-// configurationWithXRDPackageYAML is a Configuration package that bundles an
-// XRD (rather than a raw CRD, like configurationPackageYAML above) - the
-// shape that previously produced zero schemas.
-const configurationWithXRDPackageYAML = `apiVersion: meta.pkg.crossplane.io/v1
-kind: Configuration
-metadata:
-  name: example
-spec:
-  crossplane:
-    version: ">=v1.14.0"
----
-apiVersion: apiextensions.crossplane.io/v1
-kind: CompositeResourceDefinition
-metadata:
-  name: xdatabases.acme.example.com
-spec:
-  group: acme.example.com
-  names:
-    kind: XDatabase
-    plural: xdatabases
-    singular: xdatabase
-    listKind: XDatabaseList
-  claimNames:
-    kind: Database
-    plural: databases
-    singular: database
-    listKind: DatabaseList
-  scope: LegacyCluster
-  versions:
-  - name: v1alpha1
-    served: true
-    referenceable: true
-    schema:
-      openAPIV3Schema:
-        type: object
-        properties:
-          spec:
-            type: object
 `
 
 const providerPackageYAML = `apiVersion: meta.pkg.crossplane.io/v1
@@ -178,6 +139,13 @@ func parsedPackage(t *testing.T, body string) *parser.Package {
 	return pkg
 }
 
+// parsedTestPackage parses configurationPackageYAML once into a *parser.Package
+// that the fake client can hand back from Get.
+func parsedTestPackage(t *testing.T) *parser.Package {
+	t.Helper()
+	return parsedPackage(t, configurationPackageYAML)
+}
+
 // fakeClient is a fake xpkg.Client. Get returns a pre-canned Package per ref;
 // ListVersions returns the tags for the requested repo, falling back to a
 // fixed tag list, so a real Resolver can be wired on top.
@@ -218,6 +186,16 @@ func (f *fakeClient) getCount(ref string) int {
 	return f.gets[ref]
 }
 
+func makePackage(t *testing.T, source, digest, version string) *runtimexpkg.Package {
+	t.Helper()
+	return &runtimexpkg.Package{
+		Package: parsedTestPackage(t),
+		Source:  source,
+		Digest:  digest,
+		Version: version,
+	}
+}
+
 func makePackageWithBody(t *testing.T, source, digest, version, body string) *runtimexpkg.Package {
 	t.Helper()
 	return &runtimexpkg.Package{
@@ -228,18 +206,22 @@ func makePackageWithBody(t *testing.T, source, digest, version, body string) *ru
 	}
 }
 
-func newTestManager(t *testing.T, fc *fakeClient, generators ...generator.Interface) (*Manager, afero.Fs) {
+// newTestManagerWithDeps builds a manager for a project with the given
+// dependencies declared, as `crossplane dependency add` leaves it. Pass no
+// deps for a dependency-less project.
+func newTestManagerWithDeps(t *testing.T, fc *fakeClient, deps ...v1alpha1.Dependency) (*Manager, afero.Fs) {
 	t.Helper()
 	schemaFS := afero.NewMemMapFs()
 	m := NewManager(
 		&v1alpha1.Project{
 			Spec: v1alpha1.ProjectSpec{
-				Paths: &v1alpha1.ProjectPaths{Schemas: "schemas"},
+				Dependencies: deps,
+				Paths:        &v1alpha1.ProjectPaths{Schemas: "schemas", APIs: "apis"},
 			},
 		},
 		afero.NewMemMapFs(),
 		WithSchemaFS(schemaFS),
-		WithSchemaGenerators(generators),
+		WithSchemaGenerators([]generator.Interface{}),
 		WithXpkgClient(fc),
 		WithResolver(clixpkg.NewResolver(fc)),
 	)
@@ -506,6 +488,18 @@ func TestManager_AddDependency(t *testing.T) {
 			if tc.fetchAt != "" {
 				fc.packages[tc.fetchAt] = makePackageWithBody(t, tc.dep.Xpkg.Package, digestVal, "", tc.pkg.body)
 			}
+			// GenerateAllSchemas collects sources for every declared
+			// dependency, so any deps the project starts with must be
+			// servable too.
+			for _, existing := range tc.inputDeps {
+				if existing.Xpkg == nil || existing.Xpkg.Package == tc.dep.Xpkg.Package {
+					continue
+				}
+				ref := existing.Xpkg.Package + ":" + existing.Xpkg.Version
+				if _, ok := fc.packages[ref]; !ok {
+					fc.packages[ref] = makePackageWithBody(t, existing.Xpkg.Package, digestVal, "", fnInfo.body)
+				}
+			}
 
 			projFS := afero.NewMemMapFs()
 			proj := &v1alpha1.Project{
@@ -567,104 +561,56 @@ func TestManager_AddDependency(t *testing.T) {
 	}
 }
 
-func TestManager_AddPackage(t *testing.T) {
-	const (
-		cfgXRDPkg = "xpkg.crossplane.io/crossplane-contrib/configuration-xrd"
-		cfgXRDTag = "v0.1.0"
-	)
-
+func TestManager_CollectSources_RefNormalizes(t *testing.T) {
+	// The source ID is what the lock file records, so a package named by
+	// constraint, by exact tag, or by digest must still collapse to one
+	// canonical xpkg:// ID in each spelling.
 	tests := map[string]struct {
-		ref     string
+		dep     *v1alpha1.Dependency
 		tags    []string
 		fetchAt string
-		// body is the package YAML served by the fake client; empty
-		// defaults to configurationPackageYAML.
-		body string
-		// generators are the schema generators wired into the manager;
-		// empty/nil means no schema files are actually rendered.
-		generators []generator.Interface
-		wantKey    string
-		// wantSchemaGlob, when set, must match at least one file in
-		// schemaFS after AddPackage.
-		wantSchemaGlob string
+		wantID  string
 	}{
 		"ConstraintCollapsesToResolvedVersion": {
-			ref:     "pkg.example/foo:>=v0.0.0",
+			dep:     xpkgDep("pkg.example/foo", ">=v0.0.0"),
 			tags:    []string{"v0.5.2"},
 			fetchAt: "pkg.example/foo:v0.5.2",
-			wantKey: "xpkg://pkg.example/foo:v0.5.2",
+			wantID:  "xpkg://pkg.example/foo:v0.5.2",
 		},
 		"ExactVersionMatchesResolved": {
-			ref:     "pkg.example/foo:v0.5.2",
+			dep:     xpkgDep("pkg.example/foo", "v0.5.2"),
 			tags:    []string{"v0.5.2"},
 			fetchAt: "pkg.example/foo:v0.5.2",
-			wantKey: "xpkg://pkg.example/foo:v0.5.2",
+			wantID:  "xpkg://pkg.example/foo:v0.5.2",
 		},
 		"DigestRefUsesDigestForm": {
-			ref:     "pkg.example/foo@sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+			dep:     xpkgDep("pkg.example/foo", "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"),
 			fetchAt: "pkg.example/foo@sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
-			wantKey: "xpkg://pkg.example/foo@sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
-		},
-		// ConfigurationWithXRDGeneratesSchemas verifies that adding a
-		// Configuration dependency that bundles XRDs (rather than raw
-		// CRDs) generates real schema output, not just an empty
-		// successful pass. Before internal/xpkg.CRDFilesystem learned to
-		// convert XRDs to their derived CRD form, this produced a lock
-		// entry but zero schema content.
-		"ConfigurationWithXRDGeneratesSchemas": {
-			ref:            cfgXRDPkg + ":" + cfgXRDTag,
-			tags:           []string{cfgXRDTag},
-			fetchAt:        cfgXRDPkg + ":" + cfgXRDTag,
-			body:           configurationWithXRDPackageYAML,
-			generators:     generator.Filter(generator.AllLanguages(), []string{v1alpha1.SchemaLanguageJSON}),
-			wantKey:        "xpkg://" + cfgXRDPkg + ":" + cfgXRDTag,
-			wantSchemaGlob: "json/*.schema.json",
+			wantID:  "xpkg://pkg.example/foo@sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			body := tc.body
-			if body == "" {
-				body = configurationPackageYAML
-			}
 			fc := &fakeClient{
 				packages: map[string]*runtimexpkg.Package{
-					tc.fetchAt: makePackageWithBody(t, refRepo(tc.ref), "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03", "", body),
+					tc.fetchAt: makePackage(t, "pkg.example/foo", "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03", ""),
 				},
 				tags: tc.tags,
 			}
-			m, schemaFS := newTestManager(t, fc, tc.generators...)
+			m, _ := newTestManagerWithDeps(t, fc, *tc.dep)
 
-			if _, err := m.AddPackage(context.Background(), tc.ref, false); err != nil {
-				t.Fatalf("AddPackage: %v", err)
-			}
-
-			bs, err := afero.ReadFile(schemaFS, ".lock.json")
+			sources, err := m.CollectSources(context.Background(), nil)
 			if err != nil {
-				t.Fatalf("read lock: %v", err)
+				t.Fatalf("CollectSources: %v", err)
 			}
-			var got struct {
-				Packages map[string]string `json:"packages"`
+			ids := make([]string, 0, len(sources))
+			for _, src := range sources {
+				ids = append(ids, src.ID())
 			}
-			if err := json.Unmarshal(bs, &got); err != nil {
-				t.Fatalf("unmarshal lock: %v", err)
-			}
-			if _, ok := got.Packages[tc.wantKey]; !ok {
-				t.Errorf("lock has no entry for %q; keys = %v", tc.wantKey, slices.Collect(maps.Keys(got.Packages)))
-			}
-			if len(got.Packages) != 1 {
-				t.Errorf("lock packages = %d, want 1; got %v", len(got.Packages), got.Packages)
-			}
-
-			if tc.wantSchemaGlob != "" {
-				files, err := afero.Glob(schemaFS, tc.wantSchemaGlob)
-				if err != nil {
-					t.Fatalf("glob generated schemas: %v", err)
-				}
-				if len(files) == 0 {
-					t.Errorf("no files matched %q; no schemas were generated", tc.wantSchemaGlob)
-				}
+			want := []string{tc.wantID}
+			if diff := cmp.Diff(want, ids); diff != "" {
+				t.Errorf("source IDs (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -682,7 +628,10 @@ func refRepo(ref string) string {
 	return ref
 }
 
-// readLockKeys returns the package keys recorded in the schema lock file.
+// readLockKeys returns the dependency-source keys recorded in the schema
+// lock file. Source entries live under groups.<group>, one map per source
+// group; the apis entry (fs://apis) belongs to a different group, so only the
+// dependency keys are returned.
 func readLockKeys(t *testing.T, schemaFS afero.Fs) []string {
 	t.Helper()
 	bs, err := afero.ReadFile(schemaFS, ".lock.json")
@@ -690,17 +639,19 @@ func readLockKeys(t *testing.T, schemaFS afero.Fs) []string {
 		t.Fatalf("read lock: %v", err)
 	}
 	var lock struct {
-		Packages map[string]string `json:"packages"`
+		Groups map[string]map[string]string `json:"groups"`
 	}
 	if err := json.Unmarshal(bs, &lock); err != nil {
 		t.Fatalf("unmarshal lock: %v", err)
 	}
-	keys := slices.Collect(maps.Keys(lock.Packages))
+	keys := slices.Collect(maps.Keys(lock.Groups["dependencies"]))
 	slices.Sort(keys)
 	return keys
 }
 
-func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
+func TestManager_CollectSources_TransitiveWalk(t *testing.T) {
+	// What CollectSources returns is what the merged schema pass generates
+	// from, so a transitive dependency missing here means missing schemas.
 	const (
 		provA     = "xpkg.example/prov-a"
 		provB     = "xpkg.example/prov-b"
@@ -716,7 +667,7 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 	tests := map[string]struct {
 		packages     []pkgFixture
 		tagsByRepo   map[string][]string
-		addRefs      []string
+		declaredDeps []string
 		wantLockKeys []string
 		wantErr      string
 		wantGets     map[string]int
@@ -730,7 +681,7 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 				provA:  {"v0.1.0"},
 				family: {"v1.0.0"},
 			},
-			addRefs: []string{provA + ":v0.1.0"},
+			declaredDeps: []string{provA + ":v0.1.0"},
 			wantLockKeys: []string{
 				"xpkg://" + family + ":v1.0.0",
 				"xpkg://" + provA + ":v0.1.0",
@@ -745,7 +696,7 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 				provA:  {"v0.1.0"},
 				family: {"v1.2.3"},
 			},
-			addRefs: []string{provA + ":v0.1.0"},
+			declaredDeps: []string{provA + ":v0.1.0"},
 			wantLockKeys: []string{
 				"xpkg://" + family + ":v1.2.3",
 				"xpkg://" + provA + ":v0.1.0",
@@ -759,7 +710,7 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 			tagsByRepo: map[string][]string{
 				provA: {"v0.1.0"},
 			},
-			addRefs: []string{provA + ":v0.1.0"},
+			declaredDeps: []string{provA + ":v0.1.0"},
 			wantLockKeys: []string{
 				"xpkg://" + family + "@" + digestVal,
 				"xpkg://" + provA + ":v0.1.0",
@@ -774,7 +725,7 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 				provA:  {"v0.1.0"},
 				family: {"v1.0.0"},
 			},
-			addRefs: []string{provA + ":v0.1.0"},
+			declaredDeps: []string{provA + ":v0.1.0"},
 			wantLockKeys: []string{
 				"xpkg://" + family + ":v1.0.0",
 				"xpkg://" + provA + ":v0.1.0",
@@ -791,7 +742,7 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 				provB:  {"v0.2.0"},
 				family: {"v1.0.0"},
 			},
-			addRefs: []string{provA + ":v0.1.0", provB + ":v0.2.0"},
+			declaredDeps: []string{provA + ":v0.1.0", provB + ":v0.2.0"},
 			wantLockKeys: []string{
 				"xpkg://" + family + ":v1.0.0",
 				"xpkg://" + provA + ":v0.1.0",
@@ -810,7 +761,7 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 				provA: {"v0.1.0"},
 				provB: {"v0.2.0"},
 			},
-			addRefs: []string{provA + ":v0.1.0"},
+			declaredDeps: []string{provA + ":v0.1.0"},
 			wantLockKeys: []string{
 				"xpkg://" + provA + ":v0.1.0",
 				"xpkg://" + provB + ":v0.2.0",
@@ -824,11 +775,10 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 				provA:  {"v0.1.0"},
 				family: {},
 			},
-			addRefs: []string{provA + ":v0.1.0"},
-			wantErr: family + ":v9.9.9",
+			declaredDeps: []string{provA + ":v0.1.0"},
+			wantErr:      family + ":v9.9.9",
 		},
 	}
-
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			fc := &fakeClient{
@@ -838,14 +788,14 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 			for _, p := range tc.packages {
 				fc.packages[p.ref] = makePackageWithBody(t, refRepo(p.ref), "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03", "", p.body)
 			}
-			m, schemaFS := newTestManager(t, fc)
-
-			var err error
-			for _, ref := range tc.addRefs {
-				if _, err = m.AddPackage(context.Background(), ref, false); err != nil {
-					break
-				}
+			deps := make([]v1alpha1.Dependency, len(tc.declaredDeps))
+			for i, ref := range tc.declaredDeps {
+				repo, tag, _ := strings.Cut(ref, ":")
+				deps[i] = *xpkgDep(repo, tag)
 			}
+			m, schemaFS := newTestManagerWithDeps(t, fc, deps...)
+
+			err := m.GenerateAllSchemas(context.Background(), nil)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
@@ -853,7 +803,7 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("AddPackage: %v", err)
+				t.Fatalf("GenerateAllSchemas: %v", err)
 			}
 
 			want := slices.Clone(tc.wantLockKeys)
@@ -871,7 +821,197 @@ func TestManager_AddPackage_TransitiveDeps(t *testing.T) {
 	}
 }
 
-func TestManager_AddAll_SharedTransitiveDep(t *testing.T) {
+func TestManager_CollectSources_Transitive(t *testing.T) {
+	// The merged schema pass generates from exactly what CollectSources
+	// returns, so a transitive dependency missing here contributes no schemas.
+	// provA and provB both depend on family, which must appear once.
+	const (
+		provA  = "xpkg.example/prov-a"
+		provB  = "xpkg.example/prov-b"
+		family = "xpkg.example/family"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			provA + ":v0.1.0":  makePackageWithBody(t, provA, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			provB + ":v0.2.0":  makePackageWithBody(t, provB, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			family + ":v1.0.0": makePackageWithBody(t, family, digest, "", providerPackageYAML),
+		},
+		tagsByRepo: map[string][]string{
+			provA:  {"v0.1.0"},
+			provB:  {"v0.2.0"},
+			family: {"v1.0.0"},
+		},
+	}
+
+	m := NewManager(
+		&v1alpha1.Project{
+			Spec: v1alpha1.ProjectSpec{
+				Dependencies: []v1alpha1.Dependency{
+					*xpkgDep(provA, "v0.1.0"),
+					*xpkgDep(provB, "v0.2.0"),
+				},
+				Paths: &v1alpha1.ProjectPaths{Schemas: "schemas"},
+			},
+		},
+		afero.NewMemMapFs(),
+		WithSchemaFS(afero.NewMemMapFs()),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+	)
+
+	var ch async.EventChannel // nil channel; SendEvent is a no-op.
+	sources, err := m.CollectSources(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("CollectSources: %v", err)
+	}
+
+	got := make([]string, 0, len(sources))
+	for _, src := range sources {
+		got = append(got, src.ID())
+	}
+
+	// Sorted by ID, and family only once even though both providers depend on
+	// it. Sorting is what makes this assertable: the project dependencies are
+	// collected concurrently, so a shared transitive dependency would otherwise
+	// land under whichever goroutine claimed it first.
+	want := []string{
+		"xpkg://" + family + ":v1.0.0",
+		"xpkg://" + provA + ":v0.1.0",
+		"xpkg://" + provB + ":v0.2.0",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("source IDs (-want +got):\n%s", diff)
+	}
+
+	if got := fc.getCount(family + ":v1.0.0"); got != 1 {
+		t.Errorf("fetch count for %s = %d, want 1", family+":v1.0.0", got)
+	}
+}
+
+// A second top-level call on the same Manager must traverse every dependency
+// again, not silently skip the ones the first call already claimed. Without
+// resetVisited, a caller that retries CollectSources after a transient
+// failure, or simply calls it twice, would see progressively fewer sources.
+func TestManager_CollectSources_ReusableAcrossCalls(t *testing.T) {
+	const (
+		provA  = "xpkg.example/prov-a"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			provA + ":v0.1.0": makePackageWithBody(t, provA, digest, "", providerPackageYAML),
+		},
+		tagsByRepo: map[string][]string{
+			provA: {"v0.1.0"},
+		},
+	}
+
+	m := NewManager(
+		&v1alpha1.Project{
+			Spec: v1alpha1.ProjectSpec{
+				Dependencies: []v1alpha1.Dependency{
+					*xpkgDep(provA, "v0.1.0"),
+				},
+				Paths: &v1alpha1.ProjectPaths{Schemas: "schemas"},
+			},
+		},
+		afero.NewMemMapFs(),
+		WithSchemaFS(afero.NewMemMapFs()),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+	)
+
+	var ch async.EventChannel // nil channel; SendEvent is a no-op.
+	want := []string{"xpkg://" + provA + ":v0.1.0"}
+
+	for _, label := range []string{"first call", "second call"} {
+		sources, err := m.CollectSources(context.Background(), ch)
+		if err != nil {
+			t.Fatalf("CollectSources (%s): %v", label, err)
+		}
+
+		got := make([]string, 0, len(sources))
+		for _, src := range sources {
+			got = append(got, src.ID())
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("source IDs on %s (-want +got):\n%s", label, diff)
+		}
+	}
+}
+
+func TestManager_CollectSources_RangeAndExactCollapse(t *testing.T) {
+	// A package reached once through a constraint and once through an exact
+	// version is still one package. claim() records the reference as written,
+	// before Resolve canonicalizes it, so both spellings pass it and produce
+	// two sources with the same ID - which makes the merged pass generate from
+	// the same CRDs twice.
+	const (
+		provA  = "xpkg.example/prov-a"
+		family = "xpkg.example/family"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			provA + ":v0.1.0":  makePackageWithBody(t, provA, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			family + ":v1.0.0": makePackageWithBody(t, family, digest, "", providerPackageYAML),
+		},
+		tagsByRepo: map[string][]string{
+			provA:  {"v0.1.0"},
+			family: {"v1.0.0"},
+		},
+	}
+
+	m := NewManager(
+		&v1alpha1.Project{
+			Spec: v1alpha1.ProjectSpec{
+				Dependencies: []v1alpha1.Dependency{
+					// Depends on family:v1.0.0 through its metadata.
+					*xpkgDep(provA, "v0.1.0"),
+					// And the project names the same package by constraint.
+					*xpkgDep(family, ">=v1.0.0"),
+				},
+				Paths: &v1alpha1.ProjectPaths{Schemas: "schemas"},
+			},
+		},
+		afero.NewMemMapFs(),
+		WithSchemaFS(afero.NewMemMapFs()),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+	)
+
+	var ch async.EventChannel // nil channel; SendEvent is a no-op.
+	sources, err := m.CollectSources(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("CollectSources: %v", err)
+	}
+
+	got := make([]string, 0, len(sources))
+	for _, src := range sources {
+		got = append(got, src.ID())
+	}
+
+	want := []string{
+		"xpkg://" + family + ":v1.0.0",
+		"xpkg://" + provA + ":v0.1.0",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("source IDs (-want +got):\n%s", diff)
+	}
+
+	if got := fc.getCount(family + ":v1.0.0"); got != 1 {
+		t.Errorf("fetch count for %s = %d, want 1", family+":v1.0.0", got)
+	}
+}
+
+func TestManager_GenerateAllSchemas_SharedTransitiveDep(t *testing.T) {
 	const (
 		provA  = "xpkg.example/prov-a"
 		provB  = "xpkg.example/prov-b"
@@ -911,8 +1051,8 @@ func TestManager_AddAll_SharedTransitiveDep(t *testing.T) {
 	)
 
 	var ch async.EventChannel // nil channel; SendEvent is a no-op.
-	if err := m.AddAll(context.Background(), ch); err != nil {
-		t.Fatalf("AddAll: %v", err)
+	if err := m.GenerateAllSchemas(context.Background(), ch); err != nil {
+		t.Fatalf("GenerateAllSchemas: %v", err)
 	}
 
 	want := []string{
@@ -1011,5 +1151,149 @@ func TestManager_AddDependency_TransitiveNotPersisted(t *testing.T) {
 	}
 	if diff := cmp.Diff(wantDeps, gotProj.Spec.Dependencies); diff != "" {
 		t.Errorf("on-disk project deps (-want +got):\n%s", diff)
+	}
+}
+
+// A dependency whose schemas cannot be generated must not be written to the
+// project file. Git, HTTP and k8s sources are only fetched by the generation
+// pass, so persisting first would record a dependency that was never checked.
+func TestManager_AddDependency_FailedGenerationNotPersisted(t *testing.T) {
+	projFS := afero.NewMemMapFs()
+	proj := &v1alpha1.Project{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dev.crossplane.io/v1alpha1",
+			Kind:       "Project",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+		Spec: v1alpha1.ProjectSpec{
+			Repository: "xpkg.crossplane.io/test/test",
+			Paths:      &v1alpha1.ProjectPaths{Schemas: "schemas"},
+		},
+	}
+	bs, err := yaml.Marshal(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := afero.WriteFile(projFS, "crossplane-project.yaml", bs, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(proj, projFS,
+		WithProjectFile("crossplane-project.yaml"),
+		WithSchemaFS(afero.NewMemMapFs()),
+		WithSchemaGenerators([]generator.Interface{}),
+	)
+
+	// Nothing listens on port 1, so fetching this source fails.
+	dep := &v1alpha1.Dependency{
+		Type: v1alpha1.DependencyTypeCRD,
+		HTTP: &v1alpha1.HTTPDependency{URL: "http://127.0.0.1:1/crds.yaml"},
+	}
+	if err := m.AddDependency(context.Background(), dep); err == nil {
+		t.Fatal("AddDependency succeeded for an unreachable HTTP source")
+	}
+
+	if len(proj.Spec.Dependencies) != 0 {
+		t.Errorf("in-memory project dependencies = %v, want none", proj.Spec.Dependencies)
+	}
+	gotBytes, err := afero.ReadFile(projFS, "crossplane-project.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(string(bs), string(gotBytes)); diff != "" {
+		t.Errorf("project file changed (-want +got):\n%s", diff)
+	}
+}
+
+// Two dependencies that pull in one package at different versions get a
+// warning naming the package and both versions: both versions' CRDs go into
+// the same generator run.
+func TestManager_CollectSources_WarnsOnMultipleVersions(t *testing.T) {
+	const (
+		provA  = "xpkg.example/prov-a"
+		provB  = "xpkg.example/prov-b"
+		family = "xpkg.example/family"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			provA + ":v0.1.0":  makePackageWithBody(t, provA, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.0.0")),
+			provB + ":v0.1.0":  makePackageWithBody(t, provB, digest, "", fmt.Sprintf(providerDependsOnPackageYAML, family, "v1.1.0")),
+			family + ":v1.0.0": makePackageWithBody(t, family, digest, "", providerPackageYAML),
+			family + ":v1.1.0": makePackageWithBody(t, family, digest, "", providerPackageYAML),
+		},
+		tagsByRepo: map[string][]string{
+			provA:  {"v0.1.0"},
+			provB:  {"v0.1.0"},
+			family: {"v1.0.0", "v1.1.0"},
+		},
+	}
+
+	proj := &v1alpha1.Project{
+		Spec: v1alpha1.ProjectSpec{
+			Paths:        &v1alpha1.ProjectPaths{Schemas: "schemas"},
+			Dependencies: []v1alpha1.Dependency{*xpkgDep(provA, "v0.1.0"), *xpkgDep(provB, "v0.1.0")},
+		},
+	}
+
+	var warnings bytes.Buffer
+	m := NewManager(proj, afero.NewMemMapFs(),
+		WithSchemaFS(afero.NewMemMapFs()),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+		WithWarningWriter(&warnings),
+	)
+
+	if _, err := m.CollectSources(context.Background(), nil); err != nil {
+		t.Fatalf("CollectSources: %v", err)
+	}
+	want := "warning: the project's dependencies resolve " + family + " to more than one version (v1.0.0, v1.1.0)"
+	if !strings.Contains(warnings.String(), want) {
+		t.Errorf("warnings = %q, want it to contain %q", warnings.String(), want)
+	}
+
+	// A second collection over the same project warns again, once: the
+	// record of collected versions is per traversal.
+	warnings.Reset()
+	if _, err := m.CollectSources(context.Background(), nil); err != nil {
+		t.Fatalf("CollectSources: %v", err)
+	}
+	if got := strings.Count(warnings.String(), "warning:"); got != 1 {
+		t.Errorf("second collection printed %d warnings, want 1:\n%s", got, warnings.String())
+	}
+}
+
+// One version of each package collects without warnings.
+func TestManager_CollectSources_NoWarningForOneVersion(t *testing.T) {
+	const (
+		provA  = "xpkg.example/prov-a"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+	)
+	fc := &fakeClient{
+		packages:   map[string]*runtimexpkg.Package{provA + ":v0.1.0": makePackageWithBody(t, provA, digest, "", providerPackageYAML)},
+		tagsByRepo: map[string][]string{provA: {"v0.1.0"}},
+	}
+	proj := &v1alpha1.Project{
+		Spec: v1alpha1.ProjectSpec{
+			Paths:        &v1alpha1.ProjectPaths{Schemas: "schemas"},
+			Dependencies: []v1alpha1.Dependency{*xpkgDep(provA, "v0.1.0"), *xpkgDep(provA, ">=v0.1.0")},
+		},
+	}
+
+	var warnings bytes.Buffer
+	m := NewManager(proj, afero.NewMemMapFs(),
+		WithSchemaFS(afero.NewMemMapFs()),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(fc),
+		WithResolver(clixpkg.NewResolver(fc)),
+		WithWarningWriter(&warnings),
+	)
+	if _, err := m.CollectSources(context.Background(), nil); err != nil {
+		t.Fatalf("CollectSources: %v", err)
+	}
+	if warnings.Len() != 0 {
+		t.Errorf("unexpected warnings: %s", warnings.String())
 	}
 }

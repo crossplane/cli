@@ -21,6 +21,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -304,6 +305,41 @@ func TestGenerateFromOpenAPIGo(t *testing.T) {
 			if diff := cmp.Diff("dev.crossplane.io/models", mod.Module.Mod.Path); diff != "" {
 				t.Errorf("module path (-want +got):\n%s", diff)
 			}
+		}
+	}
+}
+
+// The same OpenAPI input must produce the same bytes on every run: the merged
+// schema pass compares shared files byte for byte, and users' code depends on
+// the generated constant names. GVK groups share schema pointers that the
+// generator mutates in place, so processing them in map order once made enum
+// constant names in authentication/v1 differ between runs.
+func TestGenerateFromOpenAPIGoDeterministic(t *testing.T) {
+	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataJSONFS}, "testdata")
+
+	render := func() map[string]string {
+		schemaFS, err := goGenerator{}.GenerateFromOpenAPI(t.Context(), inputFS, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := map[string]string{}
+		if err := afero.Walk(schemaFS, ".", func(p string, info fs.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return err
+			}
+			bs, err := afero.ReadFile(schemaFS, p)
+			files[p] = string(bs)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return files
+	}
+
+	first := render()
+	for i := range 5 {
+		if diff := cmp.Diff(first, render()); diff != "" {
+			t.Fatalf("run %d differs from the first (-first +run):\n%s", i+2, diff)
 		}
 	}
 }

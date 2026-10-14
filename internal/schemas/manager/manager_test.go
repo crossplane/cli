@@ -944,6 +944,9 @@ func TestFailedSwapRestoresPreviousTree(t *testing.T) {
 		assertFilesPresent(t, testFS, lang+"/0000_fs_apis/xrd-v1.yaml")
 		assertFilesAbsent(t, testFS, lang+"/0000_fs_apis/xrd-v2.yaml")
 	}
+	if ok, _ := afero.Exists(testFS, stagingDirName); ok {
+		t.Errorf("%s left behind after a failed pass", stagingDirName)
+	}
 
 	// Once renames work again, the next pass completes the update.
 	testFS.arm("")
@@ -1015,5 +1018,65 @@ func TestUnchangedPassLeavesLockFileAlone(t *testing.T) {
 	}
 	if got := readFile(t, testFS, lockFileName); got == string(compact) {
 		t.Error("a changed pass did not rewrite the lock file")
+	}
+}
+
+// Each source is its own generator run, so a group of many dependencies
+// generates in parallel instead of in one long toolchain process; the parts
+// still assemble into one tree.
+func TestEachSourceIsOneGeneratorRun(t *testing.T) {
+	t.Parallel()
+
+	testFS := afero.NewMemMapFs()
+	g := &kindGenerator{lang: "mock"}
+	m := New(testFS, []generator.Interface{g}, nil)
+
+	deps := []Source{
+		depSrc("prov-a:v1", "v1", "a.yaml"),
+		depSrc("prov-b:v1", "v1", "b.yaml"),
+		depSrc("prov-c:v1", "v1", "c.yaml"),
+	}
+	if err := m.GenerateFromMultipleSources(t.Context(), deps, apiSrc("v1", "xrd.yaml")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := g.runs, 4; got != want {
+		t.Errorf("generator ran %d times, want %d (one per source)", got, want)
+	}
+	assertFilesPresent(t, testFS,
+		treeDepPath(0, "prov-a:v1", "a.yaml"),
+		treeDepPath(1, "prov-b:v1", "b.yaml"),
+		treeDepPath(2, "prov-c:v1", "c.yaml"),
+		treeAPIPath(0, "xrd.yaml"),
+		"mock/shared-root",
+	)
+}
+
+// The hidden directories ignore themselves for git, so projects that check
+// schemas/ in do not pick up the cache, and staging is gone once a pass ends,
+// including a pass that replaced a previous tree.
+func TestHiddenDirectoriesStayOutOfGit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	testFS := afero.NewMemMapFs()
+	m := New(testFS, []generator.Interface{&kindGenerator{lang: "mock"}}, nil)
+
+	dep := depSrc("prov-a:v1", "v1", "dep.yaml")
+	for _, xrd := range []string{"v1", "v2"} {
+		if err := m.GenerateFromMultipleSources(ctx, []Source{dep}, apiSrc(xrd, "xrd-"+xrd+".yaml")); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := afero.Exists(testFS, stagingDirName); ok {
+			t.Errorf("after the %s pass: %s left behind", xrd, stagingDirName)
+		}
+	}
+
+	bs, err := afero.ReadFile(testFS, path.Join(cacheDirName, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(ignoreAllGitignore, string(bs)); diff != "" {
+		t.Errorf("%s/.gitignore (-want +got):\n%s", cacheDirName, diff)
 	}
 }

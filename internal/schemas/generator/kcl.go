@@ -66,6 +66,12 @@ func (kclGenerator) Language() string {
 	return devv1alpha1.SchemaLanguageKCL
 }
 
+// Fingerprint describes the output-affecting configuration of this generator:
+// the pinned KCL toolchain image it runs generation in.
+func (kclGenerator) Fingerprint() string {
+	return "image=" + kclImage
+}
+
 // GenerateFromCRD generates KCL schema files from the XRDs and CRDs fromFS.
 func (kclGenerator) GenerateFromCRD(ctx context.Context, fromFS afero.Fs, generator runner.SchemaRunner) (afero.Fs, error) { //nolint:gocognit // generate kcl schemas
 	crdFS := afero.NewMemMapFs()

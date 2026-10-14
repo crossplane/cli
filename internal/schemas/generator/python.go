@@ -59,6 +59,12 @@ func (pythonGenerator) Language() string {
 	return devv1alpha1.SchemaLanguagePython
 }
 
+// Fingerprint describes the output-affecting configuration of this generator:
+// the pinned datamodel-code-generator image it runs generation in.
+func (pythonGenerator) Fingerprint() string {
+	return "image=" + pythonImage
+}
+
 // GenerateFromCRD generates Python schema files from the XRDs and CRDs fromFS.
 func (p pythonGenerator) GenerateFromCRD(ctx context.Context, fromFS afero.Fs, generator runner.SchemaRunner) (afero.Fs, error) { //nolint:gocognit // generation of schemas for python
 	crdFS := afero.NewMemMapFs()

@@ -21,6 +21,10 @@ package dependency
 import (
 	"context"
 	"fmt"
+	"io"
+	"maps"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -62,10 +66,27 @@ type Manager struct {
 
 	updateMutex sync.Mutex
 
+	// fetched caches packages by resolved ref for this Manager, so the
+	// top-level walks -- GVK extraction, then source collection -- do not
+	// each download the same package. The xpkg client's own cache is
+	// per-invocation only when configured, and is keyed for extraction, not
+	// for the GVK and dependency walk both callers need.
+	fetched   map[string]*runtimexpkg.Package
+	fetchedMu sync.Mutex
+
 	// visited tracks package refs already processed during this invocation,
 	// deduplicating shared transitive dependencies and breaking cycles.
 	visited   map[string]struct{}
 	visitedMu sync.Mutex
+
+	// collected records, per package repository, every version source
+	// collection resolved it to, so CollectSources can warn when the
+	// project's dependencies pull in one package at two versions. Guarded by
+	// visitedMu and reset with visited.
+	collected map[string][]string
+
+	// warnings receives non-fatal problems found while collecting sources.
+	warnings io.Writer
 }
 
 // ManagerOption configures the dependency manager.
@@ -79,6 +100,7 @@ type managerOptions struct {
 	gitAuthProvider  git.AuthProvider
 	client           runtimexpkg.Client
 	resolver         *clixpkg.Resolver
+	warnings         io.Writer
 }
 
 // WithProjectFile sets the path to the project file.
@@ -132,6 +154,14 @@ func WithResolver(r *clixpkg.Resolver) ManagerOption {
 	}
 }
 
+// WithWarningWriter sets where non-fatal problems found while collecting
+// schema sources are written. The default is os.Stderr.
+func WithWarningWriter(w io.Writer) ManagerOption {
+	return func(opts *managerOptions) {
+		opts.warnings = w
+	}
+}
+
 // NewManager returns an initialized dependency manager. The default schema
 // generators are configured with every generator option off, so a caller that
 // generates schemas must pass WithSchemaGenerators to honor the feature flags
@@ -145,6 +175,7 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 			runner.WithImageConfig(proj.Spec.ImageConfigs),
 		),
 		gitAuthProvider: &git.HTTPSAuthProvider{},
+		warnings:        os.Stderr,
 	}
 
 	for _, opt := range opts {
@@ -167,6 +198,9 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 		client:          options.client,
 		resolver:        options.resolver,
 		visited:         make(map[string]struct{}),
+		collected:       make(map[string][]string),
+		fetched:         make(map[string]*runtimexpkg.Package),
+		warnings:        options.warnings,
 	}
 }
 
@@ -178,30 +212,26 @@ func (m *Manager) ResolveRef(ref string) (name.Reference, error) {
 	return resolved, err
 }
 
-// AddPackage adds a package to the dependency manager. If refresh is set, the
-// package's ref will be re-resolved regardless of whether it is cached.
-// Schemas are also generated recursively for the dependencies declared in the
-// package's metadata.
-func (m *Manager) AddPackage(ctx context.Context, ref string, refresh bool) (*schema.GroupVersionKind, error) {
-	return m.addPackage(ctx, ref, refresh)
-}
-
+// addPackage fetches a package by ref -- walking its transitive dependencies
+// -- and returns its runtime GVK. It writes nothing: callers that add a
+// dependency to the project finish with GenerateAllSchemas so the tree always
+// describes the whole project.
 func (m *Manager) addPackage(ctx context.Context, ref string, refresh bool) (*schema.GroupVersionKind, error) {
 	// Record the ref unconditionally: top-level calls must always fully
 	// process the package so callers get its GVK, while transitive walks
 	// consult the visited set before recursing.
 	m.claim(ref)
 
-	resolvedRef, version, err := m.resolver.Resolve(ctx, ref)
+	resolvedRef, _, err := m.resolver.Resolve(ctx, ref)
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot resolve %s", ref)
+		return nil, errors.Wrapf(err, "cannot resolve package %q; check that the package exists and that the version or digest is valid", ref)
 	}
 
 	pullPolicy := corev1.PullIfNotPresent
 	if refresh {
 		pullPolicy = corev1.PullAlways
 	}
-	pkg, err := m.client.Get(ctx, resolvedRef.String(), runtimexpkg.WithPullPolicy(pullPolicy))
+	pkg, err := m.getPackage(ctx, resolvedRef.String(), pullPolicy)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to fetch %s", ref)
 	}
@@ -209,22 +239,6 @@ func (m *Manager) addPackage(ctx context.Context, ref string, refresh bool) (*sc
 	gvk, err := runtimeGVKForPackage(pkg)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot identify package %s", ref)
-	}
-	crdFS, err := clixpkg.CRDFilesystem(pkg.Package)
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot extract CRDs from %s", ref)
-	}
-
-	// Use the resolved version so constraint and exact-version inputs
-	// collapse to one schema-lock entry. Digest-pinned refs (no resolved
-	// version) intentionally use a digest-form ID and remain separate.
-	id := pkg.Source + "@" + pkg.Digest
-	if version != "" {
-		id = pkg.Source + ":" + version
-	}
-	src := smanager.NewXpkgSource(id, pkg.Digest, crdFS)
-	if err := m.schemas.Add(ctx, src); err != nil {
-		return nil, err
 	}
 	if err := m.addTransitiveDeps(ctx, pkg, refresh); err != nil {
 		return nil, err
@@ -252,6 +266,33 @@ func (m *Manager) addTransitiveDeps(ctx context.Context, pkg *runtimexpkg.Packag
 	return nil
 }
 
+// getPackage fetches a package by resolved ref, memoizing the result so the
+// GVK-extraction walk and the source-collection walk of the same top-level
+// call do not each download it. A refresh fetch bypasses and replaces the
+// memoized package; the current contents are what the ref should resolve to
+// now.
+func (m *Manager) getPackage(ctx context.Context, resolvedRef string, pullPolicy corev1.PullPolicy) (*runtimexpkg.Package, error) {
+	if pullPolicy != corev1.PullAlways {
+		m.fetchedMu.Lock()
+		pkg, ok := m.fetched[resolvedRef]
+		m.fetchedMu.Unlock()
+		if ok {
+			return pkg, nil
+		}
+	}
+
+	pkg, err := m.client.Get(ctx, resolvedRef, runtimexpkg.WithPullPolicy(pullPolicy))
+	if err != nil {
+		return nil, err
+	}
+
+	m.fetchedMu.Lock()
+	m.fetched[resolvedRef] = pkg
+	m.fetchedMu.Unlock()
+
+	return pkg, nil
+}
+
 // claim records ref as processed and reports whether it was newly claimed.
 func (m *Manager) claim(ref string) bool {
 	m.visitedMu.Lock()
@@ -261,6 +302,19 @@ func (m *Manager) claim(ref string) bool {
 	}
 	m.visited[ref] = struct{}{}
 	return true
+}
+
+// resetVisited clears the set claim consults, so each top-level traversal
+// (RefreshAll, CollectSources) starts with none of its dependencies
+// already claimed. Without this, a Manager reused for a second traversal --
+// a retry, or a caller that calls CollectSources more than once -- would see
+// every ref the first traversal claimed as already visited and silently skip
+// it, rather than traverse it again.
+func (m *Manager) resetVisited() {
+	m.visitedMu.Lock()
+	defer m.visitedMu.Unlock()
+	m.visited = make(map[string]struct{})
+	m.collected = make(map[string][]string)
 }
 
 // dependencyRepo returns the OCI repository of a package metadata dependency,
@@ -310,9 +364,14 @@ func runtimeGVKForPackage(pkg *runtimexpkg.Package) (*schema.GroupVersionKind, e
 	}, nil
 }
 
-// AddDependency adds a dependency, generates schemas for it, and persists the
-// dependency to the project file.
+// AddDependency adds a dependency to the project file and regenerates the
+// schemas for the whole project from every source together. Schemas are
+// generated in one merged pass -- not just for the new dependency -- because
+// a per-source write would leave the tree describing a different set of
+// sources than the project has.
 func (m *Manager) AddDependency(ctx context.Context, dep *v1alpha1.Dependency) error {
+	m.resetVisited()
+
 	gvk, err := m.addDependencyNoWrite(ctx, dep, false)
 	if err != nil {
 		return err
@@ -329,25 +388,30 @@ func (m *Manager) AddDependency(ctx context.Context, dep *v1alpha1.Dependency) e
 	m.updateMutex.Lock()
 	defer m.updateMutex.Unlock()
 
+	// Add the dependency in memory and generate before touching the project
+	// file. Generation is what fetches git, HTTP and k8s sources, so a
+	// dependency that cannot be fetched or generated is never persisted.
+	prev := slices.Clone(m.proj.Spec.Dependencies)
 	upsertDependency(m.proj, *dep)
+	if err := m.GenerateAllSchemas(ctx, nil); err != nil {
+		m.proj.Spec.Dependencies = prev
+		return err
+	}
+
+	// If this write fails, the schemas describe a dependency the project file
+	// lacks; the lock then no longer matches the project, so the next pass
+	// regenerates.
 	return projectfile.Update(m.projFS, m.projFile, func(p *v1alpha1.Project) {
 		upsertDependency(p, *dep)
 	})
 }
 
-// AddAll adds all dependencies configured in the project. If ch is non-nil,
-// events will be sent for each dependency as it is processed.
-func (m *Manager) AddAll(ctx context.Context, ch async.EventChannel) error {
-	return m.addAll(ctx, ch, false)
-}
-
 // RefreshAll re-resolves every dependency's version constraint against the
-// registry. Used by `dependency update-cache`.
+// registry, re-pulls each package, and regenerates the schemas. Used by
+// `dependency update-cache`.
 func (m *Manager) RefreshAll(ctx context.Context, ch async.EventChannel) error {
-	return m.addAll(ctx, ch, true)
-}
+	m.resetVisited()
 
-func (m *Manager) addAll(ctx context.Context, ch async.EventChannel, refresh bool) error {
 	eg, egCtx := errgroup.WithContext(ctx)
 
 	for i := range m.proj.Spec.Dependencies {
@@ -355,7 +419,7 @@ func (m *Manager) addAll(ctx context.Context, ch async.EventChannel, refresh boo
 		desc := "Updating dependency " + GetSourceDescription(*dep)
 		eg.Go(func() error {
 			ch.SendEvent(desc, async.EventStatusStarted)
-			if _, err := m.addDependencyNoWrite(egCtx, dep, refresh); err != nil {
+			if _, err := m.addDependencyNoWrite(egCtx, dep, true); err != nil {
 				ch.SendEvent(desc, async.EventStatusFailure)
 				return err
 			}
@@ -364,9 +428,43 @@ func (m *Manager) addAll(ctx context.Context, ch async.EventChannel, refresh boo
 		})
 	}
 
-	return eg.Wait()
+	if err := eg.Wait(); err != nil {
+		return err
+	}
+
+	// Fetching and re-resolving never writes schemas; finish with one merged
+	// generation pass over every source so the tree describes the whole
+	// project, not whichever dependency happened to be processed last.
+	return m.GenerateAllSchemas(ctx, ch)
 }
 
+// GenerateAllSchemas collects every source the project's dependencies
+// contribute, adds the project's own apis/ directory, and runs one merged
+// schema generation pass. This is the only way the dependency manager writes
+// schemas: a per-source write would clobber the run-level files (root index,
+// package manifest) of generators whose output describes the whole run, and
+// leaves stale models for every language when dependencies are removed.
+func (m *Manager) GenerateAllSchemas(ctx context.Context, ch async.EventChannel) error {
+	sources, err := m.CollectSources(ctx, ch)
+	if err != nil {
+		return err
+	}
+
+	// The project's own apis/ directory is the second source group. A project
+	// declares it even when the directory does not exist yet (a Configuration
+	// with no XRDs of its own); the source tolerates a missing directory and
+	// simply contributes no resources, so creating it later is a source change
+	// the next pass regenerates from.
+	apis := smanager.NewProjectAPIsSource(m.projFS, m.proj.Spec.Paths)
+
+	return m.schemas.GenerateFromMultipleSources(ctx, sources, apis)
+}
+
+// addDependencyNoWrite fetches (or validates) a dependency without writing
+// any schemas. For xpkg dependencies it fetches the package and walks its
+// transitive dependencies, so callers get the package's GVK; git, HTTP and
+// k8s sources need no fetching ahead of time -- the merged pass reads their
+// resources through the sources CollectSources returns.
 func (m *Manager) addDependencyNoWrite(ctx context.Context, dep *v1alpha1.Dependency, refresh bool) (*schema.GroupVersionKind, error) {
 	switch {
 	case dep.Type == v1alpha1.DependencyTypeXpkg:
@@ -376,14 +474,189 @@ func (m *Manager) addDependencyNoWrite(ctx context.Context, dep *v1alpha1.Depend
 
 		return m.addPackage(ctx, xpkgRef(dep.Xpkg.Package, dep.Xpkg.Version), refresh)
 	case dep.Git != nil:
-		return nil, m.schemas.Add(ctx, smanager.NewGitSource(*dep, m.gitCloner, m.gitAuthProvider))
+		return nil, nil
 	case dep.HTTP != nil:
-		return nil, m.schemas.Add(ctx, smanager.NewHTTPSource(*dep))
+		return nil, nil
 	case dep.K8s != nil:
-		return nil, m.schemas.Add(ctx, smanager.NewK8sSource(*dep))
+		return nil, nil
 	default:
 		return nil, errors.New("dependency has no source configured")
 	}
+}
+
+// CollectSources returns all schema sources from the project's dependencies
+// without generating schemas. This allows the caller to merge sources and
+// generate schemas in a single pass, which the TypeScript generator requires:
+// its output is one npm package per run, not per source, so generating
+// dependencies one at a time would overwrite it on every source but the last.
+func (m *Manager) CollectSources(ctx context.Context, ch async.EventChannel) ([]smanager.Source, error) {
+	m.resetVisited()
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	// One slice per project dependency: a package contributes its own CRDs and
+	// those of everything its metadata depends on. Indexing by position keeps
+	// the flattened result in project-file order.
+	sourcesByIndex := make([][]smanager.Source, len(m.proj.Spec.Dependencies))
+
+	for i := range m.proj.Spec.Dependencies {
+		dep := &m.proj.Spec.Dependencies[i]
+		desc := "Updating dependency " + GetSourceDescription(*dep)
+		eg.Go(func() error {
+			ch.SendEvent(desc, async.EventStatusStarted)
+			srcs, err := m.collectSource(egCtx, dep)
+			if err != nil {
+				ch.SendEvent(desc, async.EventStatusFailure)
+				return err
+			}
+			ch.SendEvent(desc, async.EventStatusSuccess)
+
+			sourcesByIndex[i] = srcs
+			return nil
+		})
+	}
+
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
+
+	var sources []smanager.Source
+	for _, srcs := range sourcesByIndex {
+		sources = append(sources, srcs...)
+	}
+
+	m.warnMultipleVersions()
+
+	// Sort by ID. Project dependencies are collected concurrently and a
+	// transitive dependency shared by two of them lands under whichever
+	// goroutine claimed it first, so the flattened order is otherwise a race.
+	// The merged filesystem prefixes each source by its position, so a stable
+	// order keeps that tree reproducible between runs.
+	slices.SortFunc(sources, func(a, b smanager.Source) int {
+		return strings.Compare(a.ID(), b.ID())
+	})
+
+	return sources, nil
+}
+
+// recordCollected notes that source collection resolved repo to version (a
+// ":tag" or "@digest" suffix).
+func (m *Manager) recordCollected(repo, version string) {
+	m.visitedMu.Lock()
+	defer m.visitedMu.Unlock()
+	m.collected[repo] = append(m.collected[repo], version)
+}
+
+// warnMultipleVersions warns about every package the project's dependencies
+// resolved to more than one version. Both versions' CRDs go into the same
+// generator run, so the kinds they share can get conflicting models; on main
+// the copy from whichever source sorted last silently won.
+func (m *Manager) warnMultipleVersions() {
+	m.visitedMu.Lock()
+	defer m.visitedMu.Unlock()
+	for _, repo := range slices.Sorted(maps.Keys(m.collected)) {
+		versions := slices.Sorted(slices.Values(m.collected[repo]))
+		if len(versions) < 2 {
+			continue
+		}
+		for i := range versions {
+			versions[i] = strings.TrimLeft(versions[i], ":@")
+		}
+		_, _ = fmt.Fprintf(m.warnings, "warning: the project's dependencies resolve %s to more than one version (%s); schemas are generated from all of them, which can produce conflicting models for the kinds they share. Align the version constraints so they resolve to one version.\n", repo, strings.Join(versions, ", "))
+	}
+}
+
+// collectSource returns the schema source for a dependency without generating schemas.
+func (m *Manager) collectSource(ctx context.Context, dep *v1alpha1.Dependency) ([]smanager.Source, error) {
+	desc := GetSourceDescription(*dep)
+	switch {
+	case dep.Type == v1alpha1.DependencyTypeXpkg:
+		if dep.Xpkg == nil || dep.Xpkg.Package == "" {
+			return nil, errors.Errorf("xpkg dependency %q is missing xpkg.package; set xpkg.package to a valid package reference", desc)
+		}
+
+		// If the version is a digest, format the OCI ref as
+		// repo@digest. Otherwise, use repo:tag, where tag may be a semver
+		// constraint.
+		ref := dep.Xpkg.Package
+		if _, err := conregv1.NewHash(dep.Xpkg.Version); err == nil {
+			ref = fmt.Sprintf("%s@%s", ref, dep.Xpkg.Version)
+		} else if dep.Xpkg.Version != "" {
+			ref = fmt.Sprintf("%s:%s", ref, dep.Xpkg.Version)
+		}
+
+		return m.collectPackageSource(ctx, ref)
+	case dep.Git != nil:
+		return []smanager.Source{smanager.NewGitSource(*dep, m.gitCloner, m.gitAuthProvider)}, nil
+	case dep.HTTP != nil:
+		return []smanager.Source{smanager.NewHTTPSource(*dep)}, nil
+	case dep.K8s != nil:
+		return []smanager.Source{smanager.NewK8sSource(*dep)}, nil
+	default:
+		return nil, errors.Errorf("dependency %q has no source configured; set exactly one of xpkg, git, http, or k8s", desc)
+	}
+}
+
+// collectPackageSource fetches a package and returns its CRD source, followed
+// by the sources of everything its metadata depends on. The merged schema pass
+// generates from exactly what this returns, so a dependency missing here
+// contributes no schemas. claim() gives cycle protection and dedupes diamonds.
+func (m *Manager) collectPackageSource(ctx context.Context, ref string) ([]smanager.Source, error) {
+	if !m.claim(ref) {
+		// Already collected this invocation, directly or through another
+		// package's dependencies.
+		return nil, nil
+	}
+
+	resolvedRef, version, err := m.resolver.Resolve(ctx, ref)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot resolve package %q; check that the package exists and that the version or digest is valid", ref)
+	}
+
+	// The claim above is on the reference as written, so one package named both
+	// by constraint and by exact version passes it twice and would be generated
+	// from twice. Claiming before the fetch also skips the dropped copy's
+	// download.
+	if !m.claim("resolved:" + resolvedRef.String()) {
+		return nil, nil
+	}
+
+	pullPolicy := corev1.PullIfNotPresent
+	pkg, err := m.getPackage(ctx, resolvedRef.String(), pullPolicy)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot download package %q; check registry access and credentials", ref)
+	}
+
+	crdFS, err := clixpkg.CRDFilesystem(pkg.Package)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot extract CRDs from package %q; check that it is a valid Crossplane package", ref)
+	}
+
+	// Use the resolved version so constraint and exact-version inputs
+	// collapse to one schema-lock entry.
+	id := pkg.Source + "@" + pkg.Digest
+	if version != "" {
+		id = pkg.Source + ":" + version
+	}
+
+	sources := []smanager.Source{smanager.NewXpkgSource(id, pkg.Digest, crdFS)}
+	m.recordCollected(pkg.Source, strings.TrimPrefix(id, pkg.Source))
+
+	// Depth first, in metadata order, so the result is deterministic for a
+	// given dependency graph.
+	for _, dep := range pkg.GetDependencies() {
+		repo := dependencyRepo(dep)
+		if repo == "" {
+			continue
+		}
+		depSources, err := m.collectPackageSource(ctx, xpkgRef(repo, dep.Version))
+		if err != nil {
+			return nil, errors.Wrapf(err, "cannot collect transitive dependency %s of %s", repo, pkg.Source)
+		}
+		sources = append(sources, depSources...)
+	}
+
+	return sources, nil
 }
 
 // Clean removes all generated schemas.

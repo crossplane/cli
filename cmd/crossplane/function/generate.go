@@ -40,6 +40,7 @@ import (
 
 	v1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/config"
+	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	"github.com/crossplane/cli/v2/internal/kcl"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
@@ -47,6 +48,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/manager"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
 //go:embed help/generate.md
@@ -114,7 +116,37 @@ func (c *generateCmd) AfterApply() error {
 	c.fsPath = path.Join(proj.Spec.Paths.Functions, c.Name)
 	c.projectRepository = proj.Spec.Repository
 	c.projectSource = proj.Spec.Source
+
 	return nil
+}
+
+// newDependencyManager builds the dependency manager used to generate
+// schemas in Run, mirroring the project build command's wiring.
+func (c *generateCmd) newDependencyManager(cfg *config.Config) (*dependency.Manager, error) {
+	cacheDir := dependency.DefaultCacheDir()
+	schemasFS := afero.NewBasePathFs(c.projFS, c.proj.Spec.Paths.Schemas)
+	generators := generator.Filter(
+		generator.AllLanguages(
+			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+		),
+		c.proj.Spec.Schemas.GetLanguages(),
+	)
+	client, err := clixpkg.NewClient(
+		clixpkg.NewRemoteFetcher(),
+		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
+		clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return dependency.NewManager(c.proj, c.projFS,
+		dependency.WithProjectFile(filepath.Base(c.ProjectFile)),
+		dependency.WithSchemaFS(schemasFS),
+		dependency.WithSchemaGenerators(generators),
+		dependency.WithXpkgClient(client),
+		dependency.WithResolver(clixpkg.NewResolver(client)),
+	), nil
 }
 
 // validateLanguageAgainstSchemas refuses to generate a function in a language
@@ -151,10 +183,6 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 	}
 
 	ctx := context.Background()
-	apisFS := afero.NewBasePathFs(c.projFS, c.proj.Spec.Paths.APIs)
-	if c.proj.Spec.Paths.APIs == "/" {
-		apisFS = c.projFS
-	}
 	schemaMgr := manager.New(
 		c.schemasFS,
 		generator.Filter(
@@ -168,8 +196,21 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 	)
 
 	if err := sp.WrapWithSuccessSpinner("Generating schemas", func() error {
-		_, err := schemaMgr.Generate(ctx, manager.NewFSSource(c.proj.Spec.Paths.APIs, apisFS))
-		return err
+		depMgr, err := c.newDependencyManager(cfg)
+		if err != nil {
+			return err
+		}
+
+		// Unlike before this PR, generating a function now collects every
+		// dependency declared in the project file, like project build does:
+		// the generated function's models need the dependencies, not just
+		// apis/. The first run in a project needs network access (or a warm
+		// per-user package cache); later runs reuse the project's caches.
+		depSources, err := depMgr.CollectSources(ctx, nil)
+		if err != nil {
+			return err
+		}
+		return schemaMgr.GenerateFromMultipleSources(ctx, depSources, manager.NewProjectAPIsSource(c.projFS, c.proj.Spec.Paths))
 	}); err != nil {
 		return errors.Wrap(err, "failed to generate schemas")
 	}

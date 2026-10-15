@@ -54,6 +54,13 @@ func (jsonGenerator) Language() string {
 	return devv1alpha1.SchemaLanguageJSON
 }
 
+// Fingerprint reports that this generator has no output-affecting options.
+// Its output changes only with the CLI version, which the lock fingerprints
+// separately.
+func (jsonGenerator) Fingerprint() string {
+	return ""
+}
+
 // GenerateFromCRD generates jsonschemas for the CRDs in the given filesystem.
 func (jsonGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
 	openAPIs, err := goCollectOpenAPIs(fromFS)

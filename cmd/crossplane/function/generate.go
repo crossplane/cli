@@ -201,6 +201,11 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 			return err
 		}
 
+		// Unlike before this PR, generating a function now collects every
+		// dependency declared in the project file, like project build does:
+		// the generated function's models need the dependencies, not just
+		// apis/. The first run in a project needs network access (or a warm
+		// per-user package cache); later runs reuse the project's caches.
 		depSources, err := depMgr.CollectSources(ctx, nil)
 		if err != nil {
 			return err

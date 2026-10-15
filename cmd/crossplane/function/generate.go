@@ -40,6 +40,7 @@ import (
 
 	v1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/config"
+	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	"github.com/crossplane/cli/v2/internal/kcl"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
@@ -47,6 +48,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/manager"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
 //go:embed help/generate.md
@@ -59,6 +61,8 @@ var (
 	pythonTemplates embed.FS
 	//go:embed templates/go-templating/*
 	goTemplatingTemplates embed.FS
+	//go:embed all:templates/typescript
+	typescriptTemplates embed.FS
 
 	// The go template contains a go.mod, so we can't embed it as an
 	// embed.FS. Instead we have to embed it as a tar archive and extract it
@@ -68,10 +72,11 @@ var (
 )
 
 type generateCmd struct {
-	Name         string `arg:""                    help:"Name of the function to generate. Must be a valid DNS-1035 label."`
-	PipelinePath string `arg:""                    help:"Path to a Composition YAML file to add a pipeline step to."        optional:""`
-	Language     string `default:"go-templating"   enum:"go,go-templating,kcl,python"                                       help:"Language to use for the function." short:"l"`
-	ProjectFile  string `default:"${project_file}" help:"Path to project definition file."                                  short:"f"`
+	Name         string `arg:""                      help:"Name of the function to generate. Must be a valid DNS-1035 label."`
+	PipelinePath string `arg:""                      help:"Path to a Composition YAML file to add a pipeline step to."        optional:""`
+	Language     string `default:"go-templating"     enum:"go,go-templating,kcl,python,typescript"                            help:"Language to use for the function." short:"l"`
+	ProjectFile  string `default:"${project_file}"   help:"Path to project definition file."                                  short:"f"`
+	CacheDir     string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                       name:"cache-dir"`
 
 	projFS            afero.Fs
 	functionsFS       afero.Fs
@@ -80,6 +85,7 @@ type generateCmd struct {
 	fsPath            string
 	projectRepository string
 	projectSource     string
+	depManager        *dependency.Manager
 }
 
 func (c *generateCmd) Help() string {
@@ -87,7 +93,7 @@ func (c *generateCmd) Help() string {
 }
 
 // AfterApply sets up the project filesystem.
-func (c *generateCmd) AfterApply() error {
+func (c *generateCmd) AfterApply(cfg *config.Config) error {
 	if errs := validation.IsDNS1035Label(c.Name); len(errs) > 0 {
 		return errors.Errorf("invalid function name %q: %s", c.Name, strings.Join(errs, "; "))
 	}
@@ -114,20 +120,45 @@ func (c *generateCmd) AfterApply() error {
 	c.fsPath = path.Join(proj.Spec.Paths.Functions, c.Name)
 	c.projectRepository = proj.Spec.Repository
 	c.projectSource = proj.Spec.Source
+
+	cacheDir := c.CacheDir
+	if cacheDir == "" {
+		cacheDir = dependency.DefaultCacheDir()
+	}
+
+	client, err := clixpkg.NewClient(
+		clixpkg.NewRemoteFetcher(),
+		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
+		clixpkg.WithImageConfigs(proj.Spec.ImageConfigs),
+	)
+	if err != nil {
+		return err
+	}
+	resolver := clixpkg.NewResolver(client)
+
+	c.depManager = dependency.NewManager(proj, c.projFS,
+		dependency.WithProjectFile(filepath.Base(c.ProjectFile)),
+		dependency.WithSchemaGenerators(generator.Filter(
+			generator.AllLanguages(
+				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+				generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+			),
+			proj.Spec.Schemas.GetLanguages(),
+		)),
+		dependency.WithXpkgClient(client),
+		dependency.WithResolver(resolver),
+	)
+
 	return nil
 }
 
 // validateLanguageAgainstSchemas refuses to generate a function in a language
 // whose schemas the project doesn't generate. Such a function would have no
 // models to import, which is surprising, so we fail up front rather than
-// scaffolding a function that can't compile. An empty schemaLangs means the
-// project generates all languages (matching generator.Filter), so any function
-// language is fine.
+// scaffolding a function that can't compile.
 func validateLanguageAgainstSchemas(functionLang string, schemaLangs []string) error {
-	if len(schemaLangs) == 0 {
-		return nil
-	}
 	required := functionSchemaLanguage(functionLang)
+
 	if !slices.Contains(schemaLangs, required) {
 		return errors.Errorf("cannot generate a %q function: the project only generates %v schemas; add %q to spec.schemas.languages or choose a different language", functionLang, schemaLangs, required)
 	}
@@ -168,8 +199,17 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 	)
 
 	if err := sp.WrapWithSuccessSpinner("Generating schemas", func() error {
-		_, err := schemaMgr.Generate(ctx, manager.NewFSSource(c.proj.Spec.Paths.APIs, apisFS))
-		return err
+		var allSources []manager.Source
+		if c.depManager != nil {
+			depSources, err := c.depManager.CollectSources(ctx, nil)
+			if err != nil {
+				return err
+			}
+			allSources = append(allSources, depSources...)
+		}
+		allSources = append(allSources, manager.NewFSSource(c.proj.Spec.Paths.APIs, apisFS))
+
+		return schemaMgr.GenerateFromMultipleSources(ctx, allSources)
 	}); err != nil {
 		return errors.Wrap(err, "failed to generate schemas")
 	}
@@ -180,6 +220,7 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 		"go-templating": c.generateGoTemplatingFiles,
 		"kcl":           c.generateKCLFiles,
 		"python":        c.generatePythonFiles,
+		"typescript":    c.generateTypeScriptFiles,
 	}
 
 	generator, ok := generators[c.Language]
@@ -418,6 +459,59 @@ func (c *generateCmd) generateGoTemplatingFiles(fs afero.Fs) error {
 	}
 
 	return renderTemplates(fs, tmpls, tmplData)
+}
+
+type typescriptTemplateData struct {
+	Name        string
+	HasSchemas  bool
+	SchemasPath string
+}
+
+func (c *generateCmd) generateTypeScriptFiles(targetFS afero.Fs) error {
+	hasSchemas, err := afero.DirExists(c.schemasFS, "typescript")
+	if err != nil {
+		return errors.Wrap(err, "cannot inspect typescript schemas directory")
+	}
+	if hasSchemas {
+		entries, err := afero.ReadDir(c.schemasFS, "typescript")
+		if err != nil {
+			return errors.Wrap(err, "cannot read typescript schemas directory")
+		}
+		hasSchemas = len(entries) > 0
+	}
+
+	// Compute the relative path from the function dir to schemas/typescript/.
+	fnDir := filepath.Join("/", c.proj.Spec.Paths.Functions, c.Name)
+	relRoot, err := filepath.Rel(fnDir, "/")
+	if err != nil {
+		return errors.Wrap(err, "cannot determine path to schemas directory")
+	}
+	schemasPath := filepath.ToSlash(filepath.Join(relRoot, c.proj.Spec.Paths.Schemas, "typescript"))
+
+	data := typescriptTemplateData{
+		Name:        c.Name,
+		HasSchemas:  hasSchemas,
+		SchemasPath: schemasPath,
+	}
+
+	// Parse top-level templates
+	tmpls, err := template.ParseFS(typescriptTemplates, "templates/typescript/*.*")
+	if err != nil {
+		return errors.Wrap(err, "cannot parse top-level TypeScript templates")
+	}
+	if err := renderTemplates(targetFS, tmpls, data); err != nil {
+		return err
+	}
+
+	// Create src directory and parse src templates
+	if err := targetFS.Mkdir("src", 0o755); err != nil {
+		return errors.Wrap(err, "cannot create src directory")
+	}
+	tmpls, err = template.ParseFS(typescriptTemplates, "templates/typescript/src/*.*")
+	if err != nil {
+		return errors.Wrap(err, "cannot parse TypeScript source templates")
+	}
+	return renderTemplates(afero.NewBasePathFs(targetFS, "src"), tmpls, data)
 }
 
 func renderTemplates(targetFS afero.Fs, tmpls *template.Template, data any) error {

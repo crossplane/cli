@@ -211,7 +211,11 @@ func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, 
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer func() {
+		if err := cleanup(); err != nil {
+			log.Info("Error cleaning up render engine", "error", err)
+		}
+	}()
 
 	// Start function runtimes to get their addresses.
 	fnAddrs, err := render.StartFunctionRuntimes(ctx, log, fns)

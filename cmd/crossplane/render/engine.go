@@ -50,8 +50,9 @@ type Engine interface {
 	// no-op cleanup, as do calls on engines with nothing to clean up. The
 	// real cleanup, if any, must be called when rendering is done; callers
 	// can safely defer every returned cleanup in LIFO order without
-	// coordinating which one is real.
-	Setup(ctx context.Context, fns []pkgv1.Function) (cleanup func(), err error)
+	// coordinating which one is real. A cleanup returns an error if it
+	// cannot release what Setup created; no-op cleanups return nil.
+	Setup(ctx context.Context, fns []pkgv1.Function) (cleanup func() error, err error)
 
 	// Render executes the render request and returns the response.
 	//

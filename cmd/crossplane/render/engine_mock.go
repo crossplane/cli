@@ -27,7 +27,7 @@ import (
 // MockEngine is a function-field mock of the Engine interface.
 type MockEngine struct {
 	MockCheckContextSupport func() error
-	MockSetup               func(ctx context.Context, fns []pkgv1.Function) (func(), error)
+	MockSetup               func(ctx context.Context, fns []pkgv1.Function) (func() error, error)
 	MockRender              func(ctx context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error)
 }
 
@@ -40,9 +40,9 @@ func (m *MockEngine) CheckContextSupport() error {
 }
 
 // Setup calls MockSetup. If unset, it returns a no-op cleanup and no error.
-func (m *MockEngine) Setup(ctx context.Context, fns []pkgv1.Function) (func(), error) {
+func (m *MockEngine) Setup(ctx context.Context, fns []pkgv1.Function) (func() error, error) {
 	if m.MockSetup == nil {
-		return func() {}, nil
+		return func() error { return nil }, nil
 	}
 	return m.MockSetup(ctx, fns)
 }

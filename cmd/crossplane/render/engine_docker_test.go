@@ -318,9 +318,9 @@ func TestDockerRenderEngineSetup(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			cleanups := make([]func(), 0, len(tc.batches))
+			cleanups := make([]func() error, 0, len(tc.batches))
 			for i, b := range tc.batches {
-				cleanup, err := tc.engine.Setup(context.Background(), b.fns)
+				cleanup, err := tc.engine.Setup(t.Context(), b.fns)
 				if err != nil {
 					t.Fatalf("\n%s\nSetup(batch %d): unexpected error: %v", tc.reason, i, err)
 				}
@@ -336,9 +336,11 @@ func TestDockerRenderEngineSetup(t *testing.T) {
 
 			// Defer-LIFO: all cleanups in this test are no-ops (we pre-seed
 			// e.network, so no call took the create-network branch). Calling
-			// them must not panic.
-			for _, cleanup := range slices.Backward(cleanups) {
-				cleanup()
+			// them must not panic, and each must return nil.
+			for i, cleanup := range slices.Backward(cleanups) {
+				if err := cleanup(); err != nil {
+					t.Errorf("\n%s\nSetup(batch %d) cleanup: unexpected error: %v", tc.reason, i, err)
+				}
 			}
 
 			if tc.engine.network != presetNetwork {
@@ -352,11 +354,13 @@ func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
 	// When e.network is unset, Setup must create a temporary network through
 	// the engine's network client, record its name, annotate the supplied
 	// functions to join it, and return a cleanup that removes it through the
-	// same client.
+	// same client and returns any removal error.
 	errBoom := errors.New("boom")
 
 	type args struct {
 		create func(ctx context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error)
+		// removeErr is the error NetworkRemove returns.
+		removeErr error
 		// cancel cancels Setup's context before calling cleanup.
 		cancel bool
 	}
@@ -365,6 +369,8 @@ func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
 		// created is whether Setup should create a network, annotate the
 		// functions to join it, and return a cleanup that removes it.
 		created bool
+		// cleanupErr is the error the returned cleanup should return.
+		cleanupErr error
 	}
 
 	cases := map[string]struct {
@@ -391,6 +397,17 @@ func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
 				created: true,
 			},
 		},
+		"CleanupNetworkRemoveError": {
+			reason: "The cleanup should return an error when it cannot remove the network, e.g. because a container is still attached.",
+			args: args{
+				create:    createRenderNetworkReturns("network-id", nil),
+				removeErr: errBoom,
+			},
+			want: want{
+				created:    true,
+				cleanupErr: errBoom,
+			},
+		},
 		"NetworkCreateError": {
 			reason: "Setup should return an error and a no-op cleanup, leaving the functions unannotated, when it cannot create the network.",
 			args: args{
@@ -404,10 +421,8 @@ func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			// Cleanup discards NetworkRemove's result, so record whether it
-			// was called. A cleanup that shouldn't remove anything leaves
-			// MockNetworkRemove nil.
-			removed := false
+			// A cleanup that shouldn't remove anything leaves MockNetworkRemove
+			// nil.
 			cli := &mockNetworkClient{MockNetworkCreate: tc.args.create}
 			if tc.want.created {
 				cli.MockNetworkRemove = func(ctx context.Context, networkID string, _ client.NetworkRemoveOptions) (client.NetworkRemoveResult, error) {
@@ -419,8 +434,7 @@ func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
 					if err := ctx.Err(); err != nil {
 						t.Errorf("\n%s\nNetworkRemove(...): want a live context, got: %v", tc.reason, err)
 					}
-					removed = true
-					return client.NetworkRemoveResult{}, nil
+					return client.NetworkRemoveResult{}, tc.args.removeErr
 				}
 			}
 			e := &dockerRenderEngine{log: logging.NewNopLogger(), networks: cli}
@@ -451,10 +465,10 @@ func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
 			if tc.args.cancel {
 				cancel()
 			}
-			cleanup()
+			err = cleanup()
 
-			if diff := cmp.Diff(tc.want.created, removed); diff != "" {
-				t.Errorf("\n%s\nSetup(...) cleanup: -want network removed, +got network removed:\n%s", tc.reason, diff)
+			if diff := cmp.Diff(tc.want.cleanupErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nSetup(...) cleanup: -want error, +got error:\n%s", tc.reason, diff)
 			}
 		})
 	}

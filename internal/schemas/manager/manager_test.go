@@ -376,6 +376,22 @@ func TestDependencyChangeRegeneratesOnlyDependenciesGroup(t *testing.T) {
 	assertFilesAbsent(t, testFS, treeDepPath(0, "prov-a:v1", "dep.yaml"))
 }
 
+// A project with no sources must still assemble an empty tree for each
+// language: the swap renames the staged tree into place, and a rename needs
+// the directory to exist even when no generator produced any file for it.
+func TestNoSourcesStillBuildsEmptyTrees(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	testFS := afero.NewMemMapFs()
+	m := New(testFS, []generator.Interface{&kindGenerator{lang: "mock", noshare: true}}, nil)
+
+	if err := m.GenerateFromMultipleSources(ctx, nil, nil); err != nil {
+		t.Fatalf("generation with no sources failed: %v", err)
+	}
+	assertFilesAbsent(t, testFS, "mock/shared-root")
+}
+
 // Removing a dependency from the source list must remove its models from the
 // tree: the assembled tree describes exactly the current sources.
 func TestRemovedDependencyLeavesNoStaleModels(t *testing.T) {

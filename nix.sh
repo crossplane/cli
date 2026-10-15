@@ -44,6 +44,17 @@ if [ "${NIX_SH_CONTAINER:-}" = "1" ]; then
 	# users.
 	git config --global --add safe.directory /crossplane-cli
 
+	# Worktree checkout: Nix (libgit2) reads the worktree path from the common
+	# git dir and checks it against safe.directory, so the host paths of the
+	# worktree and the common git dir (mounted by the host section) must also
+	# be trusted here.
+	if [ -n "${WT_HOST_PATH:-}" ]; then
+		git config --global --add safe.directory "${WT_HOST_PATH}"
+	fi
+	if [ -n "${GIT_COMMON_HOST_PATH:-}" ]; then
+		git config --global --add safe.directory "${GIT_COMMON_HOST_PATH}"
+	fi
+
 	# Record the current time. After nix runs, we'll find files newer than this
 	# marker and chown them to the host user.
 	marker=$(mktemp)
@@ -108,9 +119,23 @@ if [ -t 1 ]; then
 	INTERACTIVE_FLAGS="-it"
 fi
 
+# Worktree checkout: .git is a file pointing into the main clone's
+# .git/worktrees/<name>, a path that isn't mounted below. Mount the main
+# clone's git dir and the worktree itself at their host paths - Nix (libgit2)
+# resolves the worktree path from there - and pass the host paths through so
+# the container section can add them to safe.directory.
+EXTRA_MOUNTS=()
+if [ -f .git ]; then
+	GIT_COMMON_HOST_PATH=$(git rev-parse --git-common-dir)
+	case "$GIT_COMMON_HOST_PATH" in /*) ;; *) GIT_COMMON_HOST_PATH="$(pwd)/$GIT_COMMON_HOST_PATH" ;; esac
+	WT_HOST_PATH="$(pwd)"
+	EXTRA_MOUNTS+=(-v "$GIT_COMMON_HOST_PATH:$GIT_COMMON_HOST_PATH" -v "$WT_HOST_PATH:$WT_HOST_PATH")
+fi
+
 # Run with --privileged for Docker-in-Docker (required for kind clusters).
 docker run --rm --privileged --cgroupns=host ${INTERACTIVE_FLAGS} \
 	-v "$(pwd):/crossplane-cli" \
+	"${EXTRA_MOUNTS[@]}" \
 	-v "crossplane-cli-nix:/nix" \
 	-w /crossplane-cli \
 	-e "NIX_SH_CONTAINER=1" \
@@ -120,5 +145,7 @@ docker run --rm --privileged --cgroupns=host ${INTERACTIVE_FLAGS} \
 	-e "HOST_UID=$(id -u)" \
 	-e "HOST_GID=$(id -g)" \
 	-e "TERM=${TERM:-xterm}" \
+	-e "WT_HOST_PATH=${WT_HOST_PATH:-}" \
+	-e "GIT_COMMON_HOST_PATH=${GIT_COMMON_HOST_PATH:-}" \
 	nixos/nix \
 	/crossplane-cli/nix.sh "${@}"

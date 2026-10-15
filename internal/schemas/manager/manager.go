@@ -485,6 +485,14 @@ func (m *Manager) assembleTree() error {
 
 	for _, lang := range generated {
 		treeStage := afero.NewBasePathFs(m.fs, path.Join(stagingDirName, "tree", lang))
+		// Languages with no output from either group still get an empty
+		// staged tree: the swap below renames it into place, and a rename
+		// needs the directory to exist. copyTreeWithConflicts only creates
+		// directories when it writes a file, so an empty tree would not be
+		// created otherwise.
+		if err := treeStage.MkdirAll(".", 0o750); err != nil {
+			return errors.Wrapf(err, "failed to stage the %s tree", lang)
+		}
 
 		depCache := m.groupCacheFS(sourceGroupDependencies, lang)
 		apiCache := m.groupCacheFS(sourceGroupAPIs, lang)

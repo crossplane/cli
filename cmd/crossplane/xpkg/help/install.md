@@ -1,6 +1,6 @@
 The `xpkg install` command installs a package in a Crossplane control plane. It
 uses `~/.kube/config` to connect to the control plane; override the path with
-the `KUBECONFIG` environment variable.
+the `--kubeconfig` flag or the `KUBECONFIG` environment variable.
 
 Specify the package kind, fully qualified package OCI reference, and optionally
 a name for the package inside Crossplane:

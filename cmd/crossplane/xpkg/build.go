@@ -35,6 +35,8 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/parser/examples"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/parser/yaml"
 
+	"github.com/crossplane/cli/v2/internal/terminal"
+
 	_ "embed"
 )
 
@@ -164,14 +166,20 @@ func (c *buildCmd) GetOutputFileName(meta runtime.Object, hash v1.Hash) (string,
 }
 
 // Run executes the build command.
-func (c *buildCmd) Run(logger logging.Logger) error {
+func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
 	buildOpts, err := c.GetRuntimeBaseImageOpts()
 	if err != nil {
 		return errors.Wrap(err, errGetRuntimeBaseImageOpts)
 	}
 
-	img, meta, err := c.builder.Build(context.Background(), buildOpts...)
-	if err != nil {
+	var img v1.Image
+	var meta runtime.Object
+
+	if err := sp.WrapWithSuccessSpinner("Building package", func() error {
+		var err error
+		img, meta, err = c.builder.Build(context.Background(), buildOpts...)
+		return err
+	}); err != nil {
 		return errors.Wrap(err, errBuildPackage)
 	}
 
@@ -185,14 +193,16 @@ func (c *buildCmd) Run(logger logging.Logger) error {
 		return err
 	}
 
-	f, err := c.fs.Create(output)
-	if err != nil {
-		return errors.Wrap(err, errCreatePackage)
-	}
+	if err := sp.WrapWithSuccessSpinner("Writing package to disk", func() error {
+		f, err := c.fs.Create(output)
+		if err != nil {
+			return errors.Wrap(err, errCreatePackage)
+		}
 
-	defer func() { _ = f.Close() }()
+		defer func() { _ = f.Close() }()
 
-	if err := tarball.Write(nil, img, f); err != nil {
+		return tarball.Write(nil, img, f)
+	}); err != nil {
 		return err
 	}
 

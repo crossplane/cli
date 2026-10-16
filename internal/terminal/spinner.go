@@ -34,9 +34,6 @@ import (
 
 // SpinnerPrinter prints spinners to the console.
 type SpinnerPrinter interface {
-	// NewSuccessSpinner returns a new success spinner.
-	NewSuccessSpinner(msg string) *SuccessSpinner
-
 	// WrapWithSuccessSpinner adds spinners around message and run function.
 	WrapWithSuccessSpinner(msg string, f func() error) error
 
@@ -62,8 +59,24 @@ func NewSpinnerPrinter(out io.Writer, pretty bool) SpinnerPrinter {
 	}
 }
 
-func (p *defaultSpinnerPrinter) NewSuccessSpinner(msg string) *SuccessSpinner {
-	return newSuccessSpinner(p.out, msg)
+// NopSpinnerPrinter is a SpinnerPrinter that renders nothing; its Wrap
+// methods just run the wrapped function.
+type NopSpinnerPrinter struct{}
+
+// NewNopSpinnerPrinter returns a new NopSpinnerPrinter.
+func NewNopSpinnerPrinter() SpinnerPrinter {
+	return &NopSpinnerPrinter{}
+}
+
+// WrapWithSuccessSpinner runs f without rendering any spinner.
+func (p *NopSpinnerPrinter) WrapWithSuccessSpinner(_ string, f func() error) error {
+	return f()
+}
+
+// WrapAsyncWithSuccessSpinners runs fn without rendering any spinner.
+func (p *NopSpinnerPrinter) WrapAsyncWithSuccessSpinners(fn func(ch async.EventChannel) error) error {
+	var ch async.EventChannel
+	return fn(ch)
 }
 
 func (p *defaultSpinnerPrinter) WrapWithSuccessSpinner(msg string, f func() error) error {

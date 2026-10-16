@@ -117,6 +117,53 @@ type ProjectSpec struct {
 	// any necessary ImageConfigs for deployment into a cluster must be created
 	// separately at deployment time.
 	ImageConfigs []pkgv1beta1.ImageConfig `json:"imageConfigs,omitempty"`
+
+	// Runtime configures the local development cluster.
+	Runtime Runtime `json:"runtime,omitempty"`
+}
+
+// Runtime is the spec for project runtime configuration.
+type Runtime struct {
+	Kind     RuntimeKind    `json:"kind,omitempty"`
+	Registry RegistryConfig `json:"registry,omitempty"`
+}
+
+// RuntimeKind is the runtime configuration options for KinD.
+type RuntimeKind struct {
+	// The KinD configuration to use for local development cluster.
+	Config RuntimeConfig `json:"config,omitempty"`
+	// Use internal addresses in the exported kubeconfig.
+	// Enable if running crossplane project in a container.
+	Internal bool `json:"internal,omitempty"`
+	// Network configuration options
+	Network RuntimeNetwork `json:"network,omitempty"`
+}
+
+// RuntimeConfig is the spec for a runtime configuration.
+type RuntimeConfig struct {
+	// The path to the configuration file.
+	Path string `json:"path,omitempty"`
+}
+
+// RuntimeNetwork is the spec for runtime network configuration.
+type RuntimeNetwork struct {
+	// AttachContainers lists existing containers to attach to the KinD network.
+	// Each entry accepts a Docker container name or ID. Containers already
+	// attached are left unchanged. Use this when running crossplane project
+	// in a container to give it access to the local development cluster.
+	AttachContainers []string `json:"attachContainers,omitempty"`
+}
+
+// RegistryConfig is the configuration options for the local registry.
+type RegistryConfig struct {
+	Storage StorageConfig `json:"storage,omitempty"`
+}
+
+// StorageConfig is the configuration options for storage.
+type StorageConfig struct {
+	// The type of storage to use.
+	// Options: "bind" (default), "volume".
+	Type string `json:"type,omitempty"`
 }
 
 // ProjectPackageMetadata holds metadata about the project, which will become

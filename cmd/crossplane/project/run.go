@@ -22,6 +22,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
+	"sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -44,6 +46,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/controlplane"
 	"github.com/crossplane/cli/v2/internal/project/functions"
@@ -69,18 +72,22 @@ type runCmd struct {
 
 	ControlPlaneName  string        `help:"Name of the dev control plane. Defaults to project name."`
 	CrossplaneVersion string        `help:"Version of Crossplane to install."`
+	Internal          *bool         `help:"Use internal addresses in the exported kubeconfig. Enable if running crossplane project in a container."`
+	KindConfig        string        `help:"The path to the KinD configuration which should be used to create the local development cluster."`
 	RegistryDir       string        `help:"Directory for local registry images."`
-	ClusterAdmin      bool          `default:"true"                                                  help:"Grant Crossplane the cluster-admin role."                                               negatable:""`
-	DefaultMRAP       bool          `default:"true"                                                  help:"Install the default wildcard ManagedResourceActivationPolicy in the dev control plane." negatable:""`
-	Timeout           time.Duration `default:"5m"                                                    help:"Max wait for project readiness."`
-	InitResources     []string      `help:"Resources to apply before installing."                    type:"path"`
-	ExtraResources    []string      `help:"Resources to apply after installing."                     type:"path"`
+	ClusterAdmin      bool          `default:"true"                                                                                                 help:"Grant Crossplane the cluster-admin role."                                               negatable:""`
+	DefaultMRAP       bool          `default:"true"                                                                                                 help:"Install the default wildcard ManagedResourceActivationPolicy in the dev control plane." negatable:""`
+	Timeout           time.Duration `default:"5m"                                                                                                   help:"Max wait for project readiness."`
+	InitResources     []string      `help:"Resources to apply before installing."                                                                   type:"path"`
+	ExtraResources    []string      `help:"Resources to apply after installing."                                                                    type:"path"`
 
 	proj   *devv1alpha1.Project
 	projFS afero.Fs
 
 	initResources  []runtime.RawExtension
 	extraResources []runtime.RawExtension
+	kindConfig     *v1alpha4.Cluster
+	storageType    docker.StorageType
 }
 
 func (c *runCmd) Help() string {
@@ -130,12 +137,32 @@ func (c *runCmd) AfterApply() error {
 		}
 	}
 
+	if len(strings.TrimSpace(c.KindConfig)) == 0 {
+		c.KindConfig = c.proj.Spec.Runtime.Kind.Config.Path
+	}
+
+	if len(strings.TrimSpace(c.KindConfig)) > 0 {
+		kindCfgBytes, err := afero.ReadFile(c.projFS, c.KindConfig)
+		if err != nil {
+			return errors.Wrapf(err, "failed to load kind configuration from %q", c.KindConfig)
+		}
+
+		kindCfg := &v1alpha4.Cluster{}
+		if err := yaml.Unmarshal(kindCfgBytes, kindCfg); err != nil {
+			return errors.Wrapf(err, "failed to unmarshal KinD configuration from %q", c.KindConfig)
+		}
+
+		c.kindConfig = kindCfg
+	}
+
 	return nil
 }
 
-// Run executes the run command.
-func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocyclo // Main command orchestration.
-	ctx := context.Background()
+// resolveRunOptions applies command overrides and project runtime defaults.
+func (c *runCmd) resolveRunOptions() error {
+	if c.Internal == nil {
+		c.Internal = &c.proj.Spec.Runtime.Kind.Internal
+	}
 
 	if c.Repository != "" {
 		ref, err := name.NewRepository(c.Repository)
@@ -147,6 +174,26 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 
 	if c.ControlPlaneName == "" {
 		c.ControlPlaneName = "crossplane-" + c.proj.Name
+	}
+
+	c.storageType = docker.StorageTypeBindMount
+	storageType := c.proj.Spec.Runtime.Registry.Storage.Type
+	if len(strings.TrimSpace(storageType)) > 0 {
+		if !docker.IsValidStorageType(storageType) {
+			return errors.Errorf("%q is an invalid storage type. Supported storage types: %v", storageType, docker.ValidStorageTypes())
+		}
+		c.storageType = docker.StorageType(storageType)
+	}
+
+	return nil
+}
+
+// Run executes the run command.
+func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocyclo // Main command orchestration.
+	ctx := context.Background()
+
+	if err := c.resolveRunOptions(); err != nil {
+		return err
 	}
 
 	concurrency := max(1, c.MaxConcurrency)
@@ -222,6 +269,10 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 				controlplane.WithClusterAdmin(c.ClusterAdmin),
 				controlplane.WithDefaultMRAP(c.DefaultMRAP),
 				controlplane.WithLogger(logger),
+				controlplane.WithAttachContainers(c.proj.Spec.Runtime.Kind.Network.AttachContainers),
+				controlplane.WithInternal(*c.Internal),
+				controlplane.WithKindConfig(c.kindConfig),
+				controlplane.WithStorageType(c.storageType),
 			)
 			if ctpErr != nil {
 				ch.SendEvent("Setting up control plane", async.EventStatusFailure)

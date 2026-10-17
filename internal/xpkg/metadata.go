@@ -23,6 +23,7 @@ import (
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -120,4 +121,20 @@ func convertXRDv2ToV1(xrd *xrdv2.CompositeResourceDefinition) (*xrdv1.CompositeR
 
 func crdFilename(plural, group string) string {
 	return fmt.Sprintf("%s.%s.yaml", plural, group)
+}
+
+// GroupKinds returns the group and kind of every CustomResourceDefinition in
+// the package. XRDs and other objects are skipped: for routing resources to a
+// provider's diff server only the provider's own CRDs matter.
+func GroupKinds(pkg *parser.Package) []schema.GroupKind {
+	var gks []schema.GroupKind
+	for _, obj := range pkg.GetObjects() {
+		switch c := obj.(type) {
+		case *apiextv1.CustomResourceDefinition:
+			gks = append(gks, schema.GroupKind{Group: c.Spec.Group, Kind: c.Spec.Names.Kind})
+		case *apiextv1beta1.CustomResourceDefinition:
+			gks = append(gks, schema.GroupKind{Group: c.Spec.Group, Kind: c.Spec.Names.Kind})
+		}
+	}
+	return gks
 }

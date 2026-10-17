@@ -18,7 +18,6 @@ package render
 
 import (
 	"context"
-	"io"
 	"net"
 	"strconv"
 	"testing"
@@ -36,69 +35,10 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+
+	"github.com/crossplane/cli/v2/internal/containerruntime"
+	"github.com/crossplane/cli/v2/internal/containerruntime/fake"
 )
-
-type mockPullClient struct {
-	MockPullImage func(_ context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error)
-}
-
-func (m *mockPullClient) ImagePull(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error) {
-	return m.MockPullImage(ctx, ref, options)
-}
-
-var _ pullClient = &mockPullClient{}
-
-type mockContainerClient struct {
-	MockImagePull        func(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error)
-	MockContainerInspect func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error)
-	MockContainerCreate  func(ctx context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error)
-	MockContainerStart   func(ctx context.Context, containerID string, options client.ContainerStartOptions) (client.ContainerStartResult, error)
-	MockContainerStop    func(ctx context.Context, containerID string, options client.ContainerStopOptions) (client.ContainerStopResult, error)
-	MockContainerRemove  func(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
-}
-
-func (m *mockContainerClient) ImagePull(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error) {
-	return m.MockImagePull(ctx, ref, options)
-}
-
-func (m *mockContainerClient) ContainerInspect(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
-	return m.MockContainerInspect(ctx, containerID, options)
-}
-
-func (m *mockContainerClient) ContainerCreate(ctx context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
-	return m.MockContainerCreate(ctx, options)
-}
-
-func (m *mockContainerClient) ContainerStart(ctx context.Context, containerID string, options client.ContainerStartOptions) (client.ContainerStartResult, error) {
-	return m.MockContainerStart(ctx, containerID, options)
-}
-
-func (m *mockContainerClient) ContainerStop(ctx context.Context, containerID string, options client.ContainerStopOptions) (client.ContainerStopResult, error) {
-	return m.MockContainerStop(ctx, containerID, options)
-}
-
-func (m *mockContainerClient) ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
-	return m.MockContainerRemove(ctx, containerID, options)
-}
-
-var _ containerClient = &mockContainerClient{}
-
-// imagePullDone is a MockImagePull that reports an image pull that has
-// already completed.
-func imagePullDone(context.Context, string, client.ImagePullOptions) (client.ImagePullResponse, error) {
-	return pullDoneResponse{}, nil
-}
-
-// pullDoneResponse is an ImagePullResponse whose body is empty. Only the
-// io.ReadCloser methods PullImage uses are implemented; the embedded
-// interface is nil.
-type pullDoneResponse struct {
-	client.ImagePullResponse
-}
-
-func (pullDoneResponse) Read([]byte) (int, error) { return 0, io.EOF }
-
-func (pullDoneResponse) Close() error { return nil }
 
 // createContainerReturns returns a MockContainerCreate that creates a
 // container with the supplied ID.
@@ -356,7 +296,7 @@ func TestRuntimeDockerStart(t *testing.T) {
 
 	type args struct {
 		pullPolicy DockerPullPolicy
-		cli        *mockContainerClient
+		cli        *fake.Client
 	}
 	type want struct {
 		rctx RuntimeContext
@@ -372,7 +312,7 @@ func TestRuntimeDockerStart(t *testing.T) {
 			reason: "Start should create, start, and inspect the Function's container through the injected client, without pulling an image that is present.",
 			args: args{
 				pullPolicy: AnnotationValueRuntimeDockerPullPolicyIfNotPresent,
-				cli: &mockContainerClient{
+				cli: &fake.Client{
 					MockContainerCreate:  createContainerReturns(containerID),
 					MockContainerStart:   startContainer(containerID),
 					MockContainerInspect: inspectContainerOnNetwork(containerID, containerName, dockerNetwork),
@@ -386,12 +326,12 @@ func TestRuntimeDockerStart(t *testing.T) {
 			reason: "Start should pull the Function's image through the injected client when the pull policy is Always.",
 			args: args{
 				pullPolicy: AnnotationValueRuntimeDockerPullPolicyAlways,
-				cli: &mockContainerClient{
+				cli: &fake.Client{
 					MockImagePull: func(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error) {
 						if diff := cmp.Diff(image, ref); diff != "" {
 							return nil, errors.Errorf("ImagePull(...): -want ref, +got ref:\n%s", diff)
 						}
-						return imagePullDone(ctx, ref, options)
+						return fake.ImagePullDone(ctx, ref, options)
 					},
 					MockContainerCreate:  createContainerReturns(containerID),
 					MockContainerStart:   startContainer(containerID),
@@ -406,7 +346,7 @@ func TestRuntimeDockerStart(t *testing.T) {
 			reason: "Start should return an error, without creating a container, when the injected client cannot pull the image.",
 			args: args{
 				pullPolicy: AnnotationValueRuntimeDockerPullPolicyAlways,
-				cli: &mockContainerClient{
+				cli: &fake.Client{
 					MockImagePull: func(context.Context, string, client.ImagePullOptions) (client.ImagePullResponse, error) {
 						return nil, errBoom
 					},
@@ -420,7 +360,7 @@ func TestRuntimeDockerStart(t *testing.T) {
 			reason: "Start should return an error when the injected client cannot start the container.",
 			args: args{
 				pullPolicy: AnnotationValueRuntimeDockerPullPolicyIfNotPresent,
-				cli: &mockContainerClient{
+				cli: &fake.Client{
 					MockContainerCreate: createContainerReturns(containerID),
 					MockContainerStart: func(context.Context, string, client.ContainerStartOptions) (client.ContainerStartResult, error) {
 						return client.ContainerStartResult{}, errBoom
@@ -577,7 +517,7 @@ func TestRuntimeDockerStop(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			cli := &mockContainerClient{
+			cli := &fake.Client{
 				MockContainerCreate:  createContainerReturns(containerID),
 				MockContainerStart:   startContainer(containerID),
 				MockContainerInspect: inspectContainerOnNetwork(containerID, containerName, dockerNetwork),
@@ -594,8 +534,8 @@ func TestRuntimeDockerStop(t *testing.T) {
 					}
 					// The stop request must have its own deadline, so a stop
 					// that hangs can't stall cleanup.
-					if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > containerStopTimeout {
-						t.Errorf("\n%s\nContainerStop(...): want a deadline within %s, got deadline %v (set: %t)", tc.reason, containerStopTimeout, deadline, ok)
+					if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > containerruntime.StopTimeout {
+						t.Errorf("\n%s\nContainerStop(...): want a deadline within %s, got deadline %v (set: %t)", tc.reason, containerruntime.StopTimeout, deadline, ok)
 					}
 					return stop(ctx, id, options)
 				}
@@ -610,8 +550,8 @@ func TestRuntimeDockerStop(t *testing.T) {
 					}
 					// The remove request must have its own deadline, so a stop
 					// that hangs can't leave it without time to run.
-					if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > containerRemoveTimeout || ctx.Err() != nil {
-						t.Errorf("\n%s\nContainerRemove(...): want a live context with a deadline within %s, got deadline %v (set: %t), err %v", tc.reason, containerRemoveTimeout, deadline, ok, ctx.Err())
+					if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > containerruntime.RemoveTimeout || ctx.Err() != nil {
+						t.Errorf("\n%s\nContainerRemove(...): want a live context with a deadline within %s, got deadline %v (set: %t), err %v", tc.reason, containerruntime.RemoveTimeout, deadline, ok, ctx.Err())
 					}
 					return remove(ctx, id, options)
 				}
@@ -673,7 +613,7 @@ func TestRuntimeDockerStartLabels(t *testing.T) {
 	type args struct {
 		cleanup DockerCleanup
 		session string
-		cli     *mockContainerClient
+		cli     *fake.Client
 	}
 	type want struct {
 		err error
@@ -688,7 +628,7 @@ func TestRuntimeDockerStartLabels(t *testing.T) {
 			reason: "Function containers should be marked as managed by render and record the Stop policy.",
 			args: args{
 				cleanup: AnnotationValueRuntimeDockerCleanupStop,
-				cli: &mockContainerClient{
+				cli: &fake.Client{
 					MockContainerCreate: createLabeledContainer(map[string]string{
 						LabelKeyManagedBy: LabelValueManagedByCrossplane,
 						LabelKeySession:   sessionID(),
@@ -703,7 +643,7 @@ func TestRuntimeDockerStartLabels(t *testing.T) {
 			reason: "Function containers should be marked as managed by render and record the Remove policy.",
 			args: args{
 				cleanup: AnnotationValueRuntimeDockerCleanupRemove,
-				cli: &mockContainerClient{
+				cli: &fake.Client{
 					MockContainerCreate: createLabeledContainer(map[string]string{
 						LabelKeyManagedBy: LabelValueManagedByCrossplane,
 						LabelKeySession:   sessionID(),
@@ -719,7 +659,7 @@ func TestRuntimeDockerStartLabels(t *testing.T) {
 			args: args{
 				cleanup: AnnotationValueRuntimeDockerCleanupRemove,
 				session: "my-session",
-				cli: &mockContainerClient{
+				cli: &fake.Client{
 					MockContainerCreate: createLabeledContainer(map[string]string{
 						LabelKeyManagedBy: LabelValueManagedByCrossplane,
 						LabelKeySession:   "my-session",
@@ -734,7 +674,7 @@ func TestRuntimeDockerStartLabels(t *testing.T) {
 			reason: "Function containers should record the Orphan policy so sweeps can skip them.",
 			args: args{
 				cleanup: AnnotationValueRuntimeDockerCleanupOrphan,
-				cli: &mockContainerClient{
+				cli: &fake.Client{
 					MockContainerCreate: createLabeledContainer(map[string]string{
 						LabelKeyManagedBy: LabelValueManagedByCrossplane,
 						LabelKeySession:   sessionID(),

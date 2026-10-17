@@ -39,20 +39,20 @@ external resource to update it, so applying such a change does not recreate
 anything, it wedges. The provider refuses the update, the MR sits unsynced, and
 a human has to intervene. Replacement, computed values, provider defaults, and
 custom diff logic are provider knowledge. A companion one-pager in
-crossplane/upjet proposes exposing that knowledge: a `PlanService` protocol
-that upjet providers serve from an `internal plan-server` subcommand, computing
-the provider's own Terraform diff from a desired resource and its live state,
-statelessly, with no cloud credentials and no cluster access. What that proposal
-deliberately leaves to the client is orchestration: something has to figure out
-which providers a change involves, run their plan servers, route resources to
-them, and render the results.
+crossplane/upjet proposed exposing that knowledge, and upjet has since merged
+it: a `PlanService` protocol that upjet providers serve from an `internal
+diff-server` subcommand, computing the provider's own Terraform diff from a
+desired resource and its live state, statelessly, with no cloud credentials
+and no cluster access. What that protocol deliberately leaves to the client is
+orchestration: something has to figure out which providers a change involves,
+run their diff servers, route resources to them, and render the results.
 
 The CLI is that client. It already does exactly this dance for functions:
 `crossplane composition render` pulls function packages, runs them as local Docker
 containers bound to ephemeral localhost ports, and drives them over gRPC.
 And with the project workflow now in the CLI (`crossplane project
 init|build|run`), the CLI knows a project's provider dependencies, so it
-knows which plan servers to run without being told.
+knows which diff servers to run without being told.
 
 ## Goals
 
@@ -113,29 +113,35 @@ A Crossplane provider will do neither, so replaces get their own count
 instead of inflating actions that will not happen.
 
 For each input resource the CLI fetches the live MR from the cluster if one
-exists (its `status.atProvider` and external-name annotation are the prior
-state), sends desired and live to the routed plan server, and renders the
-response. A resource with no live counterpart plans as a create "plan
+exists, sends the desired resource and the whole live one to the routed diff
+server (the live MR's `status.atProvider` and external-name annotation ride
+along as the actual state), and renders the response. A resource with no live counterpart plans as a create "plan
 before apply".
 
 Which providers answer those plans comes from the current kubeconfig
-context by default: the CLI lists the providers installed on the target
-cluster and runs their package images as plan servers, so the preview uses
-the provider versions the cluster actually runs. `--provider-images` is
-optional and overrides that discovery for the cases where the cluster is
-not the source of truth, most importantly the provider upgrade preview
-below, where the point is to plan with a version that is not installed
-yet.
+context by default: the CLI follows each resource's kind to its CRD and the
+provider revision that installed it, and runs those providers' package
+images as diff servers, so the preview uses exactly the provider versions
+serving the resources being simulated. `--providers` is optional and
+overrides that discovery with a file of Provider manifests, the way render
+takes Function manifests, for the cases where the cluster is not the
+source of truth, most importantly the provider upgrade preview below,
+where the point is to plan with a version that is not installed yet.
+Manifests rather than bare image references, so the override can be
+checked in and shared, and so per-provider runtime configuration has a
+carrier: the `simulate.crossplane.io/runtime-docker-*` annotations mirror
+render's per-function runtime annotations for the Docker setups where the
+published port is not reachable on the address the daemon reports.
 
 ### Previewing a Provider Upgrade
 
 Provider upgrades fall out of the same command with no new machinery,
-because the plan server *is* the provider version being asked about. To
-preview an upgrade, run the new version's image as the plan server and
+because the diff server *is* the provider version being asked about. To
+preview an upgrade, run the new version's image as the diff server and
 hand it the fleet:
 
 ```console
-$ crossplane resource simulate --all --provider-images xpkg.example.org/provider-aws-s3:v2.1.0
+$ crossplane resource simulate --all --providers provider-aws-s3-v2.1.0.yaml
 Found 214 managed resources in groups served by provider-aws-s3.
 
 [-/+] Bucket.s3.aws.upbound.io legacy-logs (replace)
@@ -145,18 +151,19 @@ Plan: 0 to add, 3 to change, 0 to destroy, 1 requires replacement.
 210 resources are unchanged under the new provider version.
 ```
 
-With `--all` the CLI enumerates instead of reading files: it asks the plan
-server which API groups it serves (`GetInfo` again), lists every managed
-resource of those kinds on the cluster, and sends each one with its own
+With `--all` the CLI enumerates instead of reading files: it reads the
+provider package's CRDs to learn which groups and kinds the new version
+serves, lists every managed resource of those kinds on the cluster, and
+sends each one with its own
 spec as desired state and its own live resource as prior state. The
 question each plan answers is "does the new provider version consider this
 resource up to date, exactly as it stands?". Anything that is not a no-op
 is a finding: a changed default, a schema migration, a new replacement
-rule, a validation the next reconcile would trip over. Replaces and new
-error diagnostics are the highest signal, because those are the resources
-that wedge right after the upgrade.
+rule, a validation the next reconcile would trip over. Replaces and
+resources the new version refuses to plan are the highest signal, because
+those are the resources that wedge right after the upgrade.
 
-Because the plan server never refreshes, previewing the whole fleet costs
+Because the diff server never refreshes, previewing the whole fleet costs
 zero cloud API calls and needs no cloud credentials: the CLI reads the
 cluster with the user's kubeconfig and everything else happens locally.
 That makes "plan the fleet before every provider bump" cheap enough to run
@@ -184,7 +191,7 @@ The flow:
    each Composition composes. `--namespace` and `--name` scope the run.
 2. **Prepare.** Build the project's embedded functions locally, exactly as
    `project run` does, so the simulation reflects the code in the working
-   tree. Resolve the project's provider dependencies and start their plan
+   tree. Resolve the project's provider dependencies and start their diff
    servers (below).
 3. **Render.** For each XR, fetch its current composed resources from the
    cluster and re-render it with the *local* Composition and functions,
@@ -204,7 +211,7 @@ The flow:
    detection so resources the new Composition no longer produces show as
    deletes.
 5. **Plan the cloud layer.** For every rendered MR, merge in the live MR's
-   external-name and status, route it to a plan server by API group, and get
+   external-name and status, route it to a diff server by group and kind, and get
    the provider's verdict: no-op, update, or the replace nobody spotted in
    review.
 6. **Report.** Per-XR diffs with per-resource actions, a
@@ -280,10 +287,10 @@ type simulateCmd struct {
 	Input          []string      `short:"f" help:"Project file (default), or changed Composition or XR files."`
 	Namespace      string        `help:"Simulate only XRs in this namespace."`
 	Name           string        `help:"Simulate only the XR with this name."`
-	ProviderImages []string      `help:"Override the provider images to run as plan servers."`
+	Providers      string        `help:"Provider manifests to run as diff servers, overriding cluster discovery."`
 	IncludePinned  bool          `help:"Also simulate XRs pinned to older composition revisions."`
 	SkipPlan        bool         `help:"Skip the cloud-layer plan; show only the cluster-layer diff."`
-	KeepPlanServers bool         `help:"Leave plan server containers running for reuse by later runs."`
+	SessionID       string       `help:"Session label for the containers this run creates."`
 	MaxIterations  uint          `default:"10" help:"Cap on requirement resolution passes per XR."`
 	Timeout        time.Duration `default:"2m" help:"Per XR render and plan timeout."`
 	MaxConcurrency uint          `default:"8" help:"XRs simulated concurrently."`
@@ -291,68 +298,82 @@ type simulateCmd struct {
 }
 ```
 
-`crossplane resource simulate` shares the plan server, timeout, and output
+`crossplane resource simulate` shares the diff server, timeout, and output
 flags, and takes its resources from `-f` files instead of project
 discovery. Both commands enter the tree with the CLI's `maturity:"alpha"`
 tag and graduate the way every other command does.
 
-### Running Plan Servers Like Render Runs Functions
+### Running Diff Servers Like Render Runs Functions
 
 The CLI treats provider packages the way render treats function packages: as
 images it can run locally and talk to over gRPC.
 
 The provider images come from the project's `dependsOn` for `project
-simulate`, from the providers installed on the current cluster context for
-`resource simulate`, or from an explicit `--provider-images` override of
-either. The CLI starts each provider
-image with its `internal plan-server` entrypoint as a local Docker
+simulate`, from the providers serving the simulated resources on the
+current cluster context for `resource simulate`, or from an explicit
+`--providers` override of either, a file of Provider manifests, the way
+render takes Function manifests. The CLI starts each provider
+image with its `internal diff-server` entrypoint as a local Docker
 container, following the same runtime conventions render established for
-functions (pull policy, cleanup on exit). How the CLI talks to that
-container, a gRPC connection on an ephemeral localhost port or a protobuf
-exchange over the container's stdin and stdout, is part of the plan service
-contract, so the upjet one-pager decides it and this document follows. The
-exchange is the same either way: the CLI first asks each server `GetInfo`,
-which returns the API groups the server can plan (`s3.aws.upbound.io`,
-`kms.aws.upbound.io`, ...), and builds a routing table from the answer.
-Routing by declared capability rather than image-name convention means
-family providers coexist and a resource with no route is detected up
-front, not by a failed call.
+functions (pull policy, cleanup on exit), and talks to it over plaintext
+gRPC on an ephemeral localhost port, as upjet's merged protocol defines
+(the server can also bind a unix socket, and registers gRPC reflection,
+which doubles as the readiness probe). What a server can plan is declared
+before any container starts: a provider package that serves diffs carries
+the `DiffServer` capability in its package metadata (`spec.capabilities`),
+and the CRDs inside the package say exactly which groups and kinds that
+provider serves. The CLI checks the capability first, starts containers
+only for packages that have it, and builds its routing table from the
+packages' CRDs, by group and kind. Routing by declared package contents
+rather than image-name convention means family providers coexist and a
+resource with no route is detected up front, not by a failed call. The
+protocol is alpha, merged to upjet's main branch ahead of a release, and
+simulate enters the CLI as alpha alongside it.
 
-That split is what makes the `--provider-images` override simple: the flag
-only changes where the image list comes from, never how routing works. The
-CLI never needs to know up front which image serves which API group, not
-from a registry, not from image names, not from cluster state. It starts
-whatever images the list contains and lets each server declare its groups
-through `GetInfo`. Override the list with a new provider version and the
-routing table rebuilds itself from what that version actually serves.
+That split is what makes the `--providers` override simple: the flag only
+changes where the provider list comes from, never how routing works. The
+CLI never hardcodes which image serves which group and kind, not from
+image names, not from cluster state. It inspects whatever packages the
+manifests name and lets each package declare its capability and its kinds
+through its own metadata. Override the list with a new provider version
+and the routing table rebuilds itself from what that version actually
+ships.
 
-Because plan servers are stateless and credential-free, all state travels
+Because diff servers are stateless and credential-free, all state travels
 in the request. There is nothing to configure: no ProviderConfig, no cloud
-credentials, no reach into the cluster from the container. The
-CLI fetches live state with the user's own kubeconfig and RBAC; the plan
-server only ever sees what the user could already read.
+credentials, no reach into the cluster from the container. The CLI fetches
+live state, and the Secrets or referenced objects a plan may need to
+resolve, with the user's own kubeconfig and RBAC, and sends them along in
+the request; the diff server only ever sees what the user could already
+read.
 
-Startup is the one cost that hurts across runs: a plan server takes a few
+Startup is the one cost that hurts across runs: a diff server takes a few
 seconds to come up, and an edit-simulate-edit loop pays that on every run
 if containers are torn down at exit. So containers get deterministic
-names derived from the provider image digest, and `--keep-plan-servers`
-leaves them running when the command exits: the next run finds a live
-server with a matching name and reuses it instead of starting a new one.
-Because the name carries the digest, a changed image never matches a
+names derived from the provider image digest, and a provider manifest
+annotated `simulate.crossplane.io/runtime-docker-cleanup: Orphan`, the same
+cleanup policy render's function containers take through their annotation,
+leaves its container running when the command exits: the next run finds a
+live server with a matching name and reuses it instead of starting a new
+one. Because the name carries the digest, a changed image never matches a
 stale server, and leftovers are easy to find and remove since they all
-follow one naming scheme. The default stays clean, start and tear down
-per run; the flag is for the loops where those seconds add up. The same
-naming convention is worth extending to render's function containers,
-but that belongs to render.
+follow one naming scheme and carry render-style managed-by and session
+labels. The default stays clean, start and tear down per run; Orphan is
+for the loops where those seconds add up.
 
 ### From Response to Printed Diff
 
-What a plan server returns is deliberately close to what the CLI prints.
-Every response carries the action, the field changes with current and
-desired values, replacement information, and provider diagnostics, and
-every field path arrives as a CRD path
-`spec.forProvider.deletionWindowInDays`.
-The server also redacts sensitive values and marks computed ones.
+What a diff server returns is deliberately close to what the CLI prints.
+Every response carries the action and the field changes with current and
+planned values, each change marked with whether it forces replacement and
+whether it originates from the desired state or from the provider
+(defaults and late-initialized values), and every field path arrives as a
+CRD path `spec.forProvider.deletionWindowInDays`. The server also redacts
+sensitive values, marks computed ones as known only after apply, and marks
+values it cannot resolve, an unresolved reference or Secret, rather than
+guessing. Failures are not part of the response: a server that cannot plan
+a resource says so through its error status, and simulate turns that into
+the approximate fallback below.
 
 Before sending, the CLI has to answer which live resource a rendered one
 corresponds to, and names are not enough: a re-render can generate fresh
@@ -369,9 +390,9 @@ plan as a delete instead of silently disappearing from the preview.
 Printing then follows one rule: show users their own manifest, annotated.
 Each resource prints as YAML in CRD terms with changed fields marked inline
 (`~ field: "old" -> "new"`), sensitive values stay redacted, computed
-values print as `(known after apply)`, and fields that force replacement
-carry that warning on the line where the user's eye already is. Provider
-diagnostics print under the resource they belong to. Actions map to the
+values print as `(known after apply)`, unresolved references print as
+`(unresolved reference)`, and fields that force replacement carry that
+warning on the line where the user's eye already is. Actions map to the
 summary symbols (`[+]` create, `[~]` update, `[-/+]` replace, `[-]` delete,
 `[=]` no-op, `[?]` approximate fallback).
 
@@ -381,25 +402,28 @@ the consumer, not the tool: `-o diff` prints the same result as a
 line-by-line unified diff (`- foo: bar` / `+ foo: baz`), the format
 crossplane-diff emits today, which renders directly in Markdown `diff`
 code blocks for CI comments. What only the plan layer knows (replacement,
-known-after-apply, diagnostics) prints in the per-resource header and the
+known-after-apply values) prints in the per-resource header and the
 summary in diff mode, since those have no inline line to attach to. The
 same data serializes as `-o json|yaml`, one typed result per resource, so
 a pull-request bot can gate on "any replace anywhere" without parsing
 console output.
 
-### When There Is No Plan Server
+### When There Is No Diff Server
 
 Not every provider is an upjet provider, and not every upjet provider will
 serve plans on day one. Simulate treats planning as a capability it detects,
 not a requirement:
 
-* If a resource routes to a plan server, its diff is provider-computed and
+* If a resource routes to a diff server, its diff is provider-computed and
   accurate: replacement detection, known-after-apply values, sensitive-value
   redaction.
-* If it does not, the CLI falls back to a client-side comparison of desired
-  against live spec, rendered with a distinct marker (`[?]`) and a closing
-  warning that the result is approximate: no replacement detection, no
-  computed values.
+* A routed server can still refuse an individual resource it cannot compute
+  a diff for; the server says so explicitly in its error status, and the
+  resource takes the fallback below instead of failing the run.
+* If a resource routes nowhere, or its server refused it, the CLI falls
+  back to a client-side comparison of desired against live spec, rendered
+  with a distinct marker (`[?]`) and a closing warning that the result is
+  approximate: no replacement detection, no computed values.
 
 A mixed control plane gets a complete preview that is honest about which
 parts are provider-grade, and every provider that adopts the plan protocol
@@ -453,11 +477,11 @@ standalone packaging forced them to build.
   and `--name` to scope the cluster side), and both gain the plan layer as
   their upgrade. That upgrade is strictly additive, so today's diff
   functionality is subsumed rather than replaced: planning is a capability
-  simulate detects per resource, and a resource with no plan server gets
+  simulate detects per resource, and a resource with no diff server gets
   the client-side diff crossplane-diff computes today ("When There Is No
-  Plan Server" above). Run simulate where no provider serves plans and the
+  Diff Server" above). Run simulate where no provider serves plans and the
   output is today's diff, unchanged. For users who want only the
-  cluster-layer diff, `--skip-plan` makes that explicit: no plan servers
+  cluster-layer diff, `--skip-plan` makes that explicit: no diff servers
   start, no containers run, and the command does exactly what diff does
   today. That keeps "diff without simulation" one flag away instead of a
   second command. Whether thin aliases remain for existing crossplane-diff
@@ -483,11 +507,11 @@ of the control plane. Per XR: the same render work `crossplane render` does
 (plus requirement-resolution iterations, capped), one server-side dry-run
 per composed resource, and one plan computation per rendered MR, each of
 which is a pure in-process schema diff on the server, no cloud calls.
-(Whether the protocol carries those computations one per request or
-batched is a plan protocol question, decided in the upjet one-pager.)
-Plan-server startup is the dominant fixed cost, a few seconds per distinct
+The protocol carries one resource per unary request; a fleet preview is
+many small requests, each cheap.
+Diff-server startup is the dominant fixed cost, a few seconds per distinct
 provider image, paid once per run and torn down after, or paid once across
-many runs with `--keep-plan-servers`. Nothing simulate does
+many runs with the Orphan cleanup policy. Nothing simulate does
 writes to the cluster or the cloud: reads plus dry-runs on one side, a
 credential-free diff on the other.
 

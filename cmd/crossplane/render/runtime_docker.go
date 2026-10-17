@@ -18,31 +18,24 @@ package render
 
 import (
 	"context"
-	"encoding/base64"
-	"fmt"
-	"io"
-	"net"
-	"net/netip"
 	"strings"
-	"sync"
-	"time"
 
-	"github.com/containerd/errdefs"
 	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/network"
-	"github.com/moby/moby/client"
-	"k8s.io/apimachinery/pkg/util/rand"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+
+	"github.com/crossplane/cli/v2/internal/containerruntime"
 )
 
 // FunctionPort is the port that Composition Functions listen on inside their container.
 const FunctionPort = 9443
+
+// labelDomain prefixes the labels render applies to the Docker resources it
+// creates.
+const labelDomain = "render.crossplane.io"
 
 // Annotations that can be used to configure the Docker runtime.
 const (
@@ -96,88 +89,63 @@ const (
 const (
 	// LabelKeyManagedBy is applied to every Docker container and network
 	// created by render. Its value is always LabelValueManagedByCrossplane.
-	LabelKeyManagedBy = "render.crossplane.io/managed-by"
+	LabelKeyManagedBy = labelDomain + "/managed-by"
 
 	// LabelValueManagedByCrossplane is the value of LabelKeyManagedBy.
-	LabelValueManagedByCrossplane = "crossplane-cli"
+	LabelValueManagedByCrossplane = containerruntime.LabelValueManagedBy
 
 	// LabelKeySession is applied to every Docker container and network created
 	// by render. Its value identifies the render session that created the
 	// resource, so cleanup can be scoped to a single run. Callers may supply
 	// the session ID (see EngineFlags.SessionID); otherwise a per-process ID is
 	// generated.
-	LabelKeySession = "render.crossplane.io/session"
+	LabelKeySession = labelDomain + "/session"
 
 	// LabelKeyCleanup is applied to Function containers and records the
 	// effective DockerCleanup policy the container was created with.
-	LabelKeyCleanup = "render.crossplane.io/cleanup"
+	LabelKeyCleanup = labelDomain + "/cleanup"
 )
 
 // sessionID returns an identifier unique to this process. It is the session ID
 // used for Docker resources when the caller doesn't supply one.
 //
 //nolint:gochecknoglobals // Must be stable for the life of the process.
-var sessionID = sync.OnceValue(func() string { return rand.String(12) })
+var sessionID = containerruntime.SessionID
 
 // managedLabels returns the labels applied to every Docker resource render
 // creates. An empty session falls back to the per-process session ID.
 func managedLabels(session string) map[string]string {
-	if session == "" {
-		session = sessionID()
-	}
-
-	return map[string]string{
-		LabelKeyManagedBy: LabelValueManagedByCrossplane,
-		LabelKeySession:   session,
-	}
+	return containerruntime.ManagedLabels(labelDomain, session)
 }
 
 // functionContainerLabels returns the labels applied to a Function container
 // created with the supplied session and cleanup policy.
 func functionContainerLabels(session string, cleanup DockerCleanup) map[string]string {
-	l := managedLabels(session)
-	l[LabelKeyCleanup] = string(cleanup)
-	return l
+	return containerruntime.ContainerLabels(labelDomain, session, cleanup)
 }
 
 // DockerCleanup specifies what Docker should do with a Function container after
 // it has been run.
-type DockerCleanup string
+type DockerCleanup = containerruntime.Cleanup
 
 // Supported AnnotationKeyRuntimeDockerCleanup values.
 const (
 	// AnnotationValueRuntimeDockerCleanupStop stops the container once
-	// rendering is done, waiting up to containerStopGracePeriod for it to exit
-	// on SIGTERM before Docker kills it.
-	AnnotationValueRuntimeDockerCleanupStop DockerCleanup = "Stop"
+	// rendering is done, waiting up to the grace period for it to exit on
+	// SIGTERM before Docker kills it.
+	AnnotationValueRuntimeDockerCleanupStop = containerruntime.CleanupStop
 
 	// AnnotationValueRuntimeDockerCleanupRemove is the default. It stops the
-	// container once rendering is done, waiting up to containerStopGracePeriod
-	// for it to exit on SIGTERM, then force removes it. The container is
-	// removed even if the graceful stop fails.
-	AnnotationValueRuntimeDockerCleanupRemove DockerCleanup = "Remove"
+	// container once rendering is done, waiting up to the grace period for it
+	// to exit on SIGTERM, then force removes it. The container is removed
+	// even if the graceful stop fails.
+	AnnotationValueRuntimeDockerCleanupRemove = containerruntime.CleanupRemove
 
 	// AnnotationValueRuntimeDockerCleanupOrphan leaves the container running
 	// once rendering is done.
-	AnnotationValueRuntimeDockerCleanupOrphan DockerCleanup = "Orphan"
+	AnnotationValueRuntimeDockerCleanupOrphan = containerruntime.CleanupOrphan
 
-	AnnotationValueRuntimeDockerCleanupDefault = AnnotationValueRuntimeDockerCleanupRemove
-)
-
-const (
-	// containerStopGracePeriod is how long the Stop and Remove cleanup
-	// policies wait for a Function container to exit on SIGTERM before Docker
-	// kills it.
-	containerStopGracePeriod = 3 * time.Second
-
-	// containerStopTimeout bounds the ContainerStop request: the grace period
-	// plus time for Docker to kill the container.
-	containerStopTimeout = containerStopGracePeriod + 2*time.Second
-
-	// containerRemoveTimeout bounds the ContainerRemove request. It's separate
-	// from containerStopTimeout so a stop that hangs can't leave removal
-	// without time to run.
-	containerRemoveTimeout = 10 * time.Second
+	AnnotationValueRuntimeDockerCleanupDefault = containerruntime.CleanupDefault
 )
 
 // AnnotationKeyRuntimeDockerPullPolicy can be added to a Function to control how its runtime
@@ -186,21 +154,21 @@ const AnnotationKeyRuntimeDockerPullPolicy = "render.crossplane.io/runtime-docke
 
 // DockerPullPolicy can be added to a Function to control how its runtime image
 // is pulled by Docker.
-type DockerPullPolicy string
+type DockerPullPolicy = containerruntime.PullPolicy
 
 // Supported pull policies.
 const (
 	// AnnotationValueRuntimeDockerPullPolicyAlways always pulls the image.
-	AnnotationValueRuntimeDockerPullPolicyAlways DockerPullPolicy = "Always"
+	AnnotationValueRuntimeDockerPullPolicyAlways = containerruntime.PullAlways
 
 	// AnnotationValueRuntimeDockerPullPolicyNever never pulls the image.
-	AnnotationValueRuntimeDockerPullPolicyNever DockerPullPolicy = "Never"
+	AnnotationValueRuntimeDockerPullPolicyNever = containerruntime.PullNever
 
 	// AnnotationValueRuntimeDockerPullPolicyIfNotPresent pulls the image if
 	// it's not present.
-	AnnotationValueRuntimeDockerPullPolicyIfNotPresent DockerPullPolicy = "IfNotPresent"
+	AnnotationValueRuntimeDockerPullPolicyIfNotPresent = containerruntime.PullIfNotPresent
 
-	AnnotationValueRuntimeDockerPullPolicyDefault DockerPullPolicy = AnnotationValueRuntimeDockerPullPolicyIfNotPresent
+	AnnotationValueRuntimeDockerPullPolicyDefault = containerruntime.PullDefault
 )
 
 // RuntimeDocker uses a Docker daemon to run a Function.
@@ -248,27 +216,8 @@ type RuntimeDocker struct {
 	// it nil and Start builds a real client from the environment. Tests
 	// substitute a fake to exercise container lifecycle and cleanup handling
 	// without a real Docker daemon.
-	dockerClient containerClient
+	dockerClient containerruntime.Client
 }
-
-// containerClient is the subset of the Docker client RuntimeDocker uses to
-// pull images and manage a Function's container.
-type containerClient interface {
-	pullClient
-	containerCleanupClient
-	ContainerInspect(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error)
-	ContainerCreate(ctx context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error)
-	ContainerStart(ctx context.Context, containerID string, options client.ContainerStartOptions) (client.ContainerStartResult, error)
-}
-
-// containerCleanupClient is the subset of the Docker client RuntimeDocker's
-// stop function uses to clean up a Function's container.
-type containerCleanupClient interface {
-	ContainerStop(ctx context.Context, containerID string, options client.ContainerStopOptions) (client.ContainerStopResult, error)
-	ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
-}
-
-var _ containerClient = (*client.Client)(nil)
 
 // GetDockerPullPolicy extracts PullPolicy configuration from the supplied
 // Function.
@@ -361,315 +310,33 @@ func GetRuntimeDocker(fn pkgv1.Function, log logging.Logger) (*RuntimeDocker, er
 
 var _ Runtime = &RuntimeDocker{}
 
-func (r *RuntimeDocker) findContainer(ctx context.Context, cli containerClient) (string, error) {
-	if r.Name == "" {
-		return "", nil
-	}
-
-	inspect, err := cli.ContainerInspect(ctx, r.Name, client.ContainerInspectOptions{})
-	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return "", nil // Container doesn't exist, but that's not an error
-		}
-		return "", errors.Wrapf(err, "cannot inspect Docker container %q", r.Name)
-	}
-
-	return inspect.Container.ID, nil
-}
-
-func (r *RuntimeDocker) createContainer(ctx context.Context, cli containerClient) (string, error) {
-	r.log.Debug("Starting Docker container runtime setup", "image", r.Image)
-
-	// Let Docker automatically allocate an available port on the bind address.
-	// This avoids race conditions and works reliably with Docker daemons.
-	port := network.MustParsePort(fmt.Sprintf("%d/tcp", FunctionPort))
-
-	cfg := &container.Config{
-		Image:        r.Image,
-		Cmd:          []string{"--insecure"},
-		ExposedPorts: network.PortSet{port: struct{}{}},
-		Env:          r.Env,
-		// Labels are only set at creation time. A pre-existing named container
-		// that is reused is not relabeled, since Docker can't change labels on
-		// an existing container.
-		Labels: functionContainerLabels(r.Session, r.Cleanup),
-	}
-	hcfg := &container.HostConfig{}
-	var ncfg *network.NetworkingConfig
-
-	if r.Network != "" {
-		// When a Docker network is specified, the function container joins
-		// that network and is reached via its Docker hostname on the function
-		// port. No host port bindings are needed.
-		ncfg = &network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{
-				r.Network: {},
-			},
-		}
-		r.log.Debug("Connecting container to Docker network", "network", r.Network)
-	} else {
-		// PortBinding.HostIP is a netip.Addr in the Moby API types, where it
-		// was a string; reject a malformed bind address here rather than
-		// letting it reach the daemon as a zero value.
-		bindAddr, err := netip.ParseAddr(r.BindAddress)
-		if err != nil {
-			return "", errors.Wrapf(err, "invalid bind address %q", r.BindAddress)
-		}
-		hcfg.PortBindings = network.PortMap{
-			port: []network.PortBinding{{
-				HostIP:   bindAddr,
-				HostPort: "0", // "0" => engine allocates an ephemeral port
-			}},
-		}
-	}
-
-	options, err := r.getPullOptions()
-	if err != nil {
-		// We can continue to pull an image if we don't have the PullOptions with RegistryAuth
-		// as long as the image is from a public registry. Therefore, we log the error message and continue.
-		r.log.Info("Cannot get pull options", "image", r.Image, "err", err)
-	}
-
-	if r.PullPolicy == AnnotationValueRuntimeDockerPullPolicyAlways {
-		r.log.Debug("Pulling image with pullPolicy: Always", "image", r.Image)
-
-		err = PullImage(ctx, cli, r.Image, options)
-		if err != nil {
-			return "", errors.Wrapf(err, "cannot pull Docker image %q", r.Image)
-		}
-	}
-
-	r.log.Debug("Creating Docker container", "image", r.Image, "name", r.Name, "network", r.Network)
-
-	rsp, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Config:           cfg,
-		HostConfig:       hcfg,
-		NetworkingConfig: ncfg,
-		Name:             r.Name,
-	})
-	if err != nil {
-		// TODO: If Docker ever exposes a structured way to distinguish
-		// network-not-found from image-not-found (e.g. via errdefs or a typed
-		// error), handle the network case here to avoid an unnecessary image
-		// pull attempt. For now, both surface as errdefs.IsNotFound and
-		// string-matching on the daemon message is too fragile.
-		if !errdefs.IsNotFound(err) {
-			// Non-image-not-found error: could be network misconfiguration,
-			// daemon permissions, etc.
-			if r.Network != "" {
-				return "", errors.Wrapf(err, "cannot create Docker container for image %q on network %q; verify the network exists and is accessible by the Docker daemon", r.Image, r.Network)
-			}
-			return "", errors.Wrapf(err, "cannot create Docker container for image %q", r.Image)
-		}
-		if r.PullPolicy == AnnotationValueRuntimeDockerPullPolicyNever {
-			// Image not found and we're not allowed to pull it.
-			return "", errors.Wrapf(err, "cannot create Docker container: image %q not found and pull policy is %q", r.Image, r.PullPolicy)
-		}
-
-		// The image was not found, but we're allowed to pull it.
-		r.log.Debug("Image not found, pulling", "image", r.Image)
-
-		err = PullImage(ctx, cli, r.Image, options)
-		if err != nil {
-			return "", errors.Wrapf(err, "cannot pull Docker image %q", r.Image)
-		}
-
-		rsp, err = cli.ContainerCreate(ctx, client.ContainerCreateOptions{
-			Config:           cfg,
-			HostConfig:       hcfg,
-			NetworkingConfig: ncfg,
-			Name:             r.Name,
-		})
-		if err != nil {
-			if r.Network != "" {
-				return "", errors.Wrapf(err, "cannot create Docker container for image %q on network %q; verify the network exists and is accessible by the Docker daemon", r.Image, r.Network)
-			}
-			return "", errors.Wrapf(err, "cannot create Docker container for image %q", r.Image)
-		}
-	}
-
-	return rsp.ID, nil
-}
-
-// startContainer ensures the container is running and returns its address.
-func (r *RuntimeDocker) startContainer(ctx context.Context, cli containerClient, containerID string) (string, error) {
-	// Start the container (idempotent - safe to call on running containers)
-	if _, err := cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{}); err != nil {
-		return "", errors.Wrap(err, "cannot start Docker container")
-	}
-
-	// When using a Docker network, containers are resolvable by name within
-	// the network. Inspect the container to validate it is attached to the
-	// specified network and to get its DNS-resolvable name (Docker's embedded
-	// DNS resolves container names and hostnames, but not container IDs).
-	if r.Network != "" {
-		inspect, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
-		if err != nil {
-			return "", errors.Wrap(err, "cannot inspect Docker container")
-		}
-		if _, ok := inspect.Container.NetworkSettings.Networks[r.Network]; !ok {
-			return "", errors.Errorf("container %q is not connected to Docker network %q; verify the %q annotation value matches an existing network", strings.TrimPrefix(inspect.Container.Name, "/"), r.Network, AnnotationKeyRuntimeDockerNetwork)
-		}
-		hostname := strings.TrimPrefix(inspect.Container.Name, "/")
-		if hostname == "" {
-			return "", errors.Errorf("cannot determine hostname for container %q on network %q", containerID, r.Network)
-		}
-		addr := net.JoinHostPort(hostname, fmt.Sprintf("%d", FunctionPort))
-		r.log.Debug("Function container reachable on network", "network", r.Network, "address", addr)
-		return addr, nil
-	}
-
-	// Inspect the container to get the actual allocated host port.
-	inspect, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
-	if err != nil {
-		return "", errors.Wrap(err, "cannot inspect Docker container")
-	}
-
-	// Look up the specific function port instead of taking the first one
-	p := network.MustParsePort(fmt.Sprintf("%d/tcp", FunctionPort))
-	if len(inspect.Container.NetworkSettings.Ports[p]) == 0 {
-		return "", errors.Errorf("container %q has no published binding for port %s", r.Name, p.Port())
-	}
-
-	binding := inspect.Container.NetworkSettings.Ports[p][0]
-	host := r.Target
-	if host == "" && binding.HostIP.IsValid() {
-		host = binding.HostIP.String()
-	}
-	if host == "" {
-		return "", errors.Errorf("container %q has port binding for %s but no host address", r.Name, p.Port())
-	}
-
-	return net.JoinHostPort(host, binding.HostPort), nil
-}
-
-func (r *RuntimeDocker) getPullOptions() (client.ImagePullOptions, error) {
-	// Resolve auth token by looking into keychain
-	ref, err := name.ParseReference(r.Image)
-	if err != nil {
-		return client.ImagePullOptions{}, errors.Wrapf(err, "Image is not a valid reference %s", r.Image)
-	}
-
-	auth, err := r.Keychain.Resolve(ref.Context().Registry)
-	if err != nil {
-		return client.ImagePullOptions{}, errors.Wrapf(err, "Cannot resolve auth for %s", ref.Context().RegistryStr())
-	}
-
-	authConfig, err := auth.Authorization()
-	if err != nil {
-		return client.ImagePullOptions{}, errors.Wrapf(err, "Cannot get auth config for %s", ref.Context().RegistryStr())
-	}
-
-	token, err := authConfig.MarshalJSON()
-	if err != nil {
-		return client.ImagePullOptions{}, errors.Wrapf(err, "Cannot marshal auth config for %s", ref.Context().RegistryStr())
-	}
-
-	return client.ImagePullOptions{
-		RegistryAuth: base64.StdEncoding.EncodeToString(token),
-	}, nil
-}
-
 // Start a Function as a Docker container.
 func (r *RuntimeDocker) Start(ctx context.Context) (RuntimeContext, error) {
-	cli := r.dockerClient
-	if cli == nil {
-		c, err := client.New(client.FromEnv)
-		if err != nil {
-			return RuntimeContext{}, errors.Wrap(err, "cannot create Docker client using environment variables")
-		}
-		cli = c
+	c := &containerruntime.Container{
+		Image:       r.Image,
+		Name:        r.Name,
+		Cmd:         []string{"--insecure"},
+		Port:        FunctionPort,
+		Env:         r.Env,
+		Labels:      functionContainerLabels(r.Session, r.Cleanup),
+		BindAddress: r.BindAddress,
+		Target:      r.Target,
+		Network:     r.Network,
+		PullPolicy:  r.PullPolicy,
+		Keychain:    r.Keychain,
+		Log:         r.log,
+		Client:      r.dockerClient,
 	}
 
-	// Try to find an existing container with the supplied container name.
-	containerID, err := r.findContainer(ctx, cli)
+	running, err := c.Start(ctx)
 	if err != nil {
 		return RuntimeContext{}, err
 	}
 
-	// Create new container if not found.
-	if containerID == "" {
-		containerID, err = r.createContainer(ctx, cli)
-		if err != nil {
-			return RuntimeContext{}, err
-		}
-	}
-
-	containerAddr, err := r.startContainer(ctx, cli, containerID)
-	if err != nil {
-		return RuntimeContext{}, err
-	}
-
-	// Inline stop function
-	stop := func(ctx context.Context) error {
-		grace := int(containerStopGracePeriod / time.Second)
-		stopOpts := client.ContainerStopOptions{Timeout: &grace}
-
-		switch r.Cleanup {
-		case AnnotationValueRuntimeDockerCleanupOrphan:
-			return nil
-		case AnnotationValueRuntimeDockerCleanupStop:
-			if err := stopContainer(ctx, cli, containerID, stopOpts); err != nil {
-				return errors.Wrap(err, "cannot stop Docker container")
-			}
-		case AnnotationValueRuntimeDockerCleanupRemove:
-			// Give the container a chance to exit gracefully, then force
-			// remove it whether or not the stop succeeded, so a container
-			// that's slow to exit on SIGTERM can't cause removal to be
-			// skipped. A stop failure only matters if removal fails too.
-			var stopErr error
-			if err := stopContainer(ctx, cli, containerID, stopOpts); err != nil {
-				stopErr = errors.Wrap(err, "cannot stop Docker container")
-			}
-			if err := removeContainer(ctx, cli, containerID); err != nil {
-				return errors.Join(errors.Wrap(err, "cannot remove Docker container"), stopErr)
-			}
-		}
-
-		return nil
-	}
-
-	return RuntimeContext{Target: containerAddr, Stop: stop}, nil
-}
-
-// stopContainer stops a container, bounding the request by
-// containerStopTimeout.
-func stopContainer(ctx context.Context, cli containerCleanupClient, containerID string, opts client.ContainerStopOptions) error {
-	ctx, cancel := context.WithTimeout(ctx, containerStopTimeout)
-	defer cancel()
-
-	_, err := cli.ContainerStop(ctx, containerID, opts)
-	return err
-}
-
-// removeContainer force removes a container, bounding the request by
-// containerRemoveTimeout.
-func removeContainer(ctx context.Context, cli containerCleanupClient, containerID string) error {
-	ctx, cancel := context.WithTimeout(ctx, containerRemoveTimeout)
-	defer cancel()
-
-	_, err := cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true})
-	return err
-}
-
-type pullClient interface {
-	ImagePull(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error)
-}
-
-// PullImage pulls the supplied image using the supplied client. It blocks until
-// the image has either finished pulling or hit an error.
-func PullImage(ctx context.Context, p pullClient, image string, options client.ImagePullOptions) error {
-	out, err := p.ImagePull(ctx, image, options)
-	if err != nil {
-		return err
-	}
-	defer out.Close() //nolint:errcheck // TODO(negz): Can this error?
-
-	// Each line read from out is a JSON object containing the status of the
-	// pull - similar to the progress bars you'd see if running docker pull. It
-	// seems that consuming all of this output is the best way to block until
-	// the image is actually pulled before we try to run it.
-	_, err = io.Copy(io.Discard, out)
-
-	return err
+	return RuntimeContext{
+		Target: running.Addr,
+		Stop: func(ctx context.Context) error {
+			return running.Stop(ctx, r.Cleanup)
+		},
+	}, nil
 }

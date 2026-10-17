@@ -1,0 +1,184 @@
+/*
+Copyright 2026 The Crossplane Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package plan
+
+import (
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+)
+
+func mr(spec map[string]any) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "ec2.aws.upbound.io/v1beta1",
+		"kind":       "VPC",
+		"metadata":   map[string]any{"name": "my-vpc"},
+		"spec":       spec,
+	}}
+}
+
+func TestFallback(t *testing.T) {
+	type args struct {
+		desired *unstructured.Unstructured
+		live    *unstructured.Unstructured
+	}
+	type want struct {
+		action  Action
+		changes []FieldChange
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"Create": {
+			reason: "No live counterpart plans as a create listing the desired spec.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{
+					"cidrBlock": "10.0.0.0/16",
+					"region":    "us-west-1",
+				}}),
+			},
+			want: want{
+				action: ActionCreate,
+				changes: []FieldChange{
+					{Path: "spec.forProvider.cidrBlock", Planned: &Value{Value: "10.0.0.0/16"}},
+					{Path: "spec.forProvider.region", Planned: &Value{Value: "us-west-1"}},
+				},
+			},
+		},
+		"NoOp": {
+			reason: "An identical spec plans as a no-op, even when numeric types differ between YAML and the API server.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{"retention": int64(7)}}),
+				live:    mr(map[string]any{"forProvider": map[string]any{"retention": float64(7)}}),
+			},
+			want: want{action: ActionNoOp},
+		},
+		"Update": {
+			reason: "A changed nested field plans as an update with both sides.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.1.0.0/16"}}),
+				live:    mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}}),
+			},
+			want: want{
+				action: ActionUpdate,
+				changes: []FieldChange{{
+					Path:    "spec.forProvider.cidrBlock",
+					Actual:  &Value{Value: "10.0.0.0/16"},
+					Planned: &Value{Value: "10.1.0.0/16"},
+				}},
+			},
+		},
+		"AddAndRemove": {
+			reason: "Fields only on one side plan as additions and removals.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{"added": true}}),
+				live:    mr(map[string]any{"forProvider": map[string]any{"removed": "gone"}}),
+			},
+			want: want{
+				action: ActionUpdate,
+				changes: []FieldChange{
+					{Path: "spec.forProvider.added", Planned: &Value{Value: true}},
+					{Path: "spec.forProvider.removed", Actual: &Value{Value: "gone"}},
+				},
+			},
+		},
+		"ListElementChange": {
+			reason: "Same-length lists diff element-wise with indexed paths.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{"zones": []any{"a", "c"}}}),
+				live:    mr(map[string]any{"forProvider": map[string]any{"zones": []any{"a", "b"}}}),
+			},
+			want: want{
+				action: ActionUpdate,
+				changes: []FieldChange{{
+					Path:    "spec.forProvider.zones[1]",
+					Actual:  &Value{Value: "b"},
+					Planned: &Value{Value: "c"},
+				}},
+			},
+		},
+		"DeepNestedListOfMaps": {
+			reason: "Changes inside maps nested in lists diff leaf-wise with indexed paths; untouched siblings stay silent.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{
+					"parentIdRef": map[string]any{"name": "nebius-eu-north", "namespace": "modelplane-system"},
+					"template": map[string]any{
+						"filesystems": []any{map[string]any{
+							"attachMode":         "READ_ONLY",
+							"existingFilesystem": map[string]any{"idSelector": map[string]any{"matchControllerRef": true}},
+							"mountTag":           "modelplane-cache",
+						}},
+					},
+				}}),
+				live: mr(map[string]any{"forProvider": map[string]any{
+					"parentIdRef": map[string]any{"name": "nebius-eu-north", "namespace": "modelplane-system"},
+					"template": map[string]any{
+						"filesystems": []any{map[string]any{
+							"attachMode":         "READ_WRITE",
+							"existingFilesystem": map[string]any{"idSelector": map[string]any{"matchControllerRef": true}},
+							"mountTag":           "modelplane-cache",
+						}},
+					},
+				}}),
+			},
+			want: want{
+				action: ActionUpdate,
+				changes: []FieldChange{{
+					Path:    "spec.forProvider.template.filesystems[0].attachMode",
+					Actual:  &Value{Value: "READ_WRITE"},
+					Planned: &Value{Value: "READ_ONLY"},
+				}},
+			},
+		},
+		"ListLengthChange": {
+			reason: "Lists of different lengths diff as one whole-list change.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{"zones": []any{"a"}}}),
+				live:    mr(map[string]any{"forProvider": map[string]any{"zones": []any{"a", "b"}}}),
+			},
+			want: want{
+				action: ActionUpdate,
+				changes: []FieldChange{{
+					Path:    "spec.forProvider.zones",
+					Actual:  &Value{Value: []any{"a", "b"}},
+					Planned: &Value{Value: []any{"a"}},
+				}},
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := Fallback(tc.args.desired, tc.args.live, "test")
+
+			if !got.Approximate {
+				t.Errorf("\n%s\nFallback(...): want Approximate, got exact", tc.reason)
+			}
+			if got.Action != tc.want.action {
+				t.Errorf("\n%s\nFallback(...): want action %q, got %q", tc.reason, tc.want.action, got.Action)
+			}
+			if diff := cmp.Diff(tc.want.changes, got.Changes, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nFallback(...): -want changes, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

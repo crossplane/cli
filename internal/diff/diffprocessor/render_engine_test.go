@@ -741,8 +741,9 @@ func TestNewEngineRenderFn_UncomparableImageWarns(t *testing.T) {
 // the user with a bare kong usage error. The hint must augment the original
 // error, never replace or soften it.
 func TestEngineRenderFn_StaleRenderImageHint(t *testing.T) {
-	// The verbatim shape upstream surfaces: the container's stderr, wrapped.
-	staleErr := errors.New("crossplane internal render in Docker returned error with output: crossplane: error: unexpected argument internal")
+	// The verbatim shape upstream surfaces: the container's stderr, wrapped and
+	// marked as render.ErrStaleRenderBackend.
+	staleErr := errors.Errorf("crossplane internal render in Docker returned error with output: crossplane: error: unexpected argument internal: %w", render.ErrStaleRenderBackend)
 
 	tests := map[string]struct {
 		image string
@@ -759,7 +760,7 @@ func TestEngineRenderFn_StaleRenderImageHint(t *testing.T) {
 		},
 		"StaleLocalBinaryGetsHint": {
 			image:       "",
-			renderErr:   errors.New("crossplane: error: unexpected argument internal"),
+			renderErr:   errors.Errorf("crossplane: error: unexpected argument internal: %w", render.ErrStaleRenderBackend),
 			wantHintFor: MinCrossplaneRenderVersion,
 		},
 		// Narrowness matters more than coverage here: misattributing an ordinary
@@ -987,21 +988,5 @@ func TestEngineRenderFn_RunOwnsFunctionContainers(t *testing.T) {
 				t.Errorf("\n%s\nRender(...) modified the caller's Function annotations, -want, +got:\n%s", tt.reason, diff)
 			}
 		})
-	}
-}
-
-func TestClassifyRenderError(t *testing.T) {
-	stale := errors.Wrap(errors.New("crossplane: error: unexpected argument internal"), "cannot render")
-
-	if got := classifyRenderError(stale); !errors.Is(got, ErrStaleRenderBackend) || !errors.Is(got, stale) || got.Error() == "" {
-		t.Errorf("classifyRenderError(stale) = %v, want ErrStaleRenderBackend preserving the original", got)
-	}
-
-	if got := classifyRenderError(errors.New("boom")); errors.Is(got, ErrStaleRenderBackend) {
-		t.Errorf("classifyRenderError(unrelated) wrongly classified: %v", got)
-	}
-
-	if got := classifyRenderError(nil); got != nil {
-		t.Errorf("classifyRenderError(nil) = %v, want nil", got)
 	}
 }

@@ -22,7 +22,6 @@ import (
 	"maps"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
@@ -255,7 +254,7 @@ func (e *EngineRenderFn) Render(ctx context.Context, log logging.Logger, in Rend
 
 		// Augment, never replace: the hint rides along with the original
 		// failure (and everything it wraps) rather than standing in for it.
-		if hint := e.staleRenderBackendHint(classifyRenderError(renderErr)); hint != "" {
+		if hint := e.staleRenderBackendHint(renderErr); hint != "" {
 			outErr = errors.Errorf("%w; %s", outErr, hint)
 		}
 
@@ -364,34 +363,9 @@ func (e *EngineRenderFn) startFunctions(ctx context.Context, log logging.Logger,
 	return fnAddrs, nil
 }
 
-// errStaleRenderBackend is the kong usage error a crossplane CLI predating
-// v2.3.x emits when asked to run `crossplane internal render`: the `internal`
-// command did not exist, so it is rejected as a stray positional argument.
-//
-// Matching this phrase is deliberately narrow. It can only originate from a CLI
-// that does not know the `internal` verb, so it cannot be produced by a
-// composition, pipeline, or connectivity failure against a current backend — the
-// failures a misattributed hint would send a user chasing the wrong thing for.
-const staleRenderBackendSignature = "unexpected argument internal"
-
-// ErrStaleRenderBackend reports that the render backend predates `crossplane internal render`.
-var ErrStaleRenderBackend = errors.New("render backend predates `crossplane internal render`")
-
-// classifyRenderError wraps err with ErrStaleRenderBackend when it carries the stale-backend
-// signature. The upstream engine surfaces the backend's stderr only as message text, with no
-// typed error to match, so this is the single place the text is inspected; everything
-// downstream tests identity with errors.Is. The message of err is unchanged.
-func classifyRenderError(err error) error {
-	if err == nil || !strings.Contains(err.Error(), staleRenderBackendSignature) {
-		return err
-	}
-
-	return errors.Join(ErrStaleRenderBackend, err)
-}
-
-// staleRenderBackendHint returns remediation text when err carries the signature
-// of a render backend older than `crossplane internal render`, or "" when it does
-// not.
+// staleRenderBackendHint returns remediation text when err is
+// render.ErrStaleRenderBackend, which the render engines report for a backend
+// older than `crossplane internal render`, or "" when it is not.
 //
 // This shape is otherwise a dead end for the user: a bare kong usage error naming
 // an argument they never passed, with nothing connecting it to a render image
@@ -399,7 +373,7 @@ func classifyRenderError(err error) error {
 // absent, so a locally cached :stable tag is frozen at whatever was first pulled
 // — for however long that machine lives.
 func (e *EngineRenderFn) staleRenderBackendHint(err error) string {
-	if !errors.Is(err, ErrStaleRenderBackend) {
+	if !errors.Is(err, render.ErrStaleRenderBackend) {
 		return ""
 	}
 

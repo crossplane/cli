@@ -25,6 +25,10 @@ import (
 	"k8s.io/kube-openapi/pkg/spec3"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+
+	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/config"
+	"github.com/crossplane/cli/v2/internal/schemas/generator"
 )
 
 // LoadRequiredSchemas loads OpenAPI v3 schema documents from a directory,
@@ -69,4 +73,16 @@ func LoadRequiredSchemas(fs afero.Fs, dir string) ([]spec3.OpenAPI, error) {
 	}
 
 	return schemas, nil
+}
+
+// ProjectSchemaGenerators returns the schema generators for a project,
+// restricted to the languages configured in its spec.schemas.languages.
+func ProjectSchemaGenerators(proj *devv1alpha1.Project, cfg *config.Config) []generator.Interface {
+	return generator.Filter(
+		generator.AllLanguages(
+			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+		),
+		proj.Spec.Schemas.GetLanguages(),
+	)
 }

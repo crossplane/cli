@@ -45,7 +45,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/functions"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/schemas/manager"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -362,10 +361,7 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 
 	// Built here rather than alongside the schema manager below so the
 	// dependency manager generates dependency schemas the same way.
-	generators := generator.AllLanguages(
-		generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-		generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
-	)
+	generators := render.ProjectSchemaGenerators(proj, cfg)
 
 	depMgr := dependency.NewManager(proj, projFS,
 		dependency.WithProjectFile(filepath.Base(projFilePath)),

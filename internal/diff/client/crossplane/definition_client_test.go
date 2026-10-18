@@ -1,0 +1,960 @@
+package crossplane
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	ucomposite "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+
+	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
+)
+
+var _ DefinitionClient = (*tu.MockDefinitionClient)(nil)
+
+var (
+	XRDv1GVK = schema.GroupVersionKind{Group: CrossplaneAPIExtGroup, Version: "v1", Kind: CompositeResourceDefinitionKind}
+	XRDv2GVK = schema.GroupVersionKind{Group: CrossplaneAPIExtGroup, Version: "v2", Kind: CompositeResourceDefinitionKind}
+)
+
+func TestDefaultDefinitionClient_GetXRDs(t *testing.T) {
+	ctx := t.Context()
+
+	// Create test XRDs
+	xrd1 := tu.NewResource("apiextensions.crossplane.io/v1", CompositeResourceDefinitionKind, "xrd1").
+		WithSpecField("group", "example.org").
+		WithSpecField("names", map[string]any{
+			"kind":     "XR1",
+			"plural":   "xr1s",
+			"singular": "xr1",
+		}).
+		Build()
+
+	xrd2 := tu.NewResource("apiextensions.crossplane.io/v1", CompositeResourceDefinitionKind, "xrd2").
+		WithSpecField("group", "example.org").
+		WithSpecField("names", map[string]any{
+			"kind":     "XR2",
+			"plural":   "xr2s",
+			"singular": "xr2",
+		}).
+		Build()
+
+	type fields struct {
+		xrds       []*un.Unstructured
+		xrdsLoaded bool
+		gvks       []schema.GroupVersionKind
+	}
+
+	tests := map[string]struct {
+		reason       string
+		mockResource tu.MockResourceClient
+		fields       fields
+		want         []*un.Unstructured
+		wantErr      bool
+		errSubstring string
+	}{
+		"NoXRDsFound": {
+			reason: "Should return empty slice when no XRDs exist",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithListResources(func(_ context.Context, gvk schema.GroupVersionKind, _ string) ([]*un.Unstructured, error) {
+					if gvk.Group == CrossplaneAPIExtGroup && gvk.Kind == CompositeResourceDefinitionKind {
+						return []*un.Unstructured{}, nil
+					}
+
+					return nil, errors.New("unexpected GVK")
+				}).
+				Build(),
+			fields: fields{
+				xrds:       nil,
+				xrdsLoaded: false,
+			},
+			want:    []*un.Unstructured{},
+			wantErr: false,
+		},
+		// TODO:  test for v1 and v2 xrds
+		"XRDsExist": {
+			reason: "Should return all XRDs when they exist",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithListResources(func(_ context.Context, gvk schema.GroupVersionKind, _ string) ([]*un.Unstructured, error) {
+					if gvk.Group == CrossplaneAPIExtGroup && gvk.Kind == CompositeResourceDefinitionKind && gvk.Version == "v1" {
+						return []*un.Unstructured{xrd1, xrd2}, nil
+					}
+
+					return nil, errors.New("unexpected GVK")
+				}).
+				Build(),
+			fields: fields{
+				xrds:       nil,
+				xrdsLoaded: false,
+				gvks:       []schema.GroupVersionKind{XRDv1GVK},
+			},
+			want:    []*un.Unstructured{xrd1, xrd2},
+			wantErr: false,
+		},
+		"ListError": {
+			reason: "Should propagate errors from the Kubernetes API",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithListResourcesFailure("list error").
+				Build(),
+			fields: fields{
+				xrds:       nil,
+				xrdsLoaded: false,
+				gvks:       []schema.GroupVersionKind{XRDv1GVK},
+			},
+			want:         nil,
+			wantErr:      true,
+			errSubstring: "cannot list XRDs",
+		},
+		"UsesCache": {
+			reason: "Should use cached XRDs when already loaded",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				// This should never be called since cache is used
+				WithListResources(func(context.Context, schema.GroupVersionKind, string) ([]*un.Unstructured, error) {
+					t.Errorf("ListResources should not be called when cache is available")
+					return nil, errors.New("should not be called")
+				}).
+				Build(),
+			fields: fields{
+				xrds:       []*un.Unstructured{xrd1, xrd2},
+				xrdsLoaded: true,
+			},
+			want:    []*un.Unstructured{xrd1, xrd2},
+			wantErr: false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := &DefaultDefinitionClient{
+				resourceClient: &tt.mockResource,
+				logger:         tu.TestLogger(t, false),
+				xrds:           tt.fields.xrds,
+				xrdsLoaded:     tt.fields.xrdsLoaded,
+				gvks:           tt.fields.gvks,
+			}
+
+			got, err := c.GetXRDs(ctx)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("\n%s\nGetXRDs(): expected error but got none", tt.reason)
+					return
+				}
+
+				if tt.errSubstring != "" && !strings.Contains(err.Error(), tt.errSubstring) {
+					t.Errorf("\n%s\nGetXRDs(): expected error containing %q, got %q", tt.reason, tt.errSubstring, err.Error())
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Errorf("\n%s\nGetXRDs(): unexpected error: %v", tt.reason, err)
+				return
+			}
+
+			// Verify cache state
+			if !c.xrdsLoaded {
+				t.Errorf("\n%s\nGetXRDs(): cache not marked as loaded after call", tt.reason)
+			}
+
+			// Compare XRD count
+			if diff := cmp.Diff(len(tt.want), len(got)); diff != "" {
+				t.Errorf("\n%s\nGetXRDs(): -want count, +got count:\n%s", tt.reason, diff)
+			}
+
+			// Check if all expected XRDs are present by name
+			wantNames := make(map[string]bool)
+			gotNames := make(map[string]bool)
+
+			for _, xrd := range tt.want {
+				wantNames[xrd.GetName()] = true
+			}
+
+			for _, xrd := range got {
+				gotNames[xrd.GetName()] = true
+			}
+
+			// Check missing XRDs
+			for name := range wantNames {
+				if !gotNames[name] {
+					t.Errorf("\n%s\nGetXRDs(): missing expected XRD with name %s", tt.reason, name)
+				}
+			}
+
+			// Check unexpected XRDs
+			for name := range gotNames {
+				if !wantNames[name] {
+					t.Errorf("\n%s\nGetXRDs(): unexpected XRD with name %s", tt.reason, name)
+				}
+			}
+		})
+	}
+}
+
+func TestDefaultDefinitionClient_GetXRDForClaim(t *testing.T) {
+	ctx := t.Context()
+
+	// Create test XRDs
+	xrdWithClaimKind := tu.NewResource("apiextensions.crossplane.io/v1", CompositeResourceDefinitionKind, "xrd-with-claim").
+		WithSpecField("group", "example.org").
+		WithSpecField("names", map[string]any{
+			"kind":     "XExampleResource",
+			"plural":   "xexampleresources",
+			"singular": "xexampleresource",
+		}).
+		WithSpecField("claimNames", map[string]any{
+			"kind":     "ExampleClaim",
+			"plural":   "exampleclaims",
+			"singular": "exampleclaim",
+		}).
+		Build()
+
+	xrdWithoutClaimKind := tu.NewResource("apiextensions.crossplane.io/v1", CompositeResourceDefinitionKind, "xrd-without-claim").
+		WithSpecField("group", "example.org").
+		WithSpecField("names", map[string]any{
+			"kind":     "XOtherResource",
+			"plural":   "xotherresources",
+			"singular": "xotherresource",
+		}).
+		// No claimNames field
+		Build()
+
+	type args struct {
+		gvk schema.GroupVersionKind
+	}
+
+	tests := map[string]struct {
+		reason            string
+		mockResource      tu.MockResourceClient
+		cachedXRDs        []*un.Unstructured
+		discoveredXRDGVKs []schema.GroupVersionKind
+		args              args
+		want              *un.Unstructured
+		wantErr           bool
+		errSubstring      string
+	}{
+		"MatchingClaimFound": {
+			reason: "Should return the XRD that defines the claim kind",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs:        []*un.Unstructured{xrdWithClaimKind, xrdWithoutClaimKind},
+			discoveredXRDGVKs: []schema.GroupVersionKind{XRDv1GVK},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v1",
+					Kind:    "ExampleClaim",
+				},
+			},
+			want:    xrdWithClaimKind,
+			wantErr: false,
+		},
+		"NoMatchingClaim": {
+			reason: "Should return error when no XRD defines the claim kind",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs: []*un.Unstructured{xrdWithoutClaimKind},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v1",
+					Kind:    "ExampleClaim",
+				},
+			},
+			want:         nil,
+			wantErr:      true,
+			errSubstring: "no XRD found that defines claim type",
+		},
+		"GetXRDsError": {
+			reason: "Should propagate error from GetXRDs",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithListResourcesFailure("list error").
+				Build(),
+			discoveredXRDGVKs: []schema.GroupVersionKind{XRDv1GVK},
+			cachedXRDs:        nil, // Force GetXRDs to be called
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v1",
+					Kind:    "ExampleClaim",
+				},
+			},
+			want:         nil,
+			wantErr:      true,
+			errSubstring: "cannot get XRDs",
+		},
+		"DifferentGroup": {
+			reason: "Should not match XRD with different group",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs: []*un.Unstructured{xrdWithClaimKind},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "different.org", // Different group
+					Version: "v1",
+					Kind:    "ExampleClaim", // Same kind
+				},
+			},
+			want:         nil,
+			wantErr:      true,
+			errSubstring: "no XRD found that defines claim type",
+		},
+		"DifferentKind": {
+			reason: "Should not match XRD with different claim kind",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs: []*un.Unstructured{xrdWithClaimKind},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org", // Same group
+					Version: "v1",
+					Kind:    "DifferentClaim", // Different kind
+				},
+			},
+			want:         nil,
+			wantErr:      true,
+			errSubstring: "no XRD found that defines claim type",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := &DefaultDefinitionClient{
+				resourceClient: &tt.mockResource,
+				logger:         tu.TestLogger(t, false),
+				xrds:           tt.cachedXRDs,
+				xrdsLoaded:     tt.cachedXRDs != nil, // Only mark as loaded if we have cached XRDs
+				gvks:           tt.discoveredXRDGVKs,
+			}
+
+			got, err := c.GetXRDForClaim(ctx, tt.args.gvk)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("\n%s\nGetXRDForClaim(): expected error but got none", tt.reason)
+					return
+				}
+
+				if tt.errSubstring != "" && !strings.Contains(err.Error(), tt.errSubstring) {
+					t.Errorf("\n%s\nGetXRDForClaim(): expected error containing %q, got %q", tt.reason, tt.errSubstring, err.Error())
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Errorf("\n%s\nGetXRDForClaim(): unexpected error: %v", tt.reason, err)
+				return
+			}
+
+			if diff := cmp.Diff(tt.want.GetName(), got.GetName()); diff != "" {
+				t.Errorf("\n%s\nGetXRDForClaim(): -want name, +got name:\n%s", tt.reason, diff)
+			}
+
+			// Verify it's the right XRD by checking the claim kind
+			claimNames, found, _ := un.NestedMap(got.Object, "spec", "claimNames")
+			if !found {
+				t.Errorf("\n%s\nGetXRDForClaim(): returned XRD missing spec.claimNames", tt.reason)
+				return
+			}
+
+			claimKind, found, _ := un.NestedString(claimNames, "kind")
+			if !found || claimKind != tt.args.gvk.Kind {
+				t.Errorf("\n%s\nGetXRDForClaim(): returned XRD has wrong claim kind, want %s, got %s",
+					tt.reason, tt.args.gvk.Kind, claimKind)
+			}
+		})
+	}
+}
+
+func TestDefaultDefinitionClient_GetXRDForXR(t *testing.T) {
+	ctx := t.Context()
+
+	// Create test XRDs
+	xrdForXR1 := tu.NewResource("apiextensions.crossplane.io/v1", CompositeResourceDefinitionKind, "xrd-for-xr1").
+		WithSpecField("group", "example.org").
+		WithSpecField("names", map[string]any{
+			"kind":     "XR1",
+			"plural":   "xr1s",
+			"singular": "xr1",
+		}).
+		WithSpecField("versions", []any{
+			map[string]any{
+				"name":    "v1",
+				"served":  true,
+				"storage": true,
+			},
+			map[string]any{
+				"name":    "v2",
+				"served":  true,
+				"storage": false,
+			},
+		}).
+		Build()
+
+	xrdForXR2 := tu.NewResource("apiextensions.crossplane.io/v1", CompositeResourceDefinitionKind, "xrd-for-xr2").
+		WithSpecField("group", "example.org").
+		WithSpecField("names", map[string]any{
+			"kind":     "XR2",
+			"plural":   "xr2s",
+			"singular": "xr2",
+		}).
+		WithSpecField("versions", []any{
+			map[string]any{
+				"name":    "v1alpha1",
+				"served":  true,
+				"storage": true,
+			},
+		}).
+		Build()
+
+	type args struct {
+		gvk schema.GroupVersionKind
+	}
+
+	tests := map[string]struct {
+		reason            string
+		mockResource      tu.MockResourceClient
+		cachedXRDs        []*un.Unstructured
+		discoveredXRDGVKs []schema.GroupVersionKind
+		args              args
+		want              *un.Unstructured
+		wantErr           bool
+		errSubstring      string
+	}{
+		"MatchingXRFound": {
+			reason: "Should return the XRD that defines the XR kind",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs: []*un.Unstructured{xrdForXR1, xrdForXR2},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v1",
+					Kind:    "XR1",
+				},
+			},
+			want:    xrdForXR1,
+			wantErr: false,
+		},
+		"MatchingXRWithDifferentVersion": {
+			reason: "Should return the XRD that defines the XR kind with matching version",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs: []*un.Unstructured{xrdForXR1, xrdForXR2},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v2", // Using v2 version
+					Kind:    "XR1",
+				},
+			},
+			want:    xrdForXR1,
+			wantErr: false,
+		},
+		"NoMatchingXR": {
+			reason: "Should return error when no XRD defines the XR kind",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs: []*un.Unstructured{xrdForXR1, xrdForXR2},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v1",
+					Kind:    "NonExistentXR", // No XRD defines this
+				},
+			},
+			want:         nil,
+			wantErr:      true,
+			errSubstring: "no XRD found that defines XR type",
+		},
+		"GetXRDsError": {
+			reason: "Should propagate error from GetXRDs",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithListResourcesFailure("list error").
+				Build(),
+			cachedXRDs:        nil, // Force GetXRDs to be called
+			discoveredXRDGVKs: []schema.GroupVersionKind{XRDv1GVK},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v1",
+					Kind:    "XR1",
+				},
+			},
+			want:         nil,
+			wantErr:      true,
+			errSubstring: "cannot get XRDs",
+		},
+		"DifferentGroup": {
+			reason: "Should not match XRD with different group",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs: []*un.Unstructured{xrdForXR1},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "different.org", // Different group
+					Version: "v1",
+					Kind:    "XR1", // Same kind
+				},
+			},
+			want:         nil,
+			wantErr:      true,
+			errSubstring: "no XRD found that defines XR type",
+		},
+		"VersionNotFound": {
+			reason: "Should not match XRD if version doesn't exist",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs: []*un.Unstructured{xrdForXR1},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v3", // Version doesn't exist in XRD
+					Kind:    "XR1",
+				},
+			},
+			want:         nil,
+			wantErr:      true,
+			errSubstring: "no XRD found that defines XR type",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := &DefaultDefinitionClient{
+				resourceClient: &tt.mockResource,
+				logger:         tu.TestLogger(t, false),
+				xrds:           tt.cachedXRDs,
+				xrdsLoaded:     tt.cachedXRDs != nil, // Only mark as loaded if we have cached XRDs
+				gvks:           tt.discoveredXRDGVKs,
+			}
+
+			got, err := c.GetXRDForXR(ctx, tt.args.gvk)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("\n%s\nGetXRDForXR(): expected error but got none", tt.reason)
+					return
+				}
+
+				if tt.errSubstring != "" && !strings.Contains(err.Error(), tt.errSubstring) {
+					t.Errorf("\n%s\nGetXRDForXR(): expected error containing %q, got %q", tt.reason, tt.errSubstring, err.Error())
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Errorf("\n%s\nGetXRDForXR(): unexpected error: %v", tt.reason, err)
+				return
+			}
+
+			if diff := cmp.Diff(tt.want.GetName(), got.GetName()); diff != "" {
+				t.Errorf("\n%s\nGetXRDForXR(): -want name, +got name:\n%s", tt.reason, diff)
+			}
+
+			// Verify it's the right XRD by checking the XR kind
+			xrKind, found, _ := un.NestedString(got.Object, "spec", "names", "kind")
+			if !found || xrKind != tt.args.gvk.Kind {
+				t.Errorf("\n%s\nGetXRDForXR(): returned XRD has wrong XR kind, want %s, got %s",
+					tt.reason, tt.args.gvk.Kind, xrKind)
+			}
+		})
+	}
+}
+
+func TestDefaultDefinitionClient_Initialize(t *testing.T) {
+	ctx := t.Context()
+
+	tests := map[string]struct {
+		reason       string
+		mockResource tu.MockResourceClient
+		wantErr      bool
+	}{
+		"SuccessfulInitialization": {
+			reason: "Should successfully initialize the client",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithFoundGVKs([]schema.GroupVersionKind{XRDv1GVK}).
+				WithEmptyListResources().
+				Build(),
+			wantErr: false,
+		},
+		"GetXRDsError": {
+			reason: "Should return error when getting XRDs fails",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithListResourcesFailure("list error").
+				Build(),
+			wantErr: true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := &DefaultDefinitionClient{
+				resourceClient: &tt.mockResource,
+				logger:         tu.TestLogger(t, false),
+			}
+
+			err := c.Initialize(ctx)
+
+			if tt.wantErr && err == nil {
+				t.Errorf("\n%s\nInitialize(): expected error but got none", tt.reason)
+			} else if !tt.wantErr && err != nil {
+				t.Errorf("\n%s\nInitialize(): unexpected error: %v", tt.reason, err)
+			}
+
+			// If we succeeded, verify that XRDs are now loaded
+			if !tt.wantErr {
+				if !c.xrdsLoaded {
+					t.Errorf("\n%s\nInitialize(): XRDs not marked as loaded after successful initialization", tt.reason)
+				}
+			}
+		})
+	}
+}
+
+func TestDefaultDefinitionClient_IsClaimResource(t *testing.T) {
+	ctx := t.Context()
+
+	tests := map[string]struct {
+		reason       string
+		mockResource tu.MockResourceClient
+		cachedXRDs   []*un.Unstructured
+		resource     *un.Unstructured
+		expected     bool
+	}{
+		"ResourceIsClaim": {
+			reason: "Should return true when resource is a claim type",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs: []*un.Unstructured{
+				// Create a mock XRD that defines this as a claim
+				tu.NewResource("apiextensions.crossplane.io/v1", "CompositeResourceDefinition", "testclaims.example.org").
+					WithSpecField("group", "example.org").
+					WithSpecField("names", map[string]any{
+						"kind":     "XTestResource",
+						"plural":   "xtestresources",
+						"singular": "xtestresource",
+					}).
+					WithSpecField("claimNames", map[string]any{
+						"kind":     "TestClaim",
+						"plural":   "testclaims",
+						"singular": "testclaim",
+					}).
+					Build(),
+			},
+			resource: tu.NewResource("example.org/v1", "TestClaim", "test-claim").
+				InNamespace("default").
+				Build(),
+			expected: true,
+		},
+		"ResourceIsNotClaim": {
+			reason: "Should return false when resource is not a claim type",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs: []*un.Unstructured{
+				// Create a mock XRD that defines this as an XR (no claimNames)
+				tu.NewResource("apiextensions.crossplane.io/v1", "CompositeResourceDefinition", "testxrs.example.org").
+					WithSpecField("group", "example.org").
+					WithSpecField("names", map[string]any{
+						"kind":     "TestXR",
+						"plural":   "testxrs",
+						"singular": "testxr",
+					}).
+					// No claimNames field
+					Build(),
+			},
+			resource: tu.NewResource("example.org/v1", "TestXR", "test-xr").
+				InNamespace("default").
+				Build(),
+			expected: false,
+		},
+		"GetXRDForClaimError": {
+			reason: "Should return false when GetXRDForClaim fails",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithListResourcesFailure("list error").
+				Build(),
+			cachedXRDs: nil, // Force GetXRDs to fail
+			resource: tu.NewResource("example.org/v1", "TestResource", "test-resource").
+				Build(),
+			expected: false, // Should return false on error
+		},
+		"NoMatchingXRD": {
+			reason: "Should return false when no matching XRD exists",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs: []*un.Unstructured{
+				// Create an XRD that doesn't match our resource
+				tu.NewResource("apiextensions.crossplane.io/v1", "CompositeResourceDefinition", "otherclaims.example.org").
+					WithSpecField("group", "example.org").
+					WithSpecField("names", map[string]any{
+						"kind":     "XOtherResource",
+						"plural":   "xotherresources",
+						"singular": "xotherresource",
+					}).
+					WithSpecField("claimNames", map[string]any{
+						"kind":     "OtherClaim",
+						"plural":   "otherclaims",
+						"singular": "otherclaim",
+					}).
+					Build(),
+			},
+			resource: tu.NewResource("example.org/v1", "TestClaim", "test-claim").
+				Build(),
+			expected: false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := &DefaultDefinitionClient{
+				resourceClient: &tt.mockResource,
+				logger:         tu.TestLogger(t, false),
+				xrds:           tt.cachedXRDs,
+				xrdsLoaded:     tt.cachedXRDs != nil, // Only mark as loaded if we have cached XRDs
+			}
+
+			// Call the function under test
+			result := c.IsClaimResource(ctx, tt.resource)
+
+			// Check the result
+			if result != tt.expected {
+				t.Errorf("\n%s\nIsClaimResource() = %v, want %v", tt.reason, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestDefaultDefinitionClient_GetCompositeSchema(t *testing.T) {
+	ctx := t.Context()
+
+	// v1 XRD: defines an XR (no claimNames here for simplicity).
+	xrdV1 := tu.NewResource("apiextensions.crossplane.io/v1", CompositeResourceDefinitionKind, "xrd-v1").
+		WithSpecField("group", "example.org").
+		WithSpecField("names", map[string]any{
+			"kind":     "XLegacyResource",
+			"plural":   "xlegacyresources",
+			"singular": "xlegacyresource",
+		}).
+		WithSpecField("versions", []any{
+			map[string]any{"name": "v1alpha1"},
+		}).
+		Build()
+
+	// v2 XRD: declares a non-legacy scope so the scope-based detector
+	// returns SchemaModern. (A v2 XRD without scope, or with
+	// scope=LegacyCluster, would correctly resolve as SchemaLegacy — see
+	// the V2XRD_LegacyScope_LegacySchema case below.)
+	xrdV2 := tu.NewResource("apiextensions.crossplane.io/v2", CompositeResourceDefinitionKind, "xrd-v2").
+		WithSpecField("group", "example.org").
+		WithSpecField("names", map[string]any{
+			"kind":     "XModernResource",
+			"plural":   "xmodernresources",
+			"singular": "xmodernresource",
+		}).
+		WithSpecField("scope", "Cluster").
+		WithSpecField("versions", []any{
+			map[string]any{"name": "v1alpha1"},
+		}).
+		Build()
+
+	// v2 XRD whose scope is "LegacyCluster". This shape can occur in real
+	// clusters when a user-posted v1 XRD round-trips through the apiserver's
+	// conversion to v2 storage form: the converted v2 object preserves
+	// scope="LegacyCluster" verbatim. Our scope-based detector should treat
+	// this as Legacy regardless of the apiVersion stamp.
+	xrdV2LegacyScope := tu.NewResource("apiextensions.crossplane.io/v2", CompositeResourceDefinitionKind, "xrd-v2-legacy-scope").
+		WithSpecField("group", "example.org").
+		WithSpecField("names", map[string]any{
+			"kind":     "XLegacyScopedResource",
+			"plural":   "xlegacyscopedresources",
+			"singular": "xlegacyscopedresource",
+		}).
+		WithSpecField("scope", "LegacyCluster").
+		WithSpecField("versions", []any{
+			map[string]any{"name": "v1alpha1"},
+		}).
+		Build()
+
+	// v1 XRD that also publishes a claim. Used to verify the helper resolves
+	// via the claim path when given a claim GVK (the XR/claim distinction is
+	// a Crossplane CompositeResourceDefinition feature, not a Go type — the
+	// claim kind here is just the user-supplied "ClaimedResource" below).
+	xrdV1WithClaim := tu.NewResource("apiextensions.crossplane.io/v1", CompositeResourceDefinitionKind, "xrd-v1-with-claim").
+		WithSpecField("group", "example.org").
+		WithSpecField("names", map[string]any{
+			"kind":     "XClaimedResource",
+			"plural":   "xclaimedresources",
+			"singular": "xclaimedresource",
+		}).
+		WithSpecField("claimNames", map[string]any{
+			"kind":     "ClaimedResource",
+			"plural":   "claimedresources",
+			"singular": "claimedresource",
+		}).
+		WithSpecField("versions", []any{
+			map[string]any{"name": "v1alpha1"},
+		}).
+		Build()
+
+	type args struct {
+		gvk schema.GroupVersionKind
+	}
+
+	tests := map[string]struct {
+		reason            string
+		mockResource      tu.MockResourceClient
+		cachedXRDs        []*un.Unstructured
+		discoveredXRDGVKs []schema.GroupVersionKind
+		args              args
+		want              ucomposite.Schema
+		wantErr           bool
+		errSubstring      string
+	}{
+		"V1XRD_LegacySchema": {
+			reason: "Should return SchemaLegacy for an XR defined by a v1 XRD",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs:        []*un.Unstructured{xrdV1},
+			discoveredXRDGVKs: []schema.GroupVersionKind{XRDv1GVK},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v1alpha1",
+					Kind:    "XLegacyResource",
+				},
+			},
+			want: ucomposite.SchemaLegacy,
+		},
+		"V2XRD_ModernSchema": {
+			reason: "Should return SchemaModern for a v2 XRD with non-legacy scope",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs:        []*un.Unstructured{xrdV2},
+			discoveredXRDGVKs: []schema.GroupVersionKind{XRDv2GVK},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v1alpha1",
+					Kind:    "XModernResource",
+				},
+			},
+			want: ucomposite.SchemaModern,
+		},
+		"V2XRD_LegacyScope_LegacySchema": {
+			reason: "Should return SchemaLegacy when a v2-form XRD's scope is LegacyCluster (e.g. v1 XRD round-tripped through conversion)",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs:        []*un.Unstructured{xrdV2LegacyScope},
+			discoveredXRDGVKs: []schema.GroupVersionKind{XRDv2GVK},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v1alpha1",
+					Kind:    "XLegacyScopedResource",
+				},
+			},
+			want: ucomposite.SchemaLegacy,
+		},
+		"ClaimGVK_ResolvesViaClaimPath": {
+			reason: "Should return the schema of the XRD that publishes a claim, given the claim GVK",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs:        []*un.Unstructured{xrdV1WithClaim},
+			discoveredXRDGVKs: []schema.GroupVersionKind{XRDv1GVK},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v1alpha1",
+					Kind:    "ClaimedResource", // claim kind, not XR kind
+				},
+			},
+			want: ucomposite.SchemaLegacy,
+		},
+		"NoXRDFound_Error": {
+			reason: "Should return an error when no XRD defines the GVK",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				Build(),
+			cachedXRDs:        []*un.Unstructured{xrdV2}, // only v2 XRD known
+			discoveredXRDGVKs: []schema.GroupVersionKind{XRDv2GVK},
+			args: args{
+				gvk: schema.GroupVersionKind{
+					Group:   "example.org",
+					Version: "v1alpha1",
+					Kind:    "Unknown",
+				},
+			},
+			wantErr:      true,
+			errSubstring: "no XRD",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := &DefaultDefinitionClient{
+				resourceClient: &tt.mockResource,
+				logger:         tu.TestLogger(t, false),
+				xrds:           tt.cachedXRDs,
+				xrdsLoaded:     tt.cachedXRDs != nil,
+				gvks:           tt.discoveredXRDGVKs,
+			}
+
+			got, err := c.GetCompositeSchema(ctx, tt.args.gvk)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("\n%s\nGetCompositeSchema(): expected error but got none", tt.reason)
+					return
+				}
+
+				if tt.errSubstring != "" && !strings.Contains(err.Error(), tt.errSubstring) {
+					t.Errorf("\n%s\nGetCompositeSchema(): expected error containing %q, got %q", tt.reason, tt.errSubstring, err.Error())
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Errorf("\n%s\nGetCompositeSchema(): unexpected error: %v", tt.reason, err)
+				return
+			}
+
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("\n%s\nGetCompositeSchema(): -want, +got:\n%s", tt.reason, diff)
+			}
+		})
+	}
+}

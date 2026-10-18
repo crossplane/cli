@@ -18,6 +18,7 @@ package render
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -81,6 +82,8 @@ func TestDockerRenderEngineRender(t *testing.T) {
 		wantErr              bool
 		wantInErr            []string
 		wantSingleOccurrence []string
+		wantIs               error
+		wantNotIs            error
 	}
 
 	cases := map[string]struct {
@@ -154,6 +157,25 @@ func TestDockerRenderEngineRender(t *testing.T) {
 					"container exited with status 1",
 				},
 				wantSingleOccurrence: []string{"the container is sad"},
+				wantNotIs:            ErrStaleRenderBackend,
+			},
+		},
+		"StaleRenderBackend": {
+			reason: "A backend that lacks `internal render` is reported as ErrStaleRenderBackend, matchable through further wrapping, with the stderr message unchanged.",
+			args: args{
+				runFn: func(_ context.Context, _ string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
+					return nil, []byte("crossplane: error: unexpected argument internal"), &docker.ContainerExitError{
+						ExitCode: 80,
+						Stderr:   []byte("crossplane: error: unexpected argument internal"),
+					}
+				},
+			},
+			want: want{
+				wantErr: true,
+				wantInErr: []string{
+					"crossplane internal render in Docker returned error with output: crossplane: error: unexpected argument internal",
+				},
+				wantIs: ErrStaleRenderBackend,
 			},
 		},
 		"HardFailNonExitError": {
@@ -209,6 +231,15 @@ func TestDockerRenderEngineRender(t *testing.T) {
 				if got := strings.Count(err.Error(), s); got != 1 {
 					t.Errorf("\n%s\nRender(...): error %q contains %q %d times, want exactly 1 (double-formatting bug?)", tc.reason, err.Error(), s, got)
 				}
+			}
+
+			// Wrap once more to check the sentinel survives callers' wrapping.
+			wrapped := fmt.Errorf("caller: %w", err)
+			if tc.want.wantIs != nil && !errors.Is(wrapped, tc.want.wantIs) {
+				t.Errorf("\n%s\nRender(...): errors.Is(%q, %v) = false, want true", tc.reason, err, tc.want.wantIs)
+			}
+			if tc.want.wantNotIs != nil && errors.Is(wrapped, tc.want.wantNotIs) {
+				t.Errorf("\n%s\nRender(...): errors.Is(%q, %v) = true, want false", tc.reason, err, tc.want.wantNotIs)
 			}
 
 			if diff := cmp.Diff(tc.want.rsp, rsp, protocmp.Transform()); diff != "" {

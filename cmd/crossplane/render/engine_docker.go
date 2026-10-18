@@ -200,7 +200,7 @@ func (e *dockerRenderEngine) Render(ctx context.Context, req *renderv1alpha1.Ren
 			}
 			return rsp, errors.Errorf("crossplane internal render in Docker: pipeline returned fatal: %s", exitErr.Stderr)
 		}
-		return nil, errors.Wrapf(err, "crossplane internal render in Docker returned error with output: %s", stderr)
+		return nil, classifyRenderError(errors.Wrapf(err, "crossplane internal render in Docker returned error with output: %s", stderr), stderr)
 	}
 
 	rsp := &renderv1alpha1.RenderResponse{}

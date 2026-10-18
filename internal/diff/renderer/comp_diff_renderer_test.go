@@ -1,0 +1,1424 @@
+package renderer
+
+import (
+	"bytes"
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+
+	gcmp "github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
+)
+
+// testCompDiffFixture defines a reusable test case with input and expected output.
+type testCompDiffFixture struct {
+	name     string
+	output   *CompDiffOutput
+	minimize bool
+	validate func(t *testing.T, format OutputFormat, result string)
+}
+
+// bothViews returns a ResourceViews whose Raw and Clean both point at obj. Test
+// fixtures use it when the object has no ignorable / server-side fields, so the
+// cleaned view equals the raw one.
+func bothViews(obj *un.Unstructured) dt.ResourceViews {
+	return dt.ResourceViews{Raw: obj, Clean: obj}
+}
+
+// sharedCompDiffFixtures returns test fixtures that should be run through both JSON and YAML renderers.
+func sharedCompDiffFixtures() []testCompDiffFixture {
+	return []testCompDiffFixture{
+		{
+			name:   "EmptyCompositions",
+			output: &CompDiffOutput{Compositions: []CompositionDiff{}},
+			validate: func(t *testing.T, format OutputFormat, result string) {
+				t.Helper()
+
+				if format == OutputFormatJSON {
+					var parsed compDiffWire
+					if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+						t.Fatalf("Failed to parse JSON: %v", err)
+					}
+
+					if len(parsed.Compositions) != 0 {
+						t.Errorf("Expected 0 compositions, got %d", len(parsed.Compositions))
+					}
+				} else if !strings.Contains(result, "compositions:") {
+					t.Error("Expected YAML to contain 'compositions:'")
+				}
+			},
+		},
+		{
+			name: "WithChanges",
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name: "test-comp",
+					CompositionDiff: &dt.ResourceDiff{
+						DiffType:     dt.DiffTypeAdded,
+						ResourceName: "test-comp",
+						Gvk:          schema.GroupVersionKind{Group: "apiextensions.crossplane.io", Version: "v1", Kind: "Composition"},
+						Desired:      bothViews(&un.Unstructured{Object: map[string]any{"apiVersion": "apiextensions.crossplane.io/v1", "kind": "Composition"}}),
+					},
+					AffectedResources: AffectedResourcesSummary{Total: 2, WithChanges: 1, Unchanged: 1},
+					ImpactAnalysis: []XRImpact{
+						{ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XResource", Name: "xr-1"}, Status: XRStatusChanged},
+						{ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XResource", Name: "xr-2"}, Status: XRStatusUnchanged},
+					},
+				}},
+			},
+			validate: func(t *testing.T, format OutputFormat, result string) {
+				t.Helper()
+
+				if format == OutputFormatJSON {
+					var parsed compDiffWire
+					if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+						t.Fatalf("Failed to parse JSON: %v", err)
+					}
+
+					if len(parsed.Compositions) != 1 {
+						t.Fatalf("Expected 1 composition, got %d", len(parsed.Compositions))
+					}
+
+					if parsed.Compositions[0].Name != "test-comp" {
+						t.Errorf("Expected name 'test-comp', got '%s'", parsed.Compositions[0].Name)
+					}
+
+					if parsed.Compositions[0].AffectedResources.Total != 2 {
+						t.Errorf("Expected total 2, got %d", parsed.Compositions[0].AffectedResources.Total)
+					}
+
+					// Verify compositionChanges is present in JSON
+					if parsed.Compositions[0].CompositionChanges == nil {
+						t.Error("Expected compositionChanges to be present")
+					}
+
+					// Verify embedded ObjectReference fields are at top level (not nested)
+					// This tests that json:",inline" works correctly
+					var rawParsed map[string]any
+					if err := json.Unmarshal([]byte(result), &rawParsed); err != nil {
+						t.Fatalf("Failed to parse raw JSON: %v", err)
+					}
+
+					comps, ok := rawParsed["compositions"].([]any)
+					if !ok {
+						t.Fatalf("Expected 'compositions' to be array, got %T", rawParsed["compositions"])
+					}
+
+					comp, ok := comps[0].(map[string]any)
+					if !ok {
+						t.Fatalf("Expected compositions[0] to be object, got %T", comps[0])
+					}
+
+					impacts, ok := comp["impactAnalysis"].([]any)
+					if !ok {
+						t.Fatalf("Expected 'impactAnalysis' to be array, got %T", comp["impactAnalysis"])
+					}
+
+					impact, ok := impacts[0].(map[string]any)
+					if !ok {
+						t.Fatalf("Expected impacts[0] to be object, got %T", impacts[0])
+					}
+
+					// Verify apiVersion, kind, name are top-level keys (not nested under "objectReference")
+					if _, ok := impact["apiVersion"]; !ok {
+						t.Error("Expected 'apiVersion' to be a top-level field in xrImpactWire (embedded from ObjectReference)")
+					}
+
+					if _, ok := impact["kind"]; !ok {
+						t.Error("Expected 'kind' to be a top-level field in xrImpactWire (embedded from ObjectReference)")
+					}
+
+					if _, ok := impact["name"]; !ok {
+						t.Error("Expected 'name' to be a top-level field in xrImpactWire (embedded from ObjectReference)")
+					}
+
+					// ObjectReference should NOT be nested
+					if _, ok := impact["objectReference"]; ok {
+						t.Error("ObjectReference should be inlined, not a nested field")
+					}
+				} else {
+					if !strings.Contains(result, "compositions:") {
+						t.Error("Expected YAML to contain 'compositions:'")
+					}
+
+					if !strings.Contains(result, "name: test-comp") {
+						t.Error("Expected YAML to contain 'name: test-comp'")
+					}
+				}
+			},
+		},
+		{
+			// MinimizeComposition is a human-output affordance only: structured
+			// (JSON/YAML) output must always retain full compositionChanges.
+			name:     "MinimizeKeepsStructuredFidelity",
+			minimize: true,
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name: "test-comp",
+					CompositionDiff: &dt.ResourceDiff{
+						DiffType:     dt.DiffTypeModified,
+						ResourceName: "test-comp",
+						Gvk:          schema.GroupVersionKind{Group: "apiextensions.crossplane.io", Version: "v1", Kind: "Composition"},
+						Current:      bothViews(&un.Unstructured{Object: map[string]any{"apiVersion": "apiextensions.crossplane.io/v1", "kind": "Composition"}}),
+						Desired:      bothViews(&un.Unstructured{Object: map[string]any{"apiVersion": "apiextensions.crossplane.io/v1", "kind": "Composition"}}),
+					},
+					AffectedResources: AffectedResourcesSummary{Total: 1, Unchanged: 1},
+					ImpactAnalysis:    []XRImpact{{ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XResource", Name: "xr-1"}, Status: XRStatusUnchanged}},
+				}},
+			},
+			validate: func(t *testing.T, format OutputFormat, result string) {
+				t.Helper()
+
+				if format == OutputFormatJSON {
+					var parsed compDiffWire
+					if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+						t.Fatalf("Failed to parse JSON: %v", err)
+					}
+
+					if parsed.Compositions[0].CompositionChanges == nil {
+						t.Error("expected compositionChanges preserved in structured output when minimized")
+					}
+
+					if len(parsed.Compositions[0].ImpactAnalysis) != 1 {
+						t.Errorf("expected impact analysis preserved, got %d", len(parsed.Compositions[0].ImpactAnalysis))
+					}
+				} else if !strings.Contains(result, "compositionChanges:") {
+					t.Error("expected YAML to retain 'compositionChanges:' when minimized")
+				}
+			},
+		},
+		{
+			// Issue #479: a composition that failed to process never completed the comparison, so nothing
+			// about its revision impact was determined. Serializing the zero value would put changeScope
+			// outside its "none"/"metadata"/"spec" enum and assert createsRevision: false about an apply
+			// the tool never evaluated. The object is omitted instead; a composition that *was* compared
+			// keeps it, including when the composites went unevaluated.
+			name: "FailedCompositionOmitsRevisionImpact",
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{
+					{
+						Name:                  "compared.example.org",
+						ImpactAnalysisSkipped: true,
+						RevisionImpact:        RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 1},
+						ImpactAnalysis:        []XRImpact{},
+					},
+					{
+						Name:           "broken.example.org",
+						Error:          &dt.OutputError{Message: "cannot calculate composition diff"},
+						ImpactAnalysis: []XRImpact{},
+					},
+				},
+			},
+			validate: func(t *testing.T, format OutputFormat, result string) {
+				t.Helper()
+
+				if format != OutputFormatJSON {
+					// YAML shares the JSON tags, so absence of the key is the whole assertion here.
+					if strings.Count(result, "revisionImpact:") != 1 {
+						t.Errorf("expected exactly one revisionImpact block in YAML, got:\n%s", result)
+					}
+
+					return
+				}
+
+				var parsed compDiffWire
+				if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+					t.Fatalf("Failed to parse JSON: %v", err)
+				}
+
+				if len(parsed.Compositions) != 2 {
+					t.Fatalf("expected 2 compositions, got %d", len(parsed.Compositions))
+				}
+
+				compared, broken := parsed.Compositions[0], parsed.Compositions[1]
+
+				want := &RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 1}
+				if diff := gcmp.Diff(want, compared.RevisionImpact); diff != "" {
+					t.Errorf("compared composition revisionImpact mismatch (-want +got):\n%s", diff)
+				}
+
+				if broken.RevisionImpact != nil {
+					t.Errorf("failed composition should omit revisionImpact, got %+v", *broken.RevisionImpact)
+				}
+			},
+		},
+	}
+}
+
+func TestStructuredCompDiffRenderer_RenderCompDiff(t *testing.T) {
+	formats := []OutputFormat{OutputFormatJSON, OutputFormatYAML}
+	fixtures := sharedCompDiffFixtures()
+
+	for _, format := range formats {
+		for _, fixture := range fixtures {
+			testName := string(format) + "/" + fixture.name
+			t.Run(testName, func(t *testing.T) {
+				logger := tu.TestLogger(t, false)
+
+				var buf bytes.Buffer
+
+				opts := DefaultDiffOptions()
+				opts.Format = format
+				opts.MinimizeComposition = fixture.minimize
+				opts.Stdout = &buf
+				opts.Stderr = &bytes.Buffer{} // discard stderr
+
+				renderer := NewStructuredCompDiffRenderer(logger, opts)
+
+				err := renderer.RenderCompDiff(fixture.output)
+				if err != nil {
+					t.Fatalf("RenderCompDiff() failed: %v", err)
+				}
+
+				fixture.validate(t, format, buf.String())
+			})
+		}
+	}
+}
+
+func TestDefaultCompDiffRenderer_RenderCompDiff(t *testing.T) {
+	tests := map[string]struct {
+		output   *CompDiffOutput
+		colorize bool
+		minimize bool
+		validate func(t *testing.T, result string)
+	}{
+		"EmptyCompositions": {
+			output:   &CompDiffOutput{Compositions: []CompositionDiff{}},
+			colorize: false,
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+
+				if result != "" {
+					t.Errorf("Expected empty output, got: %q", result)
+				}
+			},
+		},
+		"NoChangesComposition": {
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name:              "test-comp",
+					AffectedResources: AffectedResourcesSummary{Total: 1, Unchanged: 1},
+					ImpactAnalysis:    []XRImpact{{ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XResource", Name: "xr-1"}, Status: XRStatusUnchanged}},
+				}},
+			},
+			colorize: false,
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+
+				if !strings.Contains(result, "=== Composition Changes ===") {
+					t.Error("Expected composition changes header")
+				}
+
+				if !strings.Contains(result, "No changes detected in composition test-comp") {
+					t.Error("Expected no changes message")
+				}
+
+				if !strings.Contains(result, "=== Affected Composite Resources ===") {
+					t.Error("Expected affected resources header")
+				}
+			},
+		},
+		"FilteredByPolicy": {
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name:              "test-comp",
+					AffectedResources: AffectedResourcesSummary{FilteredByPolicy: 3},
+					ImpactAnalysis:    []XRImpact{},
+				}},
+			},
+			colorize: false,
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+
+				if !strings.Contains(result, "Manual update policy") {
+					t.Error("Expected Manual update policy message")
+				}
+			},
+		},
+		"FilteredBySelectorOnly": {
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name:              "test-comp",
+					AffectedResources: AffectedResourcesSummary{FilteredBySelector: 2},
+					ImpactAnalysis:    []XRImpact{},
+				}},
+			},
+			colorize: false,
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+
+				if !strings.Contains(result, "compositionRevisionSelector") {
+					t.Errorf("Expected compositionRevisionSelector message, got %q", result)
+				}
+			},
+		},
+		"FilteredByPolicyAndSelector": {
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name:              "test-comp",
+					AffectedResources: AffectedResourcesSummary{FilteredByPolicy: 1, FilteredBySelector: 2},
+					ImpactAnalysis:    []XRImpact{},
+				}},
+			},
+			colorize: false,
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+
+				if !strings.Contains(result, "Manual update policy") || !strings.Contains(result, "compositionRevisionSelector") {
+					t.Errorf("Expected both Manual-policy and selector messages, got %q", result)
+				}
+			},
+		},
+		"CompositionWithError": {
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name:  "error-comp",
+					Error: &dt.OutputError{Message: "failed to fetch composition from cluster"},
+					AffectedResources: AffectedResourcesSummary{
+						Total:       0,
+						WithChanges: 0,
+						Unchanged:   0,
+						WithErrors:  0,
+					},
+					ImpactAnalysis: []XRImpact{},
+				}},
+			},
+			colorize: false,
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+
+				// Should show the error message
+				if !strings.Contains(result, "Error processing composition error-comp") {
+					t.Error("Expected error processing message")
+				}
+
+				if !strings.Contains(result, "failed to fetch composition from cluster") {
+					t.Error("Expected error details")
+				}
+
+				// Should NOT show affected resources or impact analysis sections
+				if strings.Contains(result, "=== Affected Composite Resources ===") {
+					t.Error("Should not show affected resources header when composition has error")
+				}
+
+				if strings.Contains(result, "=== Impact Analysis ===") {
+					t.Error("Should not show impact analysis header when composition has error")
+				}
+			},
+		},
+		"MinimizeChangedComposition": {
+			// A changed composition collapses to a single marker line (no YAML body,
+			// no per-composition Summary footer), while the impact sections remain.
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name:              "test-comp",
+					CompositionDiff:   &dt.ResourceDiff{DiffType: dt.DiffTypeModified, ResourceName: "test-comp", Gvk: schema.GroupVersionKind{Group: "apiextensions.crossplane.io", Version: "v1", Kind: "Composition"}},
+					AffectedResources: AffectedResourcesSummary{Total: 1, Unchanged: 1},
+					ImpactAnalysis:    []XRImpact{{ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XResource", Name: "xr-1"}, Status: XRStatusUnchanged}},
+				}},
+			},
+			colorize: false,
+			minimize: true,
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+
+				if !strings.Contains(result, "=== Composition Changes ===") {
+					t.Errorf("expected composition changes header, got: %q", result)
+				}
+
+				if !strings.Contains(result, "~~~ Composition/test-comp (minimized)") {
+					t.Errorf("expected minimized marker line, got: %q", result)
+				}
+
+				if !strings.Contains(result, "=== Affected Composite Resources ===") {
+					t.Errorf("expected affected resources section, got: %q", result)
+				}
+
+				if !strings.Contains(result, "=== Impact Analysis ===") {
+					t.Errorf("expected impact analysis section, got: %q", result)
+				}
+
+				if strings.Contains(result, "Summary: 1 modified") {
+					t.Errorf("expected no composition Summary footer when minimized, got: %q", result)
+				}
+			},
+		},
+		// Issue #478: which composites would not adopt the resulting revision is settled locally, with no
+		// render, so a skipped impact analysis must still report it. What the skip withholds is the
+		// changed/unchanged/errored summary — that verdict needed the renders it did not run.
+		"SkippedAnalysisStillReportsFilteredComposites": {
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name:                  "test-comp",
+					ImpactAnalysisSkipped: true,
+					RevisionImpact:        RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 1},
+					AffectedResources:     AffectedResourcesSummary{Total: 3, FilteredByPolicy: 1, FilteredByDeletion: 1},
+					ImpactAnalysis:        []XRImpact{},
+				}},
+			},
+			colorize: false,
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+
+				for _, want := range []string{
+					"Impact analysis skipped",
+					"2 of 3 XR(s) using composition test-comp would not adopt this revision",
+					"1 with Manual update policy (use --include-manual to see them)",
+					"1 being deleted",
+				} {
+					if !strings.Contains(result, want) {
+						t.Errorf("expected %q in output, got:\n%s", want, result)
+					}
+				}
+
+				// The kept composites went unevaluated, so no per-status verdict may be printed for them.
+				for _, unwanted := range []string{"=== Affected Composite Resources ===", "=== Impact Analysis ==="} {
+					if strings.Contains(result, unwanted) {
+						t.Errorf("did not expect %q for a skipped composition, got:\n%s", unwanted, result)
+					}
+				}
+			},
+		},
+		// In --resource mode the filtered composites reach ImpactAnalysis, so the skip path names them
+		// individually with their reason and detail — the affordance issue #457 shipped, which the skip
+		// used to discard.
+		"SkippedAnalysisNamesFilteredCompositesInResourceMode": {
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name:                  "test-comp",
+					ImpactAnalysisSkipped: true,
+					RevisionImpact:        RevisionImpact{ChangeScope: "metadata", CreatesRevision: true},
+					AffectedResources:     AffectedResourcesSummary{Total: 1, FilteredByDeletion: 1},
+					ImpactAnalysis: []XRImpact{{
+						ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "my-deleting-xr", Namespace: "default"},
+						Status:          XRStatusFiltered,
+						FilterReason:    FilterReasonDeleting,
+						FilterDetail:    "deletionTimestamp: 2026-09-07T11:25:03Z",
+					}},
+				}},
+			},
+			colorize: false,
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+
+				for _, want := range []string{
+					"Impact analysis skipped",
+					"1 of 1 XR(s) using composition test-comp would not adopt this revision",
+					"XR/my-deleting-xr",
+					"filtered: being deleted (deletionTimestamp: 2026-09-07T11:25:03Z)",
+				} {
+					if !strings.Contains(result, want) {
+						t.Errorf("expected %q in output, got:\n%s", want, result)
+					}
+				}
+			},
+		},
+		// Nothing was filtered, so the skip note stands alone — no "0 of 0" line.
+		"SkippedAnalysisWithNothingFilteredSaysNoMore": {
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name:                  "test-comp",
+					ImpactAnalysisSkipped: true,
+					RevisionImpact:        RevisionImpact{ChangeScope: "none"},
+					AffectedResources:     AffectedResourcesSummary{Total: 2},
+					ImpactAnalysis:        []XRImpact{},
+				}},
+			},
+			colorize: false,
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+
+				if !strings.Contains(result, "Impact analysis skipped") {
+					t.Errorf("expected the skip note, got:\n%s", result)
+				}
+
+				if strings.Contains(result, "would not adopt this revision") {
+					t.Errorf("did not expect a filtered-composites line when nothing was filtered, got:\n%s", result)
+				}
+			},
+		},
+		"MinimizeErrorStillSurfaces": {
+			// A processing error must render in full even when minimized: only the
+			// diff body is collapsed, never the error.
+			output: &CompDiffOutput{
+				Compositions: []CompositionDiff{{
+					Name:           "error-comp",
+					Error:          &dt.OutputError{Message: "boom"},
+					ImpactAnalysis: []XRImpact{},
+				}},
+			},
+			colorize: false,
+			minimize: true,
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+
+				if !strings.Contains(result, "Error processing composition error-comp") {
+					t.Errorf("expected error to surface when minimized, got: %q", result)
+				}
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			logger := tu.TestLogger(t, false)
+
+			var buf bytes.Buffer
+
+			opts := DefaultDiffOptions()
+			opts.UseColors = tt.colorize
+			opts.MinimizeComposition = tt.minimize
+			opts.Stdout = &buf
+			opts.Stderr = &bytes.Buffer{} // discard stderr
+
+			diffRenderer := NewDiffRenderer(logger, opts)
+			renderer := NewDefaultCompDiffRenderer(logger, diffRenderer, opts)
+
+			err := renderer.RenderCompDiff(tt.output)
+			if err != nil {
+				t.Fatalf("RenderCompDiff() failed: %v", err)
+			}
+
+			tt.validate(t, buf.String())
+		})
+	}
+}
+
+// TestDefaultCompDiffRenderer_RenderCompDiff_TopLevelErrorsToStderr verifies that
+// top-level errors in CompDiffOutput.Errors are written to stderr (not stdout)
+// to follow Unix conventions.
+func TestDefaultCompDiffRenderer_RenderCompDiff_TopLevelErrorsToStderr(t *testing.T) {
+	output := &CompDiffOutput{
+		Compositions: []CompositionDiff{},
+		Errors: []dt.OutputError{
+			{ResourceID: "xbuckets.example.org", Message: "failed to list XRs for composition"},
+			{Message: "cluster connection lost"},
+		},
+	}
+
+	logger := tu.TestLogger(t, false)
+
+	var (
+		stdout bytes.Buffer
+		stderr bytes.Buffer
+	)
+
+	opts := DefaultDiffOptions()
+	opts.UseColors = false
+	opts.Stdout = &stdout
+	opts.Stderr = &stderr
+
+	diffRenderer := NewDiffRenderer(logger, opts)
+	renderer := NewDefaultCompDiffRenderer(logger, diffRenderer, opts)
+
+	if err := renderer.RenderCompDiff(output); err != nil {
+		t.Fatalf("RenderCompDiff() failed: %v", err)
+	}
+
+	stderrOut := stderr.String()
+	for _, e := range output.Errors {
+		if !strings.Contains(stderrOut, e.FormatError()) {
+			t.Errorf("Expected stderr to contain %q, got: %q", e.FormatError(), stderrOut)
+		}
+
+		// Verify errors were NOT written to stdout
+		if strings.Contains(stdout.String(), e.FormatError()) {
+			t.Errorf("Expected stdout to NOT contain error %q, got: %q", e.FormatError(), stdout.String())
+		}
+	}
+}
+
+// TestStructuredCompDiffRenderer_RenderCompDiff_TopLevelErrorsToStderr verifies that
+// top-level errors in CompDiffOutput.Errors are written to stderr in addition to being
+// included in the structured output.
+func TestStructuredCompDiffRenderer_RenderCompDiff_TopLevelErrorsToStderr(t *testing.T) {
+	output := &CompDiffOutput{
+		Compositions: []CompositionDiff{},
+		Errors: []dt.OutputError{
+			{ResourceID: "xbuckets.example.org", Message: "failed to list XRs for composition"},
+			{Message: "cluster connection lost"},
+		},
+	}
+
+	for _, format := range []OutputFormat{OutputFormatJSON, OutputFormatYAML} {
+		t.Run(string(format), func(t *testing.T) {
+			logger := tu.TestLogger(t, false)
+
+			var (
+				stdout bytes.Buffer
+				stderr bytes.Buffer
+			)
+
+			opts := DefaultDiffOptions()
+			opts.Format = format
+			opts.Stdout = &stdout
+			opts.Stderr = &stderr
+
+			renderer := NewStructuredCompDiffRenderer(logger, opts)
+
+			if err := renderer.RenderCompDiff(output); err != nil {
+				t.Fatalf("RenderCompDiff() failed: %v", err)
+			}
+
+			// Verify errors in stderr
+			stderrOut := stderr.String()
+			for _, e := range output.Errors {
+				if !strings.Contains(stderrOut, e.FormatError()) {
+					t.Errorf("Expected stderr to contain %q, got: %q", e.FormatError(), stderrOut)
+				}
+			}
+
+			// Verify errors are ALSO in structured output (stdout)
+			stdoutStr := stdout.String()
+			for _, e := range output.Errors {
+				if !strings.Contains(stdoutStr, e.Message) {
+					t.Errorf("Expected stdout to contain error message %q, got: %q", e.Message, stdoutStr)
+				}
+			}
+		})
+	}
+}
+
+func Test_formatXRStatusSummary(t *testing.T) {
+	tests := map[string]struct {
+		changed, unchanged, errors int
+		want                       string
+	}{
+		"NoResources":     {0, 0, 0, ""},
+		"OneChanged":      {1, 0, 0, "\nSummary: 1 resource with changes\n"},
+		"MultipleChanged": {5, 0, 0, "\nSummary: 5 resources with changes\n"},
+		"AllTypes":        {2, 3, 1, "\nSummary: 2 resources with changes, 3 resources unchanged, 1 resource with errors\n"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := formatXRStatusSummary(tt.changed, tt.unchanged, tt.errors)
+			if got != tt.want {
+				t.Errorf("formatXRStatusSummary() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_pluralize(t *testing.T) {
+	tests := map[string]struct {
+		count int
+		want  string
+	}{
+		"Singular_NoSuffix":  {count: 1, want: ""},
+		"Zero_HasSuffix":     {count: 0, want: "s"},
+		"Plural_HasSuffix":   {count: 2, want: "s"},
+		"Negative_HasSuffix": {count: -1, want: "s"},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := pluralize(tt.count); got != tt.want {
+				t.Errorf("pluralize(%d) = %q, want %q", tt.count, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCompDiffOutput_JSONSchema validates that the internal CompDiffOutput type
+// serializes to JSON with the correct schema structure. This includes verifying:
+// - compositionChanges field appears with correct type symbol
+// - downstreamChanges is present for changed XRs with proper summary counts
+// - error field serializes correctly on error impacts
+// - nested structures (ImpactAnalysis, AffectedResources) serialize properly
+//
+// YAML serialization uses the same JSON tags (via sigs.k8s.io/yaml), so if JSON
+// serializes correctly, YAML will too. YAML format coverage is provided by
+// TestStructuredCompDiffRenderer_RenderCompDiff.
+func TestCompDiffOutput_JSONSchema(t *testing.T) {
+	output := &CompDiffOutput{
+		Compositions: []CompositionDiff{{
+			Name: "xbuckets.example.org",
+			CompositionDiff: &dt.ResourceDiff{
+				DiffType:     dt.DiffTypeModified,
+				ResourceName: "xbuckets.example.org",
+				Gvk:          schema.GroupVersionKind{Group: "apiextensions.crossplane.io", Version: "v1", Kind: "Composition"},
+				Current:      bothViews(&un.Unstructured{Object: map[string]any{"apiVersion": "apiextensions.crossplane.io/v1", "kind": "Composition"}}),
+				Desired:      bothViews(&un.Unstructured{Object: map[string]any{"apiVersion": "apiextensions.crossplane.io/v1", "kind": "Composition"}}),
+			},
+			AffectedResources: AffectedResourcesSummary{Total: 5, WithChanges: 2, Unchanged: 2, WithErrors: 1},
+			ImpactAnalysis: []XRImpact{
+				{
+					ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XBucket", Name: "bucket-1"},
+					Status:          XRStatusChanged,
+					Diffs: map[string]*dt.ResourceDiff{
+						"s3.aws.upbound.io/v1beta1/Bucket//new-bucket": {
+							DiffType:     dt.DiffTypeAdded,
+							ResourceName: "new-bucket",
+							Gvk:          schema.GroupVersionKind{Group: "s3.aws.upbound.io", Version: "v1beta1", Kind: "Bucket"},
+							Desired:      bothViews(&un.Unstructured{Object: map[string]any{"apiVersion": "s3.aws.upbound.io/v1beta1", "kind": "Bucket"}}),
+						},
+						"s3.aws.upbound.io/v1beta1/Bucket//existing-bucket": {
+							DiffType:     dt.DiffTypeModified,
+							ResourceName: "existing-bucket",
+							Gvk:          schema.GroupVersionKind{Group: "s3.aws.upbound.io", Version: "v1beta1", Kind: "Bucket"},
+							Current:      bothViews(&un.Unstructured{Object: map[string]any{"apiVersion": "s3.aws.upbound.io/v1beta1", "kind": "Bucket"}}),
+							Desired:      bothViews(&un.Unstructured{Object: map[string]any{"apiVersion": "s3.aws.upbound.io/v1beta1", "kind": "Bucket"}}),
+						},
+					},
+				},
+				{ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XBucket", Name: "bucket-2"}, Status: XRStatusUnchanged},
+				{ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XBucket", Name: "bucket-3"}, Status: XRStatusError, Error: &dt.OutputError{ResourceID: "XBucket/bucket-3", Message: "render failed"}},
+			},
+		}},
+	}
+
+	// Test via the structured renderer (JSON)
+	logger := tu.TestLogger(t, false)
+
+	var jsonBuf bytes.Buffer
+
+	opts := DefaultDiffOptions()
+	opts.Format = OutputFormatJSON
+	opts.Stdout = &jsonBuf
+	opts.Stderr = &bytes.Buffer{} // discard stderr
+
+	jsonRenderer := NewStructuredCompDiffRenderer(logger, opts)
+
+	if err := jsonRenderer.RenderCompDiff(output); err != nil {
+		t.Fatalf("Failed to render JSON: %v", err)
+	}
+
+	var parsed compDiffWire
+	if err := json.Unmarshal(jsonBuf.Bytes(), &parsed); err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+
+	if len(parsed.Compositions) != 1 {
+		t.Fatalf("Expected 1 composition, got %d", len(parsed.Compositions))
+	}
+
+	comp := parsed.Compositions[0]
+	if comp.AffectedResources.Total != 5 {
+		t.Errorf("Expected total 5, got %d", comp.AffectedResources.Total)
+	}
+
+	if len(comp.ImpactAnalysis) != 3 {
+		t.Errorf("Expected 3 impacts, got %d", len(comp.ImpactAnalysis))
+	}
+
+	// Verify compositionChanges in JSON
+	if comp.CompositionChanges == nil {
+		t.Error("Expected compositionChanges to be present")
+	}
+
+	if comp.CompositionChanges.Type != "modified" {
+		t.Errorf("Expected compositionChanges.type 'modified', got '%s'", comp.CompositionChanges.Type)
+	}
+
+	// Verify error impact in JSON
+	if comp.ImpactAnalysis[2].Error != "render failed" {
+		t.Errorf("Expected error 'render failed', got '%s'", comp.ImpactAnalysis[2].Error)
+	}
+
+	// Verify changed impact has downstreamChanges in JSON
+	if comp.ImpactAnalysis[0].DownstreamChanges == nil {
+		t.Error("Expected downstreamChanges for changed XR")
+	}
+
+	if comp.ImpactAnalysis[0].DownstreamChanges.Summary.Added != 1 {
+		t.Errorf("Expected 1 added, got %d", comp.ImpactAnalysis[0].DownstreamChanges.Summary.Added)
+	}
+
+	if comp.ImpactAnalysis[0].DownstreamChanges.Summary.Modified != 1 {
+		t.Errorf("Expected 1 modified, got %d", comp.ImpactAnalysis[0].DownstreamChanges.Summary.Modified)
+	}
+}
+
+func TestXRStatusFiltered_JSON(t *testing.T) {
+	output := &CompDiffOutput{
+		Compositions: []CompositionDiff{{
+			Name:              "test-comp",
+			AffectedResources: AffectedResourcesSummary{Total: 3, FilteredByPolicy: 1, FilteredBySelector: 1, FilteredByDeletion: 1},
+			ImpactAnalysis: []XRImpact{
+				{
+					ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "manual-xr", Namespace: "ns"},
+					Status:          XRStatusFiltered,
+					FilterReason:    FilterReasonManualPolicy,
+				},
+				{
+					ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "selector-xr", Namespace: "ns"},
+					Status:          XRStatusFiltered,
+					FilterReason:    FilterReasonRevisionSelectorMismatch,
+					FilterDetail:    "compositionRevisionSelector {version: 0.0.1} does not match composition labels {version: 0.0.2}",
+				},
+				{
+					ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "deleting-xr", Namespace: "ns"},
+					Status:          XRStatusFiltered,
+					FilterReason:    FilterReasonDeleting,
+					FilterDetail:    "deletionTimestamp: 2026-09-07T11:25:03Z",
+				},
+			},
+		}},
+	}
+
+	logger := tu.TestLogger(t, false)
+
+	var jsonBuf bytes.Buffer
+
+	opts := DefaultDiffOptions()
+	opts.Format = OutputFormatJSON
+	opts.Stdout = &jsonBuf
+	opts.Stderr = &bytes.Buffer{}
+
+	r := NewStructuredCompDiffRenderer(logger, opts)
+	if err := r.RenderCompDiff(output); err != nil {
+		t.Fatalf("RenderCompDiff: %v", err)
+	}
+
+	var parsed compDiffWire
+	if err := json.Unmarshal(jsonBuf.Bytes(), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(parsed.Compositions) != 1 || len(parsed.Compositions[0].ImpactAnalysis) != 3 {
+		t.Fatalf("expected 1 composition with 3 impacts, got %+v", parsed)
+	}
+
+	// No impact should carry the removed "filtered_by_policy" status value.
+	for _, imp := range parsed.Compositions[0].ImpactAnalysis {
+		if string(imp.Status) != "filtered" {
+			t.Errorf("status: got %q, want %q", imp.Status, "filtered")
+		}
+
+		if imp.DownstreamChanges != nil {
+			t.Errorf("downstreamChanges should be omitted for filtered impacts, got %+v", imp.DownstreamChanges)
+		}
+	}
+
+	byName := map[string]xrImpactWire{}
+	for _, imp := range parsed.Compositions[0].ImpactAnalysis {
+		byName[imp.Name] = imp
+	}
+
+	if got, want := string(byName["manual-xr"].FilterReason), "manual_policy"; got != want {
+		t.Errorf("manual-xr filterReason: got %q, want %q", got, want)
+	}
+
+	if got, want := string(byName["selector-xr"].FilterReason), "revision_selector_mismatch"; got != want {
+		t.Errorf("selector-xr filterReason: got %q, want %q", got, want)
+	}
+
+	if byName["selector-xr"].FilterDetail == "" {
+		t.Errorf("selector-xr expected a filterDetail hint, got empty")
+	}
+
+	if got, want := string(byName["deleting-xr"].FilterReason), "deleting"; got != want {
+		t.Errorf("deleting-xr filterReason: got %q, want %q", got, want)
+	}
+
+	if got, want := byName["deleting-xr"].FilterDetail, "deletionTimestamp: 2026-09-07T11:25:03Z"; got != want {
+		t.Errorf("deleting-xr filterDetail: got %q, want %q", got, want)
+	}
+
+	if got := parsed.Compositions[0].AffectedResources.FilteredBySelector; got != 1 {
+		t.Errorf("filteredBySelector: got %d, want 1", got)
+	}
+
+	if got := parsed.Compositions[0].AffectedResources.FilteredByDeletion; got != 1 {
+		t.Errorf("filteredByDeletion: got %d, want 1", got)
+	}
+}
+
+func TestXRStatusFiltered_TextRenderer(t *testing.T) {
+	comp := CompositionDiff{
+		Name:              "test-comp",
+		AffectedResources: AffectedResourcesSummary{Total: 3, FilteredByPolicy: 1, FilteredBySelector: 1, FilteredByDeletion: 1},
+		ImpactAnalysis: []XRImpact{
+			{
+				ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "manual-xr", Namespace: "ns"},
+				Status:          XRStatusFiltered,
+				FilterReason:    FilterReasonManualPolicy,
+			},
+			{
+				ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "selector-xr", Namespace: "ns"},
+				Status:          XRStatusFiltered,
+				FilterReason:    FilterReasonRevisionSelectorMismatch,
+				FilterDetail:    "compositionRevisionSelector {version: 0.0.1} does not match composition labels {version: 0.0.2}",
+			},
+			{
+				ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "deleting-xr", Namespace: "ns"},
+				Status:          XRStatusFiltered,
+				FilterReason:    FilterReasonDeleting,
+				FilterDetail:    "deletionTimestamp: 2026-09-07T11:25:03Z",
+			},
+		},
+	}
+
+	logger := tu.TestLogger(t, false)
+	r := &DefaultCompDiffRenderer{logger: logger, opts: DefaultDiffOptions()}
+	got := r.buildXRStatusList(comp.ImpactAnalysis)
+
+	if !strings.Contains(got, "manual-xr") || !strings.Contains(got, "selector-xr") {
+		t.Errorf("expected both XR names in output, got %q", got)
+	}
+
+	// Manual-policy exclusion must mention the policy and the escape hatch.
+	if !strings.Contains(strings.ToLower(got), "manual update policy") {
+		t.Errorf("expected 'Manual update policy' verbiage, got %q", got)
+	}
+
+	// Selector-mismatch exclusion must distinguish itself from policy and surface the hint.
+	if !strings.Contains(strings.ToLower(got), "revision selector") {
+		t.Errorf("expected 'revision selector' verbiage for selector mismatch, got %q", got)
+	}
+
+	if !strings.Contains(got, "does not match composition labels") {
+		t.Errorf("expected the selector-mismatch fix hint in output, got %q", got)
+	}
+
+	// Deletion exclusion must say so and surface the timestamp, which is the diagnostic signal for
+	// an XR that has been stuck terminating.
+	if !strings.Contains(got, "being deleted") {
+		t.Errorf("expected 'being deleted' verbiage for a deleting XR, got %q", got)
+	}
+
+	if !strings.Contains(got, "deletionTimestamp: 2026-09-07T11:25:03Z") {
+		t.Errorf("expected the deletionTimestamp detail in output, got %q", got)
+	}
+}
+
+// Test_allFilteredMessage covers the default-discovery "everything was filtered" line. Each
+// single-reason case gets bespoke prose that names the remedy; mixed reasons enumerate the
+// breakdown. The total must always be the sum of the per-reason counters, so a newly added reason
+// cannot silently go unreported.
+func Test_allFilteredMessage(t *testing.T) {
+	tests := map[string]struct {
+		summary AffectedResourcesSummary
+		want    string
+	}{
+		"PolicyOnly": {
+			summary: AffectedResourcesSummary{FilteredByPolicy: 2},
+			want:    "All 2 XR(s) using composition test-comp have Manual update policy (use --include-manual to see them)",
+		},
+		"SelectorOnly": {
+			summary: AffectedResourcesSummary{FilteredBySelector: 3},
+			want:    "All 3 XR(s) using composition test-comp have a compositionRevisionSelector that does not match the composition's labels, so they would not adopt this revision",
+		},
+		"DeletionOnly": {
+			summary: AffectedResourcesSummary{FilteredByDeletion: 1},
+			want:    "All 1 XR(s) using composition test-comp are being deleted, so they would not adopt this revision",
+		},
+		"PolicyAndSelector": {
+			summary: AffectedResourcesSummary{FilteredByPolicy: 1, FilteredBySelector: 2},
+			want:    "All 3 XR(s) using composition test-comp were filtered: 1 with Manual update policy (use --include-manual to see them), 2 with a compositionRevisionSelector that does not match the composition's labels",
+		},
+		"PolicyAndDeletion": {
+			summary: AffectedResourcesSummary{FilteredByPolicy: 1, FilteredByDeletion: 1},
+			want:    "All 2 XR(s) using composition test-comp were filtered: 1 with Manual update policy (use --include-manual to see them), 1 being deleted",
+		},
+		"SelectorAndDeletion": {
+			summary: AffectedResourcesSummary{FilteredBySelector: 1, FilteredByDeletion: 2},
+			want:    "All 3 XR(s) using composition test-comp were filtered: 1 with a compositionRevisionSelector that does not match the composition's labels, 2 being deleted",
+		},
+		"AllThreeReasons": {
+			summary: AffectedResourcesSummary{FilteredByPolicy: 1, FilteredBySelector: 2, FilteredByDeletion: 3},
+			want:    "All 6 XR(s) using composition test-comp were filtered: 1 with Manual update policy (use --include-manual to see them), 2 with a compositionRevisionSelector that does not match the composition's labels, 3 being deleted",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if diff := gcmp.Diff(tt.want, allFilteredMessage("test-comp", tt.summary)); diff != "" {
+				t.Errorf("allFilteredMessage() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestSkippedMessage pins the distinction the two skip reasons must keep. An identical composition
+// creates no CompositionRevision and so genuinely cannot affect anything — a guarantee. A
+// metadata-only change under --analyze-on=spec-change does create one and simply was not evaluated —
+// an absence of information. Reporting the first for the second case would assert something the tool
+// never established, which is the whole reason skippedMessage branches at all.
+func TestSkippedMessage(t *testing.T) {
+	tests := map[string]struct {
+		impact RevisionImpact
+		// wantContains are substrings that must appear; wantOmits must not.
+		wantContains []string
+		wantOmits    []string
+	}{
+		"IdenticalCompositionMakesTheStrongClaim": {
+			impact: RevisionImpact{ChangeScope: "none", CreatesRevision: false},
+			wantContains: []string{
+				"identical to the cluster's",
+				"creates no new CompositionRevision",
+				"no composite resource could change",
+				"--analyze-on=always",
+			},
+			// Must not hedge: for this case the tool really does know nothing can change.
+			wantOmits: []string{"was not evaluated", "not predictable"},
+		},
+		"MetadataOnlyChangeMakesOnlyTheWeakClaim": {
+			impact: RevisionImpact{
+				ChangeScope:           "metadata",
+				CreatesRevision:       true,
+				RepointedComposites:   2,
+				PredictedRevisionName: "xbuckets.example.org-abc1234",
+			},
+			wantContains: []string{
+				"still creates a new CompositionRevision",
+				"2 composites would adopt",
+				"whether that changes any rendered output was not evaluated",
+				"--analyze-on=any-change",
+			},
+			wantOmits: []string{
+				// Must never claim nothing could change, nor that the composition is identical.
+				"no composite resource could change",
+				"identical to the cluster's",
+				// The hash suffix stays out of human output; see revisionImpactMessage.
+				"abc1234",
+			},
+		},
+		"SingleCompositeIsNotPluralized": {
+			impact: RevisionImpact{
+				ChangeScope:         "metadata",
+				CreatesRevision:     true,
+				RepointedComposites: 1,
+			},
+			wantContains: []string{"1 composite would adopt"},
+			wantOmits:    []string{"1 composites"},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := skippedMessage(tt.impact)
+
+			for _, want := range tt.wantContains {
+				if !strings.Contains(got, want) {
+					t.Errorf("skippedMessage() missing %q, got:\n%s", want, got)
+				}
+			}
+
+			for _, omit := range tt.wantOmits {
+				if strings.Contains(got, omit) {
+					t.Errorf("skippedMessage() must not contain %q, got:\n%s", omit, got)
+				}
+			}
+		})
+	}
+}
+
+// TestRevisionImpactMessage covers the line emitted when the composites *were* evaluated. It exists to
+// make a downstream change interpretable — a composed resource templating on the revision name
+// otherwise shows a diff with no visible cause — so the name has to be in it, and it must stay silent
+// when there is no revision to name.
+func TestRevisionImpactMessage(t *testing.T) {
+	tests := map[string]struct {
+		impact       RevisionImpact
+		want         string
+		wantContains []string
+		wantOmits    []string
+	}{
+		"NoRevisionSaysNothing": {
+			impact: RevisionImpact{ChangeScope: "none", CreatesRevision: false},
+			want:   "",
+		},
+		"ReportsTheChurnWithoutTheHash": {
+			impact: RevisionImpact{
+				ChangeScope:           "spec",
+				CreatesRevision:       true,
+				RepointedComposites:   3,
+				PredictedRevisionName: "xbuckets.example.org-abc1234",
+			},
+			wantContains: []string{
+				"creates a new CompositionRevision",
+				"3 composites would adopt",
+			},
+			// The name is available on the impact but must stay out of human stdout, which would
+			// otherwise churn on every composition edit. Structured output carries it instead.
+			wantOmits: []string{"abc1234"},
+		},
+		"ZeroAdoptingCompositesSaysNothing": {
+			// The line's only job is explaining a downstream diff that a template reading the revision
+			// name would cause. Nothing adopts this revision, so there is no such diff, and the sections
+			// around it already report the composition as changed.
+			impact: RevisionImpact{
+				ChangeScope:           "spec",
+				CreatesRevision:       true,
+				PredictedRevisionName: "xbuckets.example.org-abc1234",
+			},
+			want: "",
+		},
+		"UnpredictableNameReadsIdentically": {
+			// Nothing was seeded here, so a revision-observing change would go undetected — but that is
+			// said on stderr as a warning, which is the channel for "this could not be checked". The
+			// stdout line reports the same churn either way, so it needs no variant.
+			impact:       RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 1},
+			wantContains: []string{"creates a new CompositionRevision", "1 composite would adopt"},
+			wantOmits:    []string{"not predictable"},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := revisionImpactMessage(tt.impact)
+
+			if len(tt.wantContains) == 0 {
+				if diff := gcmp.Diff(tt.want, got); diff != "" {
+					t.Errorf("revisionImpactMessage() mismatch (-want +got):\n%s", diff)
+				}
+
+				return
+			}
+
+			for _, want := range tt.wantContains {
+				if !strings.Contains(got, want) {
+					t.Errorf("revisionImpactMessage() missing %q, got:\n%s", want, got)
+				}
+			}
+
+			for _, omit := range tt.wantOmits {
+				if strings.Contains(got, omit) {
+					t.Errorf("revisionImpactMessage() must not contain %q, got:\n%s", omit, got)
+				}
+			}
+		})
+	}
+}
+
+// TestRenderCompDiff_RevisionImpactLine checks the wiring, which the message unit tests above cannot:
+// that the line reaches stdout for an evaluated composition, and that a skipped one reports the churn
+// exactly once rather than twice (skippedMessage carries its own sentence, and both would be emitted if
+// the early-continue were removed). It also pins that the hash never reaches stdout by either route.
+func TestRenderCompDiff_RevisionImpactLine(t *testing.T) {
+	impact := RevisionImpact{
+		ChangeScope:           "metadata",
+		CreatesRevision:       true,
+		RepointedComposites:   1,
+		PredictedRevisionName: "xbuckets.example.org-abc1234",
+	}
+
+	tests := map[string]struct {
+		comp CompositionDiff
+		// wantCount is how many times the churn is reported: "composite would adopt" appears in both
+		// revisionImpactMessage and skippedMessage, so it counts either route.
+		wantCount int
+	}{
+		"EvaluatedCompositionReportsChurnOnce": {
+			comp: CompositionDiff{
+				Name:              "xbuckets.example.org",
+				RevisionImpact:    impact,
+				AffectedResources: AffectedResourcesSummary{Total: 1, Unchanged: 1},
+				ImpactAnalysis: []XRImpact{{
+					ObjectReference: corev1.ObjectReference{Kind: "XBucket", Name: "test-xr"},
+					Status:          XRStatusUnchanged,
+				}},
+			},
+			wantCount: 1,
+		},
+		"SkippedCompositionReportsChurnOnce": {
+			comp: CompositionDiff{
+				Name:                  "xbuckets.example.org",
+				RevisionImpact:        impact,
+				ImpactAnalysisSkipped: true,
+			},
+			wantCount: 1,
+		},
+		"UnchangedCompositionReportsChurnNever": {
+			comp: CompositionDiff{
+				Name:           "xbuckets.example.org",
+				RevisionImpact: RevisionImpact{ChangeScope: "none", CreatesRevision: false},
+			},
+			wantCount: 0,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+
+			opts := DefaultDiffOptions()
+			opts.Stdout = &stdout
+			opts.Stderr = &stderr
+			opts.UseColors = false
+
+			r := NewDefaultCompDiffRenderer(tu.TestLogger(t, false), NewDiffRenderer(tu.TestLogger(t, false), opts), opts)
+
+			if err := r.RenderCompDiff(&CompDiffOutput{Compositions: []CompositionDiff{tt.comp}}); err != nil {
+				t.Fatalf("RenderCompDiff() unexpected error: %v", err)
+			}
+
+			if got := strings.Count(stdout.String(), "composite would adopt"); got != tt.wantCount {
+				t.Errorf("RenderCompDiff() reported the revision churn %d times, want %d; output:\n%s",
+					got, tt.wantCount, stdout.String())
+			}
+
+			// The predicted name's hash suffix must never reach human stdout by any route; it lives in
+			// structured output, where churning on a composition edit costs nobody anything.
+			if strings.Contains(stdout.String(), "abc1234") {
+				t.Errorf("RenderCompDiff() leaked the revision hash into human output:\n%s", stdout.String())
+			}
+		})
+	}
+}
+
+func TestCompositionDiff_HasChanges_FilteredOnly(t *testing.T) {
+	c := &CompositionDiff{
+		ImpactAnalysis: []XRImpact{
+			{Status: XRStatusFiltered, FilterReason: FilterReasonManualPolicy},
+			{Status: XRStatusFiltered, FilterReason: FilterReasonRevisionSelectorMismatch},
+			{Status: XRStatusFiltered, FilterReason: FilterReasonDeleting},
+		},
+	}
+	if c.HasChanges() {
+		t.Errorf("CompositionDiff with only filtered impacts should not be HasChanges()")
+	}
+}
+
+// TestStructuredCompDiffRenderer_OutputVersions renders each per-XR status, and a failed composition,
+// under each output version, and asserts the whole document plus what reaches stderr.
+func TestStructuredCompDiffRenderer_OutputVersions(t *testing.T) {
+	ref := func(name string) corev1.ObjectReference {
+		return corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XBucket", Name: name}
+	}
+	addedBucket := &dt.ResourceDiff{
+		DiffType:     dt.DiffTypeAdded,
+		ResourceName: "new-bucket",
+		Gvk:          schema.GroupVersionKind{Group: "s3.aws.upbound.io", Version: "v1beta1", Kind: "Bucket"},
+		Desired:      bothViews(&un.Unstructured{Object: map[string]any{"apiVersion": "s3.aws.upbound.io/v1beta1", "kind": "Bucket"}}),
+	}
+	addedChange := ChangeDetail{
+		Type:       dt.DiffTypeWordAdded,
+		APIVersion: "s3.aws.upbound.io/v1beta1",
+		Kind:       "Bucket",
+		Name:       "new-bucket",
+		Diff:       map[string]any{dt.DiffKeySpec: map[string]any{"apiVersion": "s3.aws.upbound.io/v1beta1", "kind": "Bucket"}},
+	}
+	xrErr := &dt.OutputError{
+		ResourceID:         "XBucket/bucket-3",
+		Message:            "render failed",
+		ValidationFailures: []dt.ResourceValidationFailure{{APIVersion: "example.org/v1", Kind: "XBucket", Name: "bucket-3", Status: "invalid", Errors: []dt.FieldValidationError{{Type: "schema", Field: "spec.size", Message: "must be positive"}}}},
+	}
+	compErr := &dt.OutputError{ResourceID: "Composition/xbroken.example.org", Message: "cannot fetch composition"}
+	revisionImpact := RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 3}
+	affected := AffectedResourcesSummary{Total: 4, WithChanges: 1, Unchanged: 1, WithErrors: 1, FilteredBySelector: 1}
+
+	output := &CompDiffOutput{
+		Compositions: []CompositionDiff{
+			{
+				Name:              "xbuckets.example.org",
+				AffectedResources: affected,
+				RevisionImpact:    revisionImpact,
+				ImpactAnalysis: []XRImpact{
+					{ObjectReference: ref("bucket-1"), Status: XRStatusChanged, Diffs: map[string]*dt.ResourceDiff{"s3.aws.upbound.io/v1beta1/Bucket//new-bucket": addedBucket}},
+					{ObjectReference: ref("bucket-2"), Status: XRStatusUnchanged},
+					{ObjectReference: ref("bucket-3"), Status: XRStatusError, Error: xrErr},
+					{ObjectReference: ref("bucket-4"), Status: XRStatusFiltered, FilterReason: FilterReasonRevisionSelectorMismatch, FilterDetail: "selector mismatch"},
+				},
+			},
+			{
+				Name:           "xbroken.example.org",
+				Error:          compErr,
+				ImpactAnalysis: []XRImpact{},
+			},
+		},
+		// The processor lists each errored XR's OutputError at top level.
+		Errors: []dt.OutputError{*xrErr},
+	}
+
+	cases := map[string]struct {
+		version OutputVersion
+		// want is the whole document, as the type of the selected version.
+		want       any
+		wantStderr []string
+	}{
+		"DefaultIsV1": {
+			want: compDiffWire{
+				OutputVersion: OutputVersionV1,
+				Compositions: []compositionDiffWire{
+					{
+						Name:              "xbuckets.example.org",
+						AffectedResources: affected,
+						RevisionImpact:    &revisionImpact,
+						ImpactAnalysis: []xrImpactWire{
+							{ObjectReference: ref("bucket-1"), Status: XRStatusChanged, DownstreamChanges: &DownstreamChanges{Summary: Summary{Added: 1}, Changes: []ChangeDetail{addedChange}}},
+							{ObjectReference: ref("bucket-2"), Status: XRStatusUnchanged},
+							{ObjectReference: ref("bucket-3"), Status: XRStatusError, Error: "render failed"},
+							{ObjectReference: ref("bucket-4"), Status: XRStatusFiltered, FilterReason: FilterReasonRevisionSelectorMismatch, FilterDetail: "selector mismatch"},
+						},
+					},
+					{
+						Name:           "xbroken.example.org",
+						Error:          "cannot fetch composition",
+						ImpactAnalysis: []xrImpactWire{},
+					},
+				},
+				// v1 does not list the failed composition here.
+				Errors: []dt.OutputError{*xrErr},
+			},
+			wantStderr: []string{xrErr.FormatError()},
+		},
+		"V2": {
+			version: OutputVersionV2,
+			want: compDiffWireV2{
+				OutputVersion: OutputVersionV2,
+				Compositions: []compositionDiffWireV2{
+					{
+						Name:              "xbuckets.example.org",
+						AffectedResources: affected,
+						RevisionImpact:    &revisionImpact,
+						ImpactAnalysis: []xrEntryWire{
+							{XR: ref("bucket-1"), Status: XRStatusChanged, Summary: Summary{Added: 1}, Changes: []ChangeDetail{addedChange}},
+							{XR: ref("bucket-2"), Status: XRStatusUnchanged, Changes: []ChangeDetail{}},
+							{XR: ref("bucket-3"), Status: XRStatusError, Changes: []ChangeDetail{}, Errors: []dt.OutputError{*xrErr}},
+							{XR: ref("bucket-4"), Status: XRStatusFiltered, FilterReason: FilterReasonRevisionSelectorMismatch, FilterDetail: "selector mismatch", Changes: []ChangeDetail{}},
+						},
+					},
+					{
+						Name:           "xbroken.example.org",
+						Errors:         []dt.OutputError{*compErr},
+						ImpactAnalysis: []xrEntryWire{},
+					},
+				},
+				// v2 appends the failed composition, so the list is the union of the document's errors.
+				Errors: []dt.OutputError{*xrErr, *compErr},
+			},
+			wantStderr: []string{xrErr.FormatError(), compErr.FormatError()},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+
+			opts := DefaultDiffOptions()
+			opts.Format = OutputFormatJSON
+			opts.Stdout = &stdout
+			opts.Stderr = &stderr
+
+			if tc.version != "" {
+				opts.OutputVersion = tc.version
+			}
+
+			if err := NewStructuredCompDiffRenderer(tu.TestLogger(t, false), opts).RenderCompDiff(output); err != nil {
+				t.Fatalf("RenderCompDiff() failed: %v", err)
+			}
+
+			got := reflect.New(reflect.TypeOf(tc.want))
+			if err := json.Unmarshal(stdout.Bytes(), got.Interface()); err != nil {
+				t.Fatalf("Failed to unmarshal: %v\nOutput: %s", err, stdout.String())
+			}
+
+			if diff := gcmp.Diff(tc.want, got.Elem().Interface()); diff != "" {
+				t.Errorf("structured output mismatch (-want +got):\n%s", diff)
+			}
+
+			if diff := gcmp.Diff(tc.wantStderr, strings.Split(strings.TrimSpace(stderr.String()), "\n")); diff != "" {
+				t.Errorf("stderr mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

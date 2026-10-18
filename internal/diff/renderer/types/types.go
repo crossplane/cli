@@ -1,0 +1,460 @@
+// Package types provides types used in the renderer in order to facilitate code reuse in test
+package types
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/sergi/go-diff/diffmatchpatch"
+	corev1 "k8s.io/api/core/v1"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+)
+
+// XRDiffGroup pairs one input XR/claim with the diffs its render produced (or
+// the error that prevented them). It is built by the diff processor's
+// per-input loop and passed to the renderer so structured output can group by
+// input XR (see the xrs[] output field) and the human renderer can render
+// per-XR sections.
+//
+// XR carries the input XR/claim identity (apiVersion, kind, name, namespace).
+// It is left zero-valued for the composition renderer's internal reuse of the
+// human diff renderer, which has no single owning XR; the human renderer treats
+// an identity-less group as a flat, header-less block (preserving comp output).
+//
+// Err is a pre-converted *OutputError (not a raw error) because the conversion
+// (NewOutputError, which extracts typed validation failures) lives in the
+// diffprocessor package; having the renderer convert would require a
+// renderer -> diffprocessor import cycle. It is nil unless this XR failed.
+//
+// This type lives in the leaf types package (rather than the renderer package
+// alongside the DiffRenderer interface) so that testutils — which provides the
+// DiffRenderer mock — can reference it without importing renderer, which would
+// close an import cycle through renderer's in-package tests.
+type XRDiffGroup struct {
+	XR corev1.ObjectReference
+	// NameGenerated is true when the input XR had only a generateName, so XR.Name — and the name
+	// its render used — is a placeholder this tool synthesized, not one the API server would assign.
+	// Two such XRs sharing a generateName are distinct in the cluster but indistinguishable here; see
+	// the diff processor's render-overlap check.
+	NameGenerated bool
+	Diffs         map[string]*ResourceDiff
+	Err           *OutputError
+}
+
+// ResourceViews holds the two representations of a single resource involved in
+// a diff: the Raw object (as rendered, or as fetched from the cluster) and the
+// Clean object (Raw after cleanupForDiff has stripped ignored paths and
+// server-side/non-diff-relevant fields).
+//
+// Raw is load-bearing beyond rendering (removal detection and XR
+// reconstruction in the diffprocessor). Clean is what structured output emits,
+// and is populated by diff generation only when there is something to render
+// (i.e. not for equal diffs). Either field may be nil: for an added resource
+// the current side is zero-valued, for a removed resource the desired side is.
+type ResourceViews struct {
+	Raw   *un.Unstructured
+	Clean *un.Unstructured
+}
+
+// ResourceDiff represents the diff for a specific resource.
+type ResourceDiff struct {
+	Gvk          schema.GroupVersionKind
+	Namespace    string
+	ResourceName string
+	DiffType     DiffType
+	LineDiffs    []diffmatchpatch.Diff
+	Current      ResourceViews // the resource's current (cluster) state, raw + clean
+	Desired      ResourceViews // the resource's desired (rendered) state, raw + clean
+
+	// DryRun is set ONLY when this resource's desired state did not go through
+	// the apiserver even though it could have — see DryRunInfo. Nil is the
+	// success case and the common case.
+	DryRun *DryRunInfo
+}
+
+// DryRunSkipReason explains why a resource's desired state was not round-tripped
+// through the apiserver.
+type DryRunSkipReason string
+
+const (
+	// DryRunSkipDisabled means the user selected --dry-run-on=existing, so
+	// additions are deliberately not sent to the apiserver.
+	DryRunSkipDisabled DryRunSkipReason = "disabled"
+
+	// DryRunSkipForbidden means a SelfSubjectAccessReview reported that we may
+	// not create this kind here, so the dry-run create was never attempted.
+	// Nothing was learned about the resource itself; this is a limitation of the
+	// credentials in use, not a finding about the resource.
+	DryRunSkipForbidden DryRunSkipReason = "forbidden"
+
+	// DryRunSkipWebhookUnavailable means the apiserver could not complete the
+	// admission chain — typically an unreachable admission webhook with
+	// failurePolicy: Fail, though the predicate is broader than that (any
+	// InternalError / ServiceUnavailable / Timeout from the dry-run create).
+	// The constant is named for the dominant cause; DryRunInfo.Detail always
+	// carries the apiserver's own message, so the specific cause is not lost.
+	DryRunSkipWebhookUnavailable DryRunSkipReason = "webhookUnavailable"
+
+	// DryRunSkipNamespaceNotFound means the resource's target namespace does not
+	// exist yet, so the apiserver refused to admit it.
+	//
+	// This is deliberately a skip rather than a reported rejection. A namespace
+	// and the resources inside it are commonly applied together, so its absence
+	// at diff time says nothing about whether the apply will succeed — unlike a
+	// quota or webhook refusal, which describes the object itself and will still
+	// hold. Consumers that want to treat a bootstrap-order problem as a failure
+	// can gate on this value specifically.
+	DryRunSkipNamespaceNotFound DryRunSkipReason = "namespaceNotFound"
+)
+
+// DryRunInfo records that a resource's desired state was NOT verified against
+// the apiserver, and why. It exists so a consumer can tell a high-fidelity
+// addition diff (defaulting and mutating admission applied) from one that is
+// only what the render pipeline produced.
+//
+// It is emitted only in the degraded case. Absence therefore means the desired
+// state DID go through the apiserver — with one deliberate exception: removal
+// diffs never carry it, because they are produced by
+// CalculateRemovedResourceDiffs straight from cluster state and have no desired
+// state to preview at all. Read absence as "nothing was skipped", not as a
+// positive fidelity guarantee for a resource that was never a candidate.
+//
+// Warnings cover the same ground for humans, but cannot replace this: an
+// OutputWarning has no resource anchor, so it cannot tell a pipeline WHICH
+// additions were degraded.
+type DryRunInfo struct {
+	// Performed is always false when this struct is present, since the struct
+	// is emitted only when the dry-run did not happen. That redundancy is
+	// deliberate: it keeps the emitted JSON self-describing, so a consumer
+	// reading a dryRun object does not have to know that mere presence implies
+	// degradation, and it leaves room to emit the struct unconditionally later
+	// without a schema break.
+	Performed bool `json:"performed"`
+
+	SkipReason DryRunSkipReason `json:"skipReason,omitempty"`
+
+	// Detail is the underlying cause as reported by the cluster (the
+	// SelfSubjectAccessReview's reason, or the apiserver's error message).
+	Detail string `json:"detail,omitempty"`
+
+	// StorageVersion is the version the resource's CRD stores it at, set only when that is not the
+	// version it was requested at. The local prediction defaults against the requested version
+	// only, while the cluster may also apply the storage version's defaults and convert the
+	// resource through it, so the diff may omit both. Empty for a built-in type, a single-version
+	// CRD, or a request at the storage version (#528).
+	StorageVersion string `json:"storageVersion,omitempty"`
+}
+
+// DiffType represents the type of diff (added, removed, modified).
+type DiffType string
+
+// generatedSuffixLen mirrors the hash length crossplane's
+// internal/names.ChildName uses when generating a child name. Names produced
+// by `crossplane internal render` for composed resources are
+// "<parent-with-trailing-dash><12 lowercase hex>"; we synthesize XR names
+// in the same shape (see SynthesizeGeneratedName).
+const generatedSuffixLen = 12
+
+// xrSynthesisSeed is the input we hash to derive the 12-hex suffix appended
+// to an XR's generateName when synthesizing a metadata.name. Picking
+// upstream-shape (12 hex via sha256, see SynthesizeGeneratedName) means the
+// resulting XR name matches the shape of binary-generated composed names AND
+// the suffix value itself is recognisable on its own — which we rely on for
+// downstream detection in LooksLikeGeneratedName.
+const xrSynthesisSeed = "crossplane-diff/synthesized-xr"
+
+// xrSynthesisSuffix returns the deterministic 12-hex suffix we use for XR
+// name synthesis. Two surfaces depend on it:
+//
+//  1. Direct shape match — the synthesized XR name itself is
+//     "<gen-with-dash><suffix>", caught by LooksLikeGeneratedName via the
+//     shape branch.
+//  2. Embedded match — composition templates that interpolate the XR's
+//     metadata.name into a downstream resource's name carry the suffix
+//     verbatim (e.g. "<gen-with-dash><suffix>" or
+//     "<gen-with-dash><suffix>-<binary-suffix>"); those resources may not
+//     have their own generateName set, so we detect via Contains.
+func xrSynthesisSuffix() string {
+	h := sha256.Sum256([]byte(xrSynthesisSeed))
+	return hex.EncodeToString(h[:])[:generatedSuffixLen]
+}
+
+// SynthesizeGeneratedName builds a metadata.name in the same shape upstream's
+// internal/names.ChildName produces: "<parent-with-trailing-dash><12 hex>".
+//
+// We use this when an XR has bare generateName and we need a metadata.name
+// for the binary's validation. Picking upstream-shape lets the same
+// detector (LooksLikeGeneratedName) catch both this name and the binary's
+// own composed-resource names.
+func SynthesizeGeneratedName(parent string) string {
+	if !strings.HasSuffix(parent, "-") {
+		parent += "-"
+	}
+
+	return parent + xrSynthesisSuffix()
+}
+
+// LooksLikeGeneratedName reports whether name was produced by either our
+// XR synthesis path or the binary's nameGenerator. True when:
+//
+//   - name has the deterministic shape upstream's nameGenerator emits —
+//     "<generateName-with-dash><12 lowercase hex>" (catches binary-generated
+//     composed-resource names whose template carries a generateName); or
+//   - name embeds xrSynthesisSuffix anywhere (catches the synthesized XR
+//     itself and any downstream resource whose template interpolated the
+//     XR's metadata.name into its own).
+func LooksLikeGeneratedName(name, generateName string) bool {
+	if name == "" {
+		return false
+	}
+
+	if generateName != "" {
+		gen := generateName
+		if !strings.HasSuffix(gen, "-") {
+			gen += "-"
+		}
+
+		if suffix, ok := strings.CutPrefix(name, gen); ok && isLowerHex(suffix, generatedSuffixLen) {
+			return true
+		}
+	}
+
+	return strings.Contains(name, xrSynthesisSuffix())
+}
+
+// GeneratedDisplayName returns the user-facing label for a name produced by
+// either synthesis path. Caller is responsible for checking
+// LooksLikeGeneratedName first.
+func GeneratedDisplayName(name, generateName string) string {
+	if generateName != "" {
+		gen := generateName
+		if !strings.HasSuffix(gen, "-") {
+			gen += "-"
+		}
+
+		if suffix, ok := strings.CutPrefix(name, gen); ok && isLowerHex(suffix, generatedSuffixLen) {
+			return generateName + "(generated)"
+		}
+	}
+
+	// xrSynthesisSuffix was interpolated into name; cut at the suffix and
+	// drop the leading dash from what remains so the display reads cleanly.
+	before, _, _ := strings.Cut(name, xrSynthesisSuffix())
+
+	return strings.TrimSuffix(before, "-") + "-(generated)"
+}
+
+// isLowerHex reports whether s is exactly length characters of lowercase
+// hex — matching what hex.EncodeToString produces. encoding/hex.DecodeString
+// alone accepts uppercase too, so we lowercase-check first; otherwise a
+// stdlib decode handles the rest.
+func isLowerHex(s string, length int) bool {
+	if len(s) != length || s != strings.ToLower(s) {
+		return false
+	}
+
+	_, err := hex.DecodeString(s)
+
+	return err == nil
+}
+
+const (
+	// DiffTypeAdded an added section.
+	DiffTypeAdded DiffType = "+"
+	// DiffTypeRemoved a removed section.
+	DiffTypeRemoved DiffType = "-"
+	// DiffTypeModified a modified section.
+	DiffTypeModified DiffType = "~"
+	// DiffTypeEqual an unchanged section.
+	DiffTypeEqual DiffType = "="
+)
+
+// DiffTypeWord constants for human-readable JSON output.
+// These are used in structured output (JSON/YAML) for better readability.
+const (
+	DiffTypeWordAdded    = "added"
+	DiffTypeWordRemoved  = "removed"
+	DiffTypeWordModified = "modified"
+	DiffTypeWordEqual    = "equal"
+)
+
+// DiffKey constants for structured diff output.
+// These are the keys used in the diff map to hold resource states.
+const (
+	DiffKeyOld  = "old"  // Current state for modified resources
+	DiffKeyNew  = "new"  // Desired state for modified resources
+	DiffKeySpec = "spec" // Full spec for added/removed resources
+)
+
+// ToWord converts a DiffType symbol to its human-readable word.
+func (d DiffType) ToWord() string {
+	switch d {
+	case DiffTypeAdded:
+		return DiffTypeWordAdded
+	case DiffTypeRemoved:
+		return DiffTypeWordRemoved
+	case DiffTypeModified:
+		return DiffTypeWordModified
+	case DiffTypeEqual:
+		return DiffTypeWordEqual
+	default:
+		return string(d)
+	}
+}
+
+// Colors for terminal output.
+const (
+	// ColorRed an ANSI "begin red" character.
+	ColorRed = "\x1b[31m"
+	// ColorGreen an ANSI "begin green" character.
+	ColorGreen = "\x1b[32m"
+	// ColorYellow an ANSI "begin yellow" character.
+	ColorYellow = "\x1b[33m"
+	// ColorReset an ANSI "reset color" character.
+	ColorReset = "\x1b[0m"
+)
+
+// GetDiffKey returns a key that can be used to identify this object for use in a map.
+func (d *ResourceDiff) GetDiffKey() string {
+	return MakeDiffKey(d.Gvk.GroupVersion().String(), d.Gvk.Kind, d.Namespace, d.ResourceName)
+}
+
+// MakeDiffKey creates a unique key for a resource diff.
+// Format: apiVersion/kind/namespace/name (namespace may be empty for cluster-scoped resources).
+func MakeDiffKey(apiVersion, kind, namespace, name string) string {
+	return fmt.Sprintf("%s/%s/%s/%s", apiVersion, kind, namespace, name)
+}
+
+// MakeDiffKeyFromResource creates a unique key for a resource diff from an Unstructured resource.
+// This is a convenience wrapper around MakeDiffKey that extracts all fields from the resource.
+func MakeDiffKeyFromResource(res *un.Unstructured) string {
+	return MakeDiffKey(res.GetAPIVersion(), res.GetKind(), res.GetNamespace(), res.GetName())
+}
+
+// OutputError represents an error in structured output.
+// Used consistently by both XR diff and comp diff for machine-readable error handling.
+// Note: Only JSON tags are used because sigs.k8s.io/yaml uses JSON tags for YAML serialization.
+//
+// ResourceID and ValidationFailures play complementary roles:
+//
+//   - ResourceID identifies the input the diff command was processing
+//     (the XR or claim file the user fed in). It is "<Kind>/<Name>"
+//     so machine consumers can correlate an error to a specific
+//     input across batched runs.
+//
+//   - ValidationFailures, when non-empty, gives a structured
+//     per-resource breakdown of *what* the schema validator rejected
+//     within that input's render tree. It contains one entry per
+//     resource (the input itself plus any composed resource) that
+//     failed validation, with full GVK / namespace / typed errors,
+//     so consumers can drive UI or programmatic decisions without
+//     parsing the human-readable Message.
+//
+// The two fields therefore partially overlap when the input itself is
+// among the failing resources — that's intentional. ValidationFailures
+// is the complete failure list (so consumers iterating it never miss
+// an XR-level rejection); ResourceID independently anchors the error
+// to a user-supplied input. ValidationFailures is set only for schema
+// validation errors; it is nil for tool, IO, and render errors.
+type OutputError struct {
+	ResourceID         string                      `json:"resourceID,omitempty"`
+	Message            string                      `json:"message"`
+	ValidationFailures []ResourceValidationFailure `json:"validationFailures,omitempty"`
+}
+
+// ResourceValidationFailure is the per-resource view inside an
+// OutputError.ValidationFailures slice. It mirrors the shape of
+// crossplane/cli's pkg/validate.ResourceValidationResult so the
+// information transfers cleanly, but is defined here so crossplane-diff's
+// JSON output schema is owned by us — consumers depend on this struct,
+// not the upstream type.
+type ResourceValidationFailure struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name,omitempty"`
+	Namespace  string `json:"namespace,omitempty"`
+	// Status is the validator-assigned outcome for this resource.
+	// Today the surfaced values are "invalid" and "missingSchema";
+	// "valid" entries are filtered out by the converter so machine
+	// consumers iterating ValidationFailures see only the failure rows.
+	Status string                 `json:"status"`
+	Errors []FieldValidationError `json:"errors,omitempty"`
+}
+
+// FieldValidationError is the wire shape for a single field-level
+// validation error. Mirrors pkg/validate.FieldValidationError; defined
+// here so consumers of our JSON output bind to a stable schema we
+// control rather than the upstream type.
+type FieldValidationError struct {
+	// Type categorizes the error: "schema", "cel", "unknownField",
+	// or "defaulting".
+	Type string `json:"type"`
+	// Field is the JSONPath of the offending field (e.g.
+	// "spec.forProvider.region"), set when the validator can pinpoint
+	// a path. Empty for errors with no field locality (e.g.
+	// defaulting failures).
+	Field string `json:"field,omitempty"`
+	// Message is the validator-emitted human-readable description.
+	// For k8s-derived schema errors this typically embeds the field
+	// path and bad value already.
+	Message string `json:"message"`
+	// Value, when set, is the offending value as the validator saw
+	// it. Type is preserved (string, number, bool, struct), so JSON
+	// consumers can present or compare it directly.
+	Value any `json:"value,omitempty"`
+}
+
+// FormatError returns a human-readable error string.
+// If ResourceID is empty, it uses "<global>" to indicate a system-level error
+// not tied to any specific resource (e.g., cluster connection issues).
+func (e OutputError) FormatError() string {
+	resourceID := e.ResourceID
+	if resourceID == "" {
+		resourceID = "<global>"
+	}
+
+	return fmt.Sprintf("ERROR: %s: %s", resourceID, e.Message)
+}
+
+// OutputWarning is a non-fatal advisory: something the user should know that does not invalidate the
+// diff or stop the run. Warnings follow the same dual-emission contract as OutputError — written to
+// stderr for humans and included in structured output for machines — but deliberately do NOT affect
+// the exit code. A consumer gating on failure checks errors[], not warnings[].
+//
+// Context carries the log key/value pairs from the emitting call site (e.g. which composition, how
+// many credentials were fetched). It is a map rather than being flattened into Message so machine
+// consumers can read the individual values instead of parsing prose. Unlike OutputError there is no
+// ResourceID: warnings originate deep in the call stack, where the user-supplied input that led
+// there is not known, so the anchoring information lives in Context under whatever key the call
+// site used.
+type OutputWarning struct {
+	Message string            `json:"message"`
+	Context map[string]string `json:"context,omitempty"`
+}
+
+// FormatWarning renders the warning as a single human-readable stderr line, mirroring
+// OutputError.FormatError. Context pairs are appended in sorted key order so output is stable
+// across runs (Go map iteration is not).
+func (w OutputWarning) FormatWarning() string {
+	if len(w.Context) == 0 {
+		return fmt.Sprintf("WARNING: %s", w.Message)
+	}
+
+	keys := make([]string, 0, len(w.Context))
+	for k := range w.Context {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	pairs := make([]string, 0, len(keys))
+	for _, k := range keys {
+		pairs = append(pairs, fmt.Sprintf("%s=%s", k, w.Context[k]))
+	}
+
+	return fmt.Sprintf("WARNING: %s (%s)", w.Message, strings.Join(pairs, ", "))
+}

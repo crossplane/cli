@@ -1,0 +1,2307 @@
+// Package testutils provides test utilities for crossplane-diff.
+package testutils
+
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"regexp"
+	"strings"
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/util/jsonpath"
+
+	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+)
+
+// StructuredDiffOutput mirrors the renderer's xr document to avoid import cycles: v1's
+// renderer.StructuredDiffOutput, and v2's structuredDiffOutputV2, which is the same document without
+// changes (Changes is then nil). These types are used only for test assertions.
+type StructuredDiffOutput struct {
+	OutputVersion string          `json:"outputVersion"`
+	Summary       Summary         `json:"summary"`
+	Changes       []ChangeDetail  `json:"changes"`
+	Errors        []OutputError   `json:"errors,omitempty"`
+	Warnings      []OutputWarning `json:"warnings,omitempty"`
+	Xrs           []XRDiffWire    `json:"xrs"`
+}
+
+// OutputWarning mirrors renderer/types.OutputWarning: a non-fatal advisory carried in structured
+// output alongside (but distinct from) errors.
+type OutputWarning struct {
+	Message string            `json:"message"`
+	Context map[string]string `json:"context,omitempty"`
+}
+
+// XREntryWire mirrors the renderer's v2 per-XR entry (xrEntryWire), which both xr's xrs[] and comp's
+// v2 impactAnalysis[] hold. XR is a corev1.ObjectReference nested under "xr", matching the renderer —
+// asserting into the same platform type here also exercises that the "xr" object round-trips into an
+// ObjectReference.
+type XREntryWire struct {
+	XR           corev1.ObjectReference `json:"xr"`
+	Status       string                 `json:"status"`
+	FilterReason string                 `json:"filterReason,omitempty"`
+	FilterDetail string                 `json:"filterDetail,omitempty"`
+	Summary      Summary                `json:"summary"`
+	Changes      []ChangeDetail         `json:"changes"`
+	Errors       []OutputError          `json:"errors,omitempty"`
+}
+
+// XRDiffWire mirrors the renderer's v1 xrs[] entry (xrDiffWire). Its fields are a subset of the v2
+// entry's, the rest of which xr never sets, so one mirror serves both versions.
+type XRDiffWire = XREntryWire
+
+// Summary mirrors renderer.Summary.
+type Summary struct {
+	Added    int `json:"added"`
+	Modified int `json:"modified"`
+	Removed  int `json:"removed"`
+}
+
+// ChangeDetail mirrors renderer.ChangeDetail.
+type ChangeDetail struct {
+	Type       string         `json:"type"`
+	APIVersion string         `json:"apiVersion"`
+	Kind       string         `json:"kind"`
+	Name       string         `json:"name"`
+	Namespace  string         `json:"namespace,omitempty"`
+	Diff       map[string]any `json:"diff"`
+	DryRun     *DryRunInfo    `json:"dryRun,omitempty"`
+}
+
+// DryRunInfo mirrors dt.DryRunInfo. Absent (nil) means the resource's desired
+// state was verified against the apiserver; see WithDryRunSkipped /
+// WithDryRunPerformed.
+type DryRunInfo struct {
+	Performed      bool   `json:"performed"`
+	SkipReason     string `json:"skipReason,omitempty"`
+	Detail         string `json:"detail,omitempty"`
+	StorageVersion string `json:"storageVersion,omitempty"`
+}
+
+// DiffExpectation is an interface that allows AssertStructuredDiff to accept
+// either *ExpectedDiff or *ResourceExpectation, eliminating the need for And().
+type DiffExpectation interface {
+	expectation() *ExpectedDiff
+}
+
+// ExpectedDiff is a fluent builder for test expectations on structured diff output.
+type ExpectedDiff struct {
+	summary   *expectedSummary
+	resources []*ResourceExpectation
+	errors    []*ErrorExpectation
+	warnings  []*WarningExpectation
+	// noWarnings asserts warnings[] is empty. Separate from len(warnings)==0, which means "no opinion".
+	noWarnings bool
+	xrs        []*XRExpectation
+	// outputVersion, when set, asserts the document's outputVersion and the shape that implies.
+	outputVersion string
+}
+
+// warningMatch describes one expected entry in warnings[], shared by the xr and comp builders. Matched
+// by message substring rather than exact equality, since warning prose is not a stable contract;
+// context keys are asserted exactly, because those ARE what a machine consumer reads.
+type warningMatch struct {
+	messageContains string
+	context         map[string]string
+}
+
+// WarningExpectation describes one expected entry in an xr diff's warnings[].
+type WarningExpectation struct {
+	warningMatch
+
+	parent *ExpectedDiff
+}
+
+func (w *WarningExpectation) expectation() *ExpectedDiff { return w.parent }
+
+func (e *ExpectedDiff) expectation() *ExpectedDiff { return e }
+
+type expectedSummary struct {
+	added    int
+	modified int
+	removed  int
+}
+
+// ResourceExpectation defines expectations for a single resource change.
+type ResourceExpectation struct {
+	parent             *ExpectedDiff
+	xrParent           *XRExpectation // set when this change is scoped to an xrs[] entry
+	changeType         string         // "added", "modified", "removed"
+	kind               string
+	name               string
+	namePattern        *regexp.Regexp
+	namespace          string
+	fieldValues        map[string]any            // For added/removed: field path -> expected value
+	fieldChanges       map[string][2]any         // For modified: field path -> [old, new]
+	fieldValuePatterns map[string]*regexp.Regexp // For pattern matching field values
+	specMatch          map[string]any            // For strict spec matching
+	anyNameAllowed     bool                      // If true, any name is accepted
+
+	dryRun dryRunExpectation
+}
+
+// dryRunExpectation holds the dryRun assertions. It is shared by the flat (xr)
+// and downstream (comp) change builders because dryRun lives on ChangeDetail,
+// which is the same per-resource wire shape for both commands — so asserting it
+// two different ways would let the two drift apart.
+//
+// skipReason, when non-empty, asserts the change carries a dryRun object with
+// that skipReason. mustBePerformed asserts the opposite — that no dryRun object
+// is present, i.e. the desired state went through the apiserver. The two are
+// mutually exclusive; both unset asserts nothing, which keeps every pre-existing
+// expectation valid.
+type dryRunExpectation struct {
+	skipReason      string
+	detailSubstring string
+	storageVersion  string
+	mustBePerformed bool
+}
+
+// expectation returns the root builder. Only meaningful for a flat top-level
+// change (r.parent set); an XR-scoped change (r.xrParent set) is built as a
+// standalone sub-expression passed to WithXRs and is never walked back to a
+// root, so r.parent is nil there and that is fine.
+func (r *ResourceExpectation) expectation() *ExpectedDiff {
+	return r.parent
+}
+
+// ExpectDiff creates a new ExpectedDiff builder.
+func ExpectDiff() *ExpectedDiff {
+	return &ExpectedDiff{
+		resources: make([]*ResourceExpectation, 0),
+	}
+}
+
+// WithSummary sets the expected summary counts.
+func (e *ExpectedDiff) WithSummary(added, modified, removed int) *ExpectedDiff {
+	e.summary = &expectedSummary{
+		added:    added,
+		modified: modified,
+		removed:  removed,
+	}
+
+	return e
+}
+
+// WithAddedResource adds an expectation for an added resource.
+func (e *ExpectedDiff) WithAddedResource(kind, name, namespace string) *ResourceExpectation {
+	r := &ResourceExpectation{
+		parent:             e,
+		changeType:         dt.DiffTypeWordAdded,
+		kind:               kind,
+		name:               name,
+		namespace:          namespace,
+		fieldValues:        make(map[string]any),
+		fieldChanges:       make(map[string][2]any),
+		fieldValuePatterns: make(map[string]*regexp.Regexp),
+	}
+	e.resources = append(e.resources, r)
+
+	return r
+}
+
+// WithModifiedResource adds an expectation for a modified resource.
+func (e *ExpectedDiff) WithModifiedResource(kind, name, namespace string) *ResourceExpectation {
+	r := &ResourceExpectation{
+		parent:             e,
+		changeType:         dt.DiffTypeWordModified,
+		kind:               kind,
+		name:               name,
+		namespace:          namespace,
+		fieldValues:        make(map[string]any),
+		fieldChanges:       make(map[string][2]any),
+		fieldValuePatterns: make(map[string]*regexp.Regexp),
+	}
+	e.resources = append(e.resources, r)
+
+	return r
+}
+
+// ErrorExpectation describes one expected entry in the structured
+// errors[] payload. Match is by ResourceID; ValidationFailures, when
+// non-nil, asserts the per-resource typed validation breakdown.
+type ErrorExpectation struct {
+	parent             *ExpectedDiff
+	resourceID         string
+	messageContains    string
+	validationFailures []*ValidationFailureExpectation
+}
+
+func (e *ErrorExpectation) expectation() *ExpectedDiff { return e.parent }
+
+// ValidationFailureExpectation describes one expected entry in
+// errors[].validationFailures[]. Match is by APIVersion/Kind/Name;
+// Errors asserts on the per-field validation entries within.
+type ValidationFailureExpectation struct {
+	parent     *ErrorExpectation
+	apiVersion string
+	kind       string
+	name       string
+	namespace  string
+	status     string                   // optional; if "", no assertion
+	errors     []*FieldErrorExpectation // optional; nil = no assertion on per-field errors
+}
+
+func (v *ValidationFailureExpectation) expectation() *ExpectedDiff { return v.parent.parent }
+
+// FieldErrorExpectation describes one expected entry in
+// errors[].validationFailures[].errors[]. Match is by Type+Field
+// (Field may be empty for non-localized errors); messageContains and
+// value are optional refinements.
+type FieldErrorExpectation struct {
+	parent          *ValidationFailureExpectation
+	errType         string
+	field           string
+	messageContains string
+	hasValue        bool
+	value           any
+}
+
+func (f *FieldErrorExpectation) expectation() *ExpectedDiff { return f.parent.parent.parent }
+
+// WithWarning asserts that structured output carries a warning whose message contains the supplied
+// substring. Chain WithWarningContext to pin the machine-readable context pairs.
+func (e *ExpectedDiff) WithWarning(messageContains string) *WarningExpectation {
+	w := &WarningExpectation{
+		parent:       e,
+		warningMatch: warningMatch{messageContains: messageContains},
+	}
+	e.warnings = append(e.warnings, w)
+
+	return w
+}
+
+// WithNoWarnings asserts that structured output carries no advisories at all. Distinct from simply
+// declaring no WithWarning expectations, which asserts nothing: this is how a test pins that a
+// condition the tool used to warn about is correctly silent.
+func (e *ExpectedDiff) WithNoWarnings() *ExpectedDiff {
+	e.noWarnings = true
+	return e
+}
+
+// WithWarningContext pins the expected context key/value pairs on the warning under construction.
+func (w *WarningExpectation) WithWarningContext(context map[string]string) *WarningExpectation {
+	w.context = context
+	return w
+}
+
+// And returns to the parent builder.
+func (w *WarningExpectation) And() *ExpectedDiff { return w.parent }
+
+// WithError attaches an expectation for an entry in the structured
+// errors[] payload, matched by resourceID. Use the returned
+// ErrorExpectation to add validationFailures expectations.
+func (e *ExpectedDiff) WithError(resourceID string) *ErrorExpectation {
+	er := &ErrorExpectation{
+		parent:     e,
+		resourceID: resourceID,
+	}
+	e.errors = append(e.errors, er)
+
+	return er
+}
+
+// WithMessageContaining adds a substring assertion on the error's
+// Message field. Optional — useful when machine consumers care about
+// the human-readable message too.
+func (e *ErrorExpectation) WithMessageContaining(s string) *ErrorExpectation {
+	e.messageContains = s
+	return e
+}
+
+// WithValidationFailure adds an expectation for one entry in the
+// error's validationFailures[] slice, matched by APIVersion/Kind/Name.
+// namespace is optional (empty string skips the namespace assertion);
+// pass the actual namespace to lock down namespaced resources.
+func (e *ErrorExpectation) WithValidationFailure(apiVersion, kind, name, namespace string) *ValidationFailureExpectation {
+	v := &ValidationFailureExpectation{
+		parent:     e,
+		apiVersion: apiVersion,
+		kind:       kind,
+		name:       name,
+		namespace:  namespace,
+	}
+	e.validationFailures = append(e.validationFailures, v)
+
+	return v
+}
+
+// AndError returns to the parent ExpectedDiff to chain another
+// WithError call, mirroring the AndXR / AndComp helpers elsewhere in
+// this file.
+func (e *ErrorExpectation) AndError() *ExpectedDiff {
+	return e.parent
+}
+
+// WithStatus pins the validation status on this resource entry
+// ("invalid", "missingSchema"). Optional; empty status skips the
+// assertion.
+func (v *ValidationFailureExpectation) WithStatus(status string) *ValidationFailureExpectation {
+	v.status = status
+	return v
+}
+
+// WithFieldError adds an expectation for one entry in the failure's
+// errors[] slice, matched by errType ("schema", "cel",
+// "unknownField", "defaulting") and field (empty matches
+// non-localized errors like defaulting).
+func (v *ValidationFailureExpectation) WithFieldError(errType, field string) *FieldErrorExpectation {
+	f := &FieldErrorExpectation{
+		parent:  v,
+		errType: errType,
+		field:   field,
+	}
+	v.errors = append(v.errors, f)
+
+	return f
+}
+
+// AndValidationFailure returns to the parent ErrorExpectation to chain
+// another WithValidationFailure.
+func (v *ValidationFailureExpectation) AndValidationFailure() *ErrorExpectation {
+	return v.parent
+}
+
+// WithMessageContaining adds a substring assertion on this field
+// error's Message. Optional.
+func (f *FieldErrorExpectation) WithMessageContaining(s string) *FieldErrorExpectation {
+	f.messageContains = s
+	return f
+}
+
+// WithValue pins the bad value on this field error. Pass the value as
+// it would arrive after JSON decoding (e.g. float64 for numbers,
+// string for strings); for "any number is fine" omit this method.
+func (f *FieldErrorExpectation) WithValue(v any) *FieldErrorExpectation {
+	f.hasValue = true
+	f.value = v
+
+	return f
+}
+
+// AndFieldError returns to the parent ValidationFailureExpectation to
+// chain another WithFieldError.
+func (f *FieldErrorExpectation) AndFieldError() *ValidationFailureExpectation {
+	return f.parent
+}
+
+// WithRemovedResource adds an expectation for a removed resource.
+func (e *ExpectedDiff) WithRemovedResource(kind, name, namespace string) *ResourceExpectation {
+	r := &ResourceExpectation{
+		parent:             e,
+		changeType:         dt.DiffTypeWordRemoved,
+		kind:               kind,
+		name:               name,
+		namespace:          namespace,
+		fieldValues:        make(map[string]any),
+		fieldChanges:       make(map[string][2]any),
+		fieldValuePatterns: make(map[string]*regexp.Regexp),
+	}
+	e.resources = append(e.resources, r)
+
+	return r
+}
+
+// WithField asserts a specific field exists with exact value (for added/removed resources).
+func (r *ResourceExpectation) WithField(path string, value any) *ResourceExpectation {
+	r.fieldValues[path] = value
+	return r
+}
+
+// WithFieldAbsent asserts the path carries no value at all (for added/removed resources).
+//
+// Named rather than spelled WithField(path, nil) at call sites, because "this field must not be
+// here" is a different claim from "this field equals nothing" and reads as a typo otherwise.
+func (r *ResourceExpectation) WithFieldAbsent(path string) *ResourceExpectation {
+	r.fieldValues[path] = nil
+	return r
+}
+
+// WithFieldChange asserts a field changed from old to new value (for modified resources).
+func (r *ResourceExpectation) WithFieldChange(path string, oldValue, newValue any) *ResourceExpectation {
+	r.fieldChanges[path] = [2]any{oldValue, newValue}
+	return r
+}
+
+// WithDryRunSkipped asserts this change reports that its desired state was NOT
+// verified against the apiserver, for the given reason (one of the
+// dt.DryRunSkipReason values: "disabled", "forbidden", "webhookUnavailable").
+//
+// Pass a detailSubstring to additionally require that the cluster's own
+// explanation was propagated rather than swallowed; pass "" to skip that check.
+func (r *ResourceExpectation) WithDryRunSkipped(reason, detailSubstring string) *ResourceExpectation {
+	r.dryRun.skipReason = reason
+	r.dryRun.detailSubstring = detailSubstring
+
+	return r
+}
+
+// WithDryRunStorageVersion asserts this change, reported as not verified (see
+// WithDryRunSkipped), records version as the version its CRD stores it at:
+// one other than the version it was requested at, whose defaults and
+// conversion its locally predicted diff does not model.
+func (r *ResourceExpectation) WithDryRunStorageVersion(version string) *ResourceExpectation {
+	r.dryRun.storageVersion = version
+	return r
+}
+
+// WithDryRunPerformed asserts this change carries NO dryRun object, i.e. its
+// desired state did go through the apiserver. Worth asserting explicitly on the
+// happy path: without it, a regression that silently stopped dry-running
+// additions would only be caught by whichever field assertions happened to
+// depend on server-side defaulting.
+func (r *ResourceExpectation) WithDryRunPerformed() *ResourceExpectation {
+	r.dryRun.mustBePerformed = true
+	return r
+}
+
+// WithFieldAdded asserts a field was added (for modified resources).
+// Equivalent to WithFieldChange(path, nil, value).
+func (r *ResourceExpectation) WithFieldAdded(path string, value any) *ResourceExpectation {
+	return r.WithFieldChange(path, nil, value)
+}
+
+// WithFieldRemoved asserts a field was removed (for modified resources).
+// Equivalent to WithFieldChange(path, value, nil).
+func (r *ResourceExpectation) WithFieldRemoved(path string, value any) *ResourceExpectation {
+	return r.WithFieldChange(path, value, nil)
+}
+
+// WithFieldValuePattern asserts a field value matches a regex pattern.
+// Use this for fields with generated/dynamic values like resource names with random suffixes.
+func (r *ResourceExpectation) WithFieldValuePattern(path, pattern string) *ResourceExpectation {
+	r.fieldValuePatterns[path] = regexp.MustCompile(pattern)
+	return r
+}
+
+// WithSpec asserts the entire spec matches (for strict equality).
+func (r *ResourceExpectation) WithSpec(spec map[string]any) *ResourceExpectation {
+	r.specMatch = spec
+	return r
+}
+
+// WithNamePattern matches resource name against a regex pattern instead of exact name.
+func (r *ResourceExpectation) WithNamePattern(pattern string) *ResourceExpectation {
+	r.namePattern = regexp.MustCompile(pattern)
+	r.anyNameAllowed = false
+
+	return r
+}
+
+// WithAnyName allows any resource name (useful for generated names).
+func (r *ResourceExpectation) WithAnyName() *ResourceExpectation {
+	r.anyNameAllowed = true
+	return r
+}
+
+// And returns to the root ExpectedDiff to chain more expectations.
+// Not needed at the end of a chain - AssertStructuredDiff accepts a
+// ResourceExpectation directly.
+func (r *ResourceExpectation) And() *ExpectedDiff {
+	return r.expectation()
+}
+
+// Change opens a sibling change on the same enclosing XR entry (only valid on a
+// change opened via XRExpectation.Change). Lets an XR's changes chain without a
+// scope-closing call: xr.Change(...).FieldChange(...).Change(...). Panics if
+// called on a flat top-level change (which has no enclosing XR).
+func (r *ResourceExpectation) Change(changeType, kind, name, namespace string) *ResourceExpectation {
+	if r.xrParent == nil {
+		panic("Change chained on a flat (non-XR) change; open the change via XR(...).Change(...)")
+	}
+
+	return r.xrParent.Change(changeType, kind, name, namespace)
+}
+
+// XRExpectation defines expectations for a single entry in the xrs[] grouped
+// view: the input XR's identity, its status, its per-XR summary, and its
+// per-XR changes. Build one with XR(...), configure it with the methods below,
+// then pass it (with any siblings) to ExpectedDiff.WithXRs.
+type XRExpectation struct {
+	kind        string
+	name        string
+	namePattern *regexp.Regexp
+	namespace   string
+	anyName     bool
+	status      string
+	summary     *expectedSummary
+	changes     []*ResourceExpectation
+	errorIDs    []string
+}
+
+// XR begins a standalone expectation for one xrs[] entry, keyed by the input
+// XR's kind/name/namespace. Pass the result(s) to ExpectedDiff.WithXRs.
+func XR(kind, name, namespace string) *XRExpectation {
+	return &XRExpectation{kind: kind, name: name, namespace: namespace}
+}
+
+// xrSpec is satisfied by the two things a WithXRs argument can end on: an
+// XRExpectation itself, or a ResourceExpectation returned by an XR's Change(…)
+// sub-chain (which resolves back to its enclosing XR). This lets a per-XR
+// sub-expression terminate on either a status/summary call or a field call
+// without an explicit scope-closing step.
+type xrSpec interface {
+	xrExpectation() *XRExpectation
+}
+
+func (x *XRExpectation) xrExpectation() *XRExpectation { return x }
+
+func (r *ResourceExpectation) xrExpectation() *XRExpectation { return r.xrParent }
+
+// WithOutputVersion asserts the document's outputVersion ("v1" or "v2") and its shape: v1 carries the
+// flat changes[], v2 does not. Under v2, assert changes per XR with WithXRs; the top-level resource
+// expectations (WithAddedResource and friends) read the flat view and so are rejected.
+func (e *ExpectedDiff) WithOutputVersion(version string) *ExpectedDiff {
+	e.outputVersion = version
+	return e
+}
+
+// WithXRs attaches per-input-XR expectations (built via XR(...)) to assert
+// against the xrs[] grouped view, in order.
+func (e *ExpectedDiff) WithXRs(xrs ...xrSpec) *ExpectedDiff {
+	for _, x := range xrs {
+		e.xrs = append(e.xrs, x.xrExpectation())
+	}
+
+	return e
+}
+
+// Build terminates the chain and returns the root expectation. Optional —
+// AssertStructuredDiff accepts an *ExpectedDiff directly — but it reads as an
+// explicit "done building" marker.
+func (e *ExpectedDiff) Build() *ExpectedDiff { return e }
+
+// Status asserts the entry's status (changed/unchanged/error).
+func (x *XRExpectation) Status(status string) *XRExpectation {
+	x.status = status
+	return x
+}
+
+// Summary asserts the entry's per-XR summary counts.
+func (x *XRExpectation) Summary(added, modified, removed int) *XRExpectation {
+	x.summary = &expectedSummary{added: added, modified: modified, removed: removed}
+	return x
+}
+
+// AnyName matches the XR by kind/namespace only, accepting any name (useful for
+// generated XR names).
+func (x *XRExpectation) AnyName() *XRExpectation {
+	x.anyName = true
+	return x
+}
+
+// NamePattern matches the XR name against a regex instead of an exact name.
+func (x *XRExpectation) NamePattern(pattern string) *XRExpectation {
+	x.namePattern = regexp.MustCompile(pattern)
+	return x
+}
+
+// Err asserts the entry carries an error with the given resourceID.
+func (x *XRExpectation) Err(resourceID string) *XRExpectation {
+	x.errorIDs = append(x.errorIDs, resourceID)
+	return x
+}
+
+// Change opens a change expectation scoped to this XR entry's changes[].
+// changeType is "added", "modified", or "removed". Returns a
+// ResourceExpectation whose field methods (WithField/WithFieldChange/…) and
+// chained Change(...) let a change and its siblings be expressed inline.
+func (x *XRExpectation) Change(changeType, kind, name, namespace string) *ResourceExpectation {
+	r := &ResourceExpectation{
+		xrParent:           x,
+		changeType:         changeType,
+		kind:               kind,
+		name:               name,
+		namespace:          namespace,
+		fieldValues:        make(map[string]any),
+		fieldChanges:       make(map[string][2]any),
+		fieldValuePatterns: make(map[string]*regexp.Regexp),
+	}
+	x.changes = append(x.changes, r)
+
+	return r
+}
+
+// ParseStructuredOutput parses JSON output into StructuredDiffOutput.
+func ParseStructuredOutput(jsonOutput string) (StructuredDiffOutput, error) {
+	var output StructuredDiffOutput
+	if err := json.Unmarshal([]byte(jsonOutput), &output); err != nil {
+		return output, fmt.Errorf("failed to parse JSON output: %w", err)
+	}
+
+	return output, nil
+}
+
+// AssertStructuredDiff compares actual JSON output against expected.
+// Accepts DiffExpectation interface so callers don't need to call And() to return to root.
+func AssertStructuredDiff(t *testing.T, jsonOutput string, e DiffExpectation) {
+	t.Helper()
+
+	expected := e.expectation()
+
+	output, err := ParseStructuredOutput(jsonOutput)
+	if err != nil {
+		t.Fatalf("Failed to parse structured output: %v\nOutput was:\n%s", err, jsonOutput)
+	}
+
+	// Check summary if specified
+	if expected.summary != nil {
+		if output.Summary.Added != expected.summary.added {
+			t.Errorf("Summary.Added: expected %d, got %d", expected.summary.added, output.Summary.Added)
+		}
+
+		if output.Summary.Modified != expected.summary.modified {
+			t.Errorf("Summary.Modified: expected %d, got %d", expected.summary.modified, output.Summary.Modified)
+		}
+
+		if output.Summary.Removed != expected.summary.removed {
+			t.Errorf("Summary.Removed: expected %d, got %d", expected.summary.removed, output.Summary.Removed)
+		}
+	}
+
+	assertXROutputVersion(t, output, expected)
+
+	// Check each resource expectation against the flat changes[] view.
+	assertResourceExpectations(t, "", output.Changes, expected.resources)
+
+	// Check for unexpected resources
+	if len(expected.resources) > 0 && len(output.Changes) != len(expected.resources) {
+		t.Errorf("Expected %d changes, got %d", len(expected.resources), len(output.Changes))
+	}
+
+	// Check each error expectation against output.Errors.
+	for _, want := range expected.errors {
+		got := findMatchingError(output.Errors, want.resourceID)
+		if got == nil {
+			actualIDs := make([]string, 0, len(output.Errors))
+			for _, e := range output.Errors {
+				actualIDs = append(actualIDs, e.ResourceID)
+			}
+
+			t.Errorf("Expected error for resourceID %q not found in output. Actual error IDs: %v",
+				want.resourceID, actualIDs)
+
+			continue
+		}
+
+		assertErrorMatch(t, *got, want)
+	}
+
+	// If the test pinned a specific number of error expectations, verify
+	// no extras were emitted. Zero expectations = no opinion on errors.
+	if len(expected.errors) > 0 && len(output.Errors) != len(expected.errors) {
+		t.Errorf("Expected %d errors in structured output, got %d", len(expected.errors), len(output.Errors))
+	}
+
+	wantWarnings := make([]warningMatch, 0, len(expected.warnings))
+	for _, w := range expected.warnings {
+		wantWarnings = append(wantWarnings, w.warningMatch)
+	}
+
+	assertWarnings(t, output.Warnings, wantWarnings, expected.noWarnings)
+
+	// Check each xrs[] entry expectation.
+	assertXRExpectations(t, output.Xrs, expected.xrs)
+}
+
+// assertXROutputVersion checks the xr document's outputVersion and the presence of the flat changes[]
+// it implies, when the test pinned a version.
+func assertXROutputVersion(t *testing.T, output StructuredDiffOutput, expected *ExpectedDiff) {
+	t.Helper()
+
+	if expected.outputVersion == "" {
+		return
+	}
+
+	if output.OutputVersion != expected.outputVersion {
+		t.Errorf("outputVersion: expected %q, got %q", expected.outputVersion, output.OutputVersion)
+	}
+
+	switch expected.outputVersion {
+	case "v2":
+		if output.Changes != nil {
+			t.Errorf("v2 output carries the v1 flat changes[]: %d entries", len(output.Changes))
+		}
+
+		if len(expected.resources) > 0 {
+			t.Errorf("v2 output has no flat changes[]: assert changes per XR with WithXRs instead")
+		}
+	default:
+		if output.Changes == nil {
+			t.Errorf("v1 output lacks the flat changes[]")
+		}
+	}
+}
+
+// assertWarnings checks each expectation against got, then — if the test pinned any expectations, or
+// asserted there are none — verifies no extras were emitted, mirroring the errors[] guard. Without the
+// count check, warning duplication is untestable: a regression that emits the same advisory once per
+// XR still satisfies every find-first-match expectation. No expectations and no noWarnings = no opinion.
+func assertWarnings(t *testing.T, got []OutputWarning, want []warningMatch, noWarnings bool) {
+	t.Helper()
+
+	for _, w := range want {
+		assertWarningExpectation(t, got, w)
+	}
+
+	if (len(want) > 0 || noWarnings) && len(got) != len(want) {
+		messages := make([]string, 0, len(got))
+		for _, w := range got {
+			messages = append(messages, w.Message)
+		}
+
+		t.Errorf("Expected %d warnings in structured output, got %d: %v", len(want), len(got), messages)
+	}
+}
+
+// assertWarningExpectation finds a warning whose message contains want's substring and, when the
+// expectation pins one, whose context map is exactly want's.
+//
+// Both conditions select the warning; context is not merely checked against the first message match.
+// Several warnings legitimately share a message and differ only in context (one degraded-dry-run
+// warning per GVK + namespace + cause, say), and an expectation for any one of them has to be able to
+// find it rather than being compared against whichever happened to be raised first.
+func assertWarningExpectation(t *testing.T, got []OutputWarning, want warningMatch) {
+	t.Helper()
+
+	var contextsSeen []map[string]string
+
+	for _, w := range got {
+		if !strings.Contains(w.Message, want.messageContains) {
+			continue
+		}
+
+		if want.context == nil || reflect.DeepEqual(want.context, w.Context) {
+			return
+		}
+
+		contextsSeen = append(contextsSeen, w.Context)
+	}
+
+	if len(contextsSeen) > 0 {
+		t.Errorf("warning %q context mismatch: expected %v, got only %v",
+			want.messageContains, want.context, contextsSeen)
+
+		return
+	}
+
+	messages := make([]string, 0, len(got))
+	for _, w := range got {
+		messages = append(messages, w.Message)
+	}
+
+	t.Errorf("expected a warning containing %q in structured output; got %v", want.messageContains, messages)
+}
+
+// assertResourceExpectations validates a set of ResourceExpectations against a
+// changes[] slice. scope is a label ("" for the flat view, or an XR name) used
+// only in failure messages. Extracted so both the flat changes[] and each
+// xrs[] entry's changes[] can be validated with identical logic.
+func assertResourceExpectations(t *testing.T, scope string, changes []ChangeDetail, resources []*ResourceExpectation) {
+	t.Helper()
+
+	prefix := ""
+	if scope != "" {
+		prefix = "xr " + scope + ": "
+	}
+
+	for _, expectRes := range resources {
+		found := findMatchingChange(changes, expectRes)
+		if found == nil {
+			actualResources := make([]string, 0, len(changes))
+			for _, c := range changes {
+				actualResources = append(actualResources, fmt.Sprintf("%s %s/%s (ns=%s)", c.Type, c.Kind, c.Name, c.Namespace))
+			}
+
+			t.Errorf("%sExpected %s resource %s/%s (ns=%s) not found. Actual resources: %v",
+				prefix, expectRes.changeType, expectRes.kind, expectRes.name, expectRes.namespace, actualResources)
+
+			continue
+		}
+
+		assertChangeFields(t, prefix, found, expectRes)
+	}
+}
+
+// assertDryRun validates a change's dryRun expectations: either that the
+// desired state was reported as NOT verified against the apiserver (with a
+// specific reason, and optionally that the cluster's own explanation survived),
+// or that no such report is present at all.
+// id identifies the change under assertion in failure messages.
+func assertDryRun(t *testing.T, id string, found *ChangeDetail, expect dryRunExpectation) {
+	t.Helper()
+
+	if expect.mustBePerformed {
+		if found.DryRun != nil {
+			t.Errorf("%s: expected the desired state to have been dry-run against the apiserver, but it reports skipReason %q (detail: %q)",
+				id, found.DryRun.SkipReason, found.DryRun.Detail)
+		}
+
+		return
+	}
+
+	if expect.skipReason == "" {
+		return
+	}
+
+	if found.DryRun == nil {
+		t.Errorf("%s: expected dryRun.skipReason %q, but no dryRun was reported (absence means the desired state went through the apiserver)",
+			id, expect.skipReason)
+
+		return
+	}
+
+	if found.DryRun.SkipReason != expect.skipReason {
+		t.Errorf("%s: dryRun.skipReason: expected %q, got %q",
+			id, expect.skipReason, found.DryRun.SkipReason)
+	}
+
+	// Performed must be false whenever the object is present; see dt.DryRunInfo.
+	if found.DryRun.Performed {
+		t.Errorf("%s: dryRun.performed was true on a reported skip, which is contradictory", id)
+	}
+
+	if expect.detailSubstring != "" && !strings.Contains(found.DryRun.Detail, expect.detailSubstring) {
+		t.Errorf("%s: dryRun.detail %q does not contain %q — the cluster's own explanation must be propagated, not swallowed",
+			id, found.DryRun.Detail, expect.detailSubstring)
+	}
+
+	if expect.storageVersion != "" && found.DryRun.StorageVersion != expect.storageVersion {
+		t.Errorf("%s: dryRun.storageVersion: expected %q, got %q",
+			id, expect.storageVersion, found.DryRun.StorageVersion)
+	}
+}
+
+// assertChangeFields validates the field-level expectations (exact values,
+// old/new changes, value patterns, and strict spec match) of a single matched
+// change. Split out of assertResourceExpectations to keep that function's
+// cognitive complexity in check.
+func assertChangeFields(t *testing.T, prefix string, found *ChangeDetail, expectRes *ResourceExpectation) {
+	t.Helper()
+
+	assertDryRun(t,
+		fmt.Sprintf("%s%s %s/%s", prefix, expectRes.changeType, expectRes.kind, expectRes.name),
+		found, expectRes.dryRun)
+
+	// Validate field values for added/removed resources
+	for path, expectedValue := range expectRes.fieldValues {
+		actualValue := getFieldFromDiff(found.Diff, expectRes.changeType, path)
+		if !reflect.DeepEqual(actualValue, expectedValue) {
+			t.Errorf("%s%s %s/%s: field %s: expected %v, got %v",
+				prefix, expectRes.changeType, expectRes.kind, expectRes.name, path, expectedValue, actualValue)
+		}
+	}
+
+	// Validate field changes for modified resources
+	for path, change := range expectRes.fieldChanges {
+		oldVal := getFieldFromDiff(found.Diff, dt.DiffKeyOld, path)
+		newVal := getFieldFromDiff(found.Diff, dt.DiffKeyNew, path)
+
+		if !reflect.DeepEqual(oldVal, change[0]) {
+			t.Errorf("%s%s %s/%s: field %s old value: expected %v, got %v",
+				prefix, expectRes.changeType, expectRes.kind, expectRes.name, path, change[0], oldVal)
+		}
+
+		if !reflect.DeepEqual(newVal, change[1]) {
+			t.Errorf("%s%s %s/%s: field %s new value: expected %v, got %v",
+				prefix, expectRes.changeType, expectRes.kind, expectRes.name, path, change[1], newVal)
+		}
+	}
+
+	// Validate field value patterns
+	for path, pattern := range expectRes.fieldValuePatterns {
+		actualValue := getNewFieldValue(found.Diff, expectRes.changeType, path)
+
+		actualStr := fmt.Sprintf("%v", actualValue)
+		if !pattern.MatchString(actualStr) {
+			t.Errorf("%s%s %s/%s: field %s value %q does not match pattern %q",
+				prefix, expectRes.changeType, expectRes.kind, expectRes.name, path, actualStr, pattern.String())
+		}
+	}
+
+	// Validate spec match if specified
+	if expectRes.specMatch != nil {
+		spec := getFieldFromDiff(found.Diff, expectRes.changeType, "spec")
+		if specMap, ok := spec.(map[string]any); ok {
+			if !reflect.DeepEqual(specMap, expectRes.specMatch) {
+				t.Errorf("%s%s %s/%s: spec mismatch: expected %v, got %v",
+					prefix, expectRes.changeType, expectRes.kind, expectRes.name, expectRes.specMatch, specMap)
+			}
+		} else {
+			t.Errorf("%s%s %s/%s: spec is not a map: %v",
+				prefix, expectRes.changeType, expectRes.kind, expectRes.name, spec)
+		}
+	}
+}
+
+// assertXRExpectations validates xrs[] entry expectations against the actual
+// grouped output.
+//
+// Each expectation consumes the entry it matches, so two expectations can never
+// both resolve to the same entry, and the entry count is pinned once the test
+// has an opinion on xrs[] at all. Without those guards a duplicated identity —
+// exactly the symptom of issue #477 — satisfied every expectation that matched
+// it and went unnoticed (issue #488).
+func assertXRExpectations(t *testing.T, actual []XRDiffWire, expected []*XRExpectation) {
+	t.Helper()
+
+	if len(expected) == 0 {
+		return
+	}
+
+	if len(actual) != len(expected) {
+		actualXRs := make([]string, 0, len(actual))
+		for _, x := range actual {
+			actualXRs = append(actualXRs, fmt.Sprintf("%s/%s (ns=%s)", x.XR.Kind, x.XR.Name, x.XR.Namespace))
+		}
+
+		t.Errorf("Expected %d xrs[] entries, got %d: %v", len(expected), len(actual), actualXRs)
+	}
+
+	used := make([]bool, len(actual))
+
+	for _, want := range expected {
+		got := findMatchingXR(actual, used, want)
+		if got == nil {
+			actualXRs := make([]string, 0, len(actual))
+			for _, x := range actual {
+				actualXRs = append(actualXRs, fmt.Sprintf("%s/%s (ns=%s, status=%s)", x.XR.Kind, x.XR.Name, x.XR.Namespace, x.Status))
+			}
+
+			t.Errorf("Expected xrs[] entry %s/%s (ns=%s) not found. Actual: %v",
+				want.kind, want.name, want.namespace, actualXRs)
+
+			continue
+		}
+
+		label := fmt.Sprintf("%s/%s", got.XR.Kind, got.XR.Name)
+
+		if want.status != "" && got.Status != want.status {
+			t.Errorf("xr %s: status: expected %q, got %q", label, want.status, got.Status)
+		}
+
+		if want.summary != nil {
+			if got.Summary.Added != want.summary.added || got.Summary.Modified != want.summary.modified || got.Summary.Removed != want.summary.removed {
+				t.Errorf("xr %s: summary: expected {added:%d modified:%d removed:%d}, got {added:%d modified:%d removed:%d}",
+					label, want.summary.added, want.summary.modified, want.summary.removed,
+					got.Summary.Added, got.Summary.Modified, got.Summary.Removed)
+			}
+		}
+
+		assertResourceExpectations(t, label, got.Changes, want.changes)
+
+		// Pin the entry's change count too, so a change the test did not ask
+		// for cannot hide inside a matched entry.
+		if len(want.changes) > 0 && len(got.Changes) != len(want.changes) {
+			t.Errorf("xr %s: expected %d changes, got %d", label, len(want.changes), len(got.Changes))
+		}
+
+		for _, id := range want.errorIDs {
+			if findMatchingError(got.Errors, id) == nil {
+				t.Errorf("xr %s: expected error with resourceID %q not found in entry errors", label, id)
+			}
+		}
+	}
+}
+
+// findMatchingXR locates the first not-yet-consumed xrs[] entry matching an
+// XRExpectation by kind/namespace and (unless anyName / a name pattern is used)
+// exact name, marking it consumed in used. Consuming matters because identities
+// need not be unique: without it, N expectations could all be satisfied by one
+// entry (or by N byte-identical ones).
+func findMatchingXR(actual []XRDiffWire, used []bool, want *XRExpectation) *XRDiffWire {
+	for i := range actual {
+		if used[i] {
+			continue
+		}
+
+		x := &actual[i]
+
+		if x.XR.Kind != want.kind || x.XR.Namespace != want.namespace {
+			continue
+		}
+
+		switch {
+		case want.anyName:
+		case want.namePattern != nil:
+			if !want.namePattern.MatchString(x.XR.Name) {
+				continue
+			}
+		case x.XR.Name != want.name:
+			continue
+		}
+
+		used[i] = true
+
+		return x
+	}
+
+	return nil
+}
+
+// assertErrorMatch validates a single OutputError against its
+// expectation. Split out from AssertStructuredDiff so the per-error
+// branching doesn't push that function further over the gocognit
+// threshold its existing exemption already silences.
+func assertErrorMatch(t *testing.T, got OutputError, want *ErrorExpectation) {
+	t.Helper()
+
+	if want.messageContains != "" && !strings.Contains(got.Message, want.messageContains) {
+		t.Errorf("error %q: message %q does not contain %q",
+			want.resourceID, got.Message, want.messageContains)
+	}
+
+	for _, wantVF := range want.validationFailures {
+		gotVF := findMatchingValidationFailure(got.ValidationFailures, wantVF)
+		if gotVF == nil {
+			actual := make([]string, 0, len(got.ValidationFailures))
+			for _, vf := range got.ValidationFailures {
+				actual = append(actual, fmt.Sprintf("%s/%s %s/%s", vf.APIVersion, vf.Kind, vf.Namespace, vf.Name))
+			}
+
+			t.Errorf("error %q: expected validationFailure %s/%s %s/%s not found. Actual: %v",
+				want.resourceID, wantVF.apiVersion, wantVF.kind, wantVF.namespace, wantVF.name, actual)
+
+			continue
+		}
+
+		assertValidationFailureMatch(t, *gotVF, wantVF)
+	}
+
+	if len(want.validationFailures) > 0 && len(got.ValidationFailures) != len(want.validationFailures) {
+		t.Errorf("error %q: expected %d validationFailures, got %d",
+			want.resourceID, len(want.validationFailures), len(got.ValidationFailures))
+	}
+}
+
+// assertValidationFailureMatch validates a single
+// ResourceValidationFailure against its expectation.
+func assertValidationFailureMatch(t *testing.T, got ResourceValidationFailure, want *ValidationFailureExpectation) {
+	t.Helper()
+
+	if want.status != "" && got.Status != want.status {
+		t.Errorf("validationFailure %s/%s %s: status: expected %q, got %q",
+			want.apiVersion, want.kind, want.name, want.status, got.Status)
+	}
+
+	for _, wantFE := range want.errors {
+		gotFE := findMatchingFieldError(got.Errors, wantFE)
+		if gotFE == nil {
+			actual := make([]string, 0, len(got.Errors))
+			for _, fe := range got.Errors {
+				actual = append(actual, fmt.Sprintf("[%s] %s", fe.Type, fe.Field))
+			}
+
+			t.Errorf("validationFailure %s/%s %s: expected fieldError [%s] %s not found. Actual: %v",
+				want.apiVersion, want.kind, want.name, wantFE.errType, wantFE.field, actual)
+
+			continue
+		}
+
+		if wantFE.messageContains != "" && !strings.Contains(gotFE.Message, wantFE.messageContains) {
+			t.Errorf("validationFailure %s/%s %s: fieldError [%s] %s: message %q does not contain %q",
+				want.apiVersion, want.kind, want.name, wantFE.errType, wantFE.field,
+				gotFE.Message, wantFE.messageContains)
+		}
+
+		if wantFE.hasValue && !reflect.DeepEqual(gotFE.Value, wantFE.value) {
+			t.Errorf("validationFailure %s/%s %s: fieldError [%s] %s: value: expected %v (%T), got %v (%T)",
+				want.apiVersion, want.kind, want.name, wantFE.errType, wantFE.field,
+				wantFE.value, wantFE.value, gotFE.Value, gotFE.Value)
+		}
+	}
+
+	if len(want.errors) > 0 && len(got.Errors) != len(want.errors) {
+		t.Errorf("validationFailure %s/%s %s: expected %d field errors, got %d",
+			want.apiVersion, want.kind, want.name, len(want.errors), len(got.Errors))
+	}
+}
+
+func findMatchingError(errs []OutputError, resourceID string) *OutputError {
+	for i := range errs {
+		if errs[i].ResourceID == resourceID {
+			return &errs[i]
+		}
+	}
+
+	return nil
+}
+
+func findMatchingValidationFailure(vfs []ResourceValidationFailure, want *ValidationFailureExpectation) *ResourceValidationFailure {
+	for i := range vfs {
+		v := &vfs[i]
+		if v.APIVersion != want.apiVersion || v.Kind != want.kind || v.Name != want.name {
+			continue
+		}
+
+		if want.namespace != "" && v.Namespace != want.namespace {
+			continue
+		}
+
+		return v
+	}
+
+	return nil
+}
+
+func findMatchingFieldError(fes []FieldValidationError, want *FieldErrorExpectation) *FieldValidationError {
+	for i := range fes {
+		fe := &fes[i]
+		if fe.Type == want.errType && fe.Field == want.field {
+			return fe
+		}
+	}
+
+	return nil
+}
+
+// findMatchingChange finds a change that matches the resource expectation.
+func findMatchingChange(changes []ChangeDetail, expect *ResourceExpectation) *ChangeDetail {
+	for i := range changes {
+		change := &changes[i]
+		if change.Type != expect.changeType {
+			continue
+		}
+
+		if change.Kind != expect.kind {
+			continue
+		}
+
+		if expect.namespace != "" && change.Namespace != expect.namespace {
+			continue
+		}
+
+		// Check name matching
+		if expect.anyNameAllowed {
+			return change
+		}
+
+		if expect.namePattern != nil {
+			if expect.namePattern.MatchString(change.Name) {
+				return change
+			}
+
+			continue
+		}
+
+		if change.Name == expect.name {
+			return change
+		}
+	}
+
+	return nil
+}
+
+// getFieldFromDiff extracts a field value from the diff structure.
+// For added/removed, key is "spec"; for modified, key is "old" or "new".
+func getFieldFromDiff(diff map[string]any, key, path string) any {
+	// Handle special keys for modified resources
+	var root any
+
+	switch key {
+	case dt.DiffKeyOld, dt.DiffKeyNew:
+		root = diff[key]
+	case dt.DiffTypeWordAdded, dt.DiffTypeWordRemoved:
+		root = diff[dt.DiffKeySpec]
+	default:
+		root = diff[key]
+	}
+
+	if root == nil {
+		return nil
+	}
+
+	return getNestedField(root, path)
+}
+
+// getNewFieldValue returns the "new" field value for assertions.
+// For modified resources, it returns the value from the "new" state.
+// For added/removed resources, it returns the value from the "spec".
+func getNewFieldValue(diff map[string]any, changeType, path string) any {
+	if changeType == dt.DiffTypeWordModified {
+		return getFieldFromDiff(diff, dt.DiffKeyNew, path)
+	}
+
+	return getFieldFromDiff(diff, changeType, path)
+}
+
+// getNestedField extracts a nested field using k8s jsonpath.
+// Examples:
+//   - "spec.forProvider.configData" - simple path
+//   - "spec.pipeline[0].functionRef.name" - array index
+//   - "spec.pipeline[1].input.resources[0].patches[0].transforms" - multiple array indices
+func getNestedField(obj any, path string) any {
+	if path == "" {
+		return obj
+	}
+
+	// Convert bracket notation to k8s jsonpath escaped format
+	// "metadata.annotations['key.with.dots']" -> "metadata.annotations.key\.with\.dots"
+	path = convertBracketNotation(path)
+
+	// Wrap path in k8s jsonpath template syntax: "spec.foo[0]" -> "{.spec.foo[0]}"
+	jp := jsonpath.New("field")
+	jp.AllowMissingKeys(true)
+
+	if err := jp.Parse("{." + path + "}"); err != nil {
+		return nil
+	}
+
+	results, err := jp.FindResults(obj)
+	if err != nil || len(results) == 0 || len(results[0]) == 0 {
+		return nil
+	}
+
+	return results[0][0].Interface()
+}
+
+// convertBracketNotation converts bracket notation for map keys to k8s jsonpath escaped format.
+// Examples:
+//   - "metadata.annotations['key.with.dots']" -> "metadata.annotations.key\.with\.dots"
+//   - "spec.data['my-key']" -> "spec.data.my-key"
+//   - "spec.pipeline[0].name" -> "spec.pipeline[0].name" (array indices unchanged)
+func convertBracketNotation(path string) string {
+	// Pattern matches: ['key'] or ["key"] where key can contain dots
+	bracketPattern := regexp.MustCompile(`\['([^']+)'\]|\["([^"]+)"\]`)
+
+	return bracketPattern.ReplaceAllStringFunc(path, func(match string) string {
+		// Extract the key from ['key'] or ["key"]
+		key := match[2 : len(match)-2] // Remove [' and '] or [" and "]
+
+		// Escape dots in the key for k8s jsonpath
+		escapedKey := strings.ReplaceAll(key, ".", `\.`)
+
+		// Return as dot notation with escaped dots
+		return "." + escapedKey
+	})
+}
+
+// --- Composition Diff Types and Assertions ---
+//
+// Note: We use reflect.DeepEqual for value comparisons. This works because all
+// field values in our test expectations are strings. If we ever need to compare
+// numeric values (where JSON decodes everything as float64), we can switch to
+// YAML output format which preserves int vs float64 distinction.
+
+// StructuredCompDiffOutput mirrors the JSON schema for composition diffs.
+type StructuredCompDiffOutput struct {
+	OutputVersion string                `json:"outputVersion"`
+	Compositions  []CompositionDiffWire `json:"compositions"`
+	Errors        []OutputError         `json:"errors,omitempty"`
+	Warnings      []OutputWarning       `json:"warnings,omitempty"`
+}
+
+// OutputError mirrors dt.OutputError.
+type OutputError struct {
+	ResourceID         string                      `json:"resourceID,omitempty"`
+	Message            string                      `json:"message"`
+	ValidationFailures []ResourceValidationFailure `json:"validationFailures,omitempty"`
+}
+
+// ResourceValidationFailure mirrors dt.ResourceValidationFailure.
+type ResourceValidationFailure struct {
+	APIVersion string                 `json:"apiVersion"`
+	Kind       string                 `json:"kind"`
+	Name       string                 `json:"name,omitempty"`
+	Namespace  string                 `json:"namespace,omitempty"`
+	Status     string                 `json:"status"`
+	Errors     []FieldValidationError `json:"errors,omitempty"`
+}
+
+// FieldValidationError mirrors dt.FieldValidationError.
+type FieldValidationError struct {
+	Type    string `json:"type"`
+	Field   string `json:"field,omitempty"`
+	Message string `json:"message"`
+	Value   any    `json:"value,omitempty"`
+}
+
+// CompositionDiffWire mirrors compositionDiffWire from the renderer.
+type CompositionDiffWire struct {
+	Name               string                   `json:"name"`
+	Error              string                   `json:"error,omitempty"`  // v1 only
+	Errors             []OutputError            `json:"errors,omitempty"` // v2 only
+	CompositionChanges *ChangeDetail            `json:"compositionChanges,omitempty"`
+	AffectedResources  AffectedResourcesSummary `json:"affectedResources"`
+	ImpactAnalysis     []XRImpactWire           `json:"impactAnalysis"`
+	// ImpactAnalysisSkipped distinguishes "not evaluated" from "no affected composites found".
+	ImpactAnalysisSkipped bool `json:"impactAnalysisSkipped,omitempty"`
+	// MaskedChangesOnly records that an absent compositionChanges does not mean unchanged.
+	MaskedChangesOnly bool `json:"maskedChangesOnly,omitempty"`
+	// RevisionImpact mirrors renderer.RevisionImpact.
+	RevisionImpact RevisionImpactWire `json:"revisionImpact"`
+}
+
+// RevisionImpactWire mirrors renderer.RevisionImpact.
+type RevisionImpactWire struct {
+	ChangeScope           string `json:"changeScope"`
+	CreatesRevision       bool   `json:"createsRevision"`
+	RepointedComposites   int    `json:"repointedComposites"`
+	PredictedRevisionName string `json:"predictedRevisionName,omitempty"`
+}
+
+// AffectedResourcesSummary mirrors renderer.AffectedResourcesSummary.
+type AffectedResourcesSummary struct {
+	Total              int `json:"total"`
+	WithChanges        int `json:"withChanges"`
+	Unchanged          int `json:"unchanged"`
+	WithErrors         int `json:"withErrors"`
+	FilteredByPolicy   int `json:"filteredByPolicy,omitempty"`
+	FilteredBySelector int `json:"filteredBySelector,omitempty"`
+	FilteredByDeletion int `json:"filteredByDeletion,omitempty"`
+}
+
+// XRImpactWire mirrors an impactAnalysis[] entry of either version: v1's xrImpactWire (identity
+// inlined, error string, downstreamChanges wrapper) or v2's xrEntryWire (the fields of XREntryWire).
+// The two share only status, filterReason and filterDetail, so a v2 entry leaves the v1-only fields
+// zero and vice versa; assertXRImpactShape checks that. Read it through ref, downstream and
+// errorText, which work for both.
+type XRImpactWire struct {
+	// v1 only.
+	APIVersion        string             `json:"apiVersion,omitempty"`
+	Kind              string             `json:"kind,omitempty"`
+	Name              string             `json:"name,omitempty"`
+	Namespace         string             `json:"namespace,omitempty"`
+	UID               string             `json:"uid,omitempty"`
+	Error             string             `json:"error,omitempty"`
+	DownstreamChanges *DownstreamChanges `json:"downstreamChanges,omitempty"`
+
+	// Both versions.
+	Status       string `json:"status"`
+	FilterReason string `json:"filterReason,omitempty"`
+	FilterDetail string `json:"filterDetail,omitempty"`
+
+	// v2 only. Pointers and nil slices so their absence from a v1 entry is detectable.
+	XR      *corev1.ObjectReference `json:"xr,omitempty"`
+	Summary *Summary                `json:"summary,omitempty"`
+	Changes []ChangeDetail          `json:"changes,omitempty"`
+	Errors  []OutputError           `json:"errors,omitempty"`
+}
+
+// ref returns the entry's XR identity.
+func (x *XRImpactWire) ref() corev1.ObjectReference {
+	if x.XR != nil {
+		return *x.XR
+	}
+
+	return corev1.ObjectReference{APIVersion: x.APIVersion, Kind: x.Kind, Name: x.Name, Namespace: x.Namespace}
+}
+
+// downstream returns the entry's changes, or nil when it lists none, matching v1's absent
+// downstreamChanges.
+func (x *XRImpactWire) downstream() *DownstreamChanges {
+	switch {
+	case x.DownstreamChanges != nil:
+		return x.DownstreamChanges
+	case len(x.Changes) > 0 && x.Summary != nil:
+		return &DownstreamChanges{Summary: *x.Summary, Changes: x.Changes}
+	default:
+		return nil
+	}
+}
+
+// errorText returns the entry's error message: v1's error string, or v2's errors[] messages joined.
+func (x *XRImpactWire) errorText() string {
+	if x.Error != "" {
+		return x.Error
+	}
+
+	msgs := make([]string, 0, len(x.Errors))
+	for _, e := range x.Errors {
+		msgs = append(msgs, e.Message)
+	}
+
+	return strings.Join(msgs, "; ")
+}
+
+// assertXRImpactShape checks an impactAnalysis[] entry carries exactly its version's fields.
+func assertXRImpactShape(t *testing.T, label, version string, x *XRImpactWire) {
+	t.Helper()
+
+	v1Fields := x.Kind != "" || x.APIVersion != "" || x.Name != "" || x.Error != "" || x.DownstreamChanges != nil
+	v2Fields := x.XR != nil || x.Summary != nil || x.Changes != nil || x.Errors != nil
+
+	switch version {
+	case "v2":
+		if v1Fields {
+			t.Errorf("%s: v2 entry carries v1 fields: %+v", label, *x)
+		}
+
+		// summary and changes are always present in v2; changes is [] when there are none.
+		if x.XR == nil || x.Summary == nil || x.Changes == nil {
+			t.Errorf("%s: v2 entry lacks xr, summary or changes: %+v", label, *x)
+		}
+	default:
+		if v2Fields {
+			t.Errorf("%s: v1 entry carries v2 fields: %+v", label, *x)
+		}
+	}
+}
+
+// DownstreamChanges mirrors renderer.DownstreamChanges.
+type DownstreamChanges struct {
+	Summary Summary        `json:"summary"`
+	Changes []ChangeDetail `json:"changes"`
+}
+
+// ParseStructuredCompOutput parses JSON output into StructuredCompDiffOutput.
+func ParseStructuredCompOutput(jsonOutput string) (StructuredCompDiffOutput, error) {
+	var output StructuredCompDiffOutput
+	if err := json.Unmarshal([]byte(jsonOutput), &output); err != nil {
+		return output, fmt.Errorf("failed to parse comp diff JSON output: %w", err)
+	}
+
+	return output, nil
+}
+
+// CompDiffExpectation is an interface that allows AssertStructuredCompDiff to accept
+// any level of the builder hierarchy, eliminating the need for And()/AndXR()/AndComp().
+type CompDiffExpectation interface {
+	compExpectation() *ExpectedCompDiff
+}
+
+// ExpectedCompDiff is a fluent builder for test expectations on composition diff output.
+type ExpectedCompDiff struct {
+	compositions []*CompositionExpectation
+	warnings     []*CompWarningExpectation
+	// noWarnings asserts warnings[] is empty. Separate from len(warnings)==0, which means "no opinion".
+	noWarnings bool
+	// outputVersion, when set, asserts the document's outputVersion and that every composition and
+	// impactAnalysis[] entry has that version's shape.
+	outputVersion string
+	// errorIDs are resourceIDs the top-level errors[] must contain.
+	errorIDs []string
+}
+
+func (e *ExpectedCompDiff) compExpectation() *ExpectedCompDiff { return e }
+
+// CompWarningExpectation describes one expected entry in a comp diff's warnings[].
+type CompWarningExpectation struct {
+	warningMatch
+
+	parent *ExpectedCompDiff
+}
+
+func (w *CompWarningExpectation) compExpectation() *ExpectedCompDiff { return w.parent }
+
+// WithWarning asserts that structured output carries a warning whose message contains the supplied
+// substring. Chain WithWarningContext to pin the machine-readable context pairs.
+func (e *ExpectedCompDiff) WithWarning(messageContains string) *CompWarningExpectation {
+	w := &CompWarningExpectation{
+		parent:       e,
+		warningMatch: warningMatch{messageContains: messageContains},
+	}
+	e.warnings = append(e.warnings, w)
+
+	return w
+}
+
+// WithOutputVersion asserts the document's outputVersion ("v1" or "v2"), and that each composition and
+// impactAnalysis[] entry carries exactly that version's fields.
+func (e *ExpectedCompDiff) WithOutputVersion(version string) *ExpectedCompDiff {
+	e.outputVersion = version
+	return e
+}
+
+// WithError asserts the top-level errors[] contains an error with the given resourceID.
+func (e *ExpectedCompDiff) WithError(resourceID string) *ExpectedCompDiff {
+	e.errorIDs = append(e.errorIDs, resourceID)
+	return e
+}
+
+// WithNoWarnings asserts that structured output carries no advisories at all. Distinct from simply
+// declaring no WithWarning expectations, which asserts nothing: this is how a test pins that a
+// condition the tool warns about elsewhere is correctly silent here.
+func (e *ExpectedCompDiff) WithNoWarnings() *ExpectedCompDiff {
+	e.noWarnings = true
+	return e
+}
+
+// WithWarningContext pins the expected context key/value pairs on the warning under construction.
+func (w *CompWarningExpectation) WithWarningContext(context map[string]string) *CompWarningExpectation {
+	w.context = context
+	return w
+}
+
+// And returns to the parent builder.
+func (w *CompWarningExpectation) And() *ExpectedCompDiff { return w.parent }
+
+// CompositionExpectation defines expectations for a single composition in the diff.
+type CompositionExpectation struct {
+	parent                     *ExpectedCompDiff
+	name                       string
+	affectedTotal              *int
+	affectedWithChanges        *int
+	affectedUnchanged          *int
+	affectedWithErrors         *int
+	affectedFilteredByDeletion *int
+	xrImpacts                  []*XRImpactExpectation
+	// Composition changes expectations
+	compositionChangeType   string            // "modified" - composition changes are always modifications
+	compositionFieldChanges map[string][2]any // For modified: field path -> [old, new]
+	// impactAnalysisSkipped, when set, asserts the composites were deliberately not evaluated.
+	impactAnalysisSkipped *bool
+	// revisionImpact, when set, asserts what applying the composition does to CompositionRevisions.
+	revisionImpact *expectedRevisionImpact
+	// predictedRevisionName, when set, asserts revisionImpact.predictedRevisionName. Set independently
+	// of revisionImpact so a case can assert the name alone, and because the name is usually matched by
+	// pattern (its suffix is a content hash) while the rest are exact.
+	predictedRevisionName *expectedPredictedRevisionName
+	// errorContains, when set, is a substring the composition's error must contain: v1's error string,
+	// or a message in v2's errors[].
+	errorContains string
+}
+
+// expectedRevisionImpact is the expected revisionImpact object for a composition.
+type expectedRevisionImpact struct {
+	changeScope         string
+	createsRevision     bool
+	repointedComposites int
+}
+
+// expectedPredictedRevisionName is the expected revisionImpact.predictedRevisionName. A pattern rather
+// than a literal because the name's suffix is the first 7 hex digits of the composition's hash, so
+// pinning it exactly would make every fixture edit a test failure. The derivation itself is pinned
+// exactly by the revisionIdentity unit test, which is where that belongs.
+//
+// An empty pattern asserts the field is absent, which is a meaningful outcome in its own right: the
+// name was not predictable.
+type expectedPredictedRevisionName struct {
+	pattern string
+}
+
+func (c *CompositionExpectation) compExpectation() *ExpectedCompDiff { return c.parent }
+
+// XRImpactExpectation defines expectations for a single XR impact.
+type XRImpactExpectation struct {
+	parent              *CompositionExpectation
+	kind                string
+	name                string
+	namespace           string
+	anyNameAllowed      bool
+	status              string   // "changed", "unchanged", "error", "filtered"
+	filterReason        string   // "manual_policy", "revision_selector_mismatch", "deleting"; only checked when set
+	errorContains       string   // substring of an "error" impact's Error; only checked when set
+	errorIDs            []string // resourceIDs the entry's v2 errors[] must contain
+	downstreamSummary   *expectedSummary
+	downstreamResources []*DownstreamResourceExpectation
+}
+
+func (x *XRImpactExpectation) compExpectation() *ExpectedCompDiff { return x.parent.parent }
+
+// ExpectCompDiff creates a new ExpectedCompDiff builder.
+func ExpectCompDiff() *ExpectedCompDiff {
+	return &ExpectedCompDiff{
+		compositions: make([]*CompositionExpectation, 0),
+	}
+}
+
+// WithComposition adds an expectation for a composition.
+func (e *ExpectedCompDiff) WithComposition(name string) *CompositionExpectation {
+	c := &CompositionExpectation{
+		parent:    e,
+		name:      name,
+		xrImpacts: make([]*XRImpactExpectation, 0),
+	}
+	e.compositions = append(e.compositions, c)
+
+	return c
+}
+
+// WithAffectedResources sets the expected affected resources counts.
+func (c *CompositionExpectation) WithAffectedResources(total, withChanges, unchanged, withErrors int) *CompositionExpectation {
+	c.affectedTotal = &total
+	c.affectedWithChanges = &withChanges
+	c.affectedUnchanged = &unchanged
+	c.affectedWithErrors = &withErrors
+
+	return c
+}
+
+// WithFilteredByDeletion asserts the number of XRs excluded from impact analysis because they are
+// being deleted (AffectedResourcesSummary.FilteredByDeletion). A single-purpose setter rather than a
+// positional counterpart to WithAffectedResources, so a caller cannot transpose filter counters.
+func (c *CompositionExpectation) WithFilteredByDeletion(count int) *CompositionExpectation {
+	c.affectedFilteredByDeletion = &count
+
+	return c
+}
+
+// WithImpactAnalysisSkipped asserts that the composites were deliberately not evaluated, which is
+// what distinguishes "we did not look" from "we looked and found no affected composites" — both of
+// which leave impactAnalysis empty.
+func (c *CompositionExpectation) WithImpactAnalysisSkipped() *CompositionExpectation {
+	skipped := true
+	c.impactAnalysisSkipped = &skipped
+
+	return c
+}
+
+// WithRevisionImpact asserts what applying the composition does to CompositionRevisions, independent
+// of whether anything renders differently. changeScope is "none", "metadata" or "spec".
+func (c *CompositionExpectation) WithRevisionImpact(changeScope string, createsRevision bool, repointedComposites int) *CompositionExpectation {
+	c.revisionImpact = &expectedRevisionImpact{
+		changeScope:         changeScope,
+		createsRevision:     createsRevision,
+		repointedComposites: repointedComposites,
+	}
+
+	return c
+}
+
+// WithPredictedRevisionNamePattern asserts that revisionImpact.predictedRevisionName matches pattern
+// (an unanchored regexp unless the pattern anchors itself). Use for the usual case, where the name's
+// hash suffix is not worth pinning in an end-to-end test.
+func (c *CompositionExpectation) WithPredictedRevisionNamePattern(pattern string) *CompositionExpectation {
+	c.predictedRevisionName = &expectedPredictedRevisionName{pattern: pattern}
+
+	return c
+}
+
+// WithoutPredictedRevisionName asserts that revisionImpact carries no predictedRevisionName — i.e. the
+// revision's identity could not be predicted. Distinct from simply not asserting on the field.
+func (c *CompositionExpectation) WithoutPredictedRevisionName() *CompositionExpectation {
+	c.predictedRevisionName = &expectedPredictedRevisionName{pattern: ""}
+
+	return c
+}
+
+// WithCompositionModified asserts that the composition itself is modified.
+func (c *CompositionExpectation) WithCompositionModified() *CompositionExpectation {
+	c.compositionChangeType = dt.DiffTypeWordModified
+	if c.compositionFieldChanges == nil {
+		c.compositionFieldChanges = make(map[string][2]any)
+	}
+
+	return c
+}
+
+// WithCompositionFieldChange asserts a specific field in the composition changed from old to new value.
+func (c *CompositionExpectation) WithCompositionFieldChange(path string, oldValue, newValue any) *CompositionExpectation {
+	if c.compositionFieldChanges == nil {
+		c.compositionFieldChanges = make(map[string][2]any)
+	}
+
+	c.compositionFieldChanges[path] = [2]any{oldValue, newValue}
+
+	return c
+}
+
+// WithCompositionErrorContaining asserts the composition failed with an error containing s: v1's
+// error string, or a message in v2's errors[].
+func (c *CompositionExpectation) WithCompositionErrorContaining(s string) *CompositionExpectation {
+	c.errorContains = s
+	return c
+}
+
+// WithXRImpact adds an expectation for an XR impact.
+func (c *CompositionExpectation) WithXRImpact(kind, name, namespace, status string) *XRImpactExpectation {
+	x := &XRImpactExpectation{
+		parent:    c,
+		kind:      kind,
+		name:      name,
+		namespace: namespace,
+		status:    status,
+	}
+	c.xrImpacts = append(c.xrImpacts, x)
+
+	return x
+}
+
+// WithAnyName allows any XR name (useful for generated names).
+func (x *XRImpactExpectation) WithAnyName() *XRImpactExpectation {
+	x.anyNameAllowed = true
+	return x
+}
+
+// WithFilterReason pins the expected FilterReason on a filtered XR impact (e.g. "manual_policy",
+// "revision_selector_mismatch", or "deleting"). Only asserted when set.
+func (x *XRImpactExpectation) WithFilterReason(reason string) *XRImpactExpectation {
+	x.filterReason = reason
+	return x
+}
+
+// WithErrorContaining pins a substring of an "error" XR impact's Error, so a test can assert why
+// the composite failed rather than only that it did. Only asserted when set.
+func (x *XRImpactExpectation) WithErrorContaining(s string) *XRImpactExpectation {
+	x.errorContains = s
+	return x
+}
+
+// WithErrorResourceID asserts the entry's errors[] (v2 only) holds an error with the given resourceID.
+func (x *XRImpactExpectation) WithErrorResourceID(resourceID string) *XRImpactExpectation {
+	x.errorIDs = append(x.errorIDs, resourceID)
+	return x
+}
+
+// WithDownstreamSummary sets the expected downstream changes summary.
+func (x *XRImpactExpectation) WithDownstreamSummary(added, modified, removed int) *XRImpactExpectation {
+	x.downstreamSummary = &expectedSummary{
+		added:    added,
+		modified: modified,
+		removed:  removed,
+	}
+
+	return x
+}
+
+// WithDownstreamResource adds an expectation for a downstream resource change.
+// Use this to assert on specific field-level changes in downstream resources.
+func (x *XRImpactExpectation) WithDownstreamResource(changeType, kind, name, namespace string) *DownstreamResourceExpectation {
+	r := &DownstreamResourceExpectation{
+		parent:             x,
+		changeType:         changeType,
+		kind:               kind,
+		name:               name,
+		namespace:          namespace,
+		fieldChanges:       make(map[string][2]any),
+		fieldValues:        make(map[string]any),
+		fieldValuePatterns: make(map[string]*regexp.Regexp),
+	}
+	x.downstreamResources = append(x.downstreamResources, r)
+
+	return r
+}
+
+// DownstreamResourceExpectation defines expectations for a downstream resource change.
+type DownstreamResourceExpectation struct {
+	parent             *XRImpactExpectation
+	changeType         string // "added", "modified", "removed"
+	kind               string
+	name               string
+	namePattern        *regexp.Regexp
+	namespace          string
+	anyNameAllowed     bool
+	fieldChanges       map[string][2]any         // For modified: field path -> [old, new]
+	fieldValues        map[string]any            // For added/removed: field path -> expected value
+	fieldValuePatterns map[string]*regexp.Regexp // For pattern matching field values
+	dryRun             dryRunExpectation
+}
+
+func (d *DownstreamResourceExpectation) compExpectation() *ExpectedCompDiff {
+	return d.parent.parent.parent
+}
+
+// WithFieldChange asserts a field changed from old to new value (for modified resources).
+func (d *DownstreamResourceExpectation) WithFieldChange(path string, oldValue, newValue any) *DownstreamResourceExpectation {
+	d.fieldChanges[path] = [2]any{oldValue, newValue}
+	return d
+}
+
+// WithFieldAdded asserts a field was added (for modified resources).
+// Equivalent to WithFieldChange(path, nil, value).
+func (d *DownstreamResourceExpectation) WithFieldAdded(path string, value any) *DownstreamResourceExpectation {
+	return d.WithFieldChange(path, nil, value)
+}
+
+// WithFieldRemoved asserts a field was removed (for modified resources).
+// Equivalent to WithFieldChange(path, value, nil).
+func (d *DownstreamResourceExpectation) WithFieldRemoved(path string, value any) *DownstreamResourceExpectation {
+	return d.WithFieldChange(path, value, nil)
+}
+
+// WithField asserts a specific field exists with exact value (for added/removed resources).
+func (d *DownstreamResourceExpectation) WithField(path string, value any) *DownstreamResourceExpectation {
+	d.fieldValues[path] = value
+	return d
+}
+
+// WithFieldValuePattern asserts a field value matches a regex pattern.
+// Use this for fields with generated/dynamic values like resource names with random suffixes.
+func (d *DownstreamResourceExpectation) WithFieldValuePattern(path, pattern string) *DownstreamResourceExpectation {
+	d.fieldValuePatterns[path] = regexp.MustCompile(pattern)
+	return d
+}
+
+// WithDryRunSkipped asserts this downstream change reports that its desired state
+// was NOT verified against the apiserver, for the given reason (one of the
+// dt.DryRunSkipReason values: "disabled", "forbidden", "webhookUnavailable").
+//
+// Pass a detailSubstring to additionally require that the cluster's own
+// explanation was propagated rather than swallowed; pass "" to skip that check.
+func (d *DownstreamResourceExpectation) WithDryRunSkipped(reason, detailSubstring string) *DownstreamResourceExpectation {
+	d.dryRun.skipReason = reason
+	d.dryRun.detailSubstring = detailSubstring
+
+	return d
+}
+
+// WithDryRunPerformed asserts this downstream change carries NO dryRun object,
+// i.e. its desired state did go through the apiserver. See the ResourceExpectation
+// counterpart for why the happy path is worth asserting explicitly.
+func (d *DownstreamResourceExpectation) WithDryRunPerformed() *DownstreamResourceExpectation {
+	d.dryRun.mustBePerformed = true
+	return d
+}
+
+// WithAnyName allows any resource name (useful for generated names).
+func (d *DownstreamResourceExpectation) WithAnyName() *DownstreamResourceExpectation {
+	d.anyNameAllowed = true
+	return d
+}
+
+// WithNamePattern matches resource name against a regex pattern.
+func (d *DownstreamResourceExpectation) WithNamePattern(pattern string) *DownstreamResourceExpectation {
+	d.namePattern = regexp.MustCompile(pattern)
+	return d
+}
+
+// AndXR returns to parent to chain more downstream resource expectations.
+// Not needed at the end of a chain - AssertStructuredCompDiff accepts DownstreamResourceExpectation directly.
+func (d *DownstreamResourceExpectation) AndXR() *XRImpactExpectation {
+	return d.parent
+}
+
+// AndComp returns to parent to chain more XR impact expectations.
+// Not needed at the end of a chain - AssertStructuredCompDiff accepts XRImpactExpectation directly.
+func (x *XRImpactExpectation) AndComp() *CompositionExpectation {
+	return x.parent
+}
+
+// And returns to parent to chain more composition expectations.
+// Not needed at the end of a chain - AssertStructuredCompDiff accepts CompositionExpectation directly.
+func (c *CompositionExpectation) And() *ExpectedCompDiff {
+	return c.parent
+}
+
+// AndComposition starts an expectation for another composition, from anywhere in the current
+// composition's chain. It exists because the only climb a caller genuinely needs is the one back to
+// the root to add a sibling — every other And()/AndXR()/AndComp() is avoidable, since the assert
+// functions accept any builder level. Spelling the sibling case as one intention-named call keeps a
+// multi-composition expectation readable instead of ending each composition with a run of climbs
+// whose purpose is not obvious from reading them.
+func (d *DownstreamResourceExpectation) AndComposition(name string) *CompositionExpectation {
+	return d.compExpectation().WithComposition(name)
+}
+
+// AndComposition starts an expectation for another composition. See
+// DownstreamResourceExpectation.AndComposition.
+func (x *XRImpactExpectation) AndComposition(name string) *CompositionExpectation {
+	return x.compExpectation().WithComposition(name)
+}
+
+// AndComposition starts an expectation for another composition. See
+// DownstreamResourceExpectation.AndComposition.
+func (c *CompositionExpectation) AndComposition(name string) *CompositionExpectation {
+	return c.compExpectation().WithComposition(name)
+}
+
+// AssertStructuredCompDiff compares actual JSON output against expected.
+// Accepts CompDiffExpectation interface so callers don't need to call And()/AndXR()/AndComp().
+//
+//nolint:gocognit // Test assertion function with necessary branching for comprehensive validation
+func AssertStructuredCompDiff(t *testing.T, jsonOutput string, e CompDiffExpectation) {
+	t.Helper()
+
+	expected := e.compExpectation()
+
+	output, err := ParseStructuredCompOutput(jsonOutput)
+	if err != nil {
+		t.Fatalf("Failed to parse structured comp output: %v\nOutput was:\n%s", err, jsonOutput)
+	}
+
+	wantWarnings := make([]warningMatch, 0, len(expected.warnings))
+	for _, w := range expected.warnings {
+		wantWarnings = append(wantWarnings, w.warningMatch)
+	}
+
+	assertWarnings(t, output.Warnings, wantWarnings, expected.noWarnings)
+
+	assertCompOutputVersion(t, output, expected)
+
+	for _, id := range expected.errorIDs {
+		if findMatchingError(output.Errors, id) == nil {
+			t.Errorf("Expected top-level error with resourceID %q not found", id)
+		}
+	}
+
+	// Check each composition expectation
+	for _, expectComp := range expected.compositions {
+		found := findMatchingComposition(output.Compositions, expectComp.name)
+		if found == nil {
+			actualComps := make([]string, 0, len(output.Compositions))
+			for _, c := range output.Compositions {
+				actualComps = append(actualComps, c.Name)
+			}
+
+			t.Errorf("Expected composition %s not found in output. Actual compositions: %v",
+				expectComp.name, actualComps)
+
+			continue
+		}
+
+		if expectComp.errorContains != "" {
+			var text strings.Builder
+			text.WriteString(found.Error)
+			for _, e := range found.Errors {
+				text.WriteString(e.Message)
+			}
+
+			if !strings.Contains(text.String(), expectComp.errorContains) {
+				t.Errorf("Composition %s: expected error containing %q, got %q", expectComp.name, expectComp.errorContains, text.String())
+			}
+		}
+
+		// Check affected resources counts
+		if expectComp.affectedTotal != nil && found.AffectedResources.Total != *expectComp.affectedTotal {
+			t.Errorf("Composition %s: AffectedResources.Total: expected %d, got %d",
+				expectComp.name, *expectComp.affectedTotal, found.AffectedResources.Total)
+		}
+
+		if expectComp.affectedWithChanges != nil && found.AffectedResources.WithChanges != *expectComp.affectedWithChanges {
+			t.Errorf("Composition %s: AffectedResources.WithChanges: expected %d, got %d",
+				expectComp.name, *expectComp.affectedWithChanges, found.AffectedResources.WithChanges)
+		}
+
+		if expectComp.affectedUnchanged != nil && found.AffectedResources.Unchanged != *expectComp.affectedUnchanged {
+			t.Errorf("Composition %s: AffectedResources.Unchanged: expected %d, got %d",
+				expectComp.name, *expectComp.affectedUnchanged, found.AffectedResources.Unchanged)
+		}
+
+		if expectComp.affectedWithErrors != nil && found.AffectedResources.WithErrors != *expectComp.affectedWithErrors {
+			t.Errorf("Composition %s: AffectedResources.WithErrors: expected %d, got %d",
+				expectComp.name, *expectComp.affectedWithErrors, found.AffectedResources.WithErrors)
+		}
+
+		if expectComp.affectedFilteredByDeletion != nil && found.AffectedResources.FilteredByDeletion != *expectComp.affectedFilteredByDeletion {
+			t.Errorf("Composition %s: AffectedResources.FilteredByDeletion: expected %d, got %d",
+				expectComp.name, *expectComp.affectedFilteredByDeletion, found.AffectedResources.FilteredByDeletion)
+		}
+
+		if expectComp.impactAnalysisSkipped != nil && found.ImpactAnalysisSkipped != *expectComp.impactAnalysisSkipped {
+			t.Errorf("Composition %s: ImpactAnalysisSkipped: expected %t, got %t",
+				expectComp.name, *expectComp.impactAnalysisSkipped, found.ImpactAnalysisSkipped)
+		}
+
+		if want := expectComp.revisionImpact; want != nil {
+			got := found.RevisionImpact
+
+			if got.ChangeScope != want.changeScope {
+				t.Errorf("Composition %s: RevisionImpact.ChangeScope: expected %q, got %q",
+					expectComp.name, want.changeScope, got.ChangeScope)
+			}
+
+			if got.CreatesRevision != want.createsRevision {
+				t.Errorf("Composition %s: RevisionImpact.CreatesRevision: expected %t, got %t",
+					expectComp.name, want.createsRevision, got.CreatesRevision)
+			}
+
+			if got.RepointedComposites != want.repointedComposites {
+				t.Errorf("Composition %s: RevisionImpact.RepointedComposites: expected %d, got %d",
+					expectComp.name, want.repointedComposites, got.RepointedComposites)
+			}
+		}
+
+		if want := expectComp.predictedRevisionName; want != nil {
+			got := found.RevisionImpact.PredictedRevisionName
+
+			switch want.pattern {
+			case "":
+				if got != "" {
+					t.Errorf("Composition %s: RevisionImpact.PredictedRevisionName: expected absent, got %q",
+						expectComp.name, got)
+				}
+			default:
+				matched, err := regexp.MatchString(want.pattern, got)
+
+				switch {
+				case err != nil:
+					t.Errorf("Composition %s: RevisionImpact.PredictedRevisionName: invalid pattern %q: %v",
+						expectComp.name, want.pattern, err)
+				case !matched:
+					t.Errorf("Composition %s: RevisionImpact.PredictedRevisionName: %q does not match pattern %q",
+						expectComp.name, got, want.pattern)
+				}
+			}
+		}
+
+		// Check composition changes
+		if expectComp.compositionChangeType != "" {
+			if found.CompositionChanges == nil {
+				t.Errorf("Composition %s: expected composition changes but none found", expectComp.name)
+			} else {
+				if found.CompositionChanges.Type != expectComp.compositionChangeType {
+					t.Errorf("Composition %s: expected change type %s, got %s",
+						expectComp.name, expectComp.compositionChangeType, found.CompositionChanges.Type)
+				}
+
+				// Check composition field changes
+				for path, expected := range expectComp.compositionFieldChanges {
+					oldVal := getFieldFromDiff(found.CompositionChanges.Diff, dt.DiffKeyOld, path)
+					newVal := getFieldFromDiff(found.CompositionChanges.Diff, dt.DiffKeyNew, path)
+
+					if !reflect.DeepEqual(oldVal, expected[0]) {
+						t.Errorf("Composition %s: field %s old value: expected %v, got %v",
+							expectComp.name, path, expected[0], oldVal)
+					}
+
+					if !reflect.DeepEqual(newVal, expected[1]) {
+						t.Errorf("Composition %s: field %s new value: expected %v, got %v",
+							expectComp.name, path, expected[1], newVal)
+					}
+				}
+			}
+		}
+
+		// Check XR impacts
+		for _, expectXR := range expectComp.xrImpacts {
+			foundXR := findMatchingXRImpact(found.ImpactAnalysis, expectXR)
+			if foundXR == nil {
+				actualXRs := make([]string, 0, len(found.ImpactAnalysis))
+				for _, x := range found.ImpactAnalysis {
+					ref := x.ref()
+					actualXRs = append(actualXRs, fmt.Sprintf("%s/%s (ns=%s, status=%s)", ref.Kind, ref.Name, ref.Namespace, x.Status))
+				}
+
+				t.Errorf("Composition %s: Expected XR impact %s/%s (ns=%s) not found. Actual XRs: %v",
+					expectComp.name, expectXR.kind, expectXR.name, expectXR.namespace, actualXRs)
+
+				continue
+			}
+
+			// Check status
+			if foundXR.Status != expectXR.status {
+				t.Errorf("Composition %s: XR %s/%s: expected status %s, got %s",
+					expectComp.name, expectXR.kind, expectXR.name, expectXR.status, foundXR.Status)
+			}
+
+			// Check filter reason if specified
+			if expectXR.filterReason != "" && foundXR.FilterReason != expectXR.filterReason {
+				t.Errorf("Composition %s: XR %s/%s: expected filterReason %s, got %s",
+					expectComp.name, expectXR.kind, expectXR.name, expectXR.filterReason, foundXR.FilterReason)
+			}
+
+			// Check error message if specified
+			if expectXR.errorContains != "" && !strings.Contains(foundXR.errorText(), expectXR.errorContains) {
+				t.Errorf("Composition %s: XR %s/%s: expected error containing %q, got %q",
+					expectComp.name, expectXR.kind, expectXR.name, expectXR.errorContains, foundXR.errorText())
+			}
+
+			for _, id := range expectXR.errorIDs {
+				if findMatchingError(foundXR.Errors, id) == nil {
+					t.Errorf("Composition %s: XR %s/%s: expected entry error with resourceID %q not found",
+						expectComp.name, expectXR.kind, expectXR.name, id)
+				}
+			}
+
+			downstream := foundXR.downstream()
+
+			// Check downstream summary if specified
+			if expectXR.downstreamSummary != nil && downstream != nil {
+				if downstream.Summary.Added != expectXR.downstreamSummary.added {
+					t.Errorf("Composition %s: XR %s/%s: DownstreamChanges.Summary.Added: expected %d, got %d",
+						expectComp.name, expectXR.kind, expectXR.name, expectXR.downstreamSummary.added, downstream.Summary.Added)
+				}
+
+				if downstream.Summary.Modified != expectXR.downstreamSummary.modified {
+					t.Errorf("Composition %s: XR %s/%s: DownstreamChanges.Summary.Modified: expected %d, got %d",
+						expectComp.name, expectXR.kind, expectXR.name, expectXR.downstreamSummary.modified, downstream.Summary.Modified)
+				}
+
+				if downstream.Summary.Removed != expectXR.downstreamSummary.removed {
+					t.Errorf("Composition %s: XR %s/%s: DownstreamChanges.Summary.Removed: expected %d, got %d",
+						expectComp.name, expectXR.kind, expectXR.name, expectXR.downstreamSummary.removed, downstream.Summary.Removed)
+				}
+			}
+
+			// Check downstream resources with field-level assertions
+			for _, expectRes := range expectXR.downstreamResources {
+				if downstream == nil {
+					t.Errorf("Composition %s: XR %s/%s: expected downstream resource %s/%s but no downstream changes present",
+						expectComp.name, expectXR.kind, expectXR.name, expectRes.kind, expectRes.name)
+
+					continue
+				}
+
+				foundRes := findMatchingDownstreamChange(downstream.Changes, expectRes)
+				if foundRes == nil {
+					actualRes := make([]string, 0, len(downstream.Changes))
+					for _, c := range downstream.Changes {
+						actualRes = append(actualRes, fmt.Sprintf("%s/%s (type=%s)", c.Kind, c.Name, c.Type))
+					}
+
+					t.Errorf("Composition %s: XR %s/%s: expected downstream resource %s/%s not found. Actual: %v",
+						expectComp.name, expectXR.kind, expectXR.name, expectRes.kind, expectRes.name, actualRes)
+
+					continue
+				}
+
+				// Check change type
+				if foundRes.Type != expectRes.changeType {
+					t.Errorf("Composition %s: XR %s/%s: downstream %s/%s: expected type %s, got %s",
+						expectComp.name, expectXR.kind, expectXR.name, expectRes.kind, expectRes.name, expectRes.changeType, foundRes.Type)
+				}
+
+				assertDryRun(t,
+					fmt.Sprintf("Composition %s: XR %s/%s: downstream %s %s/%s",
+						expectComp.name, expectXR.kind, expectXR.name, expectRes.changeType, expectRes.kind, expectRes.name),
+					foundRes, expectRes.dryRun)
+
+				// Check field changes (for modified resources)
+				for path, expected := range expectRes.fieldChanges {
+					oldVal, newVal := expected[0], expected[1]
+					assertDownstreamFieldChange(t, expectComp.name, expectXR, expectRes, foundRes, path, oldVal, newVal)
+				}
+
+				// Check field values (for added/removed resources)
+				for path, expectedVal := range expectRes.fieldValues {
+					assertDownstreamFieldValue(t, expectComp.name, expectXR, expectRes, foundRes, path, expectedVal)
+				}
+
+				// Check field value patterns
+				for path, pattern := range expectRes.fieldValuePatterns {
+					assertDownstreamFieldValuePattern(t, expectComp.name, expectXR, expectRes, foundRes, path, pattern)
+				}
+			}
+		}
+	}
+}
+
+// assertCompOutputVersion checks the comp document's outputVersion, and that each composition and
+// impactAnalysis[] entry carries exactly that version's fields, when the test pinned a version.
+func assertCompOutputVersion(t *testing.T, output StructuredCompDiffOutput, expected *ExpectedCompDiff) {
+	t.Helper()
+
+	if expected.outputVersion == "" {
+		return
+	}
+
+	if output.OutputVersion != expected.outputVersion {
+		t.Errorf("outputVersion: expected %q, got %q", expected.outputVersion, output.OutputVersion)
+	}
+
+	for _, comp := range output.Compositions {
+		switch {
+		case expected.outputVersion == "v2" && comp.Error != "":
+			t.Errorf("Composition %s: v2 output carries the v1 error string", comp.Name)
+		case expected.outputVersion != "v2" && comp.Errors != nil:
+			t.Errorf("Composition %s: v1 output carries the v2 errors[]", comp.Name)
+		}
+
+		for i := range comp.ImpactAnalysis {
+			assertXRImpactShape(t, fmt.Sprintf("Composition %s: impactAnalysis[%d]", comp.Name, i), expected.outputVersion, &comp.ImpactAnalysis[i])
+		}
+	}
+}
+
+// findMatchingComposition finds a composition by name.
+func findMatchingComposition(comps []CompositionDiffWire, name string) *CompositionDiffWire {
+	for i := range comps {
+		if comps[i].Name == name {
+			return &comps[i]
+		}
+	}
+
+	return nil
+}
+
+// findMatchingXRImpact finds an XR impact that matches the expectation.
+func findMatchingXRImpact(impacts []XRImpactWire, expect *XRImpactExpectation) *XRImpactWire {
+	for i := range impacts {
+		impact := &impacts[i]
+
+		ref := impact.ref()
+		if ref.Kind != expect.kind {
+			continue
+		}
+
+		if expect.namespace != "" && ref.Namespace != expect.namespace {
+			continue
+		}
+
+		// Check name matching
+		if expect.anyNameAllowed {
+			return impact
+		}
+
+		if ref.Name == expect.name {
+			return impact
+		}
+	}
+
+	return nil
+}
+
+// findMatchingDownstreamChange finds a downstream change that matches the expectation.
+func findMatchingDownstreamChange(changes []ChangeDetail, expect *DownstreamResourceExpectation) *ChangeDetail {
+	for i := range changes {
+		change := &changes[i]
+		if change.Type != expect.changeType {
+			continue
+		}
+
+		if change.Kind != expect.kind {
+			continue
+		}
+
+		if expect.namespace != "" && change.Namespace != expect.namespace {
+			continue
+		}
+
+		// Check name matching
+		if expect.anyNameAllowed {
+			return change
+		}
+
+		if expect.namePattern != nil {
+			if expect.namePattern.MatchString(change.Name) {
+				return change
+			}
+
+			continue
+		}
+
+		if change.Name == expect.name {
+			return change
+		}
+	}
+
+	return nil
+}
+
+// assertDownstreamFieldChange asserts that a field changed from old to new value in a modified downstream resource.
+func assertDownstreamFieldChange(t *testing.T, compName string, expectXR *XRImpactExpectation, expectRes *DownstreamResourceExpectation, foundRes *ChangeDetail, path string, expectedOld, expectedNew any) {
+	t.Helper()
+
+	// For modified resources, the diff structure has "old" and "new" keys
+	actualOld := getFieldFromDiff(foundRes.Diff, dt.DiffKeyOld, path)
+	actualNew := getFieldFromDiff(foundRes.Diff, dt.DiffKeyNew, path)
+
+	if !reflect.DeepEqual(actualOld, expectedOld) {
+		t.Errorf("Composition %s: XR %s/%s: downstream %s/%s: field %s old value: expected %v, got %v",
+			compName, expectXR.kind, expectXR.name, expectRes.kind, foundRes.Name, path, expectedOld, actualOld)
+	}
+
+	if !reflect.DeepEqual(actualNew, expectedNew) {
+		t.Errorf("Composition %s: XR %s/%s: downstream %s/%s: field %s new value: expected %v, got %v",
+			compName, expectXR.kind, expectXR.name, expectRes.kind, foundRes.Name, path, expectedNew, actualNew)
+	}
+}
+
+// assertDownstreamFieldValue asserts that a field has the expected value in an added/removed downstream resource.
+func assertDownstreamFieldValue(t *testing.T, compName string, expectXR *XRImpactExpectation, expectRes *DownstreamResourceExpectation, foundRes *ChangeDetail, path string, expectedValue any) {
+	t.Helper()
+
+	// For added/removed resources, the value is in "spec" key
+	actualValue := getFieldFromDiff(foundRes.Diff, expectRes.changeType, path)
+
+	if !reflect.DeepEqual(actualValue, expectedValue) {
+		t.Errorf("Composition %s: XR %s/%s: downstream %s/%s: field %s: expected %v, got %v",
+			compName, expectXR.kind, expectXR.name, expectRes.kind, foundRes.Name, path, expectedValue, actualValue)
+	}
+}
+
+// assertDownstreamFieldValuePattern asserts that a field value matches a regex pattern.
+func assertDownstreamFieldValuePattern(t *testing.T, compName string, expectXR *XRImpactExpectation, expectRes *DownstreamResourceExpectation, foundRes *ChangeDetail, path string, pattern *regexp.Regexp) {
+	t.Helper()
+
+	actualValue := getNewFieldValue(foundRes.Diff, expectRes.changeType, path)
+
+	actualStr := fmt.Sprintf("%v", actualValue)
+	if !pattern.MatchString(actualStr) {
+		t.Errorf("Composition %s: XR %s/%s: downstream %s/%s: field %s value %q does not match pattern %q",
+			compName, expectXR.kind, expectXR.name, expectRes.kind, foundRes.Name, path, actualStr, pattern.String())
+	}
+}

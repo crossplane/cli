@@ -33,6 +33,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
+	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 
@@ -98,8 +99,8 @@ var (
 )
 
 // newRun returns a Run with ID runID whose leases live in dir.
-func newRun(dir, runID string, docker *tu.FakeDocker, log logging.Logger) *Run {
-	r := New(dir, func() (Docker, error) { return docker, nil }, log)
+func newRun(dir, runID string, docker *tu.FakeDocker, advisories dt.Advisories) *Run {
+	r := New(dir, func() (Docker, error) { return docker, nil }, logging.NewNopLogger(), advisories)
 	r.id = runID
 
 	return r
@@ -289,7 +290,7 @@ func TestRunStart(t *testing.T) {
 
 			// Live runs started before any run died, so they had nothing to reclaim themselves.
 			for _, runID := range tt.live {
-				start(t, newRun(dir, runID, &docker, logging.NewNopLogger()))
+				start(t, newRun(dir, runID, &docker, &tu.AdvisoryRecorder{}))
 			}
 
 			for _, runID := range tt.dead {
@@ -302,14 +303,14 @@ func TestRunStart(t *testing.T) {
 				}
 			}
 
-			log := tu.NewAdvisoryCapturingLogger(t)
-			start(t, newRun(dir, selfID, &docker, log))
+			advisories := &tu.AdvisoryRecorder{}
+			start(t, newRun(dir, selfID, &docker, advisories))
 
 			got := want{
 				Containers: docker.ContainerIDs(),
 				Networks:   docker.NetworkNames(),
 				Files:      dirEntries(t, dir),
-				Warnings:   len(log.Advisories()),
+				Warnings:   len(advisories.Advisories()),
 			}
 			if diff := gcmp.Diff(tt.want, got, unordered...); diff != "" {
 				t.Errorf("\n%s\nStart(...): -want, +got:\n%s", tt.reason, diff)
@@ -419,8 +420,8 @@ func TestRunClose(t *testing.T) {
 			docker.Containers = slices.Clone(docker.Containers)
 			docker.Networks = slices.Clone(docker.Networks)
 
-			log := tu.NewAdvisoryCapturingLogger(t)
-			r := newRun(dir, selfID, &docker, log)
+			advisories := &tu.AdvisoryRecorder{}
+			r := newRun(dir, selfID, &docker, advisories)
 
 			if tt.started {
 				// The engine calls Start for every new batch of functions.
@@ -448,7 +449,7 @@ func TestRunClose(t *testing.T) {
 			got.Containers = docker.ContainerIDs()
 			got.Networks = docker.NetworkNames()
 			got.Files = dirEntries(t, dir)
-			got.Warnings = len(log.Advisories())
+			got.Warnings = len(advisories.Advisories())
 
 			if diff := gcmp.Diff(tt.want, got, unordered...); diff != "" {
 				t.Errorf("\n%s\nClose(...): -want, +got:\n%s", tt.reason, diff)
@@ -468,7 +469,9 @@ func TestRunReclaimsARunThatDied(t *testing.T) {
 
 	dir := t.TempDir()
 	docker := &tu.FakeDocker{}
-	newRun := func() *Run { return New(dir, func() (Docker, error) { return docker, nil }, logging.NewNopLogger()) }
+	newRun := func() *Run {
+		return New(dir, func() (Docker, error) { return docker, nil }, logging.NewNopLogger(), &tu.AdvisoryRecorder{})
+	}
 
 	first := newRun()
 	start(t, first)

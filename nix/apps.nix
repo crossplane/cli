@@ -25,7 +25,9 @@
         inheritPath = false;
         text = ''
           export CGO_ENABLED=0
-          export CROSSPLANE_CRDS_DIR="''${CROSSPLANE_CRDS_DIR:-${import ./crossplane-crds.nix { inherit pkgs; }}}"
+          export CROSSPLANE_CRDS_DIR="''${CROSSPLANE_CRDS_DIR:-${
+            import ./crossplane-crds.nix { inherit pkgs; }
+          }}"
           go test -covermode=count ./... "$@"
         '';
       }

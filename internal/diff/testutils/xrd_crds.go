@@ -2,8 +2,6 @@ package testutils
 
 import (
 	"os"
-	"path/filepath"
-	"runtime"
 	"testing"
 
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -64,27 +62,25 @@ func CRDsForXRD(xrd *un.Unstructured, xrdCRD *extv1.CustomResourceDefinition) ([
 	return crds, nil
 }
 
-// pinnedCrossplaneCRDsTarget is the Earthly target that writes the directory PinnedCrossplaneCRDsDir returns.
-const pinnedCrossplaneCRDsTarget = "earthly +fetch-crossplane-crds-gomod"
+// crossplaneCRDsDirEnv names the environment variable that holds the directory PinnedCrossplaneCRDsDir returns.
+const crossplaneCRDsDirEnv = "CROSSPLANE_CRDS_DIR"
 
 // PinnedCrossplaneCRDsDir returns the directory of Crossplane's own CRDs (Compositions, XRDs, Functions, …) at the
-// version of github.com/crossplane/crossplane/v2 that go.mod pins, so they match the xcrd and the rest of the
-// Crossplane code under test. `earthly +fetch-crossplane-crds-gomod` writes them to cluster/gomod/crds at the
-// repository root. They are located from this source file rather than the working directory, and the test fails
-// with the target to run if they are missing.
+// version of github.com/crossplane/crossplane/apis/v2 that go.mod pins, so they match the xcrd and the rest of the
+// Crossplane code under test. nix/crossplane-crds.nix fetches them, and both `nix run .#test` and the sandboxed
+// `test` check export their location as CROSSPLANE_CRDS_DIR. The test fails with how to provide them if missing.
 func PinnedCrossplaneCRDsDir(tb testing.TB) string {
 	tb.Helper()
 
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		tb.Fatal("cannot locate Crossplane's CRDs: runtime.Caller gave no file for testutils")
+	dir := os.Getenv(crossplaneCRDsDirEnv)
+	if dir == "" {
+		tb.Fatalf("%s is not set; run the tests with `nix run .#test` (or `./nix.sh run .#test`), which fetches "+
+			"Crossplane's CRDs at the version go.mod pins", crossplaneCRDsDirEnv)
 	}
 
-	// This file is cmd/diff/testutils/xrd_crds.go, three levels below the repository root.
-	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "cluster", "gomod", "crds")
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		tb.Fatalf("Crossplane's CRDs are not at %s; run `%s` to fetch the version go.mod pins",
-			dir, pinnedCrossplaneCRDsTarget)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() { //nolint:gosec // Test-only path set by the test runner.
+		tb.Fatalf("%s=%s is not a directory of Crossplane's CRDs; run the tests with `nix run .#test`",
+			crossplaneCRDsDirEnv, dir)
 	}
 
 	return dir

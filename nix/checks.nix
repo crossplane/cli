@@ -16,6 +16,7 @@ let
   # Go builders backed by a single shared per-module vendor cache.
   # See nix/go-builders.nix.
   inherit (import ./go-builders.nix { inherit pkgs self; }) buildRoot;
+  crossplaneCRDs = import ./crossplane-crds.nix { inherit pkgs; };
 in
 {
   # Run Go unit tests with coverage
@@ -27,6 +28,7 @@ in
       src = self;
 
       env.CGO_ENABLED = "0";
+      env.CROSSPLANE_CRDS_DIR = crossplaneCRDs;
 
       dontBuild = true;
 

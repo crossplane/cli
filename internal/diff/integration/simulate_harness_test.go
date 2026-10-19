@@ -49,6 +49,8 @@ package integration
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,22 +77,22 @@ import (
 // positional files. Defaults match crossplane-diff's, including the
 // engineLimitVars defaults main.go feeds kong.
 type simArgs struct {
-	Timeout             time.Duration `default:"1m"                                     help:"How long to run before timing out."`
-	Namespace           string        `                                                help:"Namespace of the composite resources."`
-	Output              string        `default:"diff"    enum:"diff,json,yaml"         help:"Output format (diff, json, or yaml)." name:"output" short:"o"`
-	OutputVersion       string        `default:"v1"      enum:"v1,v2"                  help:"Schema version of structured (-o json|yaml) output (v1 or v2)." name:"output-version"`
-	NoColor             bool          `                                                help:"Disable colorized output." name:"no-color"`
-	MaxNestedDepth      int           `default:"${max_nested_depth}"                    help:"Maximum depth for nested XR recursion." name:"max-nested-depth"`
-	MaxIterations       int           `default:"${max_iterations}"                      help:"Maximum render iterations." name:"max-iterations"`
-	IgnorePaths         []string      `                                                help:"Paths to ignore in diffs." name:"ignore-paths"`
-	FunctionCredentials string        `                                                help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions." name:"function-credentials" placeholder:"PATH"`
-	EventualState       bool          `                                                help:"Show eventual state after all reconciliation cycles complete." name:"eventual-state"`
-	DryRunOn            string        `default:"all"    enum:"existing,all"           help:"Which resources to verify against the apiserver with a dry run." name:"dry-run-on"`
-	Resource            []string      `sep:","           help:"Composite resources to scope to."`
-	IncludeManual       bool          `                                                help:"Include composites with a manual update policy." name:"include-manual"`
-	AnalyzeUnchanged    bool          `                                                help:"Analyze compositions identical to their in-cluster version (deprecated; --analyze-on=always)." name:"analyze-unchanged"`
-	AnalyzeOn           string        `                                                help:"Smallest composition change that triggers per-composite impact analysis." name:"analyze-on"`
-	Files               []string      `arg:""            optional:""                  help:"Input files."`
+	Timeout             time.Duration `default:"1m"                                                                                         help:"How long to run before timing out."`
+	Namespace           string        `help:"Namespace of the composite resources."`
+	Output              string        `default:"diff"                                                                                       enum:"diff,json,yaml"                         help:"Output format (diff, json, or yaml)."                            name:"output"         short:"o"`
+	OutputVersion       string        `default:"v1"                                                                                         enum:"v1,v2"                                  help:"Schema version of structured (-o json|yaml) output (v1 or v2)."  name:"output-version"`
+	NoColor             bool          `help:"Disable colorized output."                                                                     name:"no-color"`
+	MaxNestedDepth      int           `default:"${max_nested_depth}"                                                                        help:"Maximum depth for nested XR recursion." name:"max-nested-depth"`
+	MaxIterations       int           `default:"${max_iterations}"                                                                          help:"Maximum render iterations."             name:"max-iterations"`
+	IgnorePaths         []string      `help:"Paths to ignore in diffs."                                                                     name:"ignore-paths"`
+	FunctionCredentials string        `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."    name:"function-credentials"                   placeholder:"PATH"`
+	EventualState       bool          `help:"Show eventual state after all reconciliation cycles complete."                                 name:"eventual-state"`
+	DryRunOn            string        `default:"all"                                                                                        enum:"existing,all"                           help:"Which resources to verify against the apiserver with a dry run." name:"dry-run-on"`
+	Resource            []string      `help:"Composite resources to scope to."                                                              sep:","`
+	IncludeManual       bool          `help:"Include composites with a manual update policy."                                               name:"include-manual"`
+	AnalyzeUnchanged    bool          `help:"Analyze compositions identical to their in-cluster version (deprecated; --analyze-on=always)." name:"analyze-unchanged"`
+	AnalyzeOn           string        `help:"Smallest composition change that triggers per-composite impact analysis."                      name:"analyze-on"`
+	Files               []string      `arg:""                                                                                               help:"Input files."                           optional:""`
 }
 
 // parseSimulateArgs parses one case's CLI-style args. A parse failure is
@@ -313,7 +315,8 @@ func processorOptions(a *simArgs, stdout, stderr io.Writer, logger logging.Logge
 	// user passed --ignore-paths" indistinguishable from "we always ignore
 	// something", which comp-diff relies on to tell an edited composition
 	// from a merely re-applied one.
-	opts := []dp.ProcessorOption{
+	opts := make([]dp.ProcessorOption, 0, 15)
+	opts = append(opts,
 		dp.WithLogger(logger),
 		dp.WithAdvisories(advisories),
 		dp.WithColorize(!a.NoColor),
@@ -327,7 +330,7 @@ func processorOptions(a *simArgs, stdout, stderr io.Writer, logger logging.Logge
 		dp.WithAnalyzeOn(a.analyzeOn()),
 		dp.WithStdout(stdout),
 		dp.WithStderr(stderr),
-	}
+	)
 
 	var outputFormat renderer.OutputFormat
 
@@ -395,4 +398,19 @@ var dockerAvailable = sync.OnceValue(func() bool {
 // crossplane-diff's cmd/diff type the case tables were written against.
 type ExitCode struct {
 	Code int
+}
+
+// envtestBinariesAvailable reports whether the envtest control plane's
+// binaries are reachable: KUBEBUILDER_ASSETS points at them, or the
+// setup-envtest default install path exists.
+func envtestBinariesAvailable() bool {
+	if dir := os.Getenv("KUBEBUILDER_ASSETS"); dir != "" {
+		if _, err := os.Stat(filepath.Join(dir, "kube-apiserver")); err == nil {
+			return true
+		}
+	}
+
+	_, err := os.Stat("/usr/local/kubebuilder/bin/kube-apiserver")
+
+	return err == nil
 }

@@ -28,6 +28,22 @@ own. Pass `--include-pinned` to simulate them too.
 The `--timeout` flag bounds the whole simulation, not each composite resource.
 It doesn't include the time spent building functions.
 
+The command accepts the same diff-tuning flags as `crossplane-diff`:
+
+- `--ignore-paths` leaves paths out of the diff.
+- `--function-credentials` and `--function-registry-override` configure the
+  functions the render runs.
+- `--max-nested-depth` limits nested composite resource recursion.
+- `--dry-run-on` picks which resources the server-side dry run verifies:
+  `existing` or `all`, the default.
+- `--analyze-on` sets the smallest Composition change that triggers impact
+  analysis: `spec-change`, `any-change`, or `always`.
+- `--minimize-composition` collapses each changed Composition to one line in
+  the diff output.
+- `--eventual-state` shows the state after all reconciliation cycles complete.
+- `--max-recv-message-size` raises the function gRPC message limit, in MB.
+- `--no-color` and `--compact` change how the diff prints.
+
 The command exits with status 0 when the simulation succeeds, whether or not it
 finds changes, 1 when it fails, 2 when only schema validation fails, and 130
 when interrupted. Pass `--exit-code` to exit with status 3 when it finds

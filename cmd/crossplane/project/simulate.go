@@ -26,7 +26,9 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/afero"
+	corev1 "k8s.io/api/core/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -35,6 +37,7 @@ import (
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	ld "github.com/crossplane/cli/v2/cmd/crossplane/common/load"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/diff/client"
@@ -69,6 +72,18 @@ type simulateCmd struct {
 	Output        string        `default:"diff"                                                                                                        enum:"diff,json,yaml"                                                        help:"Output format. One of: diff, json, yaml." short:"o"`
 	ExitCode      bool          `help:"Exit with status 3 when the simulation finds changes."`
 
+	NoColor                  bool                `help:"Disable colorized output."`
+	Compact                  bool                `help:"Show compact diffs with minimal context."`
+	MaxNestedDepth           int                 `default:"10"                                                                                                                                                                       help:"Maximum depth for nested XR recursion."`
+	IgnorePaths              []string            `help:"Paths to ignore in diffs (e.g., 'metadata.annotations[argocd.argoproj.io/tracking-id]')."`
+	FunctionCredentials      FunctionCredentials `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."                                                                                  placeholder:"PATH"`
+	FunctionRegistryOverride string              `help:"Override the registry for all function images (e.g., 'my-company.registry.io')."`
+	EventualState            bool                `help:"Show eventual state after all reconciliation cycles complete (useful with function-sequencer)."`
+	MaxRecvMessageSize       int                 `env:"MAX_RECV_MESSAGE_SIZE"                                                                                                                                                        help:"Max gRPC message size (MB) for render function containers (4MB if undefined)."`
+	MinimizeComposition      bool                `help:"Collapse each changed composition to a single marker line (human-readable output only; JSON/YAML keeps full detail; errors and no-change compositions still print in full)."`
+	AnalyzeOn                string              `default:""                                                                                                                                                                         enum:",spec-change,any-change,always"                                                help:"Smallest composition change that triggers per-composite impact analysis. \"spec-change\": only when the composition spec changes. \"any-change\": also when only its metadata changes, which still creates a new CompositionRevision that composites re-point to. \"always\": even when the composition is identical, for a pre-edit convergence baseline. Defaults to any-change."`
+	DryRunOn                 string              `default:"all"                                                                                                                                                                      enum:"existing,all"                                                                  help:"Which resources to verify against the apiserver with a dry run: 'all' also dry-run creates added resources so their diffs include server-side defaulting and admission (needs the 'create' verb; degrades per-resource without it), 'existing' only resources already in the cluster."`
+
 	// CrossplaneVersion and CrossplaneImage select the crossplane render
 	// backend, as they do for crossplane-diff. When neither is set the render
 	// engine pulls xpkg.crossplane.io/crossplane/crossplane:stable.
@@ -76,6 +91,63 @@ type simulateCmd struct {
 	CrossplaneImage   string `help:"Override the full crossplane render image reference. Minimum v2.3.4 when its tag is a semantic version." placeholder:"IMAGE"   xor:"crossplane-render-backend"`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
+}
+
+// FunctionCredentials holds Secret credentials loaded from a file path. It
+// implements kong.MapperValue to load the secrets at parse time, so a bad
+// path fails before any build or cluster connection.
+type FunctionCredentials struct {
+	Path    string
+	Secrets []corev1.Secret
+}
+
+// Decode implements kong.MapperValue.
+func (f *FunctionCredentials) Decode(ctx *kong.DecodeContext) error {
+	var path string
+	if err := ctx.Scan.PopValueInto("path", &path); err != nil {
+		return err
+	}
+	if path == "" {
+		return nil
+	}
+
+	secrets, err := loadFunctionCredentials(path)
+	if err != nil {
+		return err
+	}
+	if len(secrets) == 0 {
+		return errors.Errorf("no Secret resources found in %q: file must contain v1/Secret resources", path)
+	}
+
+	f.Path = path
+	f.Secrets = secrets
+	return nil
+}
+
+// loadFunctionCredentials loads the v1 Secrets in a YAML file or directory.
+// Other resources are skipped.
+func loadFunctionCredentials(path string) ([]corev1.Secret, error) {
+	loader, err := ld.NewLoader(path)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot create loader for path %q", path)
+	}
+	resources, err := loader.Load()
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot load resources from %q", path)
+	}
+
+	secrets := make([]corev1.Secret, 0, len(resources))
+	for _, res := range resources {
+		if res.GetKind() != "Secret" || res.GetAPIVersion() != "v1" {
+			continue
+		}
+		secret := corev1.Secret{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(res.UnstructuredContent(), &secret); err != nil {
+			return nil, errors.Wrapf(err, "cannot convert Secret %q to corev1.Secret", res.GetName())
+		}
+		secrets = append(secrets, secret)
+	}
+	return secrets, nil
 }
 
 func (c *simulateCmd) Help() string {
@@ -218,13 +290,29 @@ func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, f
 		dp.WithAdvisories(dp.NewAdvisoryCollector(k.Stderr)),
 		dp.WithStdout(k.Stdout),
 		dp.WithStderr(k.Stderr),
-		dp.WithColorize(isTerminal(k.Stdout)),
+		dp.WithColorize(!c.NoColor && isTerminal(k.Stdout)),
+		dp.WithCompact(c.Compact),
+		dp.WithMaxNestedDepth(c.MaxNestedDepth),
+		dp.WithEventualState(c.EventualState),
+		dp.WithMinimizeComposition(c.MinimizeComposition),
+		dp.WithAnalyzeOn(dp.AnalyzeOn(c.AnalyzeOn)),
+		dp.WithDryRunOn(dp.DryRunOn(c.DryRunOn)),
+		dp.WithIgnorePaths(append([]string{lastAppliedPath}, c.IgnorePaths...)),
 		dp.WithOutputFormat(renderer.OutputFormat(c.Output)),
 		dp.WithIncludeManual(c.IncludePinned),
 		dp.WithMaxRenderIterations(c.MaxIterations),
 		dp.WithFunctionProviderFactory(dp.NewProjectFunctionProviderFactory(fns)),
 	}
 
+	if len(c.FunctionCredentials.Secrets) > 0 {
+		opts = append(opts, dp.WithFunctionCredentials(c.FunctionCredentials.Secrets))
+	}
+	if c.FunctionRegistryOverride != "" {
+		opts = append(opts, dp.WithFunctionRegistryOverride(c.FunctionRegistryOverride))
+	}
+	if c.MaxRecvMessageSize > 0 {
+		opts = append(opts, dp.WithMaxRecvMessageSize(c.MaxRecvMessageSize))
+	}
 	if c.CrossplaneVersion != "" {
 		opts = append(opts, dp.WithCrossplaneVersion(c.CrossplaneVersion))
 	}
@@ -255,6 +343,9 @@ func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	return ok && term.IsTerminal(f.Fd())
 }
+
+// lastAppliedPath is always ignored in diffs, as in crossplane-diff.
+const lastAppliedPath = "metadata.annotations[kubectl.kubernetes.io/last-applied-configuration]"
 
 // errChangesDetected is the error a run with --exit-code returns when it
 // finds changes.

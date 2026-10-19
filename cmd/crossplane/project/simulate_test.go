@@ -20,12 +20,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
@@ -53,6 +57,16 @@ func parseSimulate(t *testing.T, args ...string) (*simulateCmd, error) {
 }
 
 func TestSimulateFlags(t *testing.T) {
+	dir := t.TempDir()
+	creds := filepath.Join(dir, "creds.yaml")
+	noSecrets := filepath.Join(dir, "none.yaml")
+	if err := os.WriteFile(creds, []byte("apiVersion: v1\nkind: Secret\nmetadata:\n  name: creds\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(noSecrets, []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	type want struct {
 		cmd *simulateCmd
 		err bool
@@ -71,6 +85,8 @@ func TestSimulateFlags(t *testing.T) {
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        time.Minute,
 				Output:         "diff",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
 			}},
 		},
 		"AllFlags": {
@@ -93,7 +109,71 @@ func TestSimulateFlags(t *testing.T) {
 				Output:            "json",
 				ExitCode:          true,
 				CrossplaneVersion: "v2.3.4",
+				MaxNestedDepth:    10,
+				DryRunOn:          "all",
 			}},
+		},
+		"ParityFlags": {
+			reason: "The crossplane-diff parity flags should land on their fields.",
+			args: []string{
+				"--no-color", "--compact", "--max-nested-depth", "3", "--ignore-paths", "a.b", "--ignore-paths", "c.d",
+				"--function-registry-override", "reg.example.com", "--eventual-state", "--max-recv-message-size", "16",
+				"--minimize-composition", "--analyze-on", "always", "--dry-run-on", "existing",
+			},
+			want: want{cmd: &simulateCmd{
+				ProjectFile:              "crossplane-project.yaml",
+				MaxConcurrency:           8,
+				MaxIterations:            dp.DefaultMaxRenderIterations,
+				Timeout:                  time.Minute,
+				Output:                   "diff",
+				NoColor:                  true,
+				Compact:                  true,
+				MaxNestedDepth:           3,
+				IgnorePaths:              []string{"a.b", "c.d"},
+				FunctionRegistryOverride: "reg.example.com",
+				EventualState:            true,
+				MaxRecvMessageSize:       16,
+				MinimizeComposition:      true,
+				AnalyzeOn:                "always",
+				DryRunOn:                 "existing",
+			}},
+		},
+		"FunctionCredentials": {
+			reason: "--function-credentials should load the Secrets in the file at parse time.",
+			args:   []string{"--function-credentials", creds},
+			want: want{cmd: &simulateCmd{
+				ProjectFile:    "crossplane-project.yaml",
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        time.Minute,
+				Output:         "diff",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+				FunctionCredentials: FunctionCredentials{Path: creds, Secrets: []corev1.Secret{{
+					TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+					ObjectMeta: metav1.ObjectMeta{Name: "creds"},
+				}}},
+			}},
+		},
+		"FunctionCredentialsMissing": {
+			reason: "A missing credentials path should be rejected at parse time.",
+			args:   []string{"--function-credentials", filepath.Join(t.TempDir(), "nope.yaml")},
+			want:   want{err: true},
+		},
+		"FunctionCredentialsNoSecrets": {
+			reason: "A credentials file with no Secrets should be rejected.",
+			args:   []string{"--function-credentials", noSecrets},
+			want:   want{err: true},
+		},
+		"UnknownDryRunOn": {
+			reason: "Unknown --dry-run-on values should be rejected.",
+			args:   []string{"--dry-run-on", "none"},
+			want:   want{err: true},
+		},
+		"UnknownAnalyzeOn": {
+			reason: "Unknown --analyze-on values should be rejected.",
+			args:   []string{"--analyze-on", "never"},
+			want:   want{err: true},
 		},
 		"UnknownOutput": {
 			reason: "Output formats other than diff, json and yaml should be rejected.",
@@ -124,6 +204,8 @@ func TestSimulateFlags(t *testing.T) {
 				MaxIterations:   dp.DefaultMaxRenderIterations,
 				Timeout:         time.Minute,
 				Output:          "diff",
+				MaxNestedDepth:  10,
+				DryRunOn:        "all",
 				CrossplaneImage: "example.com/crossplane:stable",
 			}},
 		},
@@ -202,6 +284,17 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		IncludePinned:     true,
 		MaxIterations:     7,
 		CrossplaneVersion: "v2.3.4",
+
+		Compact:                  true,
+		MaxNestedDepth:           4,
+		IgnorePaths:              []string{"a.b"},
+		FunctionCredentials:      FunctionCredentials{Secrets: []corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "creds"}}}},
+		FunctionRegistryOverride: "reg.example.com",
+		EventualState:            true,
+		MaxRecvMessageSize:       16,
+		MinimizeComposition:      true,
+		AnalyzeOn:                "spec-change",
+		DryRunOn:                 "existing",
 	}
 
 	cfg := dp.ProcessorConfig{}
@@ -220,6 +313,16 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		StderrIsK           bool
 		HasAdvisories       bool
 		HasFunctionProvider bool
+		Compact             bool
+		MaxNestedDepth      int
+		IgnorePaths         []string
+		Credentials         []corev1.Secret
+		RegistryOverride    string
+		EventualState       bool
+		MaxRecvMessageSize  int
+		MinimizeComposition bool
+		AnalyzeOn           dp.AnalyzeOn
+		DryRunOn            dp.DryRunOn
 	}
 	want := got{
 		OutputFormat:        renderer.OutputFormatYAML,
@@ -232,6 +335,16 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		StderrIsK:           true,
 		HasAdvisories:       true,
 		HasFunctionProvider: true,
+		Compact:             true,
+		MaxNestedDepth:      4,
+		IgnorePaths:         []string{lastAppliedPath, "a.b"},
+		Credentials:         c.FunctionCredentials.Secrets,
+		RegistryOverride:    "reg.example.com",
+		EventualState:       true,
+		MaxRecvMessageSize:  16,
+		MinimizeComposition: true,
+		AnalyzeOn:           dp.AnalyzeOnSpecChange,
+		DryRunOn:            dp.DryRunOnExisting,
 	}
 	g := got{
 		OutputFormat:        cfg.OutputFormat,
@@ -244,6 +357,16 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		StderrIsK:           cfg.Stderr == stderr,
 		HasAdvisories:       cfg.Advisories != nil,
 		HasFunctionProvider: cfg.Factories.FunctionProvider != nil,
+		Compact:             cfg.Compact,
+		MaxNestedDepth:      cfg.MaxNestedDepth,
+		IgnorePaths:         cfg.IgnorePaths,
+		Credentials:         cfg.FunctionCredentials,
+		RegistryOverride:    cfg.FunctionRegistryOverride,
+		EventualState:       cfg.EventualState,
+		MaxRecvMessageSize:  cfg.MaxRecvMessageSize,
+		MinimizeComposition: cfg.MinimizeComposition,
+		AnalyzeOn:           cfg.AnalyzeOn,
+		DryRunOn:            cfg.DryRunOn,
 	}
 	if diff := cmp.Diff(want, g); diff != "" {
 		t.Errorf("processorOptions(...): -want, +got:\n%s", diff)

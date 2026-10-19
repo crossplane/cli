@@ -423,7 +423,7 @@ func TestResolveFunctions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolveFunctions: %v", err)
 			}
-			if diff := cmp.Diff(tc.want, got); diff != "" {
+			if diff := cmp.Diff(tc.want, got, cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("resolveFunctions(...): -want, +got:\n%s", diff)
 			}
 		})
@@ -783,5 +783,59 @@ func writeRuntimeTarImage(t *testing.T, fsys afero.Fs, path, arch string, img v1
 	}
 	if err := gz.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadCompositions(t *testing.T) {
+	t.Parallel()
+
+	comp := compositionYAML("xdatabase-comp", "acme.example.com", "XDatabase")
+	xrd := xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase")
+
+	tcs := map[string]struct {
+		apisPath string
+		files    map[string]string
+		want     []string
+	}{
+		"DefaultAPIsPath": {
+			files: map[string]string{
+				"apis/db/comp.yaml":  comp,
+				"apis/db/xrd.yaml":   xrd,
+				"apis/db/notes.txt":  comp,
+				"examples/comp.yaml": compositionYAML("example-comp", "acme.example.com", "XDatabase"),
+				"other/comp.yaml":    compositionYAML("other-comp", "acme.example.com", "XDatabase"),
+			},
+			want: []string{"xdatabase-comp"},
+		},
+		"NoCompositions": {
+			files: map[string]string{"apis/xrd.yaml": xrd},
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			projFS := afero.NewMemMapFs()
+			for path, content := range tc.files {
+				if err := afero.WriteFile(projFS, path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			proj := &devv1alpha1.Project{Spec: devv1alpha1.ProjectSpec{Paths: &devv1alpha1.ProjectPaths{APIs: tc.apisPath}}}
+			proj.Default()
+
+			comps, err := LoadCompositions(proj, projFS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, 0, len(comps))
+			for _, c := range comps {
+				got = append(got, c.GetName())
+			}
+			if diff := cmp.Diff(tc.want, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("LoadCompositions(): -want, +got:\n%s", diff)
+			}
+		})
 	}
 }

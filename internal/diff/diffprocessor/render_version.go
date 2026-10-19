@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Masterminds/semver"
+	"github.com/Masterminds/semver/v3"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )

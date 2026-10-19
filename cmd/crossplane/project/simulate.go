@@ -67,6 +67,7 @@ type simulateCmd struct {
 	MaxIterations int           `default:"20"                                                                                                          help:"Max render iterations per composite resource to resolve requirements."`
 	Timeout       time.Duration `default:"1m"                                                                                                          help:"Max time for the simulation, not counting function builds."`
 	Output        string        `default:"diff"                                                                                                        enum:"diff,json,yaml"                                                        help:"Output format. One of: diff, json, yaml." short:"o"`
+	ExitCode      bool          `help:"Exit with status 3 when the simulation finds changes."`
 
 	// CrossplaneVersion and CrossplaneImage select the crossplane render
 	// backend, as they do for crossplane-diff. When neither is set the render
@@ -181,11 +182,17 @@ func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, initC
 	}
 
 	ns, refs := c.scope()
-	_, err = proc.DiffComposition(ctx, comps, ns, refs)
+	hasDiffs, err := proc.DiffComposition(ctx, comps, ns, refs)
 	if err != nil {
 		// DiffComposition has already rendered the result, including its
 		// errors. A run that failed only schema validation exits 2.
 		return exitError{error: errors.Wrap(err, "cannot simulate project"), code: dp.DetermineExitCode(err, false)}
+	}
+
+	// Changes are what a simulation is for, so they fail the run only when
+	// asked, as with git diff --exit-code.
+	if c.ExitCode && hasDiffs {
+		return exitError{error: errChangesDetected, code: dp.ExitCodeDiffDetected}
 	}
 
 	return nil
@@ -248,6 +255,10 @@ func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	return ok && term.IsTerminal(f.Fd())
 }
+
+// errChangesDetected is the error a run with --exit-code returns when it
+// finds changes.
+var errChangesDetected = errors.New("changes detected")
 
 // exitError is an error that sets the command's exit status. kong's
 // FatalIfErrorf honours it.

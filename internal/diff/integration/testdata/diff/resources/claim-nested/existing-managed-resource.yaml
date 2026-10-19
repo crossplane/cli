@@ -1,0 +1,14 @@
+apiVersion: nop.crossplane.io/v1alpha1
+kind: ClusterNopResource
+metadata:
+  name: existing-parent-claim-82crv-nop
+  generateName: existing-parent-claim-82crv-
+  annotations:
+    child-field: existing-parent-value
+    crossplane.io/composition-resource-name: nop-resource
+spec:
+  forProvider:
+    conditionAfter:
+    - conditionType: Ready
+      conditionStatus: "True"
+      time: 0s

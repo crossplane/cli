@@ -1,0 +1,24 @@
+# The backing XR Crossplane's claim syncer created for existing-claim.yaml, tracking its composition's
+# current revision. A case also diffs this file as an input, so it spells out what the harness would
+# otherwise derive.
+apiVersion: claimnested.diff.example.org/v1alpha1
+kind: XNopParent
+metadata:
+  name: existing-parent-claim-82crv
+  generateName: existing-parent-claim-
+  labels:
+    crossplane.io/claim-name: existing-parent-claim
+    crossplane.io/claim-namespace: default
+    crossplane.io/composite: existing-parent-claim-82crv
+spec:
+  claimRef:
+    apiVersion: claimnested.diff.example.org/v1alpha1
+    kind: ParentNopClaim
+    name: existing-parent-claim
+    namespace: default
+  parentField: existing-parent-value
+  compositionUpdatePolicy: Automatic
+  compositionRef:
+    name: parent-nop-claim-composition
+  compositionRevisionRef:
+    name: parent-nop-claim-composition-cfac93e

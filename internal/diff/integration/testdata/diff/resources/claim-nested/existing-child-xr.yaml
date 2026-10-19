@@ -1,0 +1,11 @@
+apiVersion: claimnested.diff.example.org/v1alpha1
+kind: XNopChild
+metadata:
+  name: existing-parent-claim-82crv-child
+  generateName: existing-parent-claim-82crv-
+  annotations:
+    crossplane.io/composition-resource-name: child-xr
+spec:
+  childField: existing-parent-value
+  compositionRef:
+    name: child-nop-claim-composition

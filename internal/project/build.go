@@ -686,9 +686,20 @@ func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string, exclude []s
 		}
 
 		for _, excl := range exclude {
-			if strings.HasPrefix(path, excl) {
+			if excl == "" {
+				continue
+			}
+			// Walk paths are rooted at "/" while project paths are usually
+			// relative, so anchor each exclude at "/" and match the path
+			// itself or anything beneath it.
+			e := filepath.Join("/", excl)
+			if path != e && !strings.HasPrefix(path, e+"/") {
+				continue
+			}
+			if info.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
 		}
 
 		if info.IsDir() {

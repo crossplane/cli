@@ -20,6 +20,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
+
+	xpv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/project/functions"
@@ -745,5 +748,44 @@ func writeRuntimeTarImage(t *testing.T, fsys afero.Fs, path, arch string, img v1
 	}
 	if err := gz.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCollectResourcesRootExcludes(t *testing.T) {
+	t.Parallel()
+
+	comp := compositionYAML("c", "acme.example.com", "XDatabase")
+	projFS := afero.NewMemMapFs()
+	for _, path := range []string{
+		"/db/comp.yaml",
+		"/examples/comp.yaml",
+		"/examples-foo/comp.yaml",
+		"/functions/fn/comp.yaml",
+		"/operations/comp.yaml",
+	} {
+		if err := afero.WriteFile(projFS, path, []byte(comp), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// These are the excludes project build uses when the APIs path is "/".
+	pkgFS := afero.NewMemMapFs()
+	gvks := []string{xpv1.CompositionGroupVersionKind.String()}
+	if err := collectResources(pkgFS, projFS, gvks, []string{"examples", "functions", "operations"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	if err := afero.Walk(pkgFS, "/", func(path string, info fs.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			got = append(got, path)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/db/comp.yaml", "/examples-foo/comp.yaml"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("collectResources(): -want, +got:\n%s", diff)
 	}
 }

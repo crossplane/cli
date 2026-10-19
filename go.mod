@@ -8,7 +8,6 @@ require (
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.6
 	dario.cat/mergo v1.0.2
-	github.com/Masterminds/semver v1.5.0
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/alecthomas/kong v1.16.1
 	github.com/charmbracelet/x/ansi v0.11.8

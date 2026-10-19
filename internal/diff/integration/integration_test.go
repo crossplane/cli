@@ -5988,6 +5988,23 @@ func TestDiffSingleResourceConcurrent(t *testing.T) {
 
 	tu.SetupKubeTestLogger(t)
 
+	// Same environment guards the runner applies before cluster startup: this test needs the
+	// same pieces (Docker to render, envtest binaries, the pinned Crossplane CRDs).
+	if !dockerAvailable() {
+		t.Skip("env: no Docker daemon for the function render engine")
+		return
+	}
+
+	if !envtestBinariesAvailable() {
+		t.Skip("env: no envtest binaries (KUBEBUILDER_ASSETS unset)")
+		return
+	}
+
+	if os.Getenv("CROSSPLANE_CRDS_DIR") == "" {
+		t.Skip("env: CROSSPLANE_CRDS_DIR unset (run via nix run .#test or set it to Crossplane's cluster/crds)")
+		return
+	}
+
 	cfg, _, ctx, _ := startIntegrationCluster(t, XRDiffTest, IntegrationTestCase{
 		setupFiles: []string{
 			"testdata/diff/resources/xrd.yaml",

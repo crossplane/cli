@@ -41,7 +41,6 @@ import (
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/restmapper"
-	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -681,26 +680,9 @@ func relevantProviderImages(ctx context.Context, kubeClient client.Client, rmapp
 }
 
 func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMapper, string, error) {
-	clientconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(),
-		&clientcmd.ConfigOverrides{CurrentContext: c.Context},
-	)
-
-	kubeconfig, err := clientconfig.ClientConfig()
+	kubeconfig, clientconfig, err := kube.RESTConfig(c.Context, c.Impersonation)
 	if err != nil {
-		return nil, nil, "", errors.Wrap(err, "failed to get kubeconfig")
-	}
-
-	c.Impersonation.Apply(kubeconfig)
-
-	// client-go defaults unset QPS/Burst to 5/10 with client-side throttling,
-	// which is painfully slow for the several reads simulate does per
-	// resource. Same approach as trace's setupKubeClient.
-	if kubeconfig.QPS == 0 {
-		kubeconfig.QPS = 20
-	}
-	if kubeconfig.Burst == 0 {
-		kubeconfig.Burst = 30
+		return nil, nil, "", err
 	}
 
 	logger.Debug("Found kubeconfig")

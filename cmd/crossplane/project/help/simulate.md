@@ -28,6 +28,11 @@ own. Pass `--include-pinned` to simulate them too.
 The `--timeout` flag bounds the whole simulation, not each composite resource.
 It doesn't include the time spent building functions.
 
+The command exits with status 0 when the simulation succeeds, whether or not it
+finds changes, 1 when it fails, 2 when only schema validation fails, and 130
+when interrupted. Pass `--exit-code` to exit with status 3 when it finds
+changes, for example to gate a CI pipeline.
+
 ## Examples
 
 Simulate the project in the current directory against the current context:
@@ -53,4 +58,10 @@ Print the result as JSON:
 
 ```shell
 crossplane project simulate -o json
+```
+
+Fail a CI job when the project would change the cluster:
+
+```shell
+crossplane project simulate --exit-code
 ```

@@ -78,7 +78,7 @@ func TestSimulateFlags(t *testing.T) {
 			args: []string{
 				"-f", "p.yaml", "-c", "staging", "-n", "team-a", "--name", "db",
 				"--include-pinned", "--max-iterations", "3", "--timeout", "2m",
-				"--max-concurrency", "2", "-o", "json", "--crossplane-version", "v2.3.4",
+				"--max-concurrency", "2", "-o", "json", "--crossplane-version", "v2.3.4", "--exit-code",
 				"--as", "jane", "--as-group", "admins",
 			},
 			want: want{cmd: &simulateCmd{
@@ -91,6 +91,7 @@ func TestSimulateFlags(t *testing.T) {
 				Timeout:           2 * time.Minute,
 				MaxConcurrency:    2,
 				Output:            "json",
+				ExitCode:          true,
 				CrossplaneVersion: "v2.3.4",
 			}},
 		},
@@ -320,6 +321,25 @@ func TestSimulateRun(t *testing.T) {
 				return true, nil
 			}}},
 			want: want{diffed: true},
+		},
+		"ChangesWithExitCode": {
+			reason: "With --exit-code, changes should exit 3.",
+			args: args{cmd: simulateCmd{ExitCode: true}, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
+				return true, nil
+			}}},
+			want: want{code: dp.ExitCodeDiffDetected, err: errChangesDetected, diffed: true},
+		},
+		"NoChangesWithExitCode": {
+			reason: "With --exit-code, a run with no changes should still succeed.",
+			args:   args{cmd: simulateCmd{ExitCode: true}, initClients: noInit, proc: &fakeCompProc{}},
+			want:   want{diffed: true},
+		},
+		"ErrorWithExitCode": {
+			reason: "With --exit-code, a tool error should still exit 1, not 3.",
+			args: args{cmd: simulateCmd{ExitCode: true}, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
+				return true, errBoom
+			}}},
+			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
 		},
 		"Namespaced": {
 			reason: "--namespace alone should reach DiffComposition as the namespace.",

@@ -27,10 +27,6 @@ express is ported in full and skipped with a greppable reason:
 - `gap:<feature>` — the simulate command lacks the feature. Enable the
   cases by implementing the feature and removing the gap from
   `simulateGap`.
-- `gap:flag-parity-not-merged (<flag>)` — the flag exists on branch
-  `jco-simulate-flag-parity` but is not merged into this branch yet. The
-  harness already parses and threads these flags; the cases run as soon
-  as the merge lands.
 - `env:<reason>` — the environment lacks something. The render engine
   runs functions as Docker containers (no Docker daemon skips the case),
   and envtest needs `KUBEBUILDER_ASSETS` pointing at kube-apiserver/etcd

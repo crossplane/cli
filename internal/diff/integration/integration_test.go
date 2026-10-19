@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	run "runtime"
 	"slices"
@@ -160,7 +161,7 @@ func createTestScheme() *runtime.Scheme {
 // tt's setupFiles, crossplaneManagedResources, fieldManagerApplies and deleteAfterSetup. It returns the
 // cluster's config, a client for it, and a context bounded by the case's timeout, which it also returns.
 // The cluster is stopped and the context cancelled when the test ends.
-func startIntegrationCluster(t *testing.T, testType DiffTestType, tt IntegrationTestCase) (*rest.Config, client.Client, context.Context, time.Duration) {
+func startIntegrationCluster(t *testing.T, testType DiffTestType, tt IntegrationTestCase, testTimeout time.Duration) (*rest.Config, client.Client, context.Context, time.Duration) {
 	t.Helper()
 
 	// Create a fresh scheme for each test to avoid concurrent map access.
@@ -214,12 +215,6 @@ func startIntegrationCluster(t *testing.T, testType DiffTestType, tt Integration
 	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
-	}
-
-	// Use custom timeout if specified, otherwise use default
-	testTimeout := defaultTimeout
-	if tt.timeout > 0 {
-		testTimeout = tt.timeout
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
@@ -312,7 +307,11 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 		return
 	}
 
-	cfg, k8sClient, ctx, testTimeout := startIntegrationCluster(t, testType, tt)
+	// Use custom timeout if specified, otherwise use default
+	testTimeout := defaultTimeout
+	if tt.timeout > 0 {
+		testTimeout = tt.timeout
+	}
 
 	// Set up the test files
 	testFiles := make([]string, 0, len(tt.inputFiles))
@@ -429,6 +428,15 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 		t.Skip("env: no envtest binaries (KUBEBUILDER_ASSETS unset)")
 		return
 	}
+
+	// The pinned Crossplane CRDs come from the environment the test runners set (see
+	// tu.PinnedCrossplaneCRDsDir); without it every case would fatal in cluster setup.
+	if os.Getenv("CROSSPLANE_CRDS_DIR") == "" {
+		t.Skip("env: CROSSPLANE_CRDS_DIR unset (run via nix run .#test or set it to Crossplane's cluster/crds)")
+		return
+	}
+
+	cfg, k8sClient, ctx, _ := startIntegrationCluster(t, testType, tt, testTimeout)
 
 	// Block until any ValidatingAdmissionPolicy in the setup is actually enforcing, so the diff
 	// cannot race the apiserver's policy informer. See the field's doc comment.
@@ -5992,7 +6000,7 @@ func TestDiffSingleResourceConcurrent(t *testing.T) {
 				"testdata/diff/resources/existing-downstream-resource.yaml",
 			),
 		},
-	})
+	}, defaultTimeout)
 
 	// One modified and one new XR, each diffed several times at once.
 	var inputs []*un.Unstructured

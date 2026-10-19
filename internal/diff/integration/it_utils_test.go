@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	gyaml "gopkg.in/yaml.v3"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,6 +31,8 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 
 	xpextv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+
+	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 
 // CrossplaneFieldManager is the field manager used for SSA when setting up Crossplane-managed resources.
@@ -54,7 +55,15 @@ var compositeReconcilerFields = [][]string{
 
 // Testing data for integration tests
 
+// The helpers below are carried verbatim from crossplane-diff's
+// diff_it_utils_test.go, where they back the same builder surface. Some are
+// not referenced by a case on this branch yet (the cases that used them are
+// gap-skipped, and golangci's unused check is compile-time), so keep them
+// ready for the cases that will use them once the gaps close.
+//
 // createTestCompositionWithExtraResources creates a test Composition with a function-extra-resources step.
+//
+//nolint:unused // carried verbatim from crossplane-diff; the cases using it are gap-skipped
 func createTestCompositionWithExtraResources() (*xpextv1.Composition, error) {
 	pipelineMode := xpextv1.CompositionModePipeline
 
@@ -142,6 +151,8 @@ func createTestCompositionWithExtraResources() (*xpextv1.Composition, error) {
 }
 
 // createTestXRD creates a test XRD for the XR.
+//
+//nolint:unused // carried verbatim from crossplane-diff; the cases using it are gap-skipped
 func createTestXRD() *xpextv1.CompositeResourceDefinition {
 	return tu.NewXRD("xexampleresources.example.org", "example.org", "XExampleResource").
 		WithPlural("xexampleresources").
@@ -174,6 +185,8 @@ func createTestXRD() *xpextv1.CompositeResourceDefinition {
 }
 
 // createExtraResource creates a test extra resource.
+//
+//nolint:unused // carried verbatim from crossplane-diff; the cases using it are gap-skipped
 func createExtraResource() *un.Unstructured {
 	return &un.Unstructured{
 		Object: map[string]any{
@@ -193,6 +206,8 @@ func createExtraResource() *un.Unstructured {
 }
 
 // createExistingComposedResource creates an existing composed resource with different values.
+//
+//nolint:unused // carried verbatim from crossplane-diff; the cases using it are gap-skipped
 func createExistingComposedResource() *un.Unstructured {
 	return &un.Unstructured{
 		Object: map[string]any{
@@ -227,6 +242,8 @@ func createExistingComposedResource() *un.Unstructured {
 }
 
 // createMatchingComposedResource creates a composed resource that matches what would be rendered.
+//
+//nolint:unused // carried verbatim from crossplane-diff; the cases using it are gap-skipped
 func createMatchingComposedResource() *un.Unstructured {
 	return &un.Unstructured{
 		Object: map[string]any{

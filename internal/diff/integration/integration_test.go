@@ -14,10 +14,6 @@ import (
 	"testing"
 	"time"
 
-	dclient "github.com/crossplane/cli/v2/internal/diff/client"
-	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
-	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/google/go-cmp/cmp"
 	"github.com/sergi/go-diff/diffmatchpatch"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -31,6 +27,11 @@ import (
 	xpextv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	xpextv2 "github.com/crossplane/crossplane/apis/v2/apiextensions/v2"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+
+	dclient "github.com/crossplane/cli/v2/internal/diff/client"
+	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
+	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 
 const (
@@ -418,6 +419,14 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 	// case can run; cases that would not render anyway cannot be told apart upfront, so they skip.
 	if !dockerAvailable() {
 		t.Skip("env: no Docker daemon for the function render engine")
+		return
+	}
+
+	// envtest needs kube-apiserver/etcd binaries it cannot download itself. The dev shells and
+	// nix test environment point KUBEBUILDER_ASSETS at them (see setup-envtest); without them
+	// every case would die in envtest.Start rather than skip.
+	if !envtestBinariesAvailable() {
+		t.Skip("env: no envtest binaries (KUBEBUILDER_ASSETS unset)")
 		return
 	}
 

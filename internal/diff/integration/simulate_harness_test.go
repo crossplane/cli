@@ -36,10 +36,6 @@ limitations under the License.
 //   - gap:<feature> — the simulate command lacks the feature this case
 //     needs. Grep the skip reasons to find what to enable as features
 //     land.
-//   - gap:flag-parity-not-merged (<flag>) — the flag exists on branch
-//     jco-simulate-flag-parity but is not merged into this branch yet.
-//     The harness already wires these flags, so the case runs as soon as
-//     that branch merges.
 //   - env:<reason> — the environment lacks something the case needs.
 //     The render engine runs functions as Docker containers, so without
 //     a Docker daemon no rendering case can run; cases that would not
@@ -58,6 +54,8 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -93,6 +91,12 @@ type simArgs struct {
 	AnalyzeUnchanged    bool          `help:"Analyze compositions identical to their in-cluster version (deprecated; --analyze-on=always)." name:"analyze-unchanged"`
 	AnalyzeOn           string        `help:"Smallest composition change that triggers per-composite impact analysis."                      name:"analyze-on"`
 	Files               []string      `arg:""                                                                                               help:"Input files."                           optional:""`
+
+	// functionSecrets holds the Secrets --function-credentials loaded at
+	// parse time, the way crossplane-diff's kong MapperValue and
+	// simulate's own flag do: a bad path fails before any build or
+	// cluster connection.
+	functionSecrets []corev1.Secret
 }
 
 // parseSimulateArgs parses one case's CLI-style args. A parse failure is
@@ -110,7 +114,44 @@ func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simA
 		t.Fatalf("failed to parse args %v: %v", args, err)
 	}
 
+	if a.FunctionCredentials != "" {
+		secrets, err := loadFunctionSecrets(a.FunctionCredentials)
+		if err != nil {
+			t.Fatalf("failed to load --function-credentials %q: %v", a.FunctionCredentials, err)
+		}
+		if len(secrets) == 0 {
+			t.Fatalf("no Secret resources found in %q: file must contain v1/Secret resources", a.FunctionCredentials)
+		}
+		a.functionSecrets = secrets
+	}
+
 	return &a
+}
+
+// loadFunctionSecrets mirrors simulate's loadFunctionCredentials: the v1
+// Secrets in a YAML file or directory, other resources skipped.
+func loadFunctionSecrets(path string) ([]corev1.Secret, error) {
+	loader, err := ld.NewLoader(path)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot create loader for path %q", path)
+	}
+	resources, err := loader.Load()
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot load resources from %q", path)
+	}
+
+	secrets := make([]corev1.Secret, 0, len(resources))
+	for _, res := range resources {
+		if res.GetKind() != "Secret" || res.GetAPIVersion() != "v1" {
+			continue
+		}
+		secret := corev1.Secret{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(res.UnstructuredContent(), &secret); err != nil {
+			return nil, errors.Wrapf(err, "cannot convert Secret %q to corev1.Secret", res.GetName())
+		}
+		secrets = append(secrets, secret)
+	}
+	return secrets, nil
 }
 
 // engineLimitVars ports crossplane-diff main.go's kong.Vars of the same
@@ -137,27 +178,6 @@ func simulateGap(testType DiffTestType, a *simArgs) string {
 	// `project simulate -f xr.yaml`) is not implemented yet.
 	if testType == XRDiffTest {
 		return "gap: simulate has no xr mode (XR files as input) yet"
-	}
-
-	// Flags that exist on the flag-parity branch but are not merged into
-	// this branch yet. The harness already wires them; the cases run as
-	// soon as the merge lands.
-	flagParity := []struct {
-		set  bool
-		flag string
-	}{
-		{a.NoColor, "--no-color"},
-		{len(a.IgnorePaths) > 0, "--ignore-paths"},
-		{a.FunctionCredentials != "", "--function-credentials"},
-		{a.EventualState, "--eventual-state"},
-		{a.AnalyzeUnchanged, "--analyze-unchanged (simulate's --analyze-on=always)"},
-		{a.AnalyzeOn != "", "--analyze-on"},
-		{a.DryRunOn != "" && a.DryRunOn != "all", "--dry-run-on"},
-	}
-	for _, f := range flagParity {
-		if f.set {
-			return "gap:flag-parity-not-merged (" + f.flag + ")"
-		}
 	}
 
 	// simulate scopes to one composite resource with --name (with
@@ -349,8 +369,11 @@ func processorOptions(a *simArgs, stdout, stderr io.Writer, logger logging.Logge
 	opts = append(opts, dp.WithOutputFormat(outputFormat), dp.WithOutputVersion(renderer.OutputVersion(a.OutputVersion)))
 
 	// Function credentials load at parse time in crossplane-diff (a kong
-	// MapperValue); the cases that pass them are gap-skipped before this
-	// point, so nothing reaches the processor without them.
+	// MapperValue), as parseSimulateArgs does here; the processor gets
+	// them only when the flag loaded some.
+	if len(a.functionSecrets) > 0 {
+		opts = append(opts, dp.WithFunctionCredentials(a.functionSecrets))
+	}
 
 	return opts
 }

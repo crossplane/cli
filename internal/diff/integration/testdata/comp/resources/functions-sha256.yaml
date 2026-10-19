@@ -1,0 +1,17 @@
+---
+# Function referenced by SHA256 digest instead of tag.
+# This tests that a function whose package is a digest reference renders.
+# The digest is for function-go-templating:v0.11.0 - same image, different reference format.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: function-go-templating-sha256
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/function-go-templating@sha256:34f1ca0ff2e1702ae0a5088a96f31e992eb9b15356af3b0f1a2068603e767753
+---
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: function-auto-ready
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/function-auto-ready:v0.4.2

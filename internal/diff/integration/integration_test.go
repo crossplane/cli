@@ -1,0 +1,6089 @@
+package integration
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"path/filepath"
+	run "runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	dclient "github.com/crossplane/cli/v2/internal/diff/client"
+	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
+	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
+	"github.com/google/go-cmp/cmp"
+	"github.com/sergi/go-diff/diffmatchpatch"
+	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	cgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	xpextv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	xpextv2 "github.com/crossplane/crossplane/apis/v2/apiextensions/v2"
+	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+)
+
+const (
+	defaultTimeout = 60 * time.Second
+	longTimeout    = 180 * time.Second // For tests with multiple iterations (eventual state, concurrent rendering)
+)
+
+// DiffTestType represents the type of diff test to run.
+type DiffTestType string
+
+const (
+	XRDiffTest          DiffTestType = "diff"
+	CompositionDiffTest DiffTestType = "comp"
+)
+
+// fieldManagerApply is a manifest to server-side apply under a specific field manager.
+type fieldManagerApply struct {
+	file         string
+	fieldManager string
+}
+
+// IntegrationTestCase represents a common test case structure for both XR and composition diff tests.
+type IntegrationTestCase struct {
+	reason           string // Description of what this test validates
+	setupFiles       []string
+	deleteAfterSetup []string // Files whose resources are deleted after setup; with a finalizer this leaves them Terminating
+	// crossplaneManagedResources are the XRs that exist in the cluster, with what they compose. Every
+	// composed resource is server-side applied under Crossplane's composed field manager and given a
+	// controller ownerReference to its XR's real UID, and each XR lists its composed resources in its
+	// resourceRefs, as Crossplane leaves them. Use composes() for an XR without nested XRs. Put a
+	// composed resource in setupFiles instead only when it deliberately has no controlling XR.
+	crossplaneManagedResources []HierarchicalOwnershipRelation
+	// fieldManagerApplies are server-side applied, in order, after setupFiles and
+	// crossplaneManagedResources, each under its own
+	// field manager. Use it when a test depends on which manager owns a field: a plain Create
+	// records only the test client as owner, and the apiserver drops managedFields supplied on Create.
+	fieldManagerApplies    []fieldManagerApply
+	inputFiles             []string // Input files to diff (XR YAML files or Composition YAML files)
+	expectedOutput         string
+	expectedError          bool
+	expectedErrorContains  string
+	expectedStderrContains []string // substrings that must appear on stderr (warnings, error lines)
+	expectedExitCode       int      // Expected exit code (0=success, 1=tool error, 2=schema validation, 3=diff detected)
+	noColor                bool
+	namespace              string        // For composition tests (optional)
+	xrdAPIVersion          XrdAPIVersion // For XR tests (optional)
+	ignorePaths            []string      // Paths to ignore in diffs
+	functionCredentials    string        // Path to function credentials file (optional)
+	eventualState          bool          // Enable eventual state simulation for XR or composition tests (optional)
+	timeout                time.Duration // Custom timeout for this test (0 = use default)
+	resources              []string      // For composition tests: --resource values; each entry passed as one --resource flag
+	resourcesCSV           string        // For composition tests: alternative single --resource=a,b style invocation
+	includeManual          bool          // For composition tests: pass --include-manual flag
+	analyzeUnchanged       bool          // For composition tests: pass the deprecated --analyze-unchanged flag
+	analyzeOn              string        // For composition tests: pass --analyze-on=<value> (empty = rely on the default)
+	// dryRunOn passes --dry-run-on=<value> (empty = rely on the default, which is "all").
+	// The flag lives on CommonCmdFields, so it applies to both `xr` and `comp`.
+	dryRunOn string
+	// awaitAdmissionDenialFor names a manifest whose resources a correctly-installed
+	// ValidatingAdmissionPolicy must refuse. Before running the diff, the harness dry-run
+	// creates each of them until the apiserver rejects it.
+	//
+	// This is not belt-and-braces: the apiserver loads admission policies through an informer,
+	// so a diff issued immediately after the policy is created races the plugin and observes a
+	// cluster that accepts everything. Measured on envtest 1.32, the policy took ~600ms and four
+	// attempts to take effect — long enough that without this gate the test would pass or fail
+	// depending on machine load, and a "pass" would prove nothing.
+	awaitAdmissionDenialFor string
+	// assertDeterministicAcrossRuns runs the command twice against the same cluster and requires
+	// byte-identical stdout, then applies the usual assertions to the second run. Needed for
+	// server-generated identity: the apiserver runs names.Generator before the dry-run
+	// short-circuit, so a generateName addition whose identity was not restored would emit a
+	// different random name on each run — which a single-run test cannot see.
+	assertDeterministicAcrossRuns bool
+	skip                          bool
+	skipReason                    string
+	// JSON output support: set outputFormat to "json" to use structured assertions.
+	// For XR tests, populate expectedStructuredOutput. For CompositionDiffTest tests,
+	// populate expectedStructuredCompOutput. Only one should be set per test case.
+	outputFormat string // "json" or "" (default=visual diff)
+	// outputVersion, when set, is passed as --output-version (the structured output schema version).
+	outputVersion string
+	// Typed as the assertion interfaces rather than the concrete root builders. The assert functions
+	// have accepted any builder level since those interfaces were introduced, specifically so a chain
+	// need not climb back to the root — but concrete field types here made that unreachable, which is
+	// why every case in this file used to end with a trailing And()/AndXR()/AndComp(). A chain can now
+	// simply end where it ends.
+	expectedStructuredOutput     tu.DiffExpectation     // for XR JSON output assertions
+	expectedStructuredCompOutput tu.CompDiffExpectation // for comp JSON output assertions
+}
+
+type XrdAPIVersion int
+
+const (
+	V2 XrdAPIVersion = iota // v2 comes first so that this is the default value
+	V1
+)
+
+var versionNames = map[XrdAPIVersion]string{
+	V1: "apiextensions.crossplane.io/v1",
+	V2: "apiextensions.crossplane.io/v2",
+}
+
+func (s XrdAPIVersion) String() string {
+	return versionNames[s]
+}
+
+// createTestScheme creates a runtime scheme with all required types registered.
+// Each parallel test needs its own scheme because envtest modifies it during CRD installation.
+func createTestScheme() *runtime.Scheme {
+	scheme := runtime.NewScheme()
+
+	// Register Kubernetes types
+	_ = cgoscheme.AddToScheme(scheme)
+
+	// Register Crossplane types
+	_ = xpextv1.AddToScheme(scheme)
+	_ = xpextv2.AddToScheme(scheme)
+	_ = pkgv1.AddToScheme(scheme)
+	_ = extv1.AddToScheme(scheme)
+
+	return scheme
+}
+
+// startIntegrationCluster starts a test case's envtest cluster and puts its setup state in place:
+// tt's setupFiles, crossplaneManagedResources, fieldManagerApplies and deleteAfterSetup. It returns the
+// cluster's config, a client for it, and a context bounded by the case's timeout, which it also returns.
+// The cluster is stopped and the context cancelled when the test ends.
+func startIntegrationCluster(t *testing.T, testType DiffTestType, tt IntegrationTestCase) (*rest.Config, client.Client, context.Context, time.Duration) {
+	t.Helper()
+
+	// Create a fresh scheme for each test to avoid concurrent map access.
+	// Each parallel test needs its own scheme because envtest modifies it during CRD installation.
+	scheme := createTestScheme()
+
+	// Setup a brand new test environment for each test case
+	_, thisFile, _, ok := run.Caller(0)
+	if !ok {
+		t.Fatal("failed to get caller information")
+	}
+
+	thisDir := filepath.Dir(thisFile)
+
+	// Plain CRDs are read from these directories: Crossplane's own, at the crossplane version go.mod
+	// pins (so they match the xcrd and other Crossplane code under test), and stand-ins for managed
+	// resources. XR and claim CRDs are not: they are generated from the XRDs the test applies.
+	crdPaths := []string{
+		tu.PinnedCrossplaneCRDsDir(t),
+		filepath.Join(thisDir, "testdata", string(testType), "crds"),
+	}
+
+	crds, err := envtestCRDs(crdPaths, tt.setupFiles)
+	if err != nil {
+		t.Fatalf("failed to assemble CRDs for the test environment: %v", err)
+	}
+
+	testEnv := &envtest.Environment{
+		CRDs:   crds,
+		Scheme: scheme,
+		// Note: Leaving ControlPlane unset (nil) allows envtest to create its own control plane
+		// with random ports, which enables parallel test execution without port conflicts.
+		// Each test gets its own isolated API server and etcd instance on random available ports.
+	}
+
+	// Start the test environment
+	cfg, err := testEnv.Start()
+	if err != nil {
+		t.Fatalf("failed to start test environment: %v", err)
+	}
+
+	// Ensure we clean up at the end of the test
+	t.Cleanup(func() {
+		err := testEnv.Stop()
+		if err != nil {
+			t.Logf("failed to stop test environment: %v", err)
+		}
+	})
+
+	// Create a controller-runtime client for setup operations
+	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	// Use custom timeout if specified, otherwise use default
+	testTimeout := defaultTimeout
+	if tt.timeout > 0 {
+		testTimeout = tt.timeout
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	t.Cleanup(cancel)
+
+	// Envtest runs no Crossplane controllers, so the harness fills in what they would have written to the
+	// setup fixtures, wherever a fixture leaves it out.
+	defaults := newCrossplaneDefaults(k8sClient, crds)
+
+	// Apply the setup resources
+	if err := applyResourcesFromFiles(ctx, k8sClient, defaults, tt.setupFiles); err != nil {
+		t.Fatalf("failed to setup resources: %v", err)
+	}
+
+	// No composition revision controller runs either: do what it would.
+	if err := reconcileCompositionRevisions(ctx, k8sClient); err != nil {
+		t.Fatalf("failed to reconcile CompositionRevisions: %v", err)
+	}
+
+	// Default to v2 API version for XR resources unless otherwise specified
+	xrdAPIVersion := V2
+	if tt.xrdAPIVersion != V2 {
+		xrdAPIVersion = tt.xrdAPIVersion
+	}
+
+	// Apply Crossplane-managed resources (XRs, composed resources) using SSA with Crossplane field manager.
+	// These resources simulate what Crossplane actually manages in production. They are in place before
+	// fieldManagerApplies run, since those model another manager writing to objects that already exist.
+	if len(tt.crossplaneManagedResources) > 0 {
+		err := applyHierarchicalOwnership(ctx, tu.TestLogger(t, false), k8sClient, defaults, xrdAPIVersion, tt.crossplaneManagedResources)
+		if err != nil {
+			t.Fatalf("failed to setup Crossplane-managed resources: %v", err)
+		}
+	}
+
+	for _, a := range tt.fieldManagerApplies {
+		resources, err := readResourcesFromFile(a.file)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", a.file, err)
+		}
+
+		for _, r := range resources {
+			if err := applyResourceWithSSA(ctx, k8sClient, r, a.fieldManager); err != nil {
+				t.Fatalf("failed to setup field-managed resources: %v", err)
+			}
+		}
+	}
+
+	// Issue a delete for resources that should be observed mid-deletion. The manifests must
+	// carry a finalizer so envtest (which runs no controllers) leaves the object in place with
+	// metadata.deletionTimestamp set, reproducing a real "Terminating" resource.
+	if err := deleteResourcesFromFiles(ctx, k8sClient, tt.deleteAfterSetup); err != nil {
+		t.Fatalf("failed to delete resources: %v", err)
+	}
+
+	return cfg, k8sClient, ctx, testTimeout
+}
+
+// runIntegrationTest runs a single integration test case for both XR and composition diff commands.
+func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestCase) {
+	t.Helper()
+
+	t.Parallel() // Enable parallel test execution
+
+	// Validate structured-output config up front so misconfiguration fails loudly
+	// instead of silently routing assertions to the wrong path.
+	if tt.expectedStructuredOutput != nil && tt.expectedStructuredCompOutput != nil {
+		t.Fatalf("test case sets both expectedStructuredOutput and expectedStructuredCompOutput; set only one")
+	}
+
+	if tt.expectedStructuredOutput != nil && testType != XRDiffTest {
+		t.Fatalf("expectedStructuredOutput is only valid for XRDiffTest (got %q)", testType)
+	}
+
+	if tt.expectedStructuredCompOutput != nil && testType != CompositionDiffTest {
+		t.Fatalf("expectedStructuredCompOutput is only valid for CompositionDiffTest (got %q)", testType)
+	}
+
+	// Resolve a local crossplane binary if one is present. When non-empty,
+	// it's threaded into the kong arg slice below as
+	// --crossplane-render-binary=<path> so each parallel subtest has its own
+	// copy with no shared process state. When empty, the diff command falls
+	// through to the docker render engine — slower but works wherever Docker
+	// does (including the Earthfile's go-test target's WITH DOCKER block).
+	crossplaneBin := localCrossplaneBinary(t)
+
+	// Skip test if requested
+	if tt.skip {
+		t.Skip(tt.skipReason)
+		return
+	}
+
+	cfg, k8sClient, ctx, testTimeout := startIntegrationCluster(t, testType, tt)
+
+	// Set up the test files
+	testFiles := make([]string, 0, len(tt.inputFiles))
+
+	// Handle any additional input files
+	// Note: NewCompositeLoader handles both individual files and directories,
+	// so we can pass paths directly without special handling
+	testFiles = append(testFiles, tt.inputFiles...)
+
+	// Capture stdout and stderr into separate buffers. The diff command
+	// writes structured output (JSON / YAML / text diff) to stdout and
+	// human-readable error lines to stderr; mixing them defeats JSON
+	// parsing for tests that drive the structured assertion path.
+	var stdout, stderr bytes.Buffer
+
+	// Create command line args that match your pre-populated struct
+	args := []string{
+		fmt.Sprintf("--timeout=%s", testTimeout.String()),
+	}
+
+	// Only thread --crossplane-render-binary when a local binary exists; an
+	// empty value would still parse but waste cycles, and a missing flag
+	// lets the diff command pick the docker render engine cleanly.
+	if crossplaneBin != "" {
+		args = append(args, fmt.Sprintf("--crossplane-render-binary=%s", crossplaneBin))
+	}
+
+	// Add namespace if specified (for composition tests only)
+	if tt.namespace != "" && testType == CompositionDiffTest {
+		args = append(args, fmt.Sprintf("--namespace=%s", tt.namespace))
+	}
+
+	// Add no-color flag if true
+	if tt.noColor {
+		args = append(args, "--no-color")
+	}
+
+	// Add JSON output format if specified
+	if tt.outputFormat == "json" {
+		args = append(args, "--output=json")
+	}
+
+	if tt.outputVersion != "" {
+		args = append(args, fmt.Sprintf("--output-version=%s", tt.outputVersion))
+	}
+
+	// Add ignore-paths if specified
+	if len(tt.ignorePaths) > 0 {
+		for _, path := range tt.ignorePaths {
+			args = append(args, fmt.Sprintf("--ignore-paths=%s", path))
+		}
+	}
+
+	// Add function-credentials if specified
+	if tt.functionCredentials != "" {
+		args = append(args, fmt.Sprintf("--function-credentials=%s", tt.functionCredentials))
+	}
+
+	// Add eventual-state flag if specified (supported by both `xr` and `comp`).
+	if tt.eventualState {
+		args = append(args, "--eventual-state")
+	}
+
+	// --dry-run-on lives on CommonCmdFields, so unlike --analyze-on it is threaded for both
+	// command types. An empty value relies on the flag's own default.
+	if tt.dryRunOn != "" {
+		args = append(args, "--dry-run-on="+tt.dryRunOn)
+	}
+
+	// Add --resource flags (composition tests only)
+	if testType == CompositionDiffTest {
+		for _, r := range tt.resources {
+			args = append(args, fmt.Sprintf("--resource=%s", r))
+		}
+
+		if tt.resourcesCSV != "" {
+			args = append(args, fmt.Sprintf("--resource=%s", tt.resourcesCSV))
+		}
+
+		if tt.includeManual {
+			args = append(args, "--include-manual")
+		}
+
+		if tt.analyzeUnchanged {
+			args = append(args, "--analyze-unchanged")
+		}
+
+		if tt.analyzeOn != "" {
+			args = append(args, "--analyze-on="+tt.analyzeOn)
+		}
+	}
+
+	// Add files as positional arguments
+	args = append(args, testFiles...)
+
+	// Skip cases the current simulate surface cannot express, before the cluster starts, so a
+	// skipped case costs nothing. The gap reasons are greppable; see the harness package comment.
+	if reason := simulateGap(testType, parseSimulateArgs(t, testType, args)); reason != "" {
+		t.Skip(reason)
+		return
+	}
+
+	// The render engine runs functions as Docker containers. Without a Docker daemon no rendering
+	// case can run; cases that would not render anyway cannot be told apart upfront, so they skip.
+	if !dockerAvailable() {
+		t.Skip("env: no Docker daemon for the function render engine")
+		return
+	}
+
+	// Block until any ValidatingAdmissionPolicy in the setup is actually enforcing, so the diff
+	// cannot race the apiserver's policy informer. See the field's doc comment.
+	if err := awaitAdmissionDenial(ctx, k8sClient, tt.awaitAdmissionDenialFor); err != nil {
+		t.Fatalf("admission policy never took effect: %v", err)
+	}
+
+	// runOnce executes the command against the running cluster, leaving its output in stdout /
+	// stderr. Everything the command layer touches is rebuilt per call, so a second run starts
+	// with cold client caches just as a second invocation of the CLI would.
+	runOnce := func() (int, error) {
+		stdout.Reset()
+		stderr.Reset()
+
+		return runSimulate(t, cfg, testType, args, &stdout, &stderr)
+	}
+
+	exitCode, err := runOnce()
+
+	if tt.assertDeterministicAcrossRuns {
+		first := stdout.String()
+
+		exitCode, err = runOnce()
+
+		if second := stdout.String(); second != first {
+			t.Errorf("output differs between two runs against the same cluster; a value the apiserver generated has leaked into the diff.\nfirst run:\n%s\nsecond run:\n%s", first, second)
+		}
+	}
+
+	// Check exit code matches expected
+	if exitCode != tt.expectedExitCode {
+		t.Errorf("expected exit code %d, got %d", tt.expectedExitCode, exitCode)
+	}
+
+	// Assert stderr expectations before any of the early returns below, so they apply in every
+	// output mode (human-readable, JSON, and expected-error cases alike).
+	for _, want := range tt.expectedStderrContains {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("expected stderr to contain %q, got:\n%s", want, stderr.String())
+		}
+	}
+
+	if tt.expectedError && err == nil {
+		t.Fatal("expected error but got none")
+	}
+
+	if !tt.expectedError && err != nil {
+		t.Fatalf("expected no error but got: %v", err)
+	}
+
+	// Check for specific error message if expected.
+	//
+	// Three modes:
+	//   1. expectedError + expectedErrorContains: substring-check the error.
+	//   2. expectedError + structured assertion: any error is fine here;
+	//      the structured assertion below validates errors[].
+	//   3. unexpected error: already caught by the t.Fatalf above.
+	if err != nil && tt.expectedError {
+		hasStructuredAssertion := tt.expectedStructuredOutput != nil || tt.expectedStructuredCompOutput != nil
+
+		switch {
+		case tt.expectedErrorContains != "":
+			if strings.Contains(err.Error(), tt.expectedErrorContains) {
+				t.Logf("Got expected error containing: %s", tt.expectedErrorContains)
+			} else {
+				t.Errorf("Expected error containing %q, got: %v", tt.expectedErrorContains, err)
+			}
+		case hasStructuredAssertion:
+			t.Logf("Got expected error; structured assertion will validate errors[]")
+		default:
+			t.Errorf("expectedError set without expectedErrorContains or structured assertion; got: %v", err)
+		}
+	}
+
+	// Skip stdout check for expected-error cases that use the legacy
+	// substring assertion. Cases that pin a structured assertion fall
+	// through so the JSON path is exercised against errors[] / changes.
+	if tt.expectedError && tt.expectedErrorContains != "" &&
+		tt.expectedStructuredOutput == nil && tt.expectedStructuredCompOutput == nil {
+		return
+	}
+
+	// Check the output
+	outputStr := stdout.String()
+
+	// Handle JSON output format with structured assertions
+	if tt.outputFormat == "json" && tt.expectedStructuredOutput != nil {
+		tu.AssertStructuredDiff(t, outputStr, tt.expectedStructuredOutput)
+		return
+	}
+
+	if tt.outputFormat == "json" && tt.expectedStructuredCompOutput != nil {
+		tu.AssertStructuredCompDiff(t, outputStr, tt.expectedStructuredCompOutput)
+		return
+	}
+
+	// Using TrimSpace because the output might have trailing newlines
+	if !strings.Contains(strings.TrimSpace(outputStr), strings.TrimSpace(tt.expectedOutput)) {
+		// Strings aren't equal, *including* ansi.  but we can compare ignoring ansi to determine what output to
+		// show for the failure.  if the difference is only in color codes, we'll show escaped ansi codes.
+		out := outputStr
+
+		expect := tt.expectedOutput
+		if tu.CompareIgnoringAnsi(strings.TrimSpace(outputStr), strings.TrimSpace(tt.expectedOutput)) {
+			out = strconv.QuoteToASCII(outputStr)
+			expect = strconv.QuoteToASCII(tt.expectedOutput)
+		}
+
+		t.Fatalf("expected output to contain:\n%s\n\nbut got:\n%s", expect, out)
+	}
+}
+
+// TestDiffIntegration runs an integration test for the diff command.
+func TestDiffIntegration(t *testing.T) {
+	t.Parallel()
+
+	// Set up logger for controller-runtime (global setup, once per test function)
+	tu.SetupKubeTestLogger(t)
+
+	tests := map[string]IntegrationTestCase{
+		"NewResourceDiff": {
+			reason:     "Shows color diff for new resources",
+			inputFiles: []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				// TODO: For v2, we need to upgrade the XRD apiversion to v2 + put the xr in a namespace.
+				// this might be better served as a separate test(s).
+				// since we aren't actually creating resources (there's no crossplane actually running in unit tests),
+				// we don't need to worry about upgrading providers or anything.
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedOutput: strings.Join([]string{
+				`+++ XDownstreamResource/test-resource
+`, tu.Green(`+ apiVersion: ns.nop.example.org/v1alpha1
++ kind: XDownstreamResource
++ metadata:
++   annotations:
++     crossplane.io/composition-resource-name: nop-resource
++   labels:
++     crossplane.io/composite: test-resource
++   name: test-resource
++   namespace: default
++ spec:
++   forProvider:
++     configData: new-value
+`), `
+---
++++ XNopResource/test-resource
+`, tu.Green(`+ apiVersion: ns.diff.example.org/v1alpha1
++ kind: XNopResource
++ metadata:
++   name: test-resource
++   namespace: default
++ spec:
++   coolField: new-value
+`), `
+---
+`,
+			}, ""),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"AutomaticNamespacePropagation": {
+			reason:       "Validates automatic namespace propagation for namespaced managed resources",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-no-namespace-patch.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XDownstreamResource", "test-resource", "default").
+				WithField("spec.forProvider.configData", "new-value").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithField("spec.coolField", "new-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// A built-in Kubernetes type has no CRD, so this exercises the paths
+		// that would otherwise read scope and schema from one. Before scope
+		// came from discovery this failed outright, with "cannot determine
+		// scope for resource ConfigMap/... CRD not found".
+		"RendersBuiltInResourceWithoutCRD": {
+			reason:       "A composition rendering a built-in Kubernetes resource (no CRD) produces a diff for it",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-with-configmap.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(3, 0, 0).
+				WithAddedResource("ConfigMap", "test-resource-config", "default").
+				WithField("data.configData", "new-value").
+				And().
+				WithAddedResource("XDownstreamResource", "test-resource", "default").
+				WithField("spec.forProvider.configData", "new-value").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithField("spec.coolField", "new-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"UnservedGroupIsReportedAsAnUnknownTypeNotAMissingNamespace": {
+			// From the PR #502 review. A resource whose group/version the cluster does not serve must be
+			// reported as an unknown type; blaming its namespace would send the user after the wrong root
+			// cause entirely, since the namespace here exists and is irrelevant.
+			//
+			// Worth being precise about what this covers, because it is NOT the sentinel branch in
+			// dryRunCreateAddition. For a *.k8s.io group, two earlier guards let the resource through —
+			// IsCRDRequired skips discovery for that suffix, and FetchCurrentObject swallows NotFound as
+			// "this is new" — but removeNamespacesFromClusterScopedResources then fails first, because
+			// scope determination cannot resolve the GVK either. So this pins the outer behaviour (an
+			// accurate, type-naming error rather than a namespace one) without depending on which layer
+			// produces it.
+			//
+			// The sentinel branch is what covers the case this CANNOT reach: scope determination falls
+			// back to a CRD lookup when discovery fails, whereas GVKToGVR is discovery-only, so a CRD
+			// whose version is not `served` passes the scope check and fails inside DryRunCreate. That
+			// route is unit-covered in diff_calculator_test.go, since arranging a served:false CRD whose
+			// scope still resolves is far more setup than the classification warrants.
+			reason:       "An addition whose group/version the cluster does not serve is reported as an unknown type, not as a missing namespace",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-with-unserved-k8s-group.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedError:         true,
+			expectedErrorContains: "totallynotserved.k8s.io/v1",
+			expectedExitCode:      dp.ExitCodeToolError,
+		},
+		"AdditionInMissingNamespaceDegradesRatherThanFailing": {
+			// Regression test for the e2e failure the first cut of this feature caused
+			// (TestDiffConcurrentDirectory diffs 21 XRs into a namespace that is never created).
+			//
+			// NamespaceLifecycle admission refuses a dry-run create into a namespace that does not exist.
+			// That must degrade, not fail the run: a Namespace and its contents are routinely applied
+			// together, so the namespace's absence at diff time says nothing about whether the apply will
+			// succeed — which is what separates it from a quota or webhook refusal, where the verdict
+			// describes the object and will still hold.
+			//
+			// The exit code is the real assertion. Before the fix this was exit 1 with no diff at all.
+			reason:       "An addition whose namespace does not exist yet still produces a diff, marked as unverified",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/new-xr-missing-namespace.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XNopResource", "test-resource", "nonexistent-namespace").
+				WithField("spec.coolField", "new-value").
+				WithDryRunSkipped("namespaceNotFound", "nonexistent-namespace").
+				And().
+				WithAddedResource("XDownstreamResource", "test-resource", "nonexistent-namespace").
+				WithDryRunSkipped("namespaceNotFound", "nonexistent-namespace").
+				And().
+				// One warning per GVK, and each cause exactly the apiserver's message. Through the REAL
+				// ApplyClient, whose error is wrapped with "failed to dry-run create resource <Kind>/<name>":
+				// if that wrapper leaked into the cause, every resource would be a distinct warning. The unit
+				// test mirrors the wrapping by hand; this pins it against the client that actually produces it.
+				WithWarning("their namespace does not exist yet").
+				WithWarningContext(map[string]string{
+					"gvk":       "ns.diff.example.org/v1alpha1, Kind=XNopResource",
+					"namespace": "nonexistent-namespace",
+					"cause":     `namespaces "nonexistent-namespace" not found`,
+					"count":     "1",
+				}).
+				And().
+				WithWarning("their namespace does not exist yet").
+				WithWarningContext(map[string]string{
+					"gvk":       "ns.nop.example.org/v1alpha1, Kind=XDownstreamResource",
+					"namespace": "nonexistent-namespace",
+					"cause":     `namespaces "nonexistent-namespace" not found`,
+					"count":     "1",
+				}),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Human-readable output shows no dryRun at all, so stderr is the only place a person learns that
+		// additions went unverified, and how many. Two inputs into one missing namespace share each GVK's
+		// warning rather than raising one per resource.
+		"UnverifiedAdditionsAcrossInputsAreCountedInOneWarning": {
+			reason: "In text mode, additions that could not be verified are summarised on stderr once per GVK + namespace + cause, with a count of the resources behind it",
+			inputFiles: []string{
+				"testdata/diff/new-xr-missing-namespace.yaml",
+				"testdata/diff/new-xr-missing-namespace-second.yaml",
+			},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			noColor: true,
+			expectedStderrContains: []string{
+				`WARNING: skipped apiserver verification of added resources: their namespace does not exist yet, so their diffs omit server-side defaulting and admission ` +
+					`(cause=namespaces "nonexistent-namespace" not found, count=2, gvk=ns.diff.example.org/v1alpha1, Kind=XNopResource, namespace=nonexistent-namespace)`,
+				`WARNING: skipped apiserver verification of added resources: their namespace does not exist yet, so their diffs omit server-side defaulting and admission ` +
+					`(cause=namespaces "nonexistent-namespace" not found, count=2, gvk=ns.nop.example.org/v1alpha1, Kind=XDownstreamResource, namespace=nonexistent-namespace)`,
+			},
+			expectedOutput:   "+++ XDownstreamResource/second-resource",
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"BuiltInResourceAdditionPicksUpApiserverDefaults": {
+			// The choice of a built-in type keeps this test non-vacuous whatever crossplane-diff defaults
+			// locally. The lenient Defaulter (defaulter.go) predicts CRD-derived `default:` values for an
+			// addition that gets no apiserver result, and passes anything without a CRD through unchanged.
+			// Deployment has no CRD, so IsCRDRequired is false, and the fields asserted below can ONLY have
+			// come from round-tripping the addition through the apiserver.
+			//
+			// Every asserted default is string-valued on purpose: assertChangeFields compares with
+			// reflect.DeepEqual against JSON-decoded values, so a numeric default (revisionHistoryLimit: 10)
+			// would arrive as float64 and an int literal here would fail for the wrong reason.
+			reason:       "An added built-in resource is dry-run created against the apiserver, so apiserver-side defaults appear in its addition diff",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-with-builtin-defaults.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("Deployment", "test-resource-deploy", "default").
+				// Absence of dryRun is the machine-readable claim that this desired state was
+				// verified against the apiserver. Asserted alongside the defaults so that a
+				// regression which stopped dry-running additions fails on the contract as well as
+				// on whichever fields happen to depend on server-side defaulting.
+				WithDryRunPerformed().
+				WithField("spec.strategy.type", "RollingUpdate").
+				WithField("spec.template.spec.restartPolicy", "Always").
+				WithField("spec.template.spec.dnsPolicy", "ClusterFirst").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithDryRunPerformed().
+				WithField("spec.coolField", "new-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// The inverse of the case above, and the pair is what makes either meaningful: on its own,
+		// "the defaults appear" could be satisfied by something other than the apiserver round-trip,
+		// and "the defaults are absent" could be satisfied by the feature being broken. Together they
+		// pin the flag as the thing that decides.
+		//
+		// This also pins that `existing` reproduces the behaviour from before additions were dry-run
+		// (#334), which is why the fields are asserted absent rather than merely unasserted.
+		"BuiltInResourceAdditionSkipsApiserverWhenDryRunOnExisting": {
+			reason:       "With --dry-run-on=existing an added built-in resource is not sent to the apiserver, so its diff carries no server-side defaults and reports skipReason disabled",
+			outputFormat: "json",
+			dryRunOn:     "existing",
+			inputFiles:   []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-with-builtin-defaults.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("Deployment", "test-resource-deploy", "default").
+				// No detail substring: "disabled" is the one skip reason the user asked for, so
+				// there is no cluster explanation to propagate.
+				WithDryRunSkipped("disabled", "").
+				WithFieldAbsent("spec.strategy.type").
+				WithFieldAbsent("spec.template.spec.restartPolicy").
+				WithFieldAbsent("spec.template.spec.dnsPolicy").
+				// The rendered fields must still be there — `existing` degrades fidelity, it does
+				// not degrade the diff.
+				WithField("spec.template.spec.containers[0].image", "nginx:1.27").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithDryRunSkipped("disabled", "").
+				WithField("spec.coolField", "new-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// A status authored by the composition pipeline must survive the apiserver round-trip.
+		// XStatusResource declares the status subresource, so the apiserver strips status from the
+		// dry-run create and returns an object without one; the value below can therefore only come
+		// from the calculator re-attaching what was rendered. Every other composed kind in this
+		// testdata tree omits the subresource, which would have made this assertion vacuous.
+		//
+		// SKIPPED, and the reason is a finding rather than an environment problem: the re-attach
+		// works, but nothing renders it. See skipReason.
+		"AddedResourceRetainsCompositionAuthoredStatus": {
+			skip: true,
+			skipReason: "The re-attached status cannot be observed in any output, so this assertion " +
+				"cannot pass and could not be made to fail by breaking the production code it targets. " +
+				"cleanupForDiff (renderer/diff_formatter.go) deletes metadata.status unconditionally from " +
+				"both sides of every diff, in the same block that deletes ownerReferences — the strip whose " +
+				"identical consequence for ownerReferences this feature's own spec documented (§1a) and then " +
+				"missed for status. ResourceViews.Clean is the only view any renderer reads " +
+				"(structured_renderer.go:462-472); ResourceViews.Desired.Raw, which does carry the " +
+				"re-attached status, has no reader at all. Verified empirically: the apiserver's dry-run " +
+				"create response for XStatusResource carries no status, the object handed to cleanupForDiff " +
+				"carries status.phase=authored-by-composition, and the object cleanupForDiff returns does " +
+				"not. Deciding whether status belongs in diff output is a rendering-design question well " +
+				"outside a test task, so this is left failing-by-skip with its instrument intact rather " +
+				"than quietly reworded into an assertion that passes.",
+			reason:       "A status written by the composition pipeline survives the dry-run create of an added resource",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-with-status.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XStatusResource", "test-resource", "default").
+				WithDryRunPerformed().
+				WithField("status.phase", "authored-by-composition").
+				WithField("spec.forProvider.configData", "new-value").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithField("spec.coolField", "new-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// The apiserver runs names.Generator in rest.BeforeCreate, ahead of the dry-run
+		// short-circuit at the storage layer, so it mints a real random name even for a request it
+		// never persists. Unless that identity is restored, a generateName addition's diff differs on
+		// every invocation — which only a repeated run can detect, hence assertDeterministicAcrossRuns.
+		"GenerateNameAdditionIsDeterministicAcrossRuns": {
+			reason:                        "An addition using generateName renders identically across two runs, i.e. no server-generated name leaks into the diff",
+			outputFormat:                  "json",
+			dryRunOn:                      "all",
+			assertDeterministicAcrossRuns: true,
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/generated-name-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/generated-name-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				// Both the XR and its composed resource use generateName, so both exercise the
+				// identity restore. The pattern is the renderer's display form for a
+				// not-yet-named object; a leaked server name would be a random suffix instead.
+				WithAddedResource("XDownstreamResource", "", "default").
+				WithDryRunPerformed().
+				WithNamePattern(`^test-resource-\(generated\)$`).
+				WithField("spec.forProvider.configData", "new-value").
+				And().
+				WithAddedResource("XNopResource", "", "default").
+				WithDryRunPerformed().
+				WithNamePattern(`^generated-xr-\(generated\)$`).
+				WithField("spec.coolField", "new-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Cluster rejection of an ADDITION. A ValidatingAdmissionPolicy is the instrument rather than a CEL
+		// x-kubernetes-validations rule on the CRD, because crossplane-diff evaluates CEL rules
+		// locally before the diff calculator runs: a CEL rule would reject the resource without the
+		// apiserver ever being consulted, so the test would pass on code that never dry-ran anything.
+		"AddedResourceRejectedByAdmissionPolicyIsAValidationFailure": {
+			reason:       "An apiserver rejection of an added resource is exit 2 with a typed admission validation failure, not a bare tool error",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/rejecting-admission-policy.yaml",
+			},
+			awaitAdmissionDenialFor: "testdata/diff/resources/admission-policy-canary.yaml",
+			expectedError:           true,
+			expectedExitCode:        dp.ExitCodeSchemaValidation,
+			expectedStructuredOutput: tu.ExpectDiff().
+				// errors[].resourceID names the input the user supplied, so the rejected composed
+				// resource has to be identifiable from the message and the validationFailures entry.
+				WithError("XNopResource/test-resource").
+				WithMessageContaining("the cluster rejected XDownstreamResource/test-resource").
+				WithValidationFailure("ns.nop.example.org/v1alpha1", "XDownstreamResource", "test-resource", "default").
+				WithStatus("invalid").
+				// The "admission" type is what distinguishes a cluster rejection from a local schema
+				// rejection; field is empty because an admission refusal is not localized to one field.
+				WithFieldError("admission", "").
+				WithMessageContaining("this cluster refuses that configData value"),
+		},
+		// Cluster rejection of a MODIFICATION — the deliberate behaviour change. The identical cluster fact used to
+		// surface as a plain tool error (exit 1) for an existing resource while an addition's rejection
+		// would have been exit 2, i.e. the same rejection reported in two different tiers depending
+		// only on whether the resource happened to exist. This pins the reclassification.
+		"ModifiedResourceRejectedByAdmissionPolicyIsAValidationFailure": {
+			reason:       "An apiserver rejection of an EXISTING resource's dry-run apply is reported in the same tier as a rejected addition",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/rejecting-admission-policy.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr.yaml",
+					"testdata/diff/resources/existing-downstream-resource.yaml",
+				),
+			},
+			awaitAdmissionDenialFor: "testdata/diff/resources/admission-policy-canary.yaml",
+			inputFiles:              []string{"testdata/diff/modified-xr.yaml"},
+			expectedError:           true,
+			expectedExitCode:        dp.ExitCodeSchemaValidation,
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithError("XNopResource/test-resource").
+				WithMessageContaining("the cluster rejected XDownstreamResource/test-resource").
+				WithValidationFailure("ns.nop.example.org/v1alpha1", "XDownstreamResource", "test-resource", "default").
+				WithStatus("invalid").
+				WithFieldError("admission", "").
+				WithMessageContaining("this cluster refuses that configData value"),
+		},
+		"MultipleXRsGroupedByInputXR": {
+			reason:       "Two input XRs in one invocation are grouped per input XR in the xrs[] structured view",
+			outputFormat: "json",
+			inputFiles: []string{
+				"testdata/diff/new-xr.yaml",
+				"testdata/diff/new-xr-second.yaml",
+			},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				// Aggregate flat view still reports the merged total (2 adds per XR).
+				WithSummary(4, 0, 0).
+				// Grouped view: one XR(...) sub-expression per input XR, each with
+				// its own changed tree.
+				WithXRs(
+					tu.XR("XNopResource", "test-resource", "default").
+						Status("changed").
+						Summary(2, 0, 0).
+						Change("added", "XNopResource", "test-resource", "default").
+						WithField("spec.coolField", "new-value").
+						Change("added", "XDownstreamResource", "test-resource", "default").
+						WithField("spec.forProvider.configData", "new-value"),
+					tu.XR("XNopResource", "second-resource", "default").
+						Status("changed").
+						Summary(2, 0, 0).
+						Change("added", "XNopResource", "second-resource", "default").
+						WithField("spec.coolField", "second-value").
+						Change("added", "XDownstreamResource", "second-resource", "default").
+						WithField("spec.forProvider.configData", "second-value"),
+				).
+				Build(),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"MultipleXRsGroupedByInputXRV2": {
+			reason:        "With --output-version=v2, the xrs[] entries carry each input's changes and the deprecated flat changes[] is gone",
+			outputFormat:  "json",
+			outputVersion: "v2",
+			inputFiles: []string{
+				"testdata/diff/new-xr.yaml",
+				"testdata/diff/new-xr-second.yaml",
+			},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithOutputVersion("v2").
+				// The top-level summary stays in v2: it counts distinct resources.
+				WithSummary(4, 0, 0).
+				WithXRs(
+					tu.XR("XNopResource", "test-resource", "default").
+						Status("changed").
+						Summary(2, 0, 0).
+						Change("added", "XNopResource", "test-resource", "default").
+						WithField("spec.coolField", "new-value").
+						Change("added", "XDownstreamResource", "test-resource", "default").
+						WithField("spec.forProvider.configData", "new-value"),
+					tu.XR("XNopResource", "second-resource", "default").
+						Status("changed").
+						Summary(2, 0, 0).
+						Change("added", "XNopResource", "second-resource", "default").
+						WithField("spec.coolField", "second-value").
+						Change("added", "XDownstreamResource", "second-resource", "default").
+						WithField("spec.forProvider.configData", "second-value"),
+				),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"ModifiedResourceDiff": {
+			reason: "Shows color diff for modified resources",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			// put an existing XR in the cluster to diff against
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr.yaml",
+					"testdata/diff/resources/existing-downstream-resource.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-xr.yaml"},
+			expectedOutput: `
+~~~ XDownstreamResource/test-resource
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: test-resource
+    name: test-resource
+    namespace: default
+  spec:
+    forProvider:
+` + tu.Red("-     configData: existing-value") + `
+` + tu.Green("+     configData: modified-value") + `
+
+---
+~~~ XNopResource/test-resource
+  apiVersion: ns.diff.example.org/v1alpha1
+  kind: XNopResource
+  metadata:
+    labels:
+      crossplane.io/composite: test-resource
+    name: test-resource
+    namespace: default
+  spec:
+` + tu.Red("-   coolField: existing-value") + `
+` + tu.Green("+   coolField: modified-value") + `
+    crossplane:
+      compositionRef:
+        name: xnopresources.diff.example.org
+      compositionRevisionRef:
+        name: xnopresources.diff.example.org-b616215
+      compositionUpdatePolicy: Automatic
+
+---
+
+Summary: 2 modified`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"IgnorePathsArgoCD": {
+			reason: "Ignores ArgoCD annotations and labels when --ignore-paths is specified",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			// put an existing resource with different ArgoCD annotations
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-with-argocd.yaml",
+					"testdata/diff/resources/existing-downstream-resource-with-argocd.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/xr-with-argocd-annotations.yaml"},
+			ignorePaths: []string{
+				"metadata.annotations[argocd.argoproj.io/tracking-id]",
+				"metadata.labels[argocd.argoproj.io/instance]",
+			},
+			outputFormat:             "json",
+			expectedStructuredOutput: tu.ExpectDiff().WithSummary(0, 0, 0),
+			expectedError:            false,
+		},
+		"IgnorePathsMixedChanges": {
+			// Regression test: when a resource has BOTH ignored path changes
+			// AND non-ignored spec changes, the summary must count the
+			// resource as modified once and the emitted diff bodies must not
+			// leak the ignored paths. The renderer-level unit test
+			// TestStructuredDiffRenderer_RespectsIgnorePaths asserts the
+			// absence of ignored fields in diff.old / diff.new; this test
+			// pins the summary counts and the visible non-ignored changes
+			// through the full CLI stack.
+			reason: "Ignores ArgoCD annotations/labels while still reporting a non-ignored spec change",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-with-argocd.yaml",
+					"testdata/diff/resources/existing-downstream-resource-with-argocd.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/xr-with-argocd-mixed-changes.yaml"},
+			ignorePaths: []string{
+				"metadata.annotations[argocd.argoproj.io/tracking-id]",
+				"metadata.labels[argocd.argoproj.io/instance]",
+			},
+			outputFormat: "json",
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "new-value", "modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-resource", "default").
+				WithFieldChange("spec.coolField", "new-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"ModifiedXRCreatesDownstream": {
+			reason:       "Shows diff when modified XR creates new downstream resource",
+			outputFormat: "json",
+			// The XR has its composition refs but no composed resource yet: Crossplane selects the
+			// composition and revision before it composes, so this is an XR whose first compose has not
+			// created its resource (a function error, say). That is what makes the resource an addition.
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/existing-xr.yaml",
+			},
+			inputFiles: []string{"testdata/diff/modified-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(1, 1, 0).
+				WithAddedResource("XDownstreamResource", "test-resource", "default").
+				WithField("spec.forProvider.configData", "modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-resource", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Issue #452, `xr` side, delivered through the warning channel added for #459. Unlike `comp`,
+		// which excludes deleting XRs from impact analysis, `xr` diffs exactly the resource the user
+		// named — so it still emits the diff and raises an advisory. This asserts BOTH halves of the
+		// dual emission: the stderr line for humans and the warnings[] entry for machines.
+		"DeletingXRWarnsButStillDiffs": {
+			reason:       "xr against an XR whose cluster copy is being deleted still emits the diff, plus a warning on stderr and in warnings[]",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			// A Terminating XR still has the resource it composed until garbage collection removes it.
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes("testdata/diff/resources/existing-xr-deleting.yaml", "testdata/diff/resources/existing-downstream-resource.yaml"),
+			},
+			deleteAfterSetup: []string{"testdata/diff/resources/existing-xr-deleting.yaml"},
+			inputFiles:       []string{"testdata/diff/modified-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-resource", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value").
+				And().
+				WithWarning("being deleted in the cluster"),
+			expectedStderrContains: []string{
+				"WARNING: The resource being diffed is being deleted in the cluster",
+				"resource=XNopResource/test-resource",
+			},
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Issue #495: the XR still references a composed resource that was deleted out of band. The
+		// resource tree records that child as NotFound, which is tolerated: the resource really is
+		// gone, so it is neither observed nor a removal — but the user is told. The other per-node
+		// errors (Forbidden, transport) are fatal; envtest grants the harness everything, so those are
+		// covered by the FetchObservedResources unit tests instead.
+		"ComposedResourceDeletedOutOfBandWarns": {
+			reason:       "xr against an XR whose resourceRefs name a deleted composed resource omits it from observed state and warns",
+			outputFormat: "json",
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/existing-removal-test-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/diff/resources/removal-test-ns-downstream-resource1.yaml": nil,
+						"testdata/diff/resources/removal-test-ns-downstream-resource2.yaml": nil,
+					},
+				},
+			},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/removal-test-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			deleteAfterSetup: []string{"testdata/diff/resources/removal-test-ns-downstream-resource2.yaml"},
+			inputFiles:       []string{"testdata/diff/unmodified-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 0, 0).
+				WithWarning("was not found in the cluster").
+				WithWarningContext(map[string]string{
+					"resource":  "XDownstreamResource/resource-to-be-removed",
+					"namespace": "default",
+				}),
+			expectedStderrContains: []string{
+				"WARNING: A composed resource referenced by its XR was not found in the cluster",
+				"resource=XDownstreamResource/resource-to-be-removed",
+			},
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeSuccess,
+		},
+		"EnvironmentConfigIncorporation": {
+			reason:       "Validates EnvironmentConfig (v1beta1) incorporation in diff",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xdownstreamenvresource-xrd.yaml",
+				"testdata/diff/resources/env-xrd.yaml",
+				"testdata/diff/resources/env-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/environment-config-v1beta1.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-env-xr.yaml",
+					"testdata/diff/resources/existing-env-downstream-resource.yaml",
+				),
+			},
+			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			inputFiles:    []string{"testdata/diff/modified-env-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamEnvResource", "test-env-resource", "").
+				WithFieldChange("spec.forProvider.configData", "existing-config-value", "modified-config-value").
+				And().
+				WithModifiedResource("XEnvResource", "test-env-resource", "").
+				WithFieldChange("spec.configKey", "existing-config-value", "modified-config-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"ExternalResourceDependencies": {
+			reason:       "Validates diff with external resource dependencies via fn-external-resources",
+			outputFormat: "json",
+			// this test does a weird thing where it changes the XR but all the downstream changes come from external
+			// resources, including a field path from the XR itself.
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/external-resource-configmap.yaml",
+				"testdata/diff/resources/external-res-fn-composition.yaml",
+				"testdata/diff/resources/external-named-clusterrole.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-with-external-dep.yaml",
+					"testdata/diff/resources/existing-downstream-with-external-dep.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-xr-with-external-dep.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "testing-external-resource-data").
+				WithFieldChange("spec.forProvider.roleName", "old-role-name", "external-named-clusterrole").
+				And().
+				WithModifiedResource("XNopResource", "test-resource", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-with-external-dep").
+				WithFieldChange("spec.environment", "staging", "testing"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Same-namespace case: the matchLabels ExtraResources selector omits the
+		// namespace, and the matched ConfigMap lives in "default" — the SAME
+		// namespace as the XR. This passed even before the #376 fix, because the
+		// old resolveNamespace defaulted an empty selector namespace to the XR
+		// namespace, which happened to be where the ConfigMap was. See
+		// "TemplatedExtraResourcesCrossNamespace" for the cross-namespace case
+		// that requires the all-namespaces lookup.
+		"TemplatedExtraResourcesSameNamespace": {
+			reason:       "Validates diff with templated ExtraResources (matchLabels, no namespace) resolving a resource in the XR's own namespace",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/external-resource-configmap.yaml",
+				"testdata/diff/resources/external-res-gotpl-composition.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-with-external-dep-templated.yaml",
+					"testdata/diff/resources/existing-downstream-with-external-dep.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-xr-with-external-dep.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-with-external-dep").
+				WithFieldChange("spec.forProvider.roleName", "old-role-name", "templated-external-resource-testing").
+				And().
+				WithModifiedResource("XNopResource", "test-resource", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-with-external-dep").
+				WithFieldChange("spec.environment", "staging", "testing"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Reproduction for crossplane-contrib/crossplane-diff#376: a matchLabels
+		// ExtraResources selector that omits the namespace is a cluster-wide
+		// (all-namespaces) lookup in Crossplane (internal/xfn/required_resources.go
+		// lists with client.InNamespace(rs.GetNamespace()); empty = all
+		// namespaces). Here the matched ConfigMap lives in "other-namespace" while
+		// the XR is in "default". Pre-fix, resolveNamespace defaulted the empty
+		// selector namespace to the XR namespace ("default"), so the dynamic
+		// client listed only "default", found nothing, and the go-templating
+		// requirement came back empty — the downstream XDownstreamResource would
+		// not render at all (or a real template reading the value would fatal with
+		// ValueError). Post-fix the lookup spans all namespaces, finds the
+		// ConfigMap, and the downstream renders with roleName derived from it.
+		"TemplatedExtraResourcesCrossNamespace": {
+			reason:       "matchLabels ExtraResources (no namespace) must resolve a resource in a DIFFERENT namespace than the XR via an all-namespaces lookup (issue #376)",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/external-resource-configmap-other-namespace.yaml",
+				"testdata/diff/resources/external-res-gotpl-composition.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-xr-with-cross-ns-external-dep.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XDownstreamResource", "test-resource", "default").
+				WithField("spec.forProvider.configData", "new-value").
+				// roleName is templated from the matched ConfigMap's name, proving
+				// the cross-namespace resource was resolved.
+				WithField("spec.forProvider.roleName", "templated-external-resource-crossns").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithField("spec.coolField", "new-value").
+				WithField("spec.environment", "crossns"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"TemplatedExtraResourcesMatchNameNotFound": {
+			// Regression test for crossplane-contrib/crossplane-diff#355: a
+			// go-templating ExtraResources block using matchName for a
+			// resource that does not exist in the cluster must NOT abort the
+			// diff. Pre-fix, the iterative render loop received an error
+			// from requirements_provider.processNameSelector and surfaced it
+			// as a per-XR failure. Post-fix, the unmet requirement is silently
+			// skipped (mirroring upstream xfn.required_resources.go) and the
+			// composition renders its downstream resource normally.
+			reason:       "matchName requirement for a missing resource must not abort the diff (issue #355)",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/external-res-matchname-gotpl-composition.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XDownstreamResource", "test-resource", "default").
+				WithField("spec.forProvider.configData", "new-value").
+				WithField("spec.forProvider.roleName", "static-role").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithField("spec.coolField", "new-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"MultiStepFatalAfterExtraResources": {
+			// Reproduces the PR #295 bug #1 scenario: a multi-step pipeline where
+			// step 1 successfully emits ExtraResources requirements and composed
+			// resources, and a LATER step fatals. Per crossplane/cmd/crank/render/
+			// render.go, a fatal in step N still returns the accumulated
+			// requirements from step <N. So the render output has:
+			//   renderErr != nil AND len(output.Requirements) > 0
+			//
+			// On iteration 2 (after requirements are cached) newReqCount == 0,
+			// and the OLD condition
+			//   renderErr != nil && newReqCount == 0 && len(output.Requirements) == 0
+			// is false — the error falls through to checkStability which declares
+			// the pipeline "stable" on an Outputs with nil CompositeResource,
+			// causing a SIGSEGV in CalculateNonRemovalDiffs.
+			//
+			// Expected behavior (with PR #295's render-loop fix): a clean fatal
+			// error bubbles up instead of a segfault. The diff is NOT produced
+			// because the pipeline legitimately failed.
+			reason:       "Multi-step pipeline with step-1 requirements + later-step fatal should surface the error cleanly, not SIGSEGV",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/external-resource-configmap.yaml",
+				"testdata/diff/resources/multistep-fatal-after-extra-res-composition.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-with-external-dep-multistep-fatal.yaml",
+					"testdata/diff/resources/existing-downstream-with-external-dep.yaml",
+				),
+			},
+			inputFiles:            []string{"testdata/diff/modified-xr-with-external-dep.yaml"},
+			expectedError:         true,
+			expectedErrorContains: `"always-fatal" returned a fatal result`,
+			expectedExitCode:      dp.ExitCodeToolError,
+		},
+		"UnguardedTemplatedExtraResources": {
+			// Regression guard: a user template that accesses .extraResources
+			// directly (e.g. `index .extraResources "configmaps"`) without a
+			// `{{- with .extraResources }}` guard fails fatally on the first
+			// function invocation. function-go-templating's template data has no
+			// "extraResources" entry on that first call — crossplane's
+			// FetchingFunctionRunner only populates req.ExtraResources AFTER a
+			// function returns a non-fatal rsp.Requirements, and the Fatal from
+			// this template short-circuits before that ever happens.
+			//
+			// Verified empirically (2026-04-29) against a kind cluster with
+			// Crossplane + function-go-templating v0.11.0: a live controller
+			// produces the identical error, and the XR stays Synced=False with
+			// ReconcileError. So crossplane-diff must surface the same fatal
+			// error — not mask it with a diff — to match production behavior.
+			//
+			// This test also guards against a hypothetical "fixed" prefetch that
+			// pre-populated .extraResources for the template: that would make
+			// crossplane-diff report a successful diff for a composition that
+			// actually fails in-cluster, which is a false positive. If this test
+			// ever starts passing with an unexpected exit code or producing a
+			// diff, something has diverged from prod behavior.
+			reason:       "Unguarded .extraResources access must surface a fatal error matching what a live Crossplane controller produces (verified empirically against kind cluster on 2026-04-29)",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/external-resource-configmap.yaml",
+				"testdata/diff/resources/unguarded-external-res-gotpl-composition.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-with-external-dep-unguarded.yaml",
+					"testdata/diff/resources/existing-downstream-with-external-dep.yaml",
+				),
+			},
+			inputFiles:            []string{"testdata/diff/modified-xr-with-external-dep.yaml"},
+			expectedError:         true,
+			expectedErrorContains: `<index .extraResources "configmaps">: error calling index: index of untyped nil`,
+			expectedExitCode:      dp.ExitCodeToolError,
+		},
+		"CrossNamespaceResourceDependencies": {
+			reason:       "Validates cross-namespace resource dependencies via fn-external-resources",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/cross-namespace-configmap.yaml",
+				"testdata/diff/resources/cross-namespace-fn-composition.yaml",
+				"testdata/diff/resources/external-named-clusterrole.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-cross-ns-xr.yaml",
+					"testdata/diff/resources/existing-cross-ns-downstream.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-cross-ns-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-cross-ns-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-cross-ns-data-existing-named-data-old-cross-ns-role", "cross-namespace-data-another-cross-namespace-data-external-named-clusterrole").
+				And().
+				WithModifiedResource("XNopResource", "test-cross-ns-resource", "default").
+				WithFieldChange("spec.coolField", "existing-cross-ns-value", "modified-cross-ns-value").
+				WithFieldChange("spec.environment", "staging", "production"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"ResourceRemovalHierarchyV1ClusterScoped": {
+			reason:        "Validates resource removal detection with hierarchy using v1 style resourceRefs and cluster scoped downstreams",
+			xrdAPIVersion: V1,
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/existing-legacy-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/diff/resources/removal-test-legacycluster-downstream-resource1.yaml": nil, // Will be kept
+						"testdata/diff/resources/removal-test-legacy-nested-xr.yaml": {
+							// A nested XR, no longer rendered: removed, with what it composes
+							OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+								"testdata/diff/resources/removal-test-legacy-nested-xr-managed.yaml": nil, // Child will also be removed
+							},
+						},
+					},
+				},
+			},
+			setupFiles: []string{
+				"testdata/diff/resources/legacy-xrd.yaml",
+				"testdata/diff/resources/removal-test-legacy-composition.yaml",
+				"testdata/diff/resources/removal-test-legacy-child-xrd.yaml",
+				"testdata/diff/resources/removal-test-legacy-child-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/modified-legacy-xr.yaml"},
+			expectedOutput: `
+~~~ XDownstreamResource/resource-to-be-kept
+  apiVersion: legacycluster.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: resource1
+    labels:
+      crossplane.io/composite: test-resource
+    name: resource-to-be-kept
+  spec:
+    forProvider:
+-     configData: existing-value
++     configData: modified-value
+
+---
+--- XDownstreamResource/resource-to-be-removed-managed
+- apiVersion: legacycluster.nop.example.org/v1alpha1
+- kind: XDownstreamResource
+- metadata:
+-   annotations:
+-     crossplane.io/composition-resource-name: managed-resource
+-   labels:
+-     crossplane.io/composite: test-resource
+-   name: resource-to-be-removed-managed
+- spec:
+-   forProvider:
+-     configData: child-value
+
+---
+--- XLegacyChildResource/resource-to-be-removed
+- apiVersion: legacycluster.diff.example.org/v1alpha1
+- kind: XLegacyChildResource
+- metadata:
+-   annotations:
+-     crossplane.io/composition-resource-name: resource2
+-   labels:
+-     crossplane.io/composite: test-resource
+-   name: resource-to-be-removed
+- spec:
+-   childField: child-value
+-   compositionRef:
+-     name: xlegacychildresources.legacycluster.diff.example.org
+-   compositionRevisionRef:
+-     name: xlegacychildresources.legacycluster.diff.example.org-bf2c887
+-   compositionUpdatePolicy: Automatic
+
+---
+~~~ XNopResource/test-resource
+  apiVersion: legacycluster.diff.example.org/v1alpha1
+  kind: XNopResource
+  metadata:
+    labels:
+      crossplane.io/composite: test-resource
+    name: test-resource
+  spec:
+    compositionRef:
+      name: removal-test-composition
+    compositionRevisionRef:
+      name: removal-test-composition-4b6f9f1
+    compositionUpdatePolicy: Automatic
+-   coolField: existing-value
++   coolField: modified-value
+
+---
+
+Summary: 2 modified, 2 removed`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		// Issue #259: function-sequencer hides resources from later stages, but those
+		// resources should be shown as removed if they exist in the cluster.
+		// https://github.com/crossplane-contrib/crossplane-diff/issues/259
+		"FunctionSequencerPreservesExistingResources": {
+			reason: "Function-sequencer should NOT hide resources that already exist in the cluster (fix for issue #259)",
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/existing-sequencer-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						// Stage 0 resource - exists in cluster
+						"testdata/diff/resources/sequencer-stage0-downstream.yaml": nil,
+						// Stage 1 resource - exists in cluster, should NOT be hidden by sequencer
+						// because observed resources are passed correctly to the function pipeline.
+						// Stage 0 has no Ready condition, so the sequencer would gate stage 1 if it
+						// were not observed: this case depends on the XR's own composed resources
+						// reaching render as observed state.
+						"testdata/diff/resources/sequencer-stage1-downstream.yaml": nil,
+					},
+				},
+			},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/sequencer-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles:   []string{"testdata/diff/resources/sequencer-xr.yaml"},
+			outputFormat: "json",
+			// Expected: With the fix, observed resources ARE passed to function-sequencer.
+			// Function-sequencer sees both resources exist and does NOT remove them from desired state.
+			// Since existing resources match rendered resources, there should be no changes.
+			// XR diff outputs nothing when there are no changes (unlike comp diff which says "No changes detected").
+			expectedStructuredOutput: tu.ExpectDiff().WithSummary(0, 0, 0),
+			expectedError:            false,
+			expectedExitCode:         dp.ExitCodeSuccess,
+		},
+		// Issue #259: Validates that removal detection works even when the XR has no changes.
+		// This is the core fix for the function-sequencer bug where existingXR was nil because
+		// the XR diff wasn't stored when there were no changes.
+		// https://github.com/crossplane-contrib/crossplane-diff/issues/259
+		"ResourceRemovalWithUnmodifiedXR": {
+			reason:       "Validates resource removal detection works when XR has no changes (uses existingXRFromCluster fallback)",
+			outputFormat: "json",
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/existing-removal-test-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/diff/resources/removal-test-ns-downstream-resource1.yaml": nil, // Will be kept
+						"testdata/diff/resources/removal-test-nested-xr.yaml": {
+							// A nested XR, no longer rendered: removed, with what it composes
+							OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+								"testdata/diff/resources/removal-test-nested-xr-managed.yaml": nil, // Child will also be removed
+							},
+						},
+					},
+				},
+			},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/removal-test-composition.yaml",
+				"testdata/diff/resources/nested/child-xrd.yaml",
+				"testdata/diff/resources/nested/child-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/unmodified-xr.yaml"}, // XR has NO changes
+			// Expected: the nested XR resource2 and what it composes are removed, but XR and resource1 have no changes
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 0, 2).
+				WithRemovedResource("XChildResource", "resource-to-be-removed", "default").
+				// dryRun must be absent on a removal. A removal has no desired state to preview, so it can
+				// never carry a dryRun object, and one appearing would wrongly mark it unverified; WithDryRunPerformed asserts exactly that absence. The method
+				// name reads oddly here — nothing was dry run — but the claim it makes ("no dryRun
+				// object is present") is the right one, and having a second spelling for the same
+				// assertion would be worse.
+				WithDryRunPerformed().
+				WithField("spec.childField", "child-value").
+				And().
+				WithRemovedResource("XDownstreamResource", "resource-to-be-removed-managed", "default").
+				WithDryRunPerformed().
+				WithField("spec.forProvider.configData", "child-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// #552: removal mirrors Crossplane's garbage collector, which deletes a composed resource only if
+		// the composite controls it. The XR's resourceRefs name four resources, and its render desires only
+		// the first: one it controls and renders, one it controls and no longer renders, one another XR
+		// controls, and one with no controller reference at all. Only the second is removed.
+		"ResourceRemovalSkipsResourcesTheXRDoesNotControl": {
+			reason: "A composed resource the XR's resourceRefs name but the XR does not control is not reported removed",
+			// What this case pins: test-resource's resourceRefs still name two resources it doesn't control.
+			outputFormat: "json",
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-listing-uncontrolled-resources.yaml",
+					"testdata/diff/resources/removal-test-ns-downstream-resource1.yaml", // still rendered: kept
+					"testdata/diff/resources/removal-test-ns-downstream-resource2.yaml", // no longer rendered: removed
+				),
+				composes(
+					"testdata/diff/resources/existing-other-xr.yaml",
+					"testdata/diff/resources/existing-other-xr-downstream.yaml",
+				),
+			},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/removal-test-composition.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				// Deliberately not in crossplaneManagedResources: its controller reference was removed, so
+				// no XR controls it, though test-resource's resourceRefs still name it.
+				"testdata/diff/resources/removal-test-ns-downstream-without-controller.yaml",
+			},
+			inputFiles: []string{"testdata/diff/unmodified-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 0, 1).
+				WithRemovedResource("XDownstreamResource", "resource-to-be-removed", "default").
+				WithField("spec.forProvider.configData", "existing-value"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"ResourceRemovalHierarchyV2Namespaced": {
+			reason:       "Validates resource removal detection with hierarchy using v2 style resourceRefs and namespaced downstreams",
+			outputFormat: "json",
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/existing-removal-test-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/diff/resources/removal-test-ns-downstream-resource1.yaml": nil, // Will be kept
+						"testdata/diff/resources/removal-test-nested-xr.yaml": {
+							// A nested XR, no longer rendered: removed, with what it composes
+							OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+								"testdata/diff/resources/removal-test-nested-xr-managed.yaml": nil, // Child will also be removed
+							},
+						},
+					},
+				},
+			},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/removal-test-composition.yaml",
+				"testdata/diff/resources/nested/child-xrd.yaml",
+				"testdata/diff/resources/nested/child-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/modified-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 2).
+				WithModifiedResource("XDownstreamResource", "resource-to-be-kept", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
+				And().
+				WithRemovedResource("XChildResource", "resource-to-be-removed", "default").
+				WithField("spec.childField", "child-value").
+				And().
+				WithRemovedResource("XDownstreamResource", "resource-to-be-removed-managed", "default").
+				WithField("spec.forProvider.configData", "child-value").
+				And().
+				WithModifiedResource("XNopResource", "test-resource", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"ResourceRemovalHierarchyV2ClusterScoped": {
+			reason:       "Validates resource removal detection with hierarchy using v2 style resourceRefs and cluster scoped downstreams",
+			outputFormat: "json",
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/existing-cluster-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/diff/resources/removal-test-cluster-downstream-resource1.yaml": nil, // Will be kept
+						"testdata/diff/resources/removal-test-nested-xr.yaml": {
+							// A nested XR, no longer rendered: removed, with what it composes
+							OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+								"testdata/diff/resources/removal-test-nested-xr-managed.yaml": nil, // Child will also be removed
+							},
+						},
+					},
+				},
+			},
+			setupFiles: []string{
+				"testdata/diff/resources/cluster-xrd.yaml",
+				"testdata/diff/resources/removal-test-cluster-composition.yaml",
+				"testdata/diff/resources/nested/child-xrd.yaml",
+				"testdata/diff/resources/nested/child-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/modified-cluster-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 2).
+				WithModifiedResource("XDownstreamResource", "resource-to-be-kept", "").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
+				And().
+				WithRemovedResource("XChildResource", "resource-to-be-removed", "default").
+				WithField("spec.childField", "child-value").
+				And().
+				WithRemovedResource("XDownstreamResource", "resource-to-be-removed-managed", "default").
+				WithField("spec.forProvider.configData", "child-value").
+				And().
+				WithModifiedResource("XNopResource", "test-resource", "").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"ResourceWithGenerateName": {
+			reason:       "Validates handling of resources with generateName",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/generated-name-composition.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					// Set up the XR as the owner of the generated composed resource
+					OwnerFile: "testdata/diff/resources/existing-generate-name-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						// This file has a generated name and is owned by the XR
+						"testdata/diff/resources/existing-downstream-with-generated-name.yaml": nil,
+					},
+				},
+			},
+			// Use a composition that uses generateName for composed resources
+			inputFiles: []string{"testdata/diff/new-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-resource-abc123", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "new-value").
+				And().
+				WithModifiedResource("XNopResource", "test-resource", "default").
+				WithFieldChange("spec.coolField", "existing-value", "new-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// The generateName counterpart of NewXRWithExistingComposedResource. A new XR renders its composed
+		// resource with only a generateName, and nothing is observed for it, so no name identifies the
+		// existing resource: only its crossplane.io/composite label and composition-resource-name
+		// annotation can. ResourceWithGenerateName cannot reach that lookup, because there the XR exists and
+		// render names the resource after the observed one.
+		"NewXRAdoptsOrphanedGenerateNamedComposedResource": {
+			reason:       "A new XR's generateName composed resource is matched to an existing orphan by its composite label",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/generated-name-composition.yaml",
+				// Deliberately not in crossplaneManagedResources: an orphan has no controller
+				// ownerReference (the garbage collector strips it when the XR is deleted with
+				// --cascade=orphan) and no XR lists it, but it keeps its labels and annotations.
+				"testdata/diff/resources/existing-downstream-with-generated-name.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(1, 1, 0).
+				WithAddedResource("XNopResource", "test-resource", "default").
+				And().
+				WithModifiedResource("XDownstreamResource", "test-resource-abc123", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "new-value"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// A generateName-only input next to an ordinary one is an ordinary invocation. The unnamed input
+		// has no identity, so input validation must not mistake it for the named XR's claim: an XR with
+		// no claimRef has an empty reference identity too, and the two must not match.
+		"GenerateNameInputAlongsideANamedInput": {
+			reason:       "A generateName-only input beside a named one is valid; both are diffed",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles:       []string{"testdata/diff/new-xr.yaml", "testdata/diff/generated-name-xr.yaml"},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(4, 0, 0).
+				WithXRs(
+					tu.XR("XNopResource", "test-resource", "default").Status("changed").Summary(2, 0, 0),
+					tu.XR("XNopResource", "generated-xr-(generated)", "default").Status("changed").Summary(2, 0, 0),
+				),
+		},
+		"NewXRWithGenerateName": {
+			reason:       "Shows diff for new XR with generateName",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				// We don't add any existing XR, as we're testing creation of a new one
+			},
+			inputFiles: []string{"testdata/diff/generated-name-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XDownstreamResource", "", "default").
+				WithNamePattern(`generated-xr-\(generated\)`).
+				WithField("spec.forProvider.configData", "new-value").
+				And().
+				WithAddedResource("XNopResource", "", "default").
+				WithNamePattern(`generated-xr-\(generated\)`).
+				WithField("spec.coolField", "new-value").
+				And().
+				// Issue #477: the grouped view must attribute these changes to a
+				// named XR. metadata.name is empty on the input, so the identity
+				// carries the effective (synthesized) name — the same one the
+				// changes above are keyed by.
+				WithXRs(
+					tu.XR("XNopResource", "generated-xr-(generated)", "default").
+						Status("changed").
+						Summary(2, 0, 0),
+				),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Issue #476. The same file passed twice — a fat-fingered command line, or CI enumerating one
+		// file twice — has one clear intent. It is diffed once, with a warning, and the run succeeds.
+		"IdenticalDuplicateInputIsDeduplicated": {
+			reason:       "An input identical to an earlier one is diffed once, with a warning, not rejected",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{
+				"testdata/diff/new-xr.yaml",
+				"testdata/diff/new-xr.yaml",
+			},
+			expectedExitCode:       dp.ExitCodeDiffDetected,
+			expectedStderrContains: []string{"Ignoring a duplicate input: it is identical to an earlier one"},
+			// The warning channel's contract is both halves: stderr above, and warnings[] here.
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithXRs(tu.XR("XNopResource", "test-resource", "default").Status("changed").Summary(2, 0, 0)).
+				WithWarning("Ignoring a duplicate input: it is identical to an earlier one").
+				WithWarningContext(map[string]string{"resource": "XNopResource/test-resource", "input": "2", "duplicateOf": "1"}),
+		},
+		// The same object twice with different content fails loudly: applying both would leave whichever
+		// is applied last, and the order inputs are given in is not a statement of intent.
+		"SameObjectTwiceWithDifferentContentFails": {
+			reason: "One object given twice with different content is an input error on both inputs",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{
+				"testdata/diff/new-xr.yaml",
+				"testdata/diff/modified-xr.yaml",
+			},
+			expectedError:         true,
+			expectedErrorContains: "input 2 defines XNopResource/test-resource differently from input 1",
+			expectedExitCode:      dp.ExitCodeToolError,
+		},
+		// A child XR passed alongside the parent whose composition renders it: the parent's composition
+		// writes that child, so the child input would be a second writer. Rejected on the child; the
+		// parent's own diff is unaffected.
+		"InputComposedByAnotherInputIsRejected": {
+			reason: "An XR supplied alongside the input whose composition composes it is an input error",
+			setupFiles: []string{
+				"testdata/diff/resources/nested/parent-xrd.yaml",
+				"testdata/diff/resources/nested/child-xrd.yaml",
+				"testdata/diff/resources/nested/parent-composition.yaml",
+				"testdata/diff/resources/nested/child-composition.yaml",
+				"testdata/diff/resources/xdownstreamenvresource-xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{
+				"testdata/diff/new-nested-xr.yaml",
+				"testdata/diff/new-nested-child-xr.yaml",
+			},
+			expectedError: true,
+			expectedErrorContains: "XChildResource/test-parent-child is composed by input XParentResource/test-parent, " +
+				"whose composition writes it",
+			expectedExitCode: dp.ExitCodeToolError,
+		},
+		// Issue #476. Two distinct XRs whose composition gives one child a fixed name render the same
+		// object — here with byte-identical content. Crossplane gives it to whichever XR creates it first
+		// and the other fails to reconcile it, so the run must fail however alike the renderings are.
+		// This depends on real renders carrying the controller reference; unit tests build that by hand.
+		"TwoXRsComposingOneObjectContend": {
+			reason: "Two XRs that would both control one object fail, even when their renderings are identical",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/shared-child-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles:       []string{"testdata/diff/shared-child-xrs.yaml"},
+			expectedError:    true,
+			expectedExitCode: dp.ExitCodeToolError,
+			expectedErrorContains: `resource "ns.nop.example.org/v1alpha1/XDownstreamResource/default/shared-child" would be ` +
+				`controlled by more than one XR (XNopResource/shared-child-owner-a, XNopResource/shared-child-owner-b)`,
+		},
+		// Reproduces the PR #294 scenario: a net-new XR is diffed while the
+		// composed resource it would manage already exists in the cluster
+		// (e.g. after the prior XR was deleted with --cascade=orphan, or while
+		// importing existing resources under Crossplane management). The render
+		// pipeline emits ownerReferences with an empty UID for new XRs;
+		// without the fallback in CalculateNonRemovalDiffs, UpdateOwnerRefs
+		// runs as a no-op and the real apiserver rejects the dry-run apply
+		// with "metadata.ownerReferences.uid: must not be empty".
+		"NewXRWithExistingComposedResource": {
+			reason:       "Shows diff for new XR whose composed resource already exists in the cluster (PR #294)",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				// Pre-existing composed resource; no backing XR in the cluster. Deliberately not in
+				// crossplaneManagedResources: an orphaned resource has no controller ownerReference (the
+				// garbage collector strips it when the XR is deleted with --cascade=orphan), and adopting
+				// exactly such a resource is what this case tests.
+				"testdata/diff/resources/existing-downstream-resource.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(1, 1, 0).
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithField("spec.coolField", "new-value").
+				And().
+				WithModifiedResource("XDownstreamResource", "test-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "new-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"MultipleXRs": {
+			reason:       "Validates diff for multiple XRs",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			// Add an existing XR and downstream resource to test modification
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr.yaml",
+					"testdata/diff/resources/existing-downstream-resource.yaml",
+				),
+			},
+			inputFiles: []string{
+				"testdata/diff/first-xr.yaml",
+				"testdata/diff/modified-xr.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 2, 0).
+				WithAddedResource("XDownstreamResource", "first-resource", "default").
+				WithField("spec.forProvider.configData", "first-value").
+				And().
+				WithModifiedResource("XDownstreamResource", "test-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
+				And().
+				WithAddedResource("XNopResource", "first-resource", "default").
+				WithField("spec.coolField", "first-value").
+				And().
+				WithModifiedResource("XNopResource", "test-resource", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"SelectCompositionByDirectReference": {
+			reason:       "Validates composition selection by direct reference",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				// Add multiple compositions for the same XR type
+				"testdata/diff/resources/default-composition.yaml",
+				"testdata/diff/resources/production-composition.yaml",
+				"testdata/diff/resources/staging-composition.yaml",
+			},
+			inputFiles: []string{
+				"testdata/diff/xr-with-composition-ref.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XDownstreamResource", "test-resource", "default").
+				WithField("spec.forProvider.configData", "test-value").
+				WithField("spec.forProvider.resourceTier", "production").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithField("spec.coolField", "test-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"SelectCompositionByLabelSelector": {
+			reason:       "Validates composition selection by label selector",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				// Add multiple compositions for the same XR type
+				"testdata/diff/resources/default-composition.yaml",
+				"testdata/diff/resources/production-composition.yaml",
+				"testdata/diff/resources/staging-composition.yaml",
+			},
+			inputFiles: []string{
+				"testdata/diff/xr-with-composition-selector.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XDownstreamResource", "test-resource", "default").
+				WithField("spec.forProvider.configData", "test-value").
+				WithField("spec.forProvider.resourceTier", "staging").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithField("spec.coolField", "test-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"AmbiguousCompositionSelection": {
+			reason: "Validates error on ambiguous composition selection",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				// Add multiple compositions for the same XR type
+				"testdata/diff/resources/default-composition.yaml",
+				"testdata/diff/resources/production-composition.yaml",
+				"testdata/diff/resources/staging-composition.yaml",
+			},
+			inputFiles: []string{
+				"testdata/diff/xr-with-ambiguous-selector.yaml",
+			},
+			expectedError:         true,
+			expectedExitCode:      dp.ExitCodeToolError,
+			expectedErrorContains: "ambiguous composition selection: multiple compositions match",
+			noColor:               true,
+		},
+		"SchemaValidationError": {
+			reason: "Validates exit code 2 for schema validation errors and structured per-resource failure detail in JSON output",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{
+				"testdata/diff/invalid-schema-xr.yaml",
+			},
+			outputFormat:     "json",
+			expectedError:    true,
+			expectedExitCode: dp.ExitCodeSchemaValidation,
+			// Structured assertion: lock down the typed
+			// validationFailures payload for both the failing XR and
+			// its composed resource. Field paths and error types are
+			// ours to assert; the embedded k8s message wording is
+			// left unasserted (apimachinery upgrades can shift its
+			// phrasing without changing our output contract).
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithError("XNopResource/invalid-schema-xr").
+				WithValidationFailure("ns.diff.example.org/v1alpha1", "XNopResource", "invalid-schema-xr", "default").
+				WithStatus("invalid").
+				WithFieldError("schema", "spec.coolField").
+				AndFieldError().
+				AndValidationFailure().
+				WithValidationFailure("ns.nop.example.org/v1alpha1", "XDownstreamResource", "invalid-schema-xr", "default").
+				WithStatus("invalid").
+				WithFieldError("schema", "spec.forProvider.configData").
+				AndFieldError().
+				AndValidationFailure().
+				AndError(),
+			noColor: true,
+		},
+		"NewClaimShowsDiff": {
+			reason:       "Shows diff for new claim",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/existing-namespace.yaml",
+				// Add the necessary CRDs and compositions for claim diffing
+				"testdata/diff/resources/claim-xrd.yaml",
+				"testdata/diff/resources/claim-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-claim.yaml"},
+			// The claim is defaulted with its own CRD (generated from claim-xrd.yaml), which shares the XRD's
+			// user default spec.tier with the XR's CRD but, unlike it, does not default compositionUpdatePolicy.
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("NopClaim", "test-claim", "existing-namespace").
+				WithField("spec.coolField", "new-value").
+				WithField("spec.tier", "standard").
+				WithFieldAbsent("spec.compositionUpdatePolicy").
+				And().
+				WithAddedResource("XDownstreamResource", "test-claim", "").
+				WithField("spec.forProvider.configData", "new-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"NewClaimWithClaimRefComposition": {
+			reason:       "Shows diff for new claim when composition uses spec.claimRef - claimRef is synthesized for new claims",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/existing-namespace.yaml",
+				"testdata/diff/resources/claim-xrd.yaml",
+				"testdata/diff/resources/claim-composition-with-claimref.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-claim-with-claimref-composition.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("NopClaim", "test-claim", "existing-namespace").
+				WithField("spec.coolField", "new-value").
+				And().
+				WithAddedResource("XDownstreamResource", "test-claim", "").
+				WithField("spec.forProvider.configData", "existing-namespace/test-claim"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"ModifiedClaimShowsDiff": {
+			reason:       "Shows diff for modified claim",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/existing-namespace.yaml",
+				// Add necessary CRDs and composition
+				"testdata/diff/resources/claim-xrd.yaml",
+				"testdata/diff/resources/claim-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				// Add existing resources for comparison
+				"testdata/diff/resources/existing-claim.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-claim-xr.yaml",
+					"testdata/diff/resources/existing-claim-downstream-resource.yaml",
+				),
+			},
+			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			inputFiles:    []string{"testdata/diff/modified-claim.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				// The composed resource is labelled with the backing XR the claim's resourceRef names, so it
+				// already belongs to this claim: no ownership advisory (#534).
+				WithNoWarnings().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("NopClaim", "test-claim", "existing-namespace").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value").
+				And().
+				WithModifiedResource("XDownstreamResource", "test-claim-82crv", "").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// #503, for a claim. A claim is diffed as the claim itself, so its dry-run payload must carry
+		// none of the defaults its CRD declares for fields the manifest omits.
+		"XRDDefaultedFieldOnClaimOwnedByAnotherManagerIsNotReportedChanged": {
+			reason:       "An XRD-defaulted field the claim manifest omits keeps another manager's non-default value in the diff",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/existing-namespace.yaml",
+				"testdata/diff/resources/claim-xrd.yaml",
+				"testdata/diff/resources/claim-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/existing-claim.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-claim-xr.yaml",
+					"testdata/diff/resources/existing-claim-downstream-resource.yaml",
+				),
+			},
+			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			fieldManagerApplies: []fieldManagerApply{
+				{file: "testdata/diff/resources/existing-claim-defaulted-fields-other-manager.yaml", fieldManager: "platform-operator"},
+			},
+			inputFiles: []string{"testdata/diff/modified-claim-omitting-defaulted-fields.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				// As in ModifiedClaimShowsDiff: the composed resource belongs to the claim's backing XR (#534).
+				WithNoWarnings().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("NopClaim", "test-claim", "existing-namespace").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value").
+				WithFieldChange("spec.compositeDeletePolicy", "Foreground", "Foreground").
+				WithFieldChange("spec.compositionUpdatePolicy", "Manual", "Manual").
+				And().
+				WithModifiedResource("XDownstreamResource", "test-claim-82crv", "").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// A claim is defaulted with its own CRD, never its XR's; only the XR that render consumes gets
+		// the XR CRD's defaults. The claimnested CRDs mirror what Crossplane generates: both carry the
+		// XRD's user default spec.tier, only the claim's defaults spec.compositeDeletePolicy, and only
+		// the XR's defaults spec.compositionUpdatePolicy. The composition writes the render input's
+		// tier and policy into the composed resource, so each case pins all three views at once: the
+		// claim's payload, its predicted or apiserver-defaulted form, and the render input.
+		"NewClaimIsDefaultedWithItsOwnCRDWhenDryRunCreated": {
+			reason:       "A new claim shows its own CRD's defaults, from the apiserver, and render sees its XR's",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/claim-nested/parent-definition.yaml",
+				"testdata/diff/resources/claim-nested/parent-defaults-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-parent-claim-omitting-defaulted-fields.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("ParentNopClaim", "new-parent-claim", "default").
+				WithDryRunPerformed().
+				WithField("spec.tier", "standard").
+				WithField("spec.compositeDeletePolicy", "Background").
+				WithFieldAbsent("spec.compositionUpdatePolicy").
+				And().
+				WithAddedResource("XDownstreamResource", "new-parent-claim-defaults", "").
+				WithField("spec.forProvider.configData", "standard/Automatic"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"NewClaimIsPredictedWithItsOwnCRDsDefaultsWithoutDryRun": {
+			reason:       "With --dry-run-on=existing a new claim is predicted with its own CRD's defaults, not its XR's",
+			outputFormat: "json",
+			dryRunOn:     "existing",
+			setupFiles: []string{
+				"testdata/diff/resources/claim-nested/parent-definition.yaml",
+				"testdata/diff/resources/claim-nested/parent-defaults-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-parent-claim-omitting-defaulted-fields.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("ParentNopClaim", "new-parent-claim", "default").
+				WithDryRunSkipped("disabled", "").
+				WithField("spec.tier", "standard").
+				WithField("spec.compositeDeletePolicy", "Background").
+				WithFieldAbsent("spec.compositionUpdatePolicy").
+				And().
+				WithAddedResource("XDownstreamResource", "new-parent-claim-defaults", "").
+				WithDryRunSkipped("disabled", "").
+				WithField("spec.forProvider.configData", "standard/Automatic"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"XRDDefaultsAppliedBeforeRendering": {
+			reason:       "Validates that XRD defaults are applied to XR before rendering",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/xr-with-missing-defaults.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(1, 0, 0).
+				WithAddedResource("XTestDefaultResource", "test-resource-with-defaults", "default").
+				WithField("spec.region", "us-east-1").
+				WithField("spec.size", "large"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// The sibling of XRDDefaultsAppliedBeforeRendering, whose composition renders nothing, so it checks
+		// only the XR's dry run. Here a composition reads the composite's defaulted fields into a composed
+		// resource: a user default (spec.region) for a v2 and a legacy XR, and for the legacy XR also the
+		// machinery default spec.compositionUpdatePolicy. Rendering an undefaulted XR writes "<no value>".
+		"XRDDefaultsReachTheRender": {
+			reason:       "Validates that a composition observes an XR's CRD defaults, for both a v2 and a legacy XR",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/rendered-defaults/definitions.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-rendered-defaults-xrs.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(4, 0, 0).
+				WithAddedResource("XRegionalDatabase", "modern-database", "default").
+				WithField("spec.region", "us-east-1").
+				And().
+				WithAddedResource("XLegacyRegionalDatabase", "legacy-database", "").
+				WithField("spec.region", "eu-west-1").
+				And().
+				WithAddedResource("XDownstreamResource", "modern-database", "default").
+				WithField("spec.forProvider.configData", "us-east-1/large").
+				And().
+				WithAddedResource("XDownstreamResource", "legacy-database", "").
+				WithField("spec.forProvider.configData", "eu-west-1/small/Automatic"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// #503: a composed resource's dry-run apply payload must be exactly what the composition
+		// rendered. If it carried a locally-defaulted spec.forProvider.size: small, the apply would
+		// claim the field away from the manager that set it to large, predicting a change real
+		// Crossplane (which never sends the field) would not make. The composition renders
+		// everything else identically, so any modification reported for the composed resource could
+		// only have come from the defaulted field.
+		"CRDDefaultedFieldOwnedByAnotherManagerIsNotReportedChanged": {
+			reason:       "A CRD-defaulted field the composition does not render keeps another manager's non-default value in the diff",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-with-crd-defaulted-downstream.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			// The composed resource deliberately has no controlling XR, as after its XR was deleted with
+			// --cascade=orphan: the XR is new, and what this case pins is the composed resource's field
+			// managers, which an orphan keeps. Giving it an XR would make the XR modified rather than new.
+			fieldManagerApplies: []fieldManagerApply{
+				{
+					file:         "testdata/diff/resources/existing-defaulted-downstream-composed.yaml",
+					fieldManager: "apiextensions.crossplane.io/composed/2b9d3c4e-0000-4000-8000-000000000503",
+				},
+				{
+					file:         "testdata/diff/resources/existing-defaulted-downstream-other-manager.yaml",
+					fieldManager: "platform-operator",
+				},
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(1, 0, 0).
+				WithAddedResource("XNopResource", "test-resource", "default"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// #503, for the XR itself. The XR is defaulted before rendering, and must be: the composition
+		// has to see the spec Crossplane would. But the XR's own dry-run apply payload must not carry
+		// those defaults, or it claims spec.region from the manager that set it to eu-west-1 and reports
+		// a change applying the manifest would not make. Nothing is composed, so the XR is the only
+		// thing that could be reported changed.
+		"XRDDefaultedFieldOwnedByAnotherManagerIsNotReportedChanged": {
+			reason:       "An XRD-defaulted field the XR manifest omits keeps another manager's non-default value in the diff",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/xr-with-missing-defaults.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			fieldManagerApplies: []fieldManagerApply{
+				{file: "testdata/diff/xr-with-missing-defaults.yaml", fieldManager: "kubectl"},
+				{file: "testdata/diff/resources/existing-xr-with-defaults-reconciled.yaml", fieldManager: CompositeReconcilerFieldManager},
+				{file: "testdata/diff/resources/existing-xr-with-defaults-other-manager.yaml", fieldManager: "platform-operator"},
+			},
+			expectedStructuredOutput: tu.ExpectDiff().WithSummary(0, 0, 0),
+			expectedError:            false,
+			expectedExitCode:         dp.ExitCodeSuccess,
+		},
+		// With no apiserver result for an addition, its defaults have to be predicted locally. These
+		// pin that keeping local defaults out of dry-run payloads did not also take them out of the
+		// additions that are never sent: an XRD default on the XR, and a CRD default on a composed
+		// resource.
+		"XRDDefaultsShownForAddedXRWithoutDryRun": {
+			reason:       "With --dry-run-on=existing an added XR still shows the defaults its XRD declares",
+			outputFormat: "json",
+			dryRunOn:     "existing",
+			inputFiles:   []string{"testdata/diff/xr-with-missing-defaults.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(1, 0, 0).
+				WithAddedResource("XTestDefaultResource", "test-resource-with-defaults", "default").
+				WithDryRunSkipped("disabled", "").
+				WithField("spec.region", "us-east-1").
+				WithField("spec.size", "large").
+				WithField("spec.tags.environment", "development"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"CRDDefaultsShownForAddedComposedResourceWithoutDryRun": {
+			reason:       "With --dry-run-on=existing an added composed resource still shows the defaults its CRD declares",
+			outputFormat: "json",
+			dryRunOn:     "existing",
+			inputFiles:   []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-with-crd-defaulted-downstream.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XDefaultedDownstreamResource", "test-resource-defaulted", "default").
+				WithDryRunSkipped("disabled", "").
+				WithField("spec.forProvider.size", "small").
+				WithField("spec.forProvider.configData", "new-value").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// The local prediction defaults an addition against the version it was requested at. Its CRD
+		// stores another version, whose defaults (and conversion) the cluster may also apply, so the
+		// prediction cannot be trusted to match and the advisory says so — even under
+		// --dry-run-on=existing, whose unverified additions are otherwise not warned about. Defaulting
+		// itself is unchanged: size is the requested version's default, not the storage version's.
+		// The XR's own XRD has one version, so it raises no warning, which the count pins.
+		"AdditionAtANonStorageVersionWarnsThatItsDiffOmitsTheStorageVersion": {
+			reason:       "With --dry-run-on=existing an addition requested at a version its CRD does not store warns that the cluster stores it at another version",
+			outputFormat: "json",
+			dryRunOn:     "existing",
+			inputFiles:   []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-with-non-storage-version-downstream.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XVersionedDownstreamResource", "test-resource-versioned", "default").
+				WithDryRunSkipped("disabled", "").
+				WithDryRunStorageVersion("v1").
+				WithField("spec.forProvider.size", "small").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithDryRunSkipped("disabled", "").
+				And().
+				WithWarning("they are stored at a version other than the one requested").
+				WithWarningContext(map[string]string{
+					"gvk":       "ns.nop.example.org/v1alpha1, Kind=XVersionedDownstreamResource",
+					"namespace": "default",
+					"versions":  "requested v1alpha1, stored v1",
+					"count":     "1",
+				}),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"AdditionAtANonStorageVersionWarnsOnStderr": {
+			reason:     "In text mode the storage-version note reaches stderr, the only place a person sees it",
+			dryRunOn:   "existing",
+			inputFiles: []string{"testdata/diff/new-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-with-non-storage-version-downstream.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			noColor: true,
+			expectedStderrContains: []string{
+				`WARNING: did not verify added resources against the apiserver (--dry-run-on=existing); they are stored at a version other than the one requested, ` +
+					`whose defaults and conversion the cluster may apply but their diffs do not ` +
+					`(count=1, gvk=ns.nop.example.org/v1alpha1, Kind=XVersionedDownstreamResource, namespace=default, versions=requested v1alpha1, stored v1)`,
+			},
+			expectedOutput:   "+++ XVersionedDownstreamResource/test-resource-versioned",
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"XRDDefaultsNoOverride": {
+			reason:       "Validates that XRD defaults do not override user-specified values",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/xr-with-overridden-defaults.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(1, 0, 0).
+				WithAddedResource("XTestDefaultResource", "test-resource-with-overrides", "default").
+				WithField("spec.region", "us-west-2").
+				WithField("spec.size", "xlarge"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"ConcurrentRenderingMultipleXRs": {
+			reason:       "Validates concurrent rendering with multiple functions and XRs from directory",
+			timeout:      longTimeout, // Multiple XRs processed concurrently need more time
+			outputFormat: "json",
+			// This test reproduces issue #59 - concurrent function startup failures
+			// when processing multiple XR files from a directory
+			inputFiles: []string{
+				"testdata/diff/concurrent-xrs", // Pass the directory containing all XR files
+			},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd-concurrent.yaml",
+				"testdata/diff/resources/composition-multi-functions.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			// We expect successful processing of all 5 XRs
+			// Each XR should produce 3 base resources + 2 additional resources = 5 resources per XR
+			// Plus the XR itself = 6 additions per XR
+			// Total: 5 XRs * 6 additions = 30 additions
+			expectedStructuredOutput: tu.ExpectDiff().WithSummary(30, 0, 0),
+			expectedError:            false,
+			expectedExitCode:         dp.ExitCodeDiffDetected,
+		},
+		"NewNestedXRCreatesChildren": {
+			reason:       "Validates that new nested XR creates child XR and downstream resources",
+			outputFormat: "json",
+			setupFiles: []string{
+				// XRDs for parent and child
+				"testdata/diff/resources/nested/parent-xrd.yaml",
+				"testdata/diff/resources/nested/child-xrd.yaml",
+				// Compositions for parent and child
+				"testdata/diff/resources/nested/parent-composition.yaml",
+				"testdata/diff/resources/nested/child-composition.yaml",
+				// XRD for downstream managed resource
+				"testdata/diff/resources/xdownstreamenvresource-xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-nested-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(3, 0, 0).
+				WithAddedResource("XChildResource", "test-parent-child", "default").
+				WithField("spec.childField", "parent-value").
+				And().
+				WithAddedResource("XDownstreamResource", "test-parent-child-managed", "default").
+				WithField("spec.forProvider.configData", "parent-value").
+				And().
+				WithAddedResource("XParentResource", "test-parent", "default").
+				WithField("spec.parentField", "parent-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Issue #485. The unit test for the depth guard uses a render stub that caps its own recursion,
+		// so it cannot show what a real cycle does across real renders: real templates, real names that
+		// grow at every level (kept under the generated CRDs' 63-character limit by a short suffix), real
+		// schema validation and dry-run at each level. This drives the whole path. It fails at exactly one level past the
+		// default --max-nested-depth of 10, attributed to the XR the user named.
+		"CyclicCompositionStopsAtMaxNestedDepth": {
+			reason:       "A composition cycle (XCycleA -> XCycleB -> XCycleA ...) must stop at --max-nested-depth with a clear error, not recurse until the stack overflows (#485)",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/cycle/xrds.yaml",
+				"testdata/diff/resources/cycle/compositions.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles:            []string{"testdata/diff/new-cycle-xr.yaml"},
+			expectedError:         true,
+			expectedErrorContains: "maximum nesting depth exceeded: XCycleB/test-cycle-c-c-c-c-c-c-c-c-c-c-c (nested depth 11) is nested 11 levels deep, but --max-nested-depth is 10",
+			expectedExitCode:      dp.ExitCodeToolError,
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithError("XCycleA/test-cycle").
+				WithMessageContaining("maximum nesting depth exceeded"),
+		},
+		"ModifiedNestedXRPropagatesChanges": {
+			reason:       "Validates that modified nested XR propagates changes through child XR to downstream resources",
+			outputFormat: "json",
+			setupFiles: []string{
+				// XRDs for parent and child
+				"testdata/diff/resources/nested/parent-xrd.yaml",
+				"testdata/diff/resources/nested/child-xrd.yaml",
+				// Compositions for parent and child
+				"testdata/diff/resources/nested/parent-composition.yaml",
+				"testdata/diff/resources/nested/child-composition.yaml",
+				// XRD for downstream managed resource
+				"testdata/diff/resources/xdownstreamenvresource-xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			// Existing resources: the parent XR composes the child XR, which composes the managed resource
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/nested/existing-parent-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/diff/resources/nested/existing-child-xr.yaml": {
+							OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+								"testdata/diff/resources/nested/existing-managed-resource.yaml": nil,
+							},
+						},
+					},
+				},
+			},
+			inputFiles: []string{"testdata/diff/modified-nested-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 3, 0).
+				WithModifiedResource("XChildResource", "test-parent-child", "default").
+				WithFieldChange("spec.childField", "existing-value", "modified-value").
+				And().
+				WithModifiedResource("XDownstreamResource", "test-parent-child-managed", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
+				And().
+				WithModifiedResource("XParentResource", "test-parent", "default").
+				WithFieldChange("spec.parentField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// #503, for a nested XR. It is defaulted before its own render, so that render input carries
+		// spec.tier: standard although the parent's composition never sets it. Sending it would claim
+		// spec.tier from the manager that set it to premium.
+		"XRDDefaultedFieldOnNestedXROwnedByAnotherManagerIsNotReportedChanged": {
+			reason:       "An XRD-defaulted field a parent composition omits from a nested XR keeps another manager's non-default value in the diff",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/nested/parent-xrd.yaml",
+				"testdata/diff/resources/nested/child-xrd.yaml",
+				"testdata/diff/resources/nested/parent-composition.yaml",
+				"testdata/diff/resources/nested/child-composition.yaml",
+				"testdata/diff/resources/xdownstreamenvresource-xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/nested/existing-parent-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/diff/resources/nested/existing-child-xr.yaml": {
+							OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+								"testdata/diff/resources/nested/existing-managed-resource.yaml": nil,
+							},
+						},
+					},
+				},
+			},
+			fieldManagerApplies: []fieldManagerApply{
+				{file: "testdata/diff/resources/nested/existing-child-xr-tier-other-manager.yaml", fieldManager: "platform-operator"},
+			},
+			inputFiles: []string{"testdata/diff/modified-nested-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 3, 0).
+				WithModifiedResource("XChildResource", "test-parent-child", "default").
+				WithFieldChange("spec.childField", "existing-value", "modified-value").
+				WithFieldChange("spec.tier", "premium", "premium").
+				And().
+				WithModifiedResource("XDownstreamResource", "test-parent-child-managed", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
+				And().
+				WithModifiedResource("XParentResource", "test-parent", "default").
+				WithFieldChange("spec.parentField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Composition Revision tests for v2 XRDs
+		"V2ManualPolicyPinnedRevision": {
+			reason:       "Validates v2 XR with Manual update policy stays on pinned revision",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-revision-v1.yaml",
+				"testdata/diff/resources/composition-v2.yaml", // Current composition is v2
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-manual-v1.yaml",
+					"testdata/diff/resources/existing-downstream-manual-v1.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-xr-manual-v1.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-manual-v1", "default").
+				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v1-modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-manual-v1", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"V2AutomaticPolicyLatestRevision": {
+			reason:       "Validates v2 XR with Automatic update policy uses latest revision",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-revision-v1.yaml",
+				"testdata/diff/resources/composition-v2.yaml", // Current composition is v2
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				// The XR is still on v1, and its composed resource holds v1's data.
+				composes(
+					"testdata/diff/resources/existing-xr-automatic.yaml",
+					"testdata/diff/resources/existing-downstream-automatic.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-xr-automatic.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-automatic", "default").
+				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v2-modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-automatic", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"V2AutomaticPolicyRevisionSelectorPinsMatchingRevision": {
+			// Issue #388 (Bug B): under Automatic policy WITH a compositionRevisionSelector, the XR
+			// resolves to the latest revision MATCHING the selector, not the latest overall. Here the
+			// selector pins channel=stable (revision 1) even though channel=preview (revision 2) is
+			// newer — so the diff must render against the stable template (stable-*), not preview-*.
+			reason:       "Validates v2 Automatic XR with compositionRevisionSelector resolves to the selector-matching revision, not the newest overall",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-revision-stable.yaml",  // revision 1, channel=stable
+				"testdata/diff/resources/composition-revision-preview.yaml", // revision 2, channel=preview (newest)
+				"testdata/diff/resources/composition-v2.yaml",               // current composition
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-selector-stable.yaml",
+					"testdata/diff/resources/existing-downstream-selector-stable.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-xr-selector-stable.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-selector", "default").
+				// stable-* (not preview-*) proves the selector, not "latest overall", chose the revision.
+				WithFieldChange("spec.forProvider.configData", "stable-existing-value", "stable-modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-selector", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"V2AutomaticPolicyRevisionSelectorNoMatchErrors": {
+			// The mirror of the above: a selector matching NO revision must fail the diff rather than
+			// silently rendering against a non-matching revision (accuracy over guessing).
+			reason:       "Validates v2 Automatic XR whose compositionRevisionSelector matches no revision fails the diff",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-revision-stable.yaml",
+				"testdata/diff/resources/composition-revision-preview.yaml",
+				"testdata/diff/resources/composition-v2.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles:            []string{"testdata/diff/modified-xr-selector-nomatch.yaml"},
+			expectedError:         true,
+			expectedErrorContains: "match selector",
+			expectedExitCode:      dp.ExitCodeToolError,
+		},
+		"V2ManualRevisionUpgradeDiff": {
+			reason:       "Validates v2 XR changing revision in Manual mode shows upgrade diff",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-revision-v1.yaml",
+				"testdata/diff/resources/composition-v2.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-manual-v1.yaml",
+					"testdata/diff/resources/existing-downstream-manual-v1.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-xr-manual-upgrade-to-v2.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-manual-v1", "default").
+				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v2-modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-manual-v1", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"CompositionRevisionUpgradesResourceAPIVersion": {
+			// NOTE: This test validates that resources are correctly matched across API version changes,
+			// avoiding delete/recreate. The composition template changes from v1beta1 to v1beta2, but
+			// Kubernetes automatically converts resources between served API versions. When we query for
+			// the v1beta2 resource, Kubernetes finds the v1beta1 resource and returns it auto-converted
+			// to v1beta2. From Kubernetes' perspective, the resource exists as both versions simultaneously,
+			// so there's no apiVersion field change to show in the diff. The important thing is that the
+			// resource is matched (unchanged, not ---/+++), preventing delete/recreate operations.
+			//
+			// The XR composes the resource as Crossplane leaves it: controlled by the XR, and named in the
+			// XR's resourceRefs at v1beta1, the version it was composed at. Crossplane's garbage collector
+			// matches what an XR composed to what it renders by composition resource name, so it keeps the
+			// resource; removal detection must too, rather than report the v1beta1 reference unmatched by
+			// the v1beta2 render (#552).
+			reason:       "Validates XR upgrading composition revision that changes resource API version shows as update not remove/add",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				// NOTE: xapimigrate CRD is auto-loaded from testdata/diff/crds/
+				// We apply no XRD for XApiMigrateResource because it is a regular managed resource
+				// (not a composite), and an XRD would make it composite.
+				"testdata/diff/resources/api-version-composition-revision-v1.yaml",
+				"testdata/diff/resources/api-version-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/existing-api-version-xr-rev1.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/diff/resources/existing-api-version-downstream-v1beta1.yaml": nil,
+					},
+				},
+			},
+			inputFiles: []string{"testdata/diff/modified-api-version-xr-rev2.yaml"},
+			// Key assertion: nothing is added or removed, proving API version migration works. The
+			// XApiMigrateResource is stored identically at either version, so it renders unchanged; an
+			// unmatched one would be a +++ addition plus a --- removal. Only the XR's revision ref changes.
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 1, 0).
+				WithModifiedResource("XNopResource", "test-api-version-xr", "default"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"CompositionRevisionUpgradesResourceAPIVersionAndChangesIt": {
+			// The same upgrade, with a change to the XR that the new revision renders into the resource too.
+			// The resource is one object, modified once at the version it is rendered at. Matched by API
+			// version, the v1beta1 reference was a removal contradicting that modification, and the xr
+			// command refused to combine the two diffs of one object (#552).
+			reason:       "Validates an API version change plus a field change is one modification, not a removal and a modification",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/api-version-composition-revision-v1.yaml",
+				"testdata/diff/resources/api-version-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/existing-api-version-xr-rev1.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/diff/resources/existing-api-version-downstream-v1beta1.yaml": nil,
+					},
+				},
+			},
+			inputFiles: []string{"testdata/diff/modified-api-version-xr-rev2-changed-field.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XApiMigrateResource", "test-api-version-xr-api-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "test-value", "changed-value").
+				And().
+				WithModifiedResource("XNopResource", "test-api-version-xr", "default").
+				WithFieldChange("spec.coolField", "test-value", "changed-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"V2SwitchManualToAutomatic": {
+			reason:       "Validates v2 XR switching from Manual to Automatic mode uses latest revision",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-revision-v1.yaml",
+				"testdata/diff/resources/composition-v2.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-manual-v1.yaml",
+					"testdata/diff/resources/existing-downstream-manual-v1.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-xr-switch-to-automatic.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-manual-v1", "default").
+				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v2-modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-manual-v1", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"V2NetNewManualNoRevRef": {
+			reason:       "Validates v2 net new XR with Manual policy but no revision ref uses latest revision",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-revision-v1.yaml",
+				"testdata/diff/resources/composition-v2.yaml", // Current composition is v2
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-xr-manual-no-ref.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XDownstreamResource", "test-manual-no-ref", "default").
+				WithField("spec.forProvider.configData", "v2-new-value").
+				And().
+				WithAddedResource("XNopResource", "test-manual-no-ref", "default").
+				WithField("spec.coolField", "new-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Composition Revision tests for v1 XRDs (Crossplane 1.20 compatibility)
+		"V1ManualRevisionUpgradeDiff": {
+			reason:        "Validates v1 XR with Manual update policy changing revision shows upgrade diff",
+			outputFormat:  "json",
+			xrdAPIVersion: V1,
+			setupFiles: []string{
+				"testdata/diff/resources/legacy-xrd.yaml",
+				"testdata/diff/resources/legacy-composition-revision-v1.yaml",
+				"testdata/diff/resources/legacy-composition-v2.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-legacy-xr-manual-v1.yaml",
+					"testdata/diff/resources/existing-legacy-downstream-manual-v1.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-legacy-xr-manual-upgrade-to-v2.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-legacy-manual-v1", "").
+				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v2-modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-legacy-manual-v1", "").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Issue #499: Crossplane's composite reconciler writes compositionRevisionRef, so a hand-written
+		// manifest omits it — and an apply that omits a field leaves it where it is. The render must
+		// therefore see the cluster copy's ref. Here the composition propagates the revision name into the
+		// composed resource, so a render that dropped the ref reported configData changing from the real
+		// revision name to empty for an input identical to what is deployed.
+		"ExistingXROmittingRevisionRefRendersWithClusterRef": {
+			reason:       "An existing XR whose input omits compositionRevisionRef renders with the cluster's ref, so a template reading the revision name shows no spurious change",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/comp/resources/revision-templating-composition.yaml",
+				"testdata/comp/resources/revision-templating-composition-revision.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-revision-ref.yaml",
+					"testdata/comp/resources/existing-downstream-revision-ref.yaml",
+				),
+			},
+			inputFiles:               []string{"testdata/diff/existing-xr-revision-ref-omitted.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().WithSummary(0, 0, 0),
+			expectedExitCode:         dp.ExitCodeSuccess,
+		},
+		// Issue #499, the consequence for which revision renders. The cluster's ref is inherited before the
+		// composition is resolved, so a Manual composite whose input omits the ref stays on the revision it
+		// is pinned to (-911318d, the v1 template), as it would in the cluster, instead of being rendered
+		// against the latest one (-430f3f3, v2). Compare V2ManualPolicyPinnedRevision, the same change with
+		// the ref spelled out.
+		"V2ManualPolicyOmittedRevisionRefStaysPinned": {
+			reason:       "Validates v2 XR with Manual update policy whose input omits compositionRevisionRef stays on the cluster's pinned revision",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-revision-v1.yaml",
+				"testdata/diff/resources/composition-v2.yaml", // Current composition is v2
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr-manual-v1.yaml",
+					"testdata/diff/resources/existing-downstream-manual-v1.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-xr-manual-v1-omits-revision-ref.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-manual-v1", "default").
+				// v1-* (not v2-*) proves the pinned revision, not the latest, rendered.
+				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v1-modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-manual-v1", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// The v1-path (spec.compositionRevisionRef) twin of the above.
+		"V1ManualPolicyOmittedRevisionRefStaysPinned": {
+			reason:        "Validates v1 XR with Manual update policy whose input omits compositionRevisionRef stays on the cluster's pinned revision",
+			outputFormat:  "json",
+			xrdAPIVersion: V1,
+			setupFiles: []string{
+				"testdata/diff/resources/legacy-xrd.yaml",
+				"testdata/diff/resources/legacy-composition-revision-v1.yaml",
+				"testdata/diff/resources/legacy-composition-v2.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-legacy-xr-manual-v1.yaml",
+					"testdata/diff/resources/existing-legacy-downstream-manual-v1.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-legacy-xr-manual-v1-omits-revision-ref.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-legacy-manual-v1", "").
+				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v1-modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-legacy-manual-v1", "").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Issue #499 for a nested XR. It is rendered from its parent's output, which never carries
+		// compositionRevisionRef, so it must inherit the cluster copy's, which ProcessNestedXRs hands it
+		// rather than fetching it again. The child's composition propagates the revision name into the
+		// managed resource; the parent's change reaches the child's childField but not that name, so the
+		// managed resource must not be reported.
+		"NestedXRInheritsClusterRevisionRef": {
+			reason:       "A nested XR renders with its cluster copy's compositionRevisionRef, so a template reading the revision name shows no spurious change",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/nested/parent-xrd.yaml",
+				"testdata/diff/resources/nested/child-xrd.yaml",
+				"testdata/diff/resources/nested/parent-composition.yaml",
+				"testdata/diff/resources/nested/child-revision-templating-composition.yaml",
+				"testdata/diff/resources/xdownstreamenvresource-xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/nested/existing-parent-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/diff/resources/nested/existing-child-xr-revision-ref.yaml": {
+							OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+								"testdata/diff/resources/nested/existing-managed-resource-revision-ref.yaml": nil,
+							},
+						},
+					},
+				},
+			},
+			inputFiles: []string{"testdata/diff/modified-nested-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XChildResource", "test-parent-child", "default").
+				WithFieldChange("spec.childField", "existing-value", "modified-value").
+				// The nested XR's own reconciler wrote the ref, not the parent's composed apply, so the
+				// parent's render, which omits it, leaves it in place.
+				WithFieldChange("spec.crossplane.compositionRevisionRef.name",
+					"xchildresources.nested.example.org-96afc06", "xchildresources.nested.example.org-96afc06").
+				And().
+				WithModifiedResource("XParentResource", "test-parent", "default").
+				WithFieldChange("spec.parentField", "existing-value", "modified-value"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Issue #498, as a user meets it: an Automatic claim's manifest omits the compositionRevisionRef the
+		// claim syncer copied onto the cluster copy. Under Automatic the claim's ref is never propagated to
+		// the backing XR anyway; the XR controller owns the XR's own, which is what render must see. Before,
+		// the backing XR's ref was dropped, so the template read no revision name and configData was
+		// reported changing to "v2:<no value>:existing-value" for an unchanged claim.
+		"AutomaticClaimOmittingRevisionRefRendersWithBackingXRRef": {
+			reason:       "An Automatic claim renders with its backing XR's compositionRevisionRef, so a template reading the revision name shows no spurious change",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/existing-namespace.yaml",
+				"testdata/diff/resources/pinned-claim/definitions.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/pinned-claim/existing-automatic.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/pinned-claim/existing-automatic-xr.yaml",
+					"testdata/diff/resources/pinned-claim/existing-automatic-downstream.yaml",
+				),
+			},
+			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			inputFiles:    []string{"testdata/diff/unchanged-automatic-pinned-claim.yaml"},
+			// No warnings either: the composed resource belongs to the claim's backing XR (#534).
+			expectedStructuredOutput: tu.ExpectDiff().WithNoWarnings().WithSummary(0, 0, 0),
+			expectedExitCode:         dp.ExitCodeSuccess,
+		},
+		// A Manual claim's pin lives on its backing XR: the claim syncer copies the ref back to a claim only
+		// under Automatic. Composition resolution and render must both see that pin. Before, the composition
+		// was resolved from the claim, which names no revision, so the latest one (v2) was chosen, while the
+		// render read the backing XR's ref (revision 1): configData became "v2:...-3d33597:...", a revision's template
+		// paired with another revision's name.
+		"ManualClaimRendersAgainstItsBackingXRsPinnedRevision": {
+			reason:       "A Manual claim whose backing XR is pinned to an older revision renders that revision, with that revision's name",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/existing-namespace.yaml",
+				"testdata/diff/resources/pinned-claim/definitions.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/pinned-claim/existing-manual.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/pinned-claim/existing-manual-xr.yaml",
+					"testdata/diff/resources/pinned-claim/existing-manual-downstream.yaml",
+				),
+			},
+			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			inputFiles:    []string{"testdata/diff/modified-manual-pinned-claim.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				// The composed resource is labelled with the backing XR's name, which the claim's resourceRef
+				// names, so it already belongs to this claim: no ownership advisory (#534).
+				WithNoWarnings().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("Pinned", "manual-claim", "existing-namespace").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value").
+				And().
+				WithModifiedResource("XDownstreamResource", "manual-claim-x1y2z", "").
+				WithFieldChange("spec.forProvider.configData",
+					"v1:xpinneds.pinned.diff.example.org-3d33597:existing-value",
+					"v1:xpinneds.pinned.diff.example.org-3d33597:modified-value"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Issue #536. Crossplane's composite reconciler resolves the revision, writes it to
+		// compositionRevisionRef, and then composes, so an Automatic composite whose ref lags behind the
+		// latest revision is composed from the latest one AND sees its name. Before, the latest revision
+		// rendered while the template read the stale ref: configData became "v2:...-3d33597:...", a revision's
+		// template paired with another revision's name.
+		"AutomaticXRWithLaggingRevisionRefRendersLatestRevisionAndName": {
+			reason:       "An Automatic XR whose cluster ref names an older revision renders the latest revision, with that revision's name",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/pinned-claim/definitions.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/pinned-claim/existing-lagging-automatic-xr.yaml",
+					"testdata/diff/resources/pinned-claim/existing-lagging-automatic-downstream.yaml",
+				),
+			},
+			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			inputFiles:    []string{"testdata/diff/unchanged-lagging-automatic-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 1, 0).
+				WithModifiedResource("XDownstreamResource", "lagging-xr", "").
+				WithFieldChange("spec.forProvider.configData",
+					"v1:xpinneds.pinned.diff.example.org-3d33597:existing-value",
+					"v2:xpinneds.pinned.diff.example.org-806289b:existing-value"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// An XRD's defaultCompositionUpdatePolicy applies to a new composite before Crossplane resolves its
+		// revision, so a new composite that names a revision and leaves the policy to an XRD defaulting to
+		// Manual renders the revision it names. Before, the composition was resolved before defaulting, as
+		// Automatic, so the latest revision (v2) rendered.
+		"NewXRUnderManualDefaultingXRDRendersTheRevisionItNames": {
+			reason:       "A new XR whose XRD defaults its update policy to Manual is resolved as Manual",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/manual-default/definitions.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles: []string{"testdata/diff/new-manual-default-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XManualDefault", "new-manual-default", "default").
+				And().
+				WithAddedResource("XDownstreamResource", "new-manual-default", "default").
+				WithField("spec.forProvider.configData", "v1-new-value"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// Crossplane selects a composition only for a composite with no compositionRef, and never
+		// re-selects. A composite whose input relies on a selector therefore keeps the compositionRef
+		// Crossplane wrote, here composition A, even though the selector now matches two compositions.
+		// Before, the selector was re-evaluated against the input, and the diff failed as ambiguous.
+		"ExistingXRSelectingItsCompositionKeepsTheClusterCompositionRef": {
+			reason:       "An existing XR whose input selects its composition by label renders with the composition Crossplane already bound it to",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/selector-bound/setup.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/selector-bound/existing-xr.yaml",
+					"testdata/diff/resources/selector-bound/existing-downstream.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/modified-xr-selector-bound.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "selector-bound", "default").
+				WithFieldChange("spec.forProvider.configData", "a-existing-value", "a-modified-value").
+				And().
+				WithModifiedResource("XNopResource", "selector-bound", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// v2 XRD with v1-style composition paths (issue #206)
+		"V2XRDWithV1StyleCompositionPaths": {
+			reason:       "Validates v2 XRD using v1-style spec.compositionRef paths are correctly recognized (issue #206)",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/v2-xrd-with-v1-paths.yaml",
+				"testdata/diff/resources/v2-xrd-with-v1-paths-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-v2xrd-v1paths-xr.yaml",
+					"testdata/diff/resources/existing-v2xrd-v1paths-downstream.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/diff/resources/modified-v2xrd-v1paths-xr.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("XDownstreamResource", "test-v2xrd-v1paths", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
+				And().
+				WithModifiedResource("XNopResource", "test-v2xrd-v1paths", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// A claim passed alongside its backing XR: Crossplane's claim controller writes that XR (a
+		// server-side apply with forced ownership, stamping claimRef and the claim labels), so the XR
+		// input would be a second writer. Rejected on the XR; the claim's diff still runs. The binding
+		// is read from the claim's cluster copy (spec.resourceRef) and from the XR's claim labels.
+		"ClaimPassedWithItsBackingXRIsRejected": {
+			reason: "A claim and the XR bound to it, passed together, is an input error on the XR",
+			setupFiles: []string{
+				"testdata/diff/resources/existing-namespace.yaml",
+				"testdata/diff/resources/claim-nested/parent-definition.yaml",
+				"testdata/diff/resources/claim-nested/child-definition.yaml",
+				"testdata/diff/resources/claim-nested/parent-composition.yaml",
+				"testdata/diff/resources/claim-nested/child-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/claim-nested/existing-claim.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/diff/resources/claim-nested/existing-parent-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/diff/resources/claim-nested/existing-child-xr.yaml": {
+							OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+								"testdata/diff/resources/claim-nested/existing-managed-resource.yaml": nil,
+							},
+						},
+					},
+				},
+			},
+			xrdAPIVersion: V1, // the XRDs are v1, so Crossplane writes the XRs' resourceRefs at spec.resourceRefs
+			inputFiles: []string{
+				"testdata/diff/modified-claim-nested.yaml",
+				"testdata/diff/resources/claim-nested/existing-parent-xr.yaml",
+			},
+			expectedError: true,
+			expectedErrorContains: "XNopParent/existing-parent-claim-82crv is the XR bound to claim " +
+				"ParentNopClaim/existing-parent-claim, which Crossplane's claim controller writes",
+			expectedExitCode: dp.ExitCodeToolError,
+		},
+		"ModifiedClaimWithNestedXRsShowsDiff": {
+			reason:       "Validates that modified Claims with nested XRs show proper diff (3 modified resources)",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/existing-namespace.yaml",
+				// XRDs for parent and child Claims (the harness generates their XR and Claim CRDs)
+				"testdata/diff/resources/claim-nested/parent-definition.yaml",
+				"testdata/diff/resources/claim-nested/child-definition.yaml",
+				// Compositions for parent and child
+				"testdata/diff/resources/claim-nested/parent-composition.yaml",
+				"testdata/diff/resources/claim-nested/child-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				// Claim is set up separately (not via owner refs - it uses spec.resourceRef to link to backing XR)
+				"testdata/diff/resources/claim-nested/existing-claim.yaml",
+			},
+			// Owner ref hierarchy matches Crossplane's actual ownership model:
+			// - Backing XR is the root of the owner ref tree (no owner refs)
+			// - Nested XR has owner ref to backing XR
+			// - Managed resource has owner ref to nested XR
+			// Note: Claim is NOT in this hierarchy - it links to backing XR via spec.resourceRef, not owner refs
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					// Backing XR is the root of owner ref tree
+					OwnerFile: "testdata/diff/resources/claim-nested/existing-parent-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						// Nested XR owned by backing XR
+						"testdata/diff/resources/claim-nested/existing-child-xr.yaml": {
+							// Managed resource owned by nested XR
+							OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+								"testdata/diff/resources/claim-nested/existing-managed-resource.yaml": nil,
+							},
+						},
+					},
+				},
+			},
+			inputFiles: []string{"testdata/diff/modified-claim-nested.yaml"},
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 3, 0).
+				WithModifiedResource("ClusterNopResource", "existing-parent-claim-82crv-nop", "").
+				And().
+				WithModifiedResource("ParentNopClaim", "existing-parent-claim", "default").
+				WithFieldChange("spec.parentField", "existing-parent-value", "modified-parent-value").
+				And().
+				WithModifiedResource("XNopChild", "existing-parent-claim-82crv-child", "").
+				WithFieldChange("spec.childField", "existing-parent-value", "modified-parent-value").
+				// The nested XR's own reconciler wrote its composition refs, not the parent's composed
+				// apply, so the parent's render, which omits them, leaves them in place.
+				WithFieldChange("spec.compositionRef.name", "child-nop-claim-composition", "child-nop-claim-composition").
+				WithFieldChange("spec.compositionRevisionRef.name", "child-nop-claim-composition-db22ad5", "child-nop-claim-composition-db22ad5"),
+			xrdAPIVersion:    V1, // Use V1 style resourceRefs since XRDs have claims
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"FunctionCredentialsAutoFetch": {
+			reason:       "Successfully renders XR when composition references credentials that exist in cluster",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/new-xr-with-creds.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/credentials/composition-with-creds.yaml",
+				"testdata/diff/resources/credentials/function-credentials-secret.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XDownstreamResource", "test-resource-with-creds", "default").
+				WithField("spec.forProvider.configData", "test-value-creds").
+				And().
+				WithAddedResource("XNopResource", "test-resource-with-creds", "default").
+				WithField("spec.coolField", "test-value-creds"),
+			expectedError: false,
+		},
+		"FunctionCredentialsFromCLI": {
+			reason:       "Successfully renders XR when credentials provided via --function-credentials flag",
+			outputFormat: "json",
+			inputFiles:   []string{"testdata/diff/new-xr-with-creds.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/credentials/composition-with-creds.yaml",
+				// Note: NOT setting up the secret in cluster - testing CLI override
+				"testdata/diff/resources/functions.yaml",
+			},
+			// Credentials loaded from CLI flag file
+			functionCredentials: "testdata/diff/resources/credentials/cli-credentials.yaml",
+			expectedExitCode:    dp.ExitCodeDiffDetected,
+			// WithNoWarnings is the point of this case for issue #481: the secret the composition
+			// references is deliberately absent from the cluster and supplied by --function-credentials
+			// instead, so the shortfall advisory must NOT fire. It used to, because the advisory was
+			// raised inside the credential client, which runs before the CLI-supplied secrets are merged
+			// in — telling a user who had just solved the problem to go and solve it.
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithNoWarnings().
+				WithAddedResource("XDownstreamResource", "test-resource-with-creds", "default").
+				WithField("spec.forProvider.configData", "test-value-creds").
+				And().
+				WithAddedResource("XNopResource", "test-resource-with-creds", "default").
+				WithField("spec.coolField", "test-value-creds"),
+			expectedError: false,
+		},
+		// Paired sequencer gating tests — the fixture sequencer-gating-composition.yaml
+		// is deliberately correct (rules match composition-resource-names stage0-/stage1-
+		// AND auto-ready runs BEFORE sequencer so DesiredComposed.Ready is populated
+		// before sequencer's gating check). Together these two cases discriminate
+		// --eventual-state from default behavior: only eventual-state surfaces stage1.
+		"SequencerGatesLaterStageWithoutEventualState": {
+			reason:       "Without --eventual-state, function-sequencer hides stage1 until stage0 is ready",
+			timeout:      longTimeout,
+			outputFormat: "json",
+			// eventualState deliberately false
+			inputFiles: []string{"testdata/diff/resources/sequencer-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/sequencer-gating-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			// Expect: XR + stage0 added; stage1 NOT present (gated).
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XNopResource", "sequencer-test", "default").
+				WithField("spec.coolField", "test-value").
+				And().
+				WithAddedResource("XDownstreamResource", "0-stage0-resource", "default").
+				WithField("spec.forProvider.configData", "test-value"),
+			expectedError: false,
+		},
+		"SequencerGatedStageAppearsWithEventualState": {
+			reason:        "With --eventual-state, sequencer-gated stage1 surfaces via synthesize-Ready iteration",
+			timeout:       longTimeout, // Multiple simulation iterations need more time
+			outputFormat:  "json",
+			eventualState: true,
+			inputFiles:    []string{"testdata/diff/resources/sequencer-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/sequencer-gating-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			// Expect: XR + stage0 + stage1 all added (stage1 unlocked via eventual-state).
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(3, 0, 0).
+				WithAddedResource("XNopResource", "sequencer-test", "default").
+				WithField("spec.coolField", "test-value").
+				And().
+				WithAddedResource("XDownstreamResource", "0-stage0-resource", "default").
+				WithField("spec.forProvider.configData", "test-value").
+				And().
+				WithAddedResource("XDownstreamResource", "1-stage1-resource", "default").
+				WithField("spec.forProvider.configData", "test-value"),
+			expectedError: false,
+		},
+		// Issue #564: an existing XR whose stage0 exists but is not Ready yet, the normal state of an
+		// XR whose first stage is still provisioning. Nothing renders that is not already observed, so
+		// eventual state used to stop at once and never synthesize stage0's Ready; but Crossplane
+		// composes stage1 as soon as stage0 becomes Ready.
+		"SequencerGatedStageAppearsForExistingXRWithNotReadyStage0WithEventualState": {
+			reason:        "With --eventual-state, stage1 surfaces when stage0 already exists but is not Ready",
+			timeout:       longTimeout, // Multiple simulation iterations need more time
+			outputFormat:  "json",
+			eventualState: true,
+			inputFiles:    []string{"testdata/diff/resources/sequencer-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/sequencer-gating-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes("testdata/diff/resources/existing-sequencer-gating-xr.yaml", "testdata/diff/resources/existing-sequencer-gating-stage0.yaml"),
+			},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			// Expect: XR and stage0 modified, stage1 added (unlocked by stage0's synthesized Ready).
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(1, 2, 0).
+				WithModifiedResource("XNopResource", "sequencer-test", "default").
+				WithFieldChange("spec.coolField", "existing-value", "test-value").
+				And().
+				WithModifiedResource("XDownstreamResource", "0-stage0-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "test-value").
+				And().
+				WithAddedResource("XDownstreamResource", "1-stage1-resource", "default").
+				WithField("spec.forProvider.configData", "test-value"),
+			expectedError: false,
+		},
+		// The converged counterpart: both stages exist and are Ready, so synthesizing Ready changes
+		// nothing and eventual state is the first render. Only the spec changes the input makes show.
+		"EventualStateAddsNothingWhenEveryStageIsReady": {
+			reason:        "With --eventual-state, an XR whose composed resources are all Ready shows only its real changes",
+			timeout:       longTimeout,
+			outputFormat:  "json",
+			eventualState: true,
+			inputFiles:    []string{"testdata/diff/resources/sequencer-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/sequencer-gating-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes("testdata/diff/resources/existing-sequencer-gating-xr.yaml",
+					"testdata/diff/resources/existing-sequencer-gating-stage0-ready.yaml",
+					"testdata/diff/resources/existing-sequencer-gating-stage1-ready.yaml"),
+			},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(0, 3, 0).
+				WithModifiedResource("XNopResource", "sequencer-test", "default").
+				WithFieldChange("spec.coolField", "existing-value", "test-value").
+				And().
+				WithModifiedResource("XDownstreamResource", "0-stage0-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "test-value").
+				And().
+				WithModifiedResource("XDownstreamResource", "1-stage1-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "test-value"),
+			expectedError: false,
+		},
+		// Paired composition-driven gating tests — the fixture conditional-gating-composition.yaml
+		// encodes gating in go-templating itself (no function-sequencer): stage1 is only rendered
+		// when observed stage0 has Ready=True. This isolates eventual-state simulation from
+		// function-sequencer and exercises the synthesize-Ready path directly.
+		"ConditionalGatingHidesLaterStageWithoutEventualState": {
+			reason:       "Without --eventual-state, template conditionally gates stage1 because observed stage0 is not Ready",
+			timeout:      longTimeout,
+			outputFormat: "json",
+			// eventualState deliberately false
+			inputFiles: []string{"testdata/diff/resources/conditional-gating-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/conditional-gating-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			// Expect: XR + stage0 added; stage1 NOT present (gated by the template's Ready check).
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XNopResource", "conditional-gating-test", "default").
+				WithField("spec.coolField", "test-value").
+				And().
+				WithAddedResource("XDownstreamResource", "0-stage0-resource", "default").
+				WithField("spec.forProvider.configData", "test-value"),
+			expectedError: false,
+		},
+		"ConditionalGatedStageAppearsWithEventualState": {
+			reason:        "With --eventual-state, synthesize-Ready flips stage0 Ready=True in observed so the template renders stage1",
+			timeout:       longTimeout, // Multiple simulation iterations need more time
+			outputFormat:  "json",
+			eventualState: true,
+			inputFiles:    []string{"testdata/diff/resources/conditional-gating-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/conditional-gating-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			// Expect: XR + stage0 + stage1 all added.
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(3, 0, 0).
+				WithAddedResource("XNopResource", "conditional-gating-test", "default").
+				WithField("spec.coolField", "test-value").
+				And().
+				WithAddedResource("XDownstreamResource", "0-stage0-resource", "default").
+				WithField("spec.forProvider.configData", "test-value").
+				And().
+				WithAddedResource("XDownstreamResource", "1-stage1-resource", "default").
+				WithField("spec.forProvider.configData", "test-value"),
+			expectedError: false,
+		},
+		"EventualStateWithSequencerAndEnvironmentConfigs": {
+			reason:  "Shows eventual state with function-sequencer AND function-environment-configs to verify requirements resolution during simulation",
+			timeout: longTimeout, // Multiple simulation iterations with requirements resolution need more time
+			// This test verifies that the eventual state simulation correctly resolves requirements
+			// (like environment configs) during its iterative rendering, not just in the final render.
+			// The composition uses:
+			// 1. function-environment-configs to fetch env config (requires requirements iteration)
+			// 2. function-go-templating to generate resources using env config data
+			// 3. function-sequencer to stage resources
+			// 4. function-auto-ready
+			outputFormat:  "json",
+			eventualState: true,
+			inputFiles:    []string{"testdata/diff/resources/sequencer-with-envconfig-xr.yaml"},
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/sequencer-with-envconfig-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/environment-config-v1beta1.yaml",
+			},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredOutput: tu.ExpectDiff().
+				WithSummary(3, 0, 0). // 2 downstream resources + 1 XR
+				WithAddedResource("XDownstreamResource", "0-stage0-resource", "default").
+				WithField("spec.forProvider.configData", "test-value").
+				WithField("spec.forProvider.resourceTier", "staging"). // From environment config
+				And().
+				WithAddedResource("XDownstreamResource", "1-stage1-resource", "default").
+				WithField("spec.forProvider.configData", "test-value").
+				WithField("spec.forProvider.resourceTier", "staging"). // From environment config
+				And().
+				WithAddedResource("XNopResource", "sequencer-envconfig-test", "default").
+				WithField("spec.coolField", "test-value"),
+			expectedError: false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			runIntegrationTest(t, XRDiffTest, tt)
+		})
+	}
+}
+
+// TestCompDiffIntegration runs an integration test for the composition diff command.
+func TestCompDiffIntegration(t *testing.T) {
+	t.Parallel()
+
+	// Set up logger for controller-runtime (global setup, once per test function)
+	tu.SetupKubeTestLogger(t)
+
+	tests := map[string]IntegrationTestCase{
+		"CompositionChangeImpactsXRs": {
+			reason: "Validates composition change impacts existing XRs",
+			// Set up existing XRs that use the original composition
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			// Add existing XRs that use the composition
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+				composes(
+					"testdata/comp/resources/existing-xr-2.yaml",
+					"testdata/comp/resources/existing-downstream-2.yaml",
+				),
+			},
+			// New composition files that will be diffed
+			inputFiles: []string{"testdata/comp/updated-composition.yaml"},
+			namespace:  "default",
+			expectedOutput: `
+=== Composition Changes ===
+
+~~~ Composition/xnopresources.diff.example.org
+  apiVersion: apiextensions.crossplane.io/v1
+  kind: Composition
+  metadata:
+    name: xnopresources.diff.example.org
+  spec:
+    compositeTypeRef:
+      apiVersion: ns.diff.example.org/v1alpha1
+      kind: XNopResource
+    mode: Pipeline
+    pipeline:
+    - functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: template.fn.crossplane.io/v1beta1
+        inline:
+          template: |
+            apiVersion: ns.nop.example.org/v1alpha1
+            kind: XDownstreamResource
+            metadata:
+              name: {{ .observed.composite.resource.metadata.name }}
+              namespace: {{ .observed.composite.resource.metadata.namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: nop-resource
+            spec:
+              forProvider:
+-               configData: {{ .observed.composite.resource.spec.coolField }}
+-               resourceTier: basic
++               configData: updated-{{ .observed.composite.resource.spec.coolField }}
++               resourceTier: premium
+        kind: GoTemplate
+        source: Inline
+      step: generate-resources
+    - functionRef:
+        name: function-auto-ready
+      step: automatically-detect-ready-composed-resources
+
+---
+
+Summary: 1 modified
+
+Applying this composition creates a new CompositionRevision, which 2 composites would adopt.
+
+=== Affected Composite Resources ===
+
+  ⚠ XNopResource/another-resource (namespace: default)
+  ⚠ XNopResource/test-resource (namespace: default)
+
+Summary: 2 resources with changes
+
+=== Impact Analysis ===
+
+~~~ XDownstreamResource/another-resource
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: another-resource
+    name: another-resource
+    namespace: default
+  spec:
+    forProvider:
+-     configData: another-existing-value
+-     resourceTier: basic
++     configData: updated-another-existing-value
++     resourceTier: premium
+
+---
+~~~ XDownstreamResource/test-resource
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: test-resource
+    name: test-resource
+    namespace: default
+  spec:
+    forProvider:
+-     configData: existing-value
+-     resourceTier: basic
++     configData: updated-existing-value
++     resourceTier: premium
+
+---
+
+Summary: 2 modified`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		// Issue #452: an XR with a deletionTimestamp is on Crossplane's teardown path and will never
+		// adopt the diffed composition's revision. Rendering it yields no composed resources (the
+		// composite reconciler takes its deletion path), so including it produces a meaningless
+		// impact analysis. It must be excluded and counted, leaving only the live XR evaluated.
+		"CompositionDiffExcludesDeletingXRs": {
+			reason: "A deleting XR is excluded from impact analysis and counted as filteredByDeletion; the live XR is still evaluated",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/comp/resources/existing-xr-1.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/comp/resources/existing-downstream-1.yaml": nil,
+					},
+				},
+				{
+					OwnerFile: "testdata/comp/resources/existing-xr-deleting.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/comp/resources/existing-downstream-deleting.yaml": nil,
+					},
+				},
+			},
+			deleteAfterSetup: []string{"testdata/comp/resources/existing-xr-deleting.yaml"},
+			inputFiles:       []string{"testdata/comp/updated-composition.yaml"},
+			namespace:        "default",
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected, // the composition itself changed
+			// Total counts both discovered XRs; only the live one is evaluated (1 with changes), and
+			// the deleting one is reported via filteredByDeletion. In default-discovery mode filtered
+			// XRs are counted but not surfaced as impact entries, so only test-resource appears.
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithAffectedResources(2, 1, 0, 0).
+				WithFilteredByDeletion(1).
+				WithXRImpact("XNopResource", "test-resource", "default", "changed"),
+		},
+		// Issue #452, --resource mode: filtered XRs are surfaced explicitly there, so a user who names
+		// a deleting composite is told why it was skipped rather than getting silence.
+		"ResourceFilterSurfacesDeletingXR": {
+			reason: "--resource matching a deleting composite surfaces it as filtered with reason deleting",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/comp/resources/existing-xr-deleting.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/comp/resources/existing-downstream-deleting.yaml": nil,
+					},
+				},
+			},
+			deleteAfterSetup: []string{"testdata/comp/resources/existing-xr-deleting.yaml"},
+			inputFiles:       []string{"testdata/comp/updated-composition.yaml"},
+			resources:        []string{"default/deleting-resource"},
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected, // the composition itself changed
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithFilteredByDeletion(1).
+				WithXRImpact("XNopResource", "deleting-resource", "default", "filtered").
+				WithFilterReason("deleting"),
+		},
+		// Issue #495, `comp` side: impact analysis renders each affected XR through the same observed-
+		// resource fetch as `xr`, so a composed resource deleted out of band is tolerated with the same
+		// warning. Being genuinely absent, it is then reported as something the XR will create.
+		"CompositionDiffComposedResourceDeletedOutOfBandWarns": {
+			reason: "comp against an XR whose resourceRefs name a deleted composed resource warns and reports it as an addition",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/comp/resources/existing-xr-1.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/comp/resources/existing-downstream-1.yaml": nil,
+					},
+				},
+			},
+			deleteAfterSetup: []string{"testdata/comp/resources/existing-downstream-1.yaml"},
+			inputFiles:       []string{"testdata/comp/updated-composition.yaml"},
+			namespace:        "default",
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithWarning("was not found in the cluster").
+				WithWarningContext(map[string]string{
+					"resource":  "XDownstreamResource/test-resource",
+					"namespace": "default",
+				}).
+				And().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithAffectedResources(1, 1, 0, 0).
+				WithXRImpact("XNopResource", "test-resource", "default", "changed").
+				WithDownstreamSummary(1, 0, 0).
+				WithDownstreamResource("added", "XDownstreamResource", "test-resource", "default"),
+		},
+		// The comp side of TestDiffIntegration/ResourceRemovalSkipsResourcesTheXRDoesNotControl (#552):
+		// the updated composition stops rendering resource2, which the XR controls, so it is removed;
+		// the XR's resourceRefs also name a resource another XR controls and one with no controller,
+		// which the composition doesn't render either, and neither of those is removed.
+		"CompositionDropsResourceRemovingOnlyWhatTheXRControls": {
+			reason: "A composition that stops rendering resources removes only those the XR controls",
+			// What this case pins: test-resource's resourceRefs still name two resources it doesn't control.
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/removal-test-original-composition.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+				// Deliberately not in crossplaneManagedResources: its controller reference was removed, so
+				// no XR controls it, though test-resource's resourceRefs still name it.
+				"testdata/diff/resources/removal-test-ns-downstream-without-controller.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-listing-uncontrolled-resources.yaml",
+					"testdata/diff/resources/removal-test-ns-downstream-resource1.yaml", // still rendered: kept
+					"testdata/diff/resources/removal-test-ns-downstream-resource2.yaml", // no longer rendered: removed
+				),
+				composes(
+					"testdata/diff/resources/existing-other-xr.yaml",
+					"testdata/diff/resources/existing-other-xr-downstream.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/diff/resources/removal-test-composition.yaml"},
+			namespace:        "default",
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("removal-test-composition").
+				WithCompositionModified().
+				WithAffectedResources(1, 1, 0, 0).
+				WithXRImpact("XNopResource", "test-resource", "default", "changed").
+				WithDownstreamSummary(0, 0, 1).
+				WithDownstreamResource("removed", "XDownstreamResource", "resource-to-be-removed", "default"),
+		},
+		"CompositionDiffIgnorePaths": {
+			reason: "Validates that ArgoCD annotations are ignored in composition diffs",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			// Add existing XR with ArgoCD annotations
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-with-argocd.yaml",
+					"testdata/comp/resources/existing-downstream-with-argocd.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/comp/composition-no-changes.yaml"},
+			namespace:  "default",
+			// The composition is unchanged, so impact analysis would be skipped by default (issue
+			// #453). This case is about XR/downstream-level ignore paths, so it opts back in.
+			analyzeUnchanged: true,
+			ignorePaths: []string{
+				"metadata.annotations[argocd.argoproj.io/tracking-id]",
+				"metadata.labels[argocd.argoproj.io/instance]",
+			},
+			expectedOutput: `
+=== Composition Changes ===
+
+No changes detected in composition xnopresources.diff.example.org
+
+=== Affected Composite Resources ===
+
+  ✓ XNopResource/test-resource (namespace: default)
+
+Summary: 1 resource unchanged
+
+=== Impact Analysis ===
+
+All composite resources are up-to-date. No downstream resource changes detected.
+
+`,
+			expectedError: false,
+			noColor:       true,
+		},
+		// Issue #453: any revision an unchanged composition produced would carry the same spec, so no XR
+		// renders differently and the affected-XR / impact-analysis sections are replaced by a skip note.
+		//
+		// These fixtures are deliberately ones that DO produce a downstream delta when evaluated (see
+		// UnchangedCompositionAnalyzeUnchangedEvaluatesXRs, which asserts exactly that against the same
+		// setup). So this case proves two things at once: the skip suppresses a report that would
+		// otherwise be emitted, and the exit code is 0 rather than the 3 that report would have caused
+		// — a delta not attributable to any composition change must not gate a CI pipeline.
+		"UnchangedCompositionSkipsImpactAnalysis": {
+			reason: "An unchanged composition skips impact analysis entirely and says so",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/comp/composition-no-changes.yaml"},
+			namespace:  "default",
+			expectedOutput: `
+=== Composition Changes ===
+
+No changes detected in composition xnopresources.diff.example.org
+
+Impact analysis skipped: this composition is identical to the cluster's, so applying it creates no new CompositionRevision and no composite resource could change as a result. Pass --analyze-on=always to evaluate them anyway.
+
+`,
+			expectedError: false,
+			// No composition change and no evaluated XRs, so nothing was detected.
+			expectedExitCode: dp.ExitCodeSuccess,
+			noColor:          true,
+		},
+		// Issue #467: the cluster composition was applied with a client-side `kubectl apply`, so it
+		// carries kubectl.kubernetes.io/last-applied-configuration; the file being diffed never does.
+		// That annotation is suppressed from the rendered diff — it is a multi-KB serialization of the
+		// object, useless to show — but Crossplane's Composition.Hash() covers annotations, so applying
+		// this DOES create a new CompositionRevision that composites re-point to, and whose name a
+		// template can read off the XR's compositionRevisionRef. A suppression made for readability
+		// must not decide that away, so the composites are evaluated. Contrast the sibling above, which
+		// is byte-identical and needs --analyze-unchanged to evaluate anything.
+		//
+		// This runs the real CLI wiring, which the unit coverage in
+		// TestDefaultCompDiffProcessor_calculateCompositionDiff cannot reach: it pins that
+		// defaultProcessorOptions does not fold the annotation into --ignore-paths, and that the
+		// display-only suppression does not leak into the change verdict.
+		//
+		// The evaluated composite renders unchanged, because the new revision's spec is identical, so
+		// nothing renders differently and the exit code is 0 (as with AnalyzeOnSpecChangeSkipsMetadataOnlyChange).
+		// What proves evaluation is that the composite is counted, rather than impact analysis being skipped.
+		"CompositionAppliedWithKubectlEvaluatesXRs": {
+			reason: "A composition differing only in kubectl's last-applied-configuration still counts as changed, because applying it creates a new CompositionRevision",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition-kubectl-applied.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1-kubectl-applied.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/comp/composition-no-changes.yaml"},
+			namespace:        "default",
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeSuccess,
+			expectedStderrContains: []string{
+				// Issue #474: the composites are still evaluated, but they are rendered with their existing
+				// compositionRevisionRef, because the name of the revision this would create cannot be
+				// predicted for a client-side-applied composition. Saying so is the honest position: if this
+				// composition's template read the revision name, the resulting change would go undetected.
+				"Could not predict the name of the CompositionRevision",
+			},
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				// The same advisory reaches warnings[] for machine consumers, keyed by composition so that two
+				// compositions declining to predict stay two warnings rather than being merged as duplicates.
+				WithWarning("Could not predict the name of the CompositionRevision").
+				WithWarningContext(map[string]string{"composition": "xnopresources.diff.example.org"}).
+				And().
+				WithComposition("xnopresources.diff.example.org").
+				// createsRevision stays true while the name is withheld: the annotation delta is real, and a
+				// stale annotation genuinely would be rewritten and mint a revision. Only the identity is
+				// unknowable, which is why the guard makes the weak claim rather than "no revision".
+				WithRevisionImpact("metadata", true, 1).
+				WithoutPredictedRevisionName().
+				WithAffectedResources(1, 0, 1, 0).
+				WithXRImpact("XNopResource", "test-resource", "default", "unchanged"),
+		},
+		// Issue #500: the same asymmetry, but the cluster's last-applied-configuration is the one a
+		// client-side `kubectl apply` of this very file would write. Re-applying it computes the same
+		// annotation, the patch is empty and kubectl writes nothing, so no CompositionRevision is created.
+		// The sibling above differs only in that its annotation is stale, which a re-apply does rewrite.
+		"CompositionReappliedWithKubectlCreatesNoRevision": {
+			reason: "A composition whose live last-applied-configuration already describes the file is unchanged, because re-applying it writes nothing",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition-kubectl-applied-current.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1-kubectl-applied-current.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/comp/composition-no-changes.yaml"},
+			namespace:        "default",
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeSuccess,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithNoWarnings().
+				WithComposition("xnopresources.diff.example.org").
+				WithImpactAnalysisSkipped().
+				WithRevisionImpact("none", false, 0),
+		},
+		// Issue #474: the case that makes "creates a revision but renders identically" a claim to be
+		// verified rather than assumed. The composition edit is metadata-only — one added label, identical
+		// spec — so the CompositionRevision it mints carries a byte-identical spec. But the template reads
+		// the revision's own name off the composite and propagates it into the composed resource, so the
+		// rendered output genuinely changes.
+		//
+		// Before the fix, the composite was rendered with its EXISTING compositionRevisionRef: configData
+		// came out as the old revision's name, matched the cluster, and the tool reported unchanged with
+		// exit 0. Seeding the predicted ref is what turns that into the exit 3 below. This is the
+		// regression test for the whole feature — stop comp's composition provider resolving the predicted
+		// revision, or stop the processor writing the resolved revision to the ref, and this is what fails.
+		//
+		// Note also what is NOT in the output: the composite's own
+		// spec.crossplane.compositionRevisionRef diff. The predicted ref is written only to the render input,
+		// never to the composite's dry-run payload, which is why the exit code reflects rendering rather than
+		// bookkeeping; predictedRevisionName is what keeps the downstream change interpretable without it.
+		"RevisionNamePropagatesToComposedResource": {
+			reason: "A metadata-only composition edit whose template reads the CompositionRevision name changes rendered output, and is detected rather than assumed away",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/revision-templating-composition.yaml",
+				"testdata/comp/resources/revision-templating-composition-revision.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-revision-ref.yaml",
+					"testdata/comp/resources/existing-downstream-revision-ref.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/comp/revision-templating-updated-composition.yaml"},
+			namespace:        "default",
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				// The name was predictable, so the could-not-predict advisory must stay silent.
+				WithNoWarnings().
+				WithComposition("xrevisionrefs.diff.example.org").
+				WithRevisionImpact("metadata", true, 1).
+				// Matched by pattern, not literally: the suffix is the first 7 hex digits of the
+				// composition's hash, so pinning it would make any edit to the fixture a test failure. The
+				// derivation is pinned exactly by TestRevisionIdentity, which is where that belongs.
+				WithPredictedRevisionNamePattern(`^xrevisionrefs\.diff\.example\.org-[0-9a-f]{7}$`).
+				WithAffectedResources(1, 1, 0, 0).
+				WithXRImpact("XNopResource", "revision-ref-resource", "default", "changed").
+				WithDownstreamSummary(0, 1, 0).
+				WithDownstreamResource("modified", "XDownstreamResource", "revision-ref-resource", "default").
+				// The old value is the revision the composite currently tracks; the new one is the predicted
+				// revision, i.e. the thing this whole feature exists to surface. Both are real revision names,
+				// so both match the pattern above: only the exact values tell them apart.
+				WithFieldChange("spec.forProvider.configData",
+					"xrevisionrefs.diff.example.org-e36719b", "xrevisionrefs.diff.example.org-ec5496c"),
+		},
+		// Issue #536 / #479: the same edit with --include-manual, which keeps a Manual composite for analysis
+		// without making it adopt the new revision. Only the Automatic composite is rendered with the
+		// predicted revision name; the Manual one stays pinned, so its template-read name, and with it its
+		// composed resource, is unchanged. Giving every composite the name would report the pinned one as
+		// changing to a revision it never uses.
+		"RevisionNameReachesOnlyRepointingCompositesWithIncludeManual": {
+			reason: "Under --include-manual, the predicted revision name reaches an Automatic composite but not a Manual one pinned to an older revision",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/revision-templating-composition.yaml",
+				"testdata/comp/resources/revision-templating-composition-revision.yaml",
+				"testdata/comp/resources/revision-templating-composition-older-revision.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-revision-ref.yaml",
+					"testdata/comp/resources/existing-downstream-revision-ref.yaml",
+				),
+				composes(
+					"testdata/comp/resources/existing-xr-pinned-revision-ref.yaml",
+					"testdata/comp/resources/existing-downstream-pinned-revision-ref.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/comp/revision-templating-updated-composition.yaml"},
+			namespace:        "default",
+			includeManual:    true,
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithNoWarnings().
+				WithComposition("xrevisionrefs.diff.example.org").
+				// One composite re-points; the Manual one is kept but adopts nothing.
+				WithRevisionImpact("metadata", true, 1).
+				WithPredictedRevisionNamePattern(`^xrevisionrefs\.diff\.example\.org-[0-9a-f]{7}$`).
+				WithAffectedResources(2, 1, 1, 0).
+				WithXRImpact("XNopResource", "pinned-revision-ref-resource", "default", "unchanged").
+				WithDownstreamSummary(0, 0, 0).
+				AndComp().
+				WithXRImpact("XNopResource", "revision-ref-resource", "default", "changed").
+				WithDownstreamSummary(0, 1, 0).
+				WithDownstreamResource("modified", "XDownstreamResource", "revision-ref-resource", "default").
+				WithFieldChange("spec.forProvider.configData",
+					"xrevisionrefs.diff.example.org-e36719b", "xrevisionrefs.diff.example.org-ec5496c"),
+		},
+		// Issue #498, the claim variant of RevisionNamePropagatesToComposedResource. A claim is rendered from its backing XR with the
+		// claim's spec synced in. Under Automatic the claim's own ref is never propagated (the XR controller
+		// owns the backing XR's), so seeding the claim would reach nothing: comp's composition provider is
+		// handed the backing XR the render consumes, and resolves that to the predicted revision. Without it,
+		// the backing XR's stale ref renders and the change goes unreported.
+		"ClaimRevisionNamePropagatesToComposedResource": {
+			reason: "A metadata-only composition edit is rendered for an Automatic claim with the revision its backing XR would re-point to",
+			setupFiles: []string{
+				"testdata/comp/resources/claim-xrd.yaml",
+				"testdata/comp/resources/claim-revision-templating-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+				"testdata/comp/resources/test-namespace.yaml",
+				"testdata/comp/resources/existing-claim-revision-ref.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-claim-revision-ref-xr.yaml",
+					"testdata/comp/resources/existing-claim-revision-ref-downstream.yaml",
+				),
+			},
+			xrdAPIVersion:    V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			inputFiles:       []string{"testdata/comp/claim-revision-templating-updated-composition.yaml"},
+			namespace:        "test-namespace",
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				// The claim's composed resource is labelled with its backing XR's name, which is the claim's
+				// owner, so no "already belongs to another composite" advisory is raised (#534).
+				WithNoWarnings().
+				WithComposition("xrevisionrefclaims.diff.example.org").
+				WithRevisionImpact("metadata", true, 1).
+				WithPredictedRevisionNamePattern(`^xrevisionrefclaims\.diff\.example\.org-[0-9a-f]{7}$`).
+				WithAffectedResources(1, 1, 0, 0).
+				WithXRImpact("NopClaim", "revision-ref-claim", "test-namespace", "changed").
+				WithDownstreamSummary(0, 1, 0).
+				WithDownstreamResource("modified", "XDownstreamResource", "revision-ref-claim-xr", "").
+				// The old value is the revision the backing XR tracks now; the new one is the predicted name.
+				WithFieldChange("spec.forProvider.configData",
+					"xrevisionrefclaims.diff.example.org-98b484d", "xrevisionrefclaims.diff.example.org-55c3a3b"),
+		},
+		// Issue #498, the other half: when nothing is seeded, an Automatic claim renders against the
+		// revision its backing XR tracks now, not against no revision at all. Nothing is seeded here
+		// because the composition differs from the cluster's only by a stale kubectl annotation, so the
+		// name of the revision that would mint is unknowable (see CompositionAppliedWithKubectlEvaluatesXRs);
+		// the claim is still rendered, so the backing XR's ref is what the template reads.
+		"ClaimRendersWithBackingXRRevisionWhenNothingIsSeeded": {
+			reason: "An Automatic claim with nothing seeded renders with its backing XR's compositionRevisionRef, so a template reading the revision name shows no spurious change",
+			setupFiles: []string{
+				"testdata/comp/resources/claim-xrd.yaml",
+				"testdata/comp/resources/claim-revision-templating-composition-kubectl-applied.yaml",
+				"testdata/comp/resources/functions.yaml",
+				"testdata/comp/resources/test-namespace.yaml",
+				"testdata/comp/resources/existing-claim-revision-ref-kubectl-applied.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-claim-revision-ref-kubectl-applied-xr.yaml",
+					"testdata/comp/resources/existing-claim-revision-ref-kubectl-applied-downstream.yaml",
+				),
+			},
+			xrdAPIVersion:          V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			inputFiles:             []string{"testdata/comp/resources/claim-revision-templating-composition.yaml"},
+			namespace:              "test-namespace",
+			outputFormat:           "json",
+			expectedExitCode:       dp.ExitCodeSuccess,
+			expectedStderrContains: []string{"Could not predict the name of the CompositionRevision"},
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				// The could-not-predict advisory is the only warning: the claim's composed resource is labelled
+				// with its backing XR's name, so it raises no ownership advisory (#534).
+				WithWarning("Could not predict the name of the CompositionRevision").
+				WithWarningContext(map[string]string{"composition": "xrevisionrefclaims.diff.example.org"}).
+				And().
+				WithComposition("xrevisionrefclaims.diff.example.org").
+				WithRevisionImpact("metadata", true, 1).
+				WithoutPredictedRevisionName().
+				WithAffectedResources(1, 0, 1, 0).
+				WithXRImpact("NopClaim", "revision-ref-claim", "test-namespace", "unchanged").
+				WithDownstreamSummary(0, 0, 0),
+		},
+		// Issue #472: the same metadata-only change, with the user opting out of paying a render per
+		// composite for it. The composites go unevaluated — but the mutative consequence is still
+		// reported, which is what keeps --analyze-on a cost knob rather than a correctness mode. So the
+		// skip is recorded, and revisionImpact says a CompositionRevision is created and one composite
+		// would adopt it. Exit code 0: nothing renders differently, and a GitOps loop re-applying the
+		// same manifests must not fail its gate forever.
+		"AnalyzeOnSpecChangeSkipsMetadataOnlyChange": {
+			reason: "--analyze-on=spec-change leaves a metadata-only change unevaluated, while still reporting that it creates a CompositionRevision",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition-kubectl-applied.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1-kubectl-applied.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/comp/composition-no-changes.yaml"},
+			namespace:        "default",
+			analyzeOn:        "spec-change",
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeSuccess,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithImpactAnalysisSkipped().
+				WithRevisionImpact("metadata", true, 1).
+				// Issue #474: no predicted name here, and that absence is the point. The compositions
+				// differ by nothing but kubectl's last-applied-configuration, whose post-apply value is a
+				// function of how the user applies rather than of the file — so the hash, and therefore the
+				// revision's name, is unknowable. createsRevision stays true; only the identity is withheld.
+				WithoutPredictedRevisionName(),
+		},
+		// The same setup with --analyze-unchanged evaluates the XRs after all (the pre-edit
+		// convergence-baseline workflow). Here the composed resource has drifted out of band, so the
+		// evaluation reports a downstream modification even though the composition is byte-identical
+		// to the cluster's. That delta is not caused by this composition — it is exactly the class of
+		// finding the default skip keeps out of the "impact of your composition change" report, and why
+		// opting in is explicit.
+		"UnchangedCompositionAnalyzeUnchangedEvaluatesXRs": {
+			reason: "--analyze-unchanged evaluates affected XRs even though the composition is unchanged, surfacing deltas not caused by it",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-drifted.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/comp/composition-no-changes.yaml"},
+			namespace:        "default",
+			analyzeUnchanged: true,
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithAffectedResources(1, 1, 0, 0).
+				WithXRImpact("XNopResource", "test-resource", "default", "changed").
+				WithDownstreamSummary(0, 1, 0).
+				WithDownstreamResource("modified", "XDownstreamResource", "test-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "drifted-value", "existing-value"),
+		},
+		"CompositionDiffCustomNamespace": {
+			reason: "Validates composition diff with custom namespace",
+			// Set up existing XRs in both custom and default namespaces to validate filtering
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+				// Create the custom namespace first
+				"testdata/comp/resources/custom-namespace.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				// Add existing XRs in custom namespace (should be included in output)
+				composes(
+					"testdata/comp/resources/existing-custom-ns-xr.yaml",
+					"testdata/comp/resources/existing-custom-ns-downstream.yaml",
+				),
+				// Add existing XRs in default namespace (should be filtered out)
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+			},
+			// New composition files that will be diffed
+			inputFiles: []string{"testdata/comp/updated-composition.yaml"},
+			namespace:  "custom-namespace",
+			// Expected output should only show custom-namespace resources, NOT default namespace resources
+			// This validates that namespace filtering works correctly
+			expectedOutput: `
+=== Composition Changes ===
+
+~~~ Composition/xnopresources.diff.example.org
+  apiVersion: apiextensions.crossplane.io/v1
+  kind: Composition
+  metadata:
+    name: xnopresources.diff.example.org
+  spec:
+    compositeTypeRef:
+      apiVersion: ns.diff.example.org/v1alpha1
+      kind: XNopResource
+    mode: Pipeline
+    pipeline:
+    - functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: template.fn.crossplane.io/v1beta1
+        inline:
+          template: |
+            apiVersion: ns.nop.example.org/v1alpha1
+            kind: XDownstreamResource
+            metadata:
+              name: {{ .observed.composite.resource.metadata.name }}
+              namespace: {{ .observed.composite.resource.metadata.namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: nop-resource
+            spec:
+              forProvider:
+-               configData: {{ .observed.composite.resource.spec.coolField }}
+-               resourceTier: basic
++               configData: updated-{{ .observed.composite.resource.spec.coolField }}
++               resourceTier: premium
+        kind: GoTemplate
+        source: Inline
+      step: generate-resources
+    - functionRef:
+        name: function-auto-ready
+      step: automatically-detect-ready-composed-resources
+
+---
+
+Summary: 1 modified
+
+Applying this composition creates a new CompositionRevision, which 1 composite would adopt.
+
+=== Affected Composite Resources ===
+
+  ⚠ XNopResource/custom-namespace-resource (namespace: custom-namespace)
+
+Summary: 1 resource with changes
+
+=== Impact Analysis ===
+
+~~~ XDownstreamResource/custom-namespace-resource
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: custom-namespace-resource
+    name: custom-namespace-resource
+    namespace: custom-namespace
+  spec:
+    forProvider:
+-     configData: custom-ns-existing-value
+-     resourceTier: basic
++     configData: updated-custom-ns-existing-value
++     resourceTier: premium
+
+---
+
+Summary: 1 modified`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		// Two compositions that BOTH genuinely change, each with its own affected XR. This is the
+		// aggregation case: one CompositionDiff entry per input, each carrying its own impact analysis,
+		// with hasDiffs ORed across them. MultipleCompositionDiffImpact below covers the mixed
+		// changed/unchanged variant; before this case existed, nothing covered two compositions that
+		// both report impacts — the second composition there has no affected XR at all.
+		"MultipleChangedCompositionsBothReportImpact": {
+			reason: "Two changed compositions each report their own affected XR's downstream changes",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/original-composition-2.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				// XR using composition 1
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+				// XR using composition 2
+				composes(
+					"testdata/comp/resources/existing-xr-v2.yaml",
+					"testdata/comp/resources/existing-downstream-v2.yaml",
+				),
+			},
+			inputFiles: []string{
+				"testdata/comp/updated-composition.yaml",
+				"testdata/comp/updated-composition-2-changed.yaml",
+			},
+			namespace:        "default",
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithAffectedResources(1, 1, 0, 0).
+				WithXRImpact("XNopResource", "test-resource", "default", "changed").
+				WithDownstreamSummary(0, 1, 0).
+				WithDownstreamResource("modified", "XDownstreamResource", "test-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "updated-existing-value").
+				WithFieldChange("spec.forProvider.resourceTier", "basic", "premium").
+				AndComposition("xnopresources-v2.diff.example.org").
+				WithCompositionModified().
+				WithAffectedResources(1, 1, 0, 0).
+				WithXRImpact("XNopResource", "v2-resource", "default", "changed").
+				WithDownstreamSummary(0, 1, 0).
+				WithDownstreamResource("modified", "XDownstreamResource", "v2-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "v2-updated-v2-existing-value", "v2-changed-v2-existing-value").
+				WithFieldChange("spec.forProvider.resourceTier", "enterprise", "premium-plus"),
+		},
+		// Note the second input composition (xnopresources-v2.diff.example.org) is byte-identical to its
+		// in-cluster version, so this case doubles as the mixed changed/unchanged scenario: the changed
+		// composition reports its impact while the unchanged one is skipped per-composition (issue
+		// #453). It is not a broken fixture.
+		"MultipleCompositionDiffImpact": {
+			reason: "Validates multiple compositions in one invocation: the changed one reports impact on existing XRs, the unchanged one is skipped",
+			// Set up existing XRs that use both compositions
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/original-composition-2.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			// Add existing XRs that use the compositions
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+				composes(
+					"testdata/comp/resources/existing-xr-2.yaml",
+					"testdata/comp/resources/existing-downstream-2.yaml",
+				),
+			},
+			// Multiple composition files that will be diffed
+			inputFiles: []string{
+				"testdata/comp/updated-composition.yaml",
+				"testdata/comp/updated-composition-2.yaml",
+			},
+			namespace: "default",
+			expectedOutput: `
+=== Composition Changes ===
+
+~~~ Composition/xnopresources.diff.example.org
+  apiVersion: apiextensions.crossplane.io/v1
+  kind: Composition
+  metadata:
+    name: xnopresources.diff.example.org
+  spec:
+    compositeTypeRef:
+      apiVersion: ns.diff.example.org/v1alpha1
+      kind: XNopResource
+    mode: Pipeline
+    pipeline:
+    - functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: template.fn.crossplane.io/v1beta1
+        inline:
+          template: |
+            apiVersion: ns.nop.example.org/v1alpha1
+            kind: XDownstreamResource
+            metadata:
+              name: {{ .observed.composite.resource.metadata.name }}
+              namespace: {{ .observed.composite.resource.metadata.namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: nop-resource
+            spec:
+              forProvider:
+-               configData: {{ .observed.composite.resource.spec.coolField }}
+-               resourceTier: basic
++               configData: updated-{{ .observed.composite.resource.spec.coolField }}
++               resourceTier: premium
+        kind: GoTemplate
+        source: Inline
+      step: generate-resources
+    - functionRef:
+        name: function-auto-ready
+      step: automatically-detect-ready-composed-resources
+
+---
+
+Summary: 1 modified
+
+Applying this composition creates a new CompositionRevision, which 2 composites would adopt.
+
+=== Affected Composite Resources ===
+
+  ⚠ XNopResource/another-resource (namespace: default)
+  ⚠ XNopResource/test-resource (namespace: default)
+
+Summary: 2 resources with changes
+
+=== Impact Analysis ===
+
+~~~ XDownstreamResource/another-resource
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: another-resource
+    name: another-resource
+    namespace: default
+  spec:
+    forProvider:
+-     configData: another-existing-value
+-     resourceTier: basic
++     configData: updated-another-existing-value
++     resourceTier: premium
+
+---
+~~~ XDownstreamResource/test-resource
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: test-resource
+    name: test-resource
+    namespace: default
+  spec:
+    forProvider:
+-     configData: existing-value
+-     resourceTier: basic
++     configData: updated-existing-value
++     resourceTier: premium
+
+---
+
+Summary: 2 modified
+
+================================================================================
+
+=== Composition Changes ===
+
+No changes detected in composition xnopresources-v2.diff.example.org
+
+Impact analysis skipped: this composition is identical to the cluster's, so applying it creates no new CompositionRevision and no composite resource could change as a result. Pass --analyze-on=always to evaluate them anyway.
+`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		"CompositionDiffFiltersManualXRs": {
+			reason: "Validates composition diff filters Manual policy XRs by default",
+			// Set up existing XRs - one with Automatic policy and one with Manual policy
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				// Add existing XR with Automatic policy (should be included)
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+				// Add existing XR with Manual policy (should be filtered out by default)
+				composes(
+					"testdata/comp/resources/existing-xr-manual.yaml",
+					"testdata/comp/resources/existing-downstream-manual.yaml",
+				),
+			},
+			// Updated composition
+			inputFiles: []string{"testdata/comp/updated-composition.yaml"},
+			namespace:  "default",
+			// Expected output should only show test-resource (Automatic), NOT manual-resource (Manual)
+			expectedOutput: `
+=== Composition Changes ===
+
+~~~ Composition/xnopresources.diff.example.org
+  apiVersion: apiextensions.crossplane.io/v1
+  kind: Composition
+  metadata:
+    name: xnopresources.diff.example.org
+  spec:
+    compositeTypeRef:
+      apiVersion: ns.diff.example.org/v1alpha1
+      kind: XNopResource
+    mode: Pipeline
+    pipeline:
+    - functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: template.fn.crossplane.io/v1beta1
+        inline:
+          template: |
+            apiVersion: ns.nop.example.org/v1alpha1
+            kind: XDownstreamResource
+            metadata:
+              name: {{ .observed.composite.resource.metadata.name }}
+              namespace: {{ .observed.composite.resource.metadata.namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: nop-resource
+            spec:
+              forProvider:
+-               configData: {{ .observed.composite.resource.spec.coolField }}
+-               resourceTier: basic
++               configData: updated-{{ .observed.composite.resource.spec.coolField }}
++               resourceTier: premium
+        kind: GoTemplate
+        source: Inline
+      step: generate-resources
+    - functionRef:
+        name: function-auto-ready
+      step: automatically-detect-ready-composed-resources
+
+---
+
+Summary: 1 modified
+
+Applying this composition creates a new CompositionRevision, which 1 composite would adopt.
+
+=== Affected Composite Resources ===
+
+  ⚠ XNopResource/test-resource (namespace: default)
+
+Summary: 1 resource with changes
+
+=== Impact Analysis ===
+
+~~~ XDownstreamResource/test-resource
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: test-resource
+    name: test-resource
+    namespace: default
+  spec:
+    forProvider:
+-     configData: existing-value
+-     resourceTier: basic
++     configData: updated-existing-value
++     resourceTier: premium
+
+---
+
+Summary: 1 modified`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		"CompositionUpgradesResourceAPIVersion": {
+			// NOTE: This test validates that resources are correctly matched across API version changes,
+			// avoiding delete/recreate. The composition template changes from v1beta1 to v1beta2, but
+			// Kubernetes automatically converts resources between served API versions. When we query for
+			// the v1beta2 resource, Kubernetes finds the v1beta1 resource and returns it auto-converted
+			// to v1beta2. From Kubernetes' perspective, the resource exists as both versions simultaneously,
+			// so there's no apiVersion field change to show in the diff. The important thing is that the
+			// resource is matched, preventing delete/recreate operations: since the stored object is
+			// identical at either version it renders unchanged, where an unmatched one would show as a
+			// +++ addition and a --- removal. The composition diff itself WILL show the template change
+			// from v1beta1 to v1beta2.
+			//
+			// As in TestDiffIntegration/CompositionRevisionUpgradesResourceAPIVersion, the XR composes the
+			// resource as Crossplane leaves it, named in its resourceRefs at v1beta1, so this also checks
+			// that it is not reported as removed (#552).
+			reason: "Validates composition upgrade that changes resource API version shows as update not remove/add",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				// NOTE: xapimigrate CRD is auto-loaded from testdata/comp/crds/
+				// We apply no XRD for XApiMigrateResource because it is a regular managed resource
+				// (not a composite), and an XRD would make it composite, causing infinite recursion.
+				"testdata/comp/resources/api-version-original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/comp/resources/existing-api-version-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/comp/resources/existing-api-version-downstream-v1beta1.yaml": nil,
+					},
+				},
+			},
+			inputFiles: []string{"testdata/comp/api-version-updated-composition.yaml"},
+			namespace:  "default",
+			expectedOutput: `
+=== Composition Changes ===
+
+~~~ Composition/xapimigrateresources.example.org
+  apiVersion: apiextensions.crossplane.io/v1
+  kind: Composition
+  metadata:
+    name: xapimigrateresources.example.org
+  spec:
+    compositeTypeRef:
+      apiVersion: ns.diff.example.org/v1alpha1
+      kind: XNopResource
+    mode: Pipeline
+    pipeline:
+    - functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: template.fn.crossplane.io/v1beta1
+        inline:
+          template: |
+-           apiVersion: comp.example.org/v1beta1
++           apiVersion: comp.example.org/v1beta2
+            kind: XApiMigrateResource
+            metadata:
+              name: {{ .observed.composite.resource.metadata.name }}-api-resource
+              namespace: {{ .observed.composite.resource.metadata.namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: api-migrate-resource
+            spec:
+              forProvider:
+                configData: {{ .observed.composite.resource.spec.coolField }}
+        kind: GoTemplate
+        source: Inline
+      step: generate-api-versioned-resources
+    - functionRef:
+        name: function-auto-ready
+      step: automatically-detect-ready-composed-resources
+
+---
+
+Summary: 1 modified
+
+Applying this composition creates a new CompositionRevision, which 1 composite would adopt.
+
+=== Affected Composite Resources ===
+
+  ✓ XNopResource/test-api-version (namespace: default)
+
+Summary: 1 resource unchanged
+
+=== Impact Analysis ===
+
+All composite resources are up-to-date. No downstream resource changes detected.
+`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		"NetNewCompositionNoImpact": {
+			reason: "Validates net-new composition with no downstream impact",
+			// Set up cluster with existing resources but no composition that matches the new one
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			// Add existing XRs that use different compositions (won't be affected)
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+			},
+			// Net-new composition file that doesn't exist in cluster and targets different XR type
+			inputFiles: []string{"testdata/comp/net-new-composition.yaml"},
+			namespace:  "default",
+			expectedOutput: `
+=== Composition Changes ===
+
++++ Composition/xnewresources.diff.example.org
++ apiVersion: apiextensions.crossplane.io/v1
++ kind: Composition
++ metadata:
++   labels:
++     environment: staging
++     provider: aws
++   name: xnewresources.diff.example.org
++ spec:
++   compositeTypeRef:
++     apiVersion: staging.diff.example.org/v1alpha1
++     kind: XNewResource
++   mode: Pipeline
++   pipeline:
++   - functionRef:
++       name: function-go-templating
++     input:
++       apiVersion: template.fn.crossplane.io/v1beta1
++       inline:
++         template: |
++           apiVersion: staging.nop.example.org/v1alpha1
++           kind: XStagingResource
++           metadata:
++             name: {{ .observed.composite.resource.metadata.name }}
++             namespace: {{ .observed.composite.resource.metadata.namespace }}
++             annotations:
++               gotemplating.fn.crossplane.io/composition-resource-name: staging-resource
++           spec:
++             forProvider:
++               environment: staging
++               configData: new-{{ .observed.composite.resource.spec.newField }}
++               resourceTier: premium
++       kind: GoTemplate
++       source: Inline
++     step: generate-new-resources
++   - functionRef:
++       name: function-auto-ready
++     step: automatically-detect-ready-composed-resources
+
+---
+
+Summary: 1 added
+
+No XRs found using composition xnewresources.diff.example.org`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		"CompositionChangeWithUnchangedDownstreamResources": {
+			reason: "Validates status indicators for unchanged downstream resources",
+			// Set up existing XRs that use the original composition
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/status-indicator-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			// Add existing XRs that use the composition
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/status-xr-1.yaml",
+					"testdata/comp/resources/status-downstream-1.yaml",
+				),
+				composes(
+					"testdata/comp/resources/status-xr-2.yaml",
+					"testdata/comp/resources/status-downstream-2.yaml",
+				),
+			},
+			// Updated composition with only metadata change (no downstream impact)
+			inputFiles: []string{"testdata/comp/status-indicator-updated-composition.yaml"},
+			namespace:  "default",
+			expectedOutput: `
+=== Composition Changes ===
+
+~~~ Composition/xstatus.diff.example.org
+  apiVersion: apiextensions.crossplane.io/v1
+  kind: Composition
+  metadata:
++   labels:
++     environment: production
+    name: xstatus.diff.example.org
+  spec:
+    compositeTypeRef:
+      apiVersion: ns.diff.example.org/v1alpha1
+      kind: XNopResource
+    mode: Pipeline
+    pipeline:
+    - functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: template.fn.crossplane.io/v1beta1
+        inline:
+          template: |
+            apiVersion: ns.nop.example.org/v1alpha1
+            kind: XDownstreamResource
+            metadata:
+              name: {{ .observed.composite.resource.metadata.name }}
+              namespace: {{ .observed.composite.resource.metadata.namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: nop-resource
+            spec:
+              forProvider:
+                configData: stable-value
+                resourceTier: standard
+        kind: GoTemplate
+        source: Inline
+      step: generate-resources
+    - functionRef:
+        name: function-auto-ready
+      step: automatically-detect-ready-composed-resources
+
+---
+
+Summary: 1 modified
+
+Applying this composition creates a new CompositionRevision, which 2 composites would adopt.
+
+=== Affected Composite Resources ===
+
+  ✓ XNopResource/status-test-xr-1 (namespace: default)
+  ✓ XNopResource/status-test-xr-2 (namespace: default)
+
+Summary: 2 resources unchanged
+
+=== Impact Analysis ===
+
+All composite resources are up-to-date. No downstream resource changes detected.`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		"CompositionChangeWithMixedStatusAndColors": {
+			reason: "Validates status indicators with colorization for mixed changed/unchanged XRs",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/mixed-status-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				// XR 1 with downstream resources (standard tier - will change)
+				composes(
+					"testdata/comp/resources/mixed-xr-1.yaml",
+					"testdata/comp/resources/mixed-downstream-db-1.yaml",
+					"testdata/comp/resources/mixed-downstream-storage-1.yaml",
+					"testdata/comp/resources/mixed-downstream-network-1.yaml",
+				),
+				// XR 2 with downstream resources (standard tier - will change)
+				composes(
+					"testdata/comp/resources/mixed-xr-2.yaml",
+					"testdata/comp/resources/mixed-downstream-db-2.yaml",
+					"testdata/comp/resources/mixed-downstream-storage-2.yaml",
+					"testdata/comp/resources/mixed-downstream-network-2.yaml",
+				),
+				// XR 3 with downstream resources (already premium tier - no change)
+				composes(
+					"testdata/comp/resources/mixed-xr-3.yaml",
+					"testdata/comp/resources/mixed-downstream-db-3.yaml",
+					"testdata/comp/resources/mixed-downstream-storage-3.yaml",
+					"testdata/comp/resources/mixed-downstream-network-3.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/comp/mixed-status-updated-composition.yaml"},
+			namespace:  "default",
+			expectedOutput: strings.Join([]string{
+				`
+=== Composition Changes ===
+
+~~~ Composition/xmixed.diff.example.org
+  apiVersion: apiextensions.crossplane.io/v1
+  kind: Composition
+  metadata:
+    name: xmixed.diff.example.org
+  spec:
+    compositeTypeRef:
+      apiVersion: ns.diff.example.org/v1alpha1
+      kind: XNopResource
+    mode: Pipeline
+    pipeline:
+    - functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: template.fn.crossplane.io/v1beta1
+        inline:
+          template: |
+            ---
+            apiVersion: ns.nop.example.org/v1alpha1
+            kind: XDownstreamResource
+            metadata:
+              name: {{ .observed.composite.resource.metadata.name }}-database
+              namespace: {{ .observed.composite.resource.metadata.namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: database
+            spec:
+              forProvider:
+                resourceType: database
+`, tu.Red(`-               tier: standard`), `
+`, tu.Green(`+               tier: premium`), `
+`, tu.Green(`+               backupEnabled: true`), `
+            ---
+            apiVersion: ns.nop.example.org/v1alpha1
+            kind: XDownstreamResource
+            metadata:
+              name: {{ .observed.composite.resource.metadata.name }}-storage
+              namespace: {{ .observed.composite.resource.metadata.namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: storage
+            spec:
+              forProvider:
+                resourceType: storage
+                tier: standard
+            ---
+            apiVersion: ns.nop.example.org/v1alpha1
+            kind: XDownstreamResource
+            metadata:
+              name: {{ .observed.composite.resource.metadata.name }}-network
+              namespace: {{ .observed.composite.resource.metadata.namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: network
+            spec:
+              forProvider:
+                resourceType: network
+                tier: standard
+        kind: GoTemplate
+        source: Inline
+      step: generate-resources
+    - functionRef:
+        name: function-auto-ready
+      step: automatically-detect-ready-composed-resources
+
+---
+
+Summary: 1 modified
+
+Applying this composition creates a new CompositionRevision, which 3 composites would adopt.
+
+=== Affected Composite Resources ===
+
+`, tu.Yellow(`  ⚠ XNopResource/mixed-test-xr-1 (namespace: default)`), `
+`, tu.Yellow(`  ⚠ XNopResource/mixed-test-xr-2 (namespace: default)`), `
+`, tu.Green(`  ✓ XNopResource/mixed-test-xr-3 (namespace: default)`), `
+
+Summary: 2 resources with changes, 1 resource unchanged
+
+=== Impact Analysis ===
+
+~~~ XDownstreamResource/mixed-test-xr-1-database
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: database
+    labels:
+      crossplane.io/composite: mixed-test-xr-1
+    name: mixed-test-xr-1-database
+    namespace: default
+  spec:
+    forProvider:
+`, tu.Red(`-     resourceType: database`), `
+`, tu.Red(`-     tier: standard`), `
+`, tu.Green(`+     backupEnabled: true`), `
+`, tu.Green(`+     resourceType: database`), `
+`, tu.Green(`+     tier: premium`), `
+  
+  
+
+---
+~~~ XDownstreamResource/mixed-test-xr-2-database
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: database
+    labels:
+      crossplane.io/composite: mixed-test-xr-2
+    name: mixed-test-xr-2-database
+    namespace: default
+  spec:
+    forProvider:
+`, tu.Red(`-     resourceType: database`), `
+`, tu.Red(`-     tier: standard`), `
+`, tu.Green(`+     backupEnabled: true`), `
+`, tu.Green(`+     resourceType: database`), `
+`, tu.Green(`+     tier: premium`), `
+  
+  
+
+---
+
+Summary: 2 modified
+`,
+			}, ""),
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          false,
+		},
+		"CompositionChangeImpactsClaims": {
+			reason: "Validates composition change impacts existing Claims (issue #120)",
+			// Set up existing Claims and their XRs that use the original composition
+			setupFiles: []string{
+				// XRD, composition, and functions
+				"testdata/comp/resources/claim-xrd.yaml",
+				"testdata/comp/resources/claim-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+				// Test namespace
+				"testdata/comp/resources/test-namespace.yaml",
+				// Existing Claims and their corresponding XRs
+				"testdata/comp/resources/existing-claim-1.yaml",
+				"testdata/comp/resources/existing-claim-2.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-claim-1-xr.yaml",
+					"testdata/comp/resources/existing-claim-downstream-1.yaml",
+				),
+				composes(
+					"testdata/comp/resources/existing-claim-2-xr.yaml",
+					"testdata/comp/resources/existing-claim-downstream-2.yaml",
+				),
+			},
+			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			// Updated composition that will be diffed
+			inputFiles: []string{"testdata/comp/updated-claim-composition.yaml"},
+			namespace:  "test-namespace",
+			expectedOutput: `
+=== Composition Changes ===
+
+~~~ Composition/nopclaims.diff.example.org
+  apiVersion: apiextensions.crossplane.io/v1
+  kind: Composition
+  metadata:
+    name: nopclaims.diff.example.org
+  spec:
+    compositeTypeRef:
+      apiVersion: diff.example.org/v1alpha1
+      kind: XNop
+    mode: Pipeline
+    pipeline:
+    - functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: template.fn.crossplane.io/v1beta1
+        inline:
+          template: |
+            apiVersion: nop.example.org/v1alpha1
+            kind: XDownstreamResource
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: nop-resource
+              name: {{ .observed.composite.resource.metadata.name }}
+            spec:
+              forProvider:
+-               configData: {{ .observed.composite.resource.spec.coolField }}
+-               resourceTier: basic
++               configData: updated-{{ .observed.composite.resource.spec.coolField }}
++               resourceTier: premium
+        kind: GoTemplate
+        source: Inline
+      step: generate-resources
+    - functionRef:
+        name: function-auto-ready
+      step: automatically-detect-ready-composed-resources
+
+---
+
+Summary: 1 modified
+
+Applying this composition creates a new CompositionRevision, which 2 composites would adopt.
+
+=== Affected Composite Resources ===
+
+  ⚠ NopClaim/test-claim-1 (namespace: test-namespace)
+  ⚠ NopClaim/test-claim-2 (namespace: test-namespace)
+
+Summary: 2 resources with changes
+
+=== Impact Analysis ===
+
+~~~ XDownstreamResource/test-claim-1-xr
+  apiVersion: nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/claim-name: test-claim-1
+      crossplane.io/claim-namespace: test-namespace
+      crossplane.io/composite: test-claim-1-xr
+    name: test-claim-1-xr
+  spec:
+    forProvider:
+-     configData: claim-value-1
+-     resourceTier: basic
++     configData: updated-claim-value-1
++     resourceTier: premium
+
+---
+~~~ XDownstreamResource/test-claim-2-xr
+  apiVersion: nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/claim-name: test-claim-2
+      crossplane.io/claim-namespace: test-namespace
+      crossplane.io/composite: test-claim-2-xr
+    name: test-claim-2-xr
+  spec:
+    forProvider:
+-     configData: claim-value-2
+-     resourceTier: basic
++     configData: updated-claim-value-2
++     resourceTier: premium
+
+---
+
+Summary: 2 modified`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		"SSAFieldRemovalDetection": {
+			reason: "Validates that field removals are correctly detected when resources are created via Server-Side Apply with Crossplane's field manager (issue #121)",
+			// Set up XRD, functions, and original composition with the removable field
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/functions.yaml",
+				"testdata/comp/resources/field-removal/composition-with-field.yaml",
+			},
+			// XR and downstream resource applied via SSA with Crossplane field manager
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/comp/resources/field-removal/existing-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/comp/resources/field-removal/existing-downstream.yaml": nil,
+					},
+				},
+			},
+			// Updated composition that removes the removableField
+			inputFiles: []string{"testdata/comp/field-removal-updated-composition.yaml"},
+			namespace:  "default",
+			expectedOutput: `
+=== Composition Changes ===
+
+~~~ Composition/xfieldremoval.diff.example.org
+  apiVersion: apiextensions.crossplane.io/v1
+  kind: Composition
+  metadata:
+    name: xfieldremoval.diff.example.org
+  spec:
+    compositeTypeRef:
+      apiVersion: ns.diff.example.org/v1alpha1
+      kind: XNopResource
+    mode: Pipeline
+    pipeline:
+    - functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: template.fn.crossplane.io/v1beta1
+        inline:
+          template: |
+            apiVersion: ns.nop.example.org/v1alpha1
+            kind: XDownstreamResource
+            metadata:
+              name: {{ .observed.composite.resource.metadata.name }}
+              namespace: {{ .observed.composite.resource.metadata.namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: nop-resource
+            spec:
+              forProvider:
+                configData: {{ .observed.composite.resource.spec.coolField }}
+-               removableField: will-be-removed
+        kind: GoTemplate
+        source: Inline
+      step: generate-resources
+    - functionRef:
+        name: function-auto-ready
+      step: automatically-detect-ready-composed-resources
+
+---
+
+Summary: 1 modified
+
+Applying this composition creates a new CompositionRevision, which 1 composite would adopt.
+
+=== Affected Composite Resources ===
+
+  ⚠ XNopResource/field-removal-test (namespace: default)
+
+Summary: 1 resource with changes
+
+=== Impact Analysis ===
+
+~~~ XDownstreamResource/field-removal-test
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: field-removal-test
+    name: field-removal-test
+    namespace: default
+  spec:
+    forProvider:
+      configData: test-value
+-     removableField: will-be-removed
+
+---
+
+Summary: 1 modified`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		"SHA256DigestFunctionReference": {
+			reason: "Validates composition diff works with functions referenced by SHA256 digest instead of tag",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/sha256-composition.yaml",
+				"testdata/comp/resources/functions-sha256.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-sha256-xr.yaml",
+					"testdata/comp/resources/existing-sha256-downstream.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/comp/updated-sha256-composition.yaml"},
+			namespace:  "default",
+			expectedOutput: `
+=== Composition Changes ===
+
+~~~ Composition/xnopresources-sha256.diff.example.org
+  apiVersion: apiextensions.crossplane.io/v1
+  kind: Composition
+  metadata:
+    name: xnopresources-sha256.diff.example.org
+  spec:
+    compositeTypeRef:
+      apiVersion: ns.diff.example.org/v1alpha1
+      kind: XNopResource
+    mode: Pipeline
+    pipeline:
+    - functionRef:
+        name: function-go-templating-sha256
+      input:
+        apiVersion: template.fn.crossplane.io/v1beta1
+        inline:
+          template: |
+            apiVersion: ns.nop.example.org/v1alpha1
+            kind: XDownstreamResource
+            metadata:
+              name: {{ .observed.composite.resource.metadata.name }}
+              namespace: {{ .observed.composite.resource.metadata.namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: nop-resource
+            spec:
+              forProvider:
+-               configData: {{ .observed.composite.resource.spec.coolField }}
+-               resourceTier: basic
++               configData: updated-{{ .observed.composite.resource.spec.coolField }}
++               resourceTier: premium
+        kind: GoTemplate
+        source: Inline
+      step: generate-resources
+    - functionRef:
+        name: function-auto-ready
+      step: automatically-detect-ready-composed-resources
+
+---
+
+Summary: 1 modified
+
+Applying this composition creates a new CompositionRevision, which 1 composite would adopt.
+
+=== Affected Composite Resources ===
+
+  ⚠ XNopResource/sha256-test-resource (namespace: default)
+
+Summary: 1 resource with changes
+
+=== Impact Analysis ===
+
+~~~ XDownstreamResource/sha256-test-resource
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: sha256-test-resource
+    name: sha256-test-resource
+    namespace: default
+  spec:
+    forProvider:
+-     configData: sha256-value
+-     resourceTier: basic
++     configData: updated-sha256-value
++     resourceTier: premium
+
+---
+
+Summary: 1 modified`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		// Issue #485, comp's half. comp re-renders each discovered composite through DiffSingleResource,
+		// the same recursion xr uses, so one fix covers both — this pins that for comp rather than
+		// assuming it. comp's own error only counts the failures, so the assertion that matters is that
+		// the depth message reaches the failing composite's impact entry: without it, a user would be
+		// told something failed but not that the composition recurses into itself.
+		"CyclicCompositionStopsAtMaxNestedDepth": {
+			reason:       "comp shares xr's recursion path (it enters via DiffSingleResource), so a composition cycle must stop at --max-nested-depth here too, and say so on the failing composite (#485)",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/cycle/xrds.yaml",
+				"testdata/diff/resources/cycle/compositions.yaml",
+				"testdata/comp/resources/functions.yaml",
+				// Composed nothing: with a cyclic composition, Crossplane would nest XRs without end, so
+				// the case models the XR before its first compose rather than an endless tree.
+				"testdata/comp/resources/cycle/existing-cycle-xr.yaml",
+			},
+			inputFiles:            []string{"testdata/comp/updated-cycle-composition.yaml"},
+			namespace:             "default",
+			expectedError:         true,
+			expectedErrorContains: "impact analysis failed for 1 XR(s)",
+			expectedExitCode:      dp.ExitCodeToolError,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xcycleas.cycle.example.org").
+				WithAffectedResources(1, 0, 0, 1).
+				WithXRImpact("XCycleA", "test-cycle", "default", "error").
+				WithErrorContaining("maximum nesting depth exceeded"),
+		},
+		// The same failure under --output-version=v2: the impact entry is the shared per-XR entry, and
+		// its errors[] holds the same OutputError as the top-level errors[].
+		"CyclicCompositionStopsAtMaxNestedDepthV2": {
+			reason:        "With --output-version=v2, a failing composite's impactAnalysis entry carries its error as a structured errors[] entry",
+			outputFormat:  "json",
+			outputVersion: "v2",
+			setupFiles: []string{
+				"testdata/diff/resources/cycle/xrds.yaml",
+				"testdata/diff/resources/cycle/compositions.yaml",
+				"testdata/comp/resources/functions.yaml",
+				// Composed nothing, as in CyclicCompositionStopsAtMaxNestedDepth.
+				"testdata/comp/resources/cycle/existing-cycle-xr.yaml",
+			},
+			inputFiles:            []string{"testdata/comp/updated-cycle-composition.yaml"},
+			namespace:             "default",
+			expectedError:         true,
+			expectedErrorContains: "impact analysis failed for 1 XR(s)",
+			expectedExitCode:      dp.ExitCodeToolError,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithOutputVersion("v2").
+				WithError("XCycleA/test-cycle").
+				WithComposition("xcycleas.cycle.example.org").
+				WithAffectedResources(1, 0, 0, 1).
+				WithXRImpact("XCycleA", "test-cycle", "default", "error").
+				WithErrorContaining("maximum nesting depth exceeded").
+				WithErrorResourceID("XCycleA/test-cycle"),
+		},
+		"NestedXRUsesOwnComposition": {
+			reason: "Validates that nested XRs use their own composition from the cluster, not the parent's CLI composition",
+			// Set up XRDs, compositions, and functions
+			setupFiles: []string{
+				// Child XRD and composition (XNopResource uses xnopresources.diff.example.org)
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+				// Parent XRD and composition
+				"testdata/comp/resources/nested-xr/parent-xrd.yaml",
+				"testdata/comp/resources/nested-xr/parent-composition.yaml",
+			},
+			// Use crossplaneManagedResources to set up proper ownership hierarchy
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					// Parent XR owns both direct downstream and nested child XR
+					OwnerFile: "testdata/comp/resources/nested-xr/existing-parent-xr.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						// Direct downstream owned by parent XR
+						"testdata/comp/resources/nested-xr/existing-parent-direct-downstream.yaml": nil,
+						// Nested child XR owned by parent XR, which owns its own downstream
+						"testdata/comp/resources/nested-xr/existing-nested-child-xr.yaml": {
+							OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+								// Child's downstream owned by nested child XR
+								"testdata/comp/resources/nested-xr/existing-child-downstream.yaml": nil,
+							},
+						},
+					},
+				},
+			},
+			// Diff the updated parent composition
+			inputFiles: []string{"testdata/comp/updated-parent-composition.yaml"},
+			namespace:  "default",
+			// Expected: Only the parent's direct downstream shows changes (tier change).
+			// The nested child's downstream should NOT change because:
+			// 1. The nested XR (XNopResource) uses its own composition (xnopresources.diff.example.org)
+			// 2. That child composition was NOT modified
+			// Bug scenario: If nested XR incorrectly uses parent composition, we'd see wrong changes to child's downstream.
+			// Expected output: Only the parent's direct downstream should show in the Impact Analysis.
+			// The child's downstream (XDownstreamResource/test-parent-nested) should NOT appear here.
+			// If it did, it would mean the nested XR incorrectly used the parent's CLI composition.
+			expectedOutput: `=== Impact Analysis ===
+
+~~~ XDownstreamResource/test-parent-direct
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: direct-resource
+    labels:
+      crossplane.io/composite: test-parent
+    name: test-parent-direct
+    namespace: default
+  spec:
+    forProvider:
+      configData: parent-parent-value
+-     resourceTier: parent-tier
++     resourceTier: premium-tier
+
+---
+
+Summary: 1 modified`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		"CrossNamespaceResourceCollision": {
+			reason: "Validates that resources with the same name in different namespaces are correctly distinguished",
+			skip:   true,
+			skipReason: "Blocked on https://github.com/crossplane-contrib/function-extra-resources/issues/106. " +
+				"function-extra-resources (v0.2.0/v0.3.0) emits ResourceSelector{Namespace=\"\"} for " +
+				"by-name references that omit `ref.namespace` — it only forwards user-yaml verbatim, " +
+				"never inferring from the XR's namespace. Crossplane v2.3+'s render binary then does " +
+				"InMemoryClient.Get(name, namespace=\"\"), a strict (GVK, ns, name) match that doesn't " +
+				"find our resolved ConfigMap (stored at namespace=ns-{a,b}). By-label selectors aren't " +
+				"affected — List(InNamespace(\"\")) lists across all namespaces — which is why our " +
+				"other extra-resources tests still pass. Re-enable once a function release defaults " +
+				"selector.Namespace to the XR's namespace.",
+			timeout: longTimeout, // Test involves multiple namespaces and can be slow with Docker contention
+			// This test catches a bug where the cache key didn't include namespace, causing
+			// ConfigMaps with the same name in different namespaces to collide.
+			// The XR in ns-a should get ConfigMap from ns-a (value: from-ns-a)
+			// The XR in ns-b should get ConfigMap from ns-b (value: from-ns-b)
+			// Bug: Both XRs would get the same ConfigMap (whichever was cached first)
+			setupFiles: []string{
+				// Create namespaces first
+				"testdata/comp/resources/namespace-collision/namespace-ns-a.yaml",
+				"testdata/comp/resources/namespace-collision/namespace-ns-b.yaml",
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/functions.yaml",
+				"testdata/comp/resources/namespace-collision/collision-composition.yaml",
+				"testdata/comp/resources/namespace-collision/collision-composition-revision.yaml",
+				// ConfigMaps with same name in different namespaces
+				"testdata/comp/resources/namespace-collision/configmap-ns-a.yaml",
+				"testdata/comp/resources/namespace-collision/configmap-ns-b.yaml",
+			},
+			// XRs and their downstream resources in different namespaces
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/comp/resources/namespace-collision/existing-xr-ns-a.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/comp/resources/namespace-collision/existing-downstream-ns-a.yaml": nil,
+					},
+				},
+				{
+					OwnerFile: "testdata/comp/resources/namespace-collision/existing-xr-ns-b.yaml",
+					OwnedFiles: map[string]*HierarchicalOwnershipRelation{
+						"testdata/comp/resources/namespace-collision/existing-downstream-ns-b.yaml": nil,
+					},
+				},
+			},
+			inputFiles: []string{"testdata/comp/updated-collision-composition.yaml"},
+			// Expected: Each XR's downstream should show the correct prefix applied to its namespace's ConfigMap value.
+			// XR in ns-a: from-ns-a → prefix-from-ns-a
+			// XR in ns-b: from-ns-b → prefix-from-ns-b
+			// Bug scenario: If namespace collision occurs, ns-b would incorrectly show:
+			//   from-ns-b → prefix-from-ns-a (wrong ConfigMap cached from ns-a)
+			expectedOutput: `=== Impact Analysis ===
+
+~~~ XDownstreamResource/xr-in-ns-a
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: collision-resource
+    labels:
+      crossplane.io/composite: xr-in-ns-a
+    name: xr-in-ns-a
+    namespace: ns-a
+  spec:
+    forProvider:
+-     configData: from-ns-a
++     configData: prefix-from-ns-a
+
+---
+~~~ XDownstreamResource/xr-in-ns-b
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: collision-resource
+    labels:
+      crossplane.io/composite: xr-in-ns-b
+    name: xr-in-ns-b
+    namespace: ns-b
+  spec:
+    forProvider:
+-     configData: from-ns-b
++     configData: prefix-from-ns-b
+
+---
+
+Summary: 2 modified`,
+			expectedError:    false,
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			noColor:          true,
+		},
+		// Paired comp sequencer-gating tests — mirror of the XR pair. Verifies that
+		// --eventual-state on `comp` surfaces downstream resources hidden by
+		// function-sequencer in the impact analysis.
+		"CompSequencerGatesLaterStageWithoutEventualState": {
+			reason:       "`comp` without --eventual-state: sequencer-gated stage1 is absent from the impact analysis",
+			timeout:      longTimeout,
+			outputFormat: "json",
+			// eventualState deliberately false
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/sequencer-gating-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			// The XR references sequencer-gating-composition by name, so comp discovers it. It has
+			// composed stage0, which isn't Ready, so stage1 stays gated.
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes("testdata/comp/resources/existing-sequencer-gating-xr.yaml", "testdata/comp/resources/existing-sequencer-gating-stage0.yaml"),
+			},
+			inputFiles:       []string{"testdata/comp/updated-sequencer-gating-composition.yaml"},
+			namespace:        "default",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			// Expect: impact shows stage0 modified (its configData changed); stage1 is absent from
+			// downstream impact because sequencer gates it.
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("sequencer-gating-composition").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "sequencer-gating-test", "default", "changed").
+				WithDownstreamSummary(0, 1, 0).
+				WithDownstreamResource("modified", "XDownstreamResource", "0-stage0-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "updated-existing-value"),
+			expectedError: false,
+		},
+		"CompSequencerGatedStageAppearsWithEventualState": {
+			reason:        "`comp` with --eventual-state: sequencer-gated stage1 surfaces in the impact analysis",
+			timeout:       longTimeout, // Multiple simulation iterations need more time
+			outputFormat:  "json",
+			eventualState: true,
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/sequencer-gating-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			// The XR has composed stage0, which isn't Ready, so stage1 stays gated until eventual
+			// state synthesizes stage0's Ready (#564).
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes("testdata/comp/resources/existing-sequencer-gating-xr.yaml", "testdata/comp/resources/existing-sequencer-gating-stage0.yaml"),
+			},
+			inputFiles:       []string{"testdata/comp/updated-sequencer-gating-composition.yaml"},
+			namespace:        "default",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			// Expect: impact shows stage0 modified and stage1 added (eventual-state unlocks stage1).
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("sequencer-gating-composition").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "sequencer-gating-test", "default", "changed").
+				WithDownstreamSummary(1, 1, 0).
+				WithDownstreamResource("modified", "XDownstreamResource", "0-stage0-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "updated-existing-value").
+				AndXR().
+				WithDownstreamResource("added", "XDownstreamResource", "1-stage1-resource", "default").
+				// dryRun absence through `comp`: a downstream addition that reached the apiserver
+				// carries no dryRun object. Piggy-backed on an existing case rather than given its
+				// own envtest instance, since it is a pure additional assertion.
+				WithDryRunPerformed().
+				WithField("spec.forProvider.configData", "updated-existing-value"),
+			expectedError: false,
+		},
+		// Paired comp composition-driven gating tests — gating encoded in go-templating,
+		// no function-sequencer. Mirrors the XR composition-driven pair.
+		"CompConditionalGatingHidesLaterStageWithoutEventualState": {
+			reason:       "`comp` without --eventual-state: template-gated stage1 is absent from the impact analysis",
+			timeout:      longTimeout,
+			outputFormat: "json",
+			// eventualState deliberately false
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/conditional-gating-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			// The XR has composed stage0, which isn't Ready, so stage1 stays gated.
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes("testdata/comp/resources/existing-conditional-gating-xr.yaml", "testdata/comp/resources/existing-conditional-gating-stage0.yaml"),
+			},
+			inputFiles:       []string{"testdata/comp/updated-conditional-gating-composition.yaml"},
+			namespace:        "default",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("conditional-gating-composition").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "conditional-gating-test", "default", "changed").
+				WithDownstreamSummary(0, 1, 0).
+				WithDownstreamResource("modified", "XDownstreamResource", "0-stage0-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "updated-existing-value"),
+			expectedError: false,
+		},
+		"CompConditionalGatedStageAppearsWithEventualState": {
+			reason:        "`comp` with --eventual-state: template-gated stage1 surfaces in the impact analysis",
+			timeout:       longTimeout, // Multiple simulation iterations need more time
+			outputFormat:  "json",
+			eventualState: true,
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/conditional-gating-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			// The XR has composed stage0, which isn't Ready, so stage1 stays gated until eventual
+			// state synthesizes stage0's Ready (#564).
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes("testdata/comp/resources/existing-conditional-gating-xr.yaml", "testdata/comp/resources/existing-conditional-gating-stage0.yaml"),
+			},
+			inputFiles:       []string{"testdata/comp/updated-conditional-gating-composition.yaml"},
+			namespace:        "default",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("conditional-gating-composition").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "conditional-gating-test", "default", "changed").
+				WithDownstreamSummary(1, 1, 0).
+				WithDownstreamResource("modified", "XDownstreamResource", "0-stage0-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "updated-existing-value").
+				AndXR().
+				WithDownstreamResource("added", "XDownstreamResource", "1-stage1-resource", "default").
+				WithField("spec.forProvider.configData", "updated-existing-value"),
+			expectedError: false,
+		},
+		// dryRun presence through `comp`. dryRun lives on ChangeDetail, which `xr` reaches via
+		// changes[] and `comp` via impactAnalysis[].downstreamChanges.changes[] — one shared wire
+		// shape, but only an assertion through the comp renderer proves comp actually populates it.
+		// The composed resource is deliberately absent from the setup so the impact is an ADDITION,
+		// which is the only kind of change the dryRun field applies to: the XR has its composition
+		// refs, but its first compose has not created its resource.
+		"CompDownstreamAdditionReportsDryRunSkippedWhenDryRunOnExisting": {
+			reason:       "`comp` structured output carries dryRun.skipReason on a downstream addition when --dry-run-on=existing",
+			outputFormat: "json",
+			dryRunOn:     "existing",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+				// existing-downstream-1.yaml is intentionally NOT applied: with no composed resource
+				// in the cluster, the impact analysis reports an addition rather than a modification.
+				"testdata/comp/resources/existing-xr-1.yaml",
+			},
+			inputFiles:       []string{"testdata/comp/updated-composition.yaml"},
+			namespace:        "default",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "test-resource", "default", "changed").
+				WithDownstreamSummary(1, 0, 0).
+				WithDownstreamResource("added", "XDownstreamResource", "test-resource", "default").
+				WithDryRunSkipped("disabled", "").
+				WithField("spec.forProvider.configData", "updated-existing-value"),
+			expectedError: false,
+		},
+		// The unverified-addition warning through `comp`: one run-wide summary in the top-level
+		// warnings[], counting the downstream additions behind it, rather than one per composition.
+		// A cluster-scoped XR is what lets the composition reach a namespace that does not exist.
+		"CompDownstreamAdditionsInMissingNamespaceAreCountedInOneWarning": {
+			reason:       "`comp` summarises downstream additions it could not verify as one warning per GVK + namespace + cause, with a count",
+			outputFormat: "json",
+			setupFiles: []string{
+				"testdata/diff/resources/cluster-xrd.yaml",
+				"testdata/comp/resources/unverified-cluster-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+				"testdata/comp/resources/existing-unverified-cluster-xr.yaml",
+			},
+			inputFiles:       []string{"testdata/comp/updated-unverified-cluster-composition.yaml"},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStderrContains: []string{
+				`WARNING: skipped apiserver verification of added resources: their namespace does not exist yet, so their diffs omit server-side defaulting and admission ` +
+					`(cause=namespaces "nonexistent-namespace" not found, count=2, gvk=/v1, Kind=ConfigMap, namespace=nonexistent-namespace)`,
+			},
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithWarning("their namespace does not exist yet").
+				WithWarningContext(map[string]string{
+					"gvk":       "/v1, Kind=ConfigMap",
+					"namespace": "nonexistent-namespace",
+					"cause":     `namespaces "nonexistent-namespace" not found`,
+					"count":     "2",
+				}).
+				And().
+				WithComposition("xnopresources-unverified.diff.example.org").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "unverified-xr", "", "changed").
+				WithDownstreamSummary(2, 0, 0).
+				WithDownstreamResource("added", "ConfigMap", "unverified-xr-first", "nonexistent-namespace").
+				WithDryRunSkipped("namespaceNotFound", "nonexistent-namespace").
+				AndXR().
+				WithDownstreamResource("added", "ConfigMap", "unverified-xr-second", "nonexistent-namespace").
+				WithDryRunSkipped("namespaceNotFound", "nonexistent-namespace"),
+			expectedError: false,
+		},
+		// --resource flag tests (issue #321)
+		"ResourceFilterScopesAffectedXRs": {
+			reason: "--resource limits impact analysis to the named composites and ignores the rest",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes( // test-resource (default ns)
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+				composes( // another-resource (default ns)
+					"testdata/comp/resources/existing-xr-2.yaml",
+					"testdata/comp/resources/existing-downstream-2.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/comp/updated-composition.yaml"},
+			resources:        []string{"default/test-resource"},
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithAffectedResources(1, 1, 0, 0).
+				WithXRImpact("XNopResource", "test-resource", "default", "changed"),
+		},
+		"ResourceFilterCommaSeparated": {
+			reason: "--resource accepts comma-separated values via kong's auto-parsing",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+				composes(
+					"testdata/comp/resources/existing-xr-2.yaml",
+					"testdata/comp/resources/existing-downstream-2.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/comp/updated-composition.yaml"},
+			resourcesCSV:     "default/test-resource,default/another-resource",
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithAffectedResources(2, 2, 0, 0).
+				WithXRImpact("XNopResource", "test-resource", "default", "changed").
+				AndComp().
+				WithXRImpact("XNopResource", "another-resource", "default", "changed"),
+		},
+		"ResourceFilterUnmatched_FailsBeforeRendering": {
+			reason: "--resource naming a non-existent composite fails fast with an error before any rendering",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+			},
+			inputFiles:            []string{"testdata/comp/updated-composition.yaml"},
+			resources:             []string{"default/does-not-exist"},
+			expectedError:         true,
+			expectedErrorContains: "does-not-exist",
+			expectedExitCode:      dp.ExitCodeToolError,
+		},
+		"ResourceFilterRespectsManualPolicy_WithoutIncludeManual": {
+			reason: "--resource matching a Manual-policy composite surfaces it as filtered (reason manual_policy) when --include-manual is unset",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-manual.yaml",
+					"testdata/comp/resources/existing-downstream-manual.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/comp/updated-composition.yaml"},
+			resources:        []string{"default/manual-resource"},
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected, // composition itself changed
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "manual-resource", "default", "filtered").
+				WithFilterReason("manual_policy"),
+		},
+		"ResourceFilterRespectsManualPolicy_WithIncludeManual": {
+			reason: "--include-manual evaluates the Manual-policy composite normally instead of marking it filtered",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-manual.yaml",
+					"testdata/comp/resources/existing-downstream-manual.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/comp/updated-composition.yaml"},
+			resources:        []string{"default/manual-resource"},
+			includeManual:    true,
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "manual-resource", "default", "changed"),
+		},
+		// Issue #388 (Bug A): an Automatic-policy XR whose compositionRevisionSelector does not match
+		// the edited composition's labels would not adopt the resulting revision, so it must be
+		// surfaced as filtered (reason revision_selector_mismatch), NOT evaluated for changes.
+		"ResourceFilterRespectsRevisionSelectorMismatch": {
+			reason: "--resource matching an Automatic XR whose compositionRevisionSelector does not match the composition's labels surfaces it as filtered (reason revision_selector_mismatch)",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+				"testdata/comp/resources/existing-xr-selector-mismatch.yaml",
+			},
+			inputFiles:       []string{"testdata/comp/updated-composition-labeled.yaml"},
+			resources:        []string{"default/selector-mismatch-resource"},
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected, // composition itself changed
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "selector-mismatch-resource", "default", "filtered").
+				WithFilterReason("revision_selector_mismatch"),
+			// Note: that --include-manual does NOT rescue a selector-mismatched Automatic XR is
+			// proven at the unit level (TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy /
+			// IncludeManualTrue_StillDropsSelectorMismatchedAutomaticXRs). A second slow
+			// docker-render integration case for that flag interaction would be redundant.
+		},
+		// Issue #388 (Bug A, positive): an Automatic XR whose compositionRevisionSelector DOES match
+		// the edited composition's labels is kept and evaluated for downstream changes (not filtered).
+		"ResourceFilterRespectsRevisionSelectorMatch": {
+			reason: "--resource matching an Automatic XR whose compositionRevisionSelector matches the composition's labels keeps it and reports downstream changes",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+				"testdata/comp/resources/existing-xr-selector-match.yaml",
+			},
+			inputFiles:       []string{"testdata/comp/updated-composition-labeled.yaml"},
+			resources:        []string{"default/selector-match-resource"},
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: tu.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "selector-match-resource", "default", "changed"),
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			runIntegrationTest(t, CompositionDiffTest, tt)
+		})
+	}
+}
+
+// TestDiffSingleResourceConcurrent diffs several XRs from concurrent goroutines with one processor,
+// against a real apiserver and real functions, and checks each gets the diffs and the run the
+// warnings a sequential run of the same XRs gets. Run it with -race: it is what shows the processor,
+// its caches and its render engine are safe for concurrent use (#579).
+func TestDiffSingleResourceConcurrent(t *testing.T) {
+	t.Parallel()
+
+	tu.SetupKubeTestLogger(t)
+
+	cfg, _, ctx, _ := startIntegrationCluster(t, XRDiffTest, IntegrationTestCase{
+		setupFiles: []string{
+			"testdata/diff/resources/xrd.yaml",
+			"testdata/diff/resources/composition.yaml",
+			"testdata/diff/resources/functions.yaml",
+		},
+		crossplaneManagedResources: []HierarchicalOwnershipRelation{
+			composes(
+				"testdata/diff/resources/existing-xr.yaml",
+				"testdata/diff/resources/existing-downstream-resource.yaml",
+			),
+		},
+	})
+
+	// One modified and one new XR, each diffed several times at once.
+	var inputs []*un.Unstructured
+
+	for _, f := range []string{"testdata/diff/modified-xr.yaml", "testdata/diff/new-xr-second.yaml"} {
+		res, err := readResourcesFromFile(f)
+		if err != nil {
+			t.Fatalf("cannot read %s: %v", f, err)
+		}
+
+		inputs = append(inputs, res...)
+	}
+
+	inputs = slices.Concat(inputs, inputs, inputs)
+
+	// diffAll diffs inputs with a new processor, concurrently or one at a time, and returns each
+	// input's diffs (by index) and the warnings the run raised.
+	diffAll := func(t *testing.T, concurrent bool) ([]map[string]lineDiffs, []dt.OutputWarning) {
+		t.Helper()
+
+		log := tu.TestLogger(t, false)
+
+		clients, err := dclient.New(cfg, log)
+		if err != nil {
+			t.Fatalf("client.New: %v", err)
+		}
+
+		if err := clients.Initialize(ctx, log); err != nil {
+			t.Fatalf("Clients.Initialize: %v", err)
+		}
+
+		advisories := dp.NewAdvisoryCollector(io.Discard)
+		// The processor the xr command builds, with its flags' defaults.
+		opts := []dp.ProcessorOption{
+			dp.WithLogger(log),
+			dp.WithAdvisories(advisories),
+			dp.WithColorize(false),
+			dp.WithMaxNestedDepth(10),
+			dp.WithMaxRenderIterations(20),
+			dp.WithDryRunOn(dp.DryRunOnAll),
+		}
+		if bin := localCrossplaneBinary(t); bin != "" {
+			opts = append(opts, dp.WithCrossplaneRenderBinary(bin))
+		}
+
+		proc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
+		t.Cleanup(func() {
+			if err := proc.Cleanup(context.WithoutCancel(ctx)); err != nil {
+				t.Errorf("Cleanup: %v", err)
+			}
+		})
+
+		if err := proc.Initialize(ctx); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+
+		got := make([]map[string]lineDiffs, len(inputs))
+		diff := func(i int) {
+			diffs, err := proc.DiffSingleResource(ctx, inputs[i].DeepCopy(), clients.XpClients.Composition.FindMatchingComposition)
+			if err != nil {
+				t.Errorf("DiffSingleResource(%s): %v", inputs[i].GetName(), err)
+				return
+			}
+
+			got[i] = make(map[string]lineDiffs, len(diffs))
+			for k, d := range diffs {
+				got[i][k] = lineDiffs{Type: d.DiffType, Lines: d.LineDiffs}
+			}
+		}
+
+		var wg sync.WaitGroup
+
+		for i := range inputs {
+			if !concurrent {
+				diff(i)
+				continue
+			}
+
+			wg.Go(func() { diff(i) })
+		}
+
+		wg.Wait()
+
+		return got, advisories.Advisories()
+	}
+
+	wantDiffs, wantWarnings := diffAll(t, false)
+	gotDiffs, gotWarnings := diffAll(t, true)
+
+	if diff := cmp.Diff(wantDiffs, gotDiffs); diff != "" {
+		t.Errorf("concurrent diffs differ from sequential diffs (-sequential +concurrent):\n%s", diff)
+	}
+
+	if diff := cmp.Diff(wantWarnings, gotWarnings); diff != "" {
+		t.Errorf("concurrent warnings differ from sequential warnings (-sequential +concurrent):\n%s", diff)
+	}
+}
+
+// lineDiffs is what TestDiffSingleResourceConcurrent compares of a resource's diff.
+type lineDiffs struct {
+	Type  dt.DiffType
+	Lines []diffmatchpatch.Diff
+}

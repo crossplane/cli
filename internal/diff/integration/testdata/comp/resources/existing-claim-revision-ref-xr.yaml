@@ -1,0 +1,15 @@
+# The backing XR of existing-claim-revision-ref.yaml, tracking the current revision of
+# claim-revision-templating-composition.yaml as Crossplane's composite reconciler leaves it.
+apiVersion: diff.example.org/v1alpha1
+kind: XNop
+metadata:
+  name: revision-ref-claim-xr
+spec:
+  claimRef:
+    apiVersion: diff.example.org/v1alpha1
+    kind: NopClaim
+    name: revision-ref-claim
+    namespace: test-namespace
+  coolField: revision-ref-claim-value
+  compositionRef:
+    name: xrevisionrefclaims.diff.example.org

@@ -1,0 +1,9 @@
+apiVersion: legacycluster.diff.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: test-resource
+spec:
+  compositionRef:
+    name: removal-test-composition
+  compositionUpdatePolicy: Automatic
+  coolField: "existing-value"

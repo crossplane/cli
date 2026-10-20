@@ -48,7 +48,7 @@ type updateCacheCmd struct {
 	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                                      optional:""             predictor:"yaml_file" short:"f" type:"path"`
 	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."                            name:"schemas-dir"`
 	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python). Overrides the project's schemas.languages; defaults to all."                  name:"schema-languages"`
-	K8sVersion      string   `help:"Kubernetes version to generate core API schemas for (e.g. v1.33.0). Replaces the project's k8s dependency for this run; never written to the file." name:"k8s-version"`
+	K8sVersion      string   `help:"Kubernetes version to generate core API schemas for, such as v1.33.0. Replaces the project's Kubernetes dependency for this run; never written to the file." name:"k8s-version"`
 }
 
 func (c *updateCacheCmd) Help() string {

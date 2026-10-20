@@ -7,7 +7,7 @@ re-generates language bindings (schemas) for them if needed.
 
 The command reads dependencies from a project file (`crossplane-project.yaml`)
 or from Configuration package metadata (`crossplane.yaml`).
-When `-f` is not set, it uses `crossplane-project.yaml` in the current directory if present,
+When `-f` isn't set, it uses `crossplane-project.yaml` in the current directory if present,
 otherwise `crossplane.yaml`.
 
 For package metadata, the xpkg dependencies listed in `spec.dependsOn` are cached.

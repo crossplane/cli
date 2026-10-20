@@ -22,7 +22,7 @@ Non-xpkg dependencies are always build-time dependencies.
 ## Package metadata files
 
 The command can also add a dependency to `Configuration` package metadata (`crossplane.yaml`).
-When `-f` is not set, it uses `crossplane-project.yaml` in the current directory if present,
+When `-f` isn't set, it uses `crossplane-project.yaml` in the current directory if present,
 otherwise `crossplane.yaml`.
 Package metadata only supports runtime xpkg dependencies, which are added to `spec.dependsOn`.
 Kubernetes, CRD, and `--api-only` dependencies require a project file.

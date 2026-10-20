@@ -19,10 +19,16 @@ let
   envtestAssets = import ./envtest-assets.nix { inherit pkgs; };
 in
 {
-  # Run Go unit tests.
+  # Run the full Go test suite with coverage, diff integration tests included.
+  # Unlike the sandboxed `test` check, this app runs outside the Nix sandbox so
+  # the integration tests can reach a Docker daemon for the render engine;
+  # envtest binaries and Crossplane CRDs come from the Nix store. CI runs it on
+  # GitHub runners (see the tests job in .github/workflows/ci.yml).
+  # -coverpkg=./... counts coverage of every package from every test binary,
+  # so the integration tests' coverage of internal/diff is kept.
   test = _: {
     type = "app";
-    meta.description = "Run unit tests";
+    meta.description = "Run all tests with coverage (integration tests need Docker)";
     program = pkgs.lib.getExe (
       pkgs.writeShellApplication {
         name = "crossplane-cli-test";
@@ -33,34 +39,10 @@ in
           export CROSSPLANE_CRDS_DIR="''${CROSSPLANE_CRDS_DIR:-${
             import ./crossplane-crds.nix { inherit pkgs; }
           }}"
-          go test -covermode=count ./... "$@"
-        '';
-      }
-    );
-  };
-
-  # Run the diff integration tests. Unlike the sandboxed `test` check, this app
-  # runs outside the Nix sandbox so it can reach a Docker daemon for the
-  # render engine; envtest binaries and Crossplane CRDs come from the Nix
-  # store. CI runs it on GitHub runners, where a host Docker daemon is
-  # available (see the integration-tests job in .github/workflows/ci.yml).
-  integration-test = _: {
-    type = "app";
-    meta.description = "Run the diff integration tests (needs Docker)";
-    program = pkgs.lib.getExe (
-      pkgs.writeShellApplication {
-        name = "crossplane-cli-integration-test";
-        runtimeInputs = [ pkgs.unstable.go_1_26 ];
-        inheritPath = false;
-        text = ''
-          export CGO_ENABLED=0
-          export CROSSPLANE_CRDS_DIR="''${CROSSPLANE_CRDS_DIR:-${
-            import ./crossplane-crds.nix { inherit pkgs; }
-          }}"
           ${pkgs.lib.optionalString (
             envtestAssets != null
           ) ''export KUBEBUILDER_ASSETS="''${KUBEBUILDER_ASSETS:-${envtestAssets}}"''}
-          go test ./internal/diff/integration/... "$@"
+          go test -covermode=count -coverpkg=./... -coverprofile=coverage.txt ./... "$@"
         '';
       }
     );

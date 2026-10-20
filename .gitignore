@@ -45,3 +45,4 @@ AGENTS.md
 
 # Ignore local dev environment variables
 .env
+/coverage.txt

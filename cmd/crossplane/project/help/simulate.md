@@ -63,10 +63,16 @@ The command accepts the same diff-tuning flags as `crossplane-diff`:
 - `--output-version` picks the schema version of JSON and YAML output: `v1`,
   the default, or `v2`.
 
-The command exits with status 0 when the simulation succeeds, whether or not it
-finds changes, 1 when it fails, 2 when only schema validation fails, and 130
-when interrupted. Pass `--exit-code` to exit with status 3 when it finds
-changes, for example to gate a CI pipeline.
+The command exits with one of these statuses, so a CI pipeline can gate on
+the result:
+
+- 0: the simulation succeeded and found no changes.
+- 1: the simulation failed.
+- 2: only schema validation failed.
+- 3: the simulation succeeded and found changes.
+- 130: the simulation was interrupted.
+
+When more than one applies, the lowest of 1, 2 and 3 wins.
 
 ## Examples
 
@@ -93,12 +99,6 @@ Print the result as JSON:
 
 ```shell
 crossplane project simulate -o json
-```
-
-Fail a CI job when the project would change the cluster:
-
-```shell
-crossplane project simulate --exit-code
 ```
 
 Simulate a changed Composition without a project:

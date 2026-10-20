@@ -40,6 +40,7 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	ld "github.com/crossplane/cli/v2/cmd/crossplane/common/load"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
@@ -76,7 +77,6 @@ type simulateCmd struct {
 	Timeout       time.Duration `default:"1m"                                                                                                          help:"Max time for the simulation, not counting function builds."`
 	Output        string        `default:"diff"                                                                                                        enum:"diff,json,yaml"                                                        help:"Output format. One of: diff, json, yaml."                                                 short:"o"`
 	OutputVersion string        `default:"v1"                                                                                                          enum:"v1,v2"                                                                 help:"Schema version of structured (-o json|yaml) output (v1 or v2). Has no effect on -o diff."`
-	ExitCode      bool          `help:"Exit with status 3 when the simulation finds changes."`
 
 	NoColor                  bool                `help:"Disable colorized output."`
 	Compact                  bool                `help:"Show compact diffs with minimal context."`
@@ -202,7 +202,7 @@ func (c *simulateCmd) Validate() error {
 // Run previews the inputs -f names against the cluster: a project's
 // compositions, with its functions built locally, or changed Composition or
 // composite resource files, with functions from the cluster.
-func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config) error {
+func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config, status *common.ExitStatus) error {
 	in, err := loadInputs(c.Input)
 	if err != nil {
 		return err
@@ -251,7 +251,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		// design's printing of the result under the claim's name
 		// (crossplane/cli#367) belongs in the renderer, keyed by the claim
 		// labels the engine copies onto the XR.
-		return c.simulate(ctx, logger, clients.Initialize, xrProc, func(ctx context.Context) (bool, error) {
+		return c.simulate(ctx, logger, status, clients.Initialize, xrProc, func(ctx context.Context) (bool, error) {
 			if err := checkComposites(ctx, clients.XpClients.Definition, in.resources); err != nil {
 				return false, err
 			}
@@ -261,7 +261,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	}
 
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
-	return c.simulate(ctx, logger, clients.Initialize, proc, c.diffCompositions(proc, comps, in.mode))
+	return c.simulate(ctx, logger, status, clients.Initialize, proc, c.diffCompositions(proc, comps, in.mode))
 }
 
 // restConfig returns the cluster to simulate against: the hooks' when set,
@@ -509,15 +509,17 @@ type processor interface {
 	dp.Cleaner
 }
 
-// simulate initializes the clients and processor and runs diff, mapping the
-// result to the command's exit status. ctx must not be cancelled by its owner
-// until simulate returns, so a cancellation reads as an interrupt.
-func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, initClients func(context.Context, logging.Logger) error, proc processor, diff func(context.Context) (bool, error)) (err error) {
+// simulate initializes the clients and processor and runs diff. A run that
+// finds changes and fails nothing sets status to 3 and returns nil; one that
+// fails only schema validation returns an error that exits 2. ctx must not be
+// cancelled by its owner until simulate returns, so a cancellation reads as
+// an interrupt.
+func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, status *common.ExitStatus, initClients func(context.Context, logging.Logger) error, proc processor, diff func(context.Context) (bool, error)) (err error) {
 	// An interrupted run reports the interruption, not the cancelled calls it
-	// caused.
+	// caused. main exits 130 for it.
 	defer func() {
 		if dp.Interrupted(ctx) {
-			err = exitError{error: dp.ErrInterrupted, code: dp.ExitCodeInterrupted}
+			err = dp.ErrInterrupted
 		}
 	}()
 
@@ -531,20 +533,19 @@ func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, initC
 		return errors.Wrap(err, "cannot initialize diff processor")
 	}
 
+	// Exit codes rank as crossplane-diff's do: a tool error (1) over schema
+	// validation (2) over changes found (3) over success (0).
 	hasDiffs, err := diff(ctx)
-	if err != nil {
-		// The diff has already rendered the result, including its errors. A
-		// run that failed only schema validation exits 2.
-		return exitError{error: err, code: dp.DetermineExitCode(err, false)}
+	switch code := dp.DetermineExitCode(err, hasDiffs); code {
+	case dp.ExitCodeSchemaValidation:
+		return exitError{error: err, code: code}
+	case dp.ExitCodeDiffDetected:
+		// Changes found are a result, not an error, so nothing is printed.
+		status.Code = code
+		return nil
 	}
 
-	// Changes are what a simulation is for, so they fail the run only when
-	// asked, as with git diff --exit-code.
-	if c.ExitCode && hasDiffs {
-		return exitError{error: errChangesDetected, code: dp.ExitCodeDiffDetected}
-	}
-
-	return nil
+	return err
 }
 
 // scope returns the namespace and composite resource refs DiffComposition
@@ -629,10 +630,6 @@ func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	return ok && term.IsTerminal(f.Fd())
 }
-
-// errChangesDetected is the error a run with --exit-code returns when it
-// finds changes.
-var errChangesDetected = errors.New("changes detected")
 
 // exitError is an error that sets the command's exit status. kong's
 // FatalIfErrorf honours it.

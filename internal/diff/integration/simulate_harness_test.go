@@ -52,6 +52,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/cmd/crossplane/project"
 	"github.com/crossplane/cli/v2/internal/config"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
@@ -119,13 +120,12 @@ func simulateGap(_ DiffTestType, a *simArgs) string {
 // simulateArgv translates the parsed crossplane-diff args into project
 // simulate's: the input files as -f, a single --resource as --name (and
 // --namespace), --include-manual as --include-pinned, and
-// --analyze-unchanged as its replacement --analyze-on=always. --exit-code
-// makes simulate exit 3 on changes, as crossplane-diff always does.
+// --analyze-unchanged as its replacement --analyze-on=always.
 func simulateArgv(t *testing.T, a *simArgs) []string {
 	t.Helper()
 
 	argv := []string{
-		"project", "simulate", "--exit-code",
+		"project", "simulate",
 		"--timeout=" + a.Timeout.String(),
 		"--output=" + a.Output,
 		"--output-version=" + a.OutputVersion,
@@ -188,6 +188,7 @@ func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []s
 	var cli struct {
 		Project project.Cmd `cmd:""`
 	}
+	status := &common.ExitStatus{}
 	parser, err := kong.New(&cli,
 		kong.Vars{"project_file": clixpkg.ProjectFile},
 		kong.Writers(stdout, stderr),
@@ -196,6 +197,7 @@ func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []s
 		kong.BindTo(tu.TestLogger(t, true), (*logging.Logger)(nil)),
 		kong.BindTo(terminal.NewNopSpinnerPrinter(), (*terminal.SpinnerPrinter)(nil)),
 		kong.Bind(&config.Config{}),
+		kong.Bind(status),
 	)
 	if err != nil {
 		t.Fatalf("failed to create kong parser: %v", err)
@@ -218,15 +220,12 @@ func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []s
 
 	err = kctx.Run()
 
+	// Exit as main does: an error with its ExitCoder's code or 1, otherwise
+	// with the status the command set.
 	var ec kong.ExitCoder
 	switch {
 	case err == nil:
-		return dp.ExitCodeSuccess, nil
-	case errors.As(err, &ec) && ec.ExitCode() == dp.ExitCodeDiffDetected:
-		// simulate signals changes found under --exit-code with an error
-		// carrying the exit code; crossplane-diff, whose cases these are,
-		// signals them with the exit code alone.
-		return dp.ExitCodeDiffDetected, nil
+		return status.Code, nil
 	case errors.As(err, &ec):
 		return ec.ExitCode(), err
 	default:

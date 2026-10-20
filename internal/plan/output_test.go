@@ -164,7 +164,7 @@ Applying this leaves the resource unsynced until it is replaced manually.
 
 	var buf bytes.Buffer
 	r, _ := NewRenderer(FormatPlan)
-	if err := r.Render(&buf, plans); err != nil {
+	if err := r.Render(&buf, NewResult(plans)); err != nil {
 		t.Fatalf("Render(plan): unexpected error: %v", err)
 	}
 	if diff := cmp.Diff(want, buf.String()); diff != "" {
@@ -174,7 +174,7 @@ Applying this leaves the resource unsynced until it is replaced manually.
 	// With no replace path reported anywhere, the warning says the provider
 	// did not name the forcing field rather than listing an empty set.
 	var buf2 bytes.Buffer
-	if err := r.Render(&buf2, plans[1:]); err != nil {
+	if err := r.Render(&buf2, NewResult(plans[1:])); err != nil {
 		t.Fatalf("Render(plan): unexpected error: %v", err)
 	}
 	wantWarning := "Warning: 1 resource requires replacement, but the provider did not report which field forces it.\n"

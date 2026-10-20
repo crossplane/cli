@@ -20,7 +20,9 @@ directory, or pass `-` to read from standard input:
   functions installed in the cluster.
 
 A project file must be the only `-f` input, and one run can't mix Compositions
-with composite resources.
+with composite resources. Any other resource, such as package metadata, a
+Provider or a ConfigMap, is rejected: each one must be a kind an XRD in the
+cluster defines as a composite resource or claim.
 
 The command connects to the cluster in your current Kubernetes context, or the
 one `--context` names.

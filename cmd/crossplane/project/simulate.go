@@ -44,6 +44,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/diff/client"
+	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	"github.com/crossplane/cli/v2/internal/docker"
@@ -251,6 +252,9 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		// (crossplane/cli#367) belongs in the renderer, keyed by the claim
 		// labels the engine copies onto the XR.
 		return c.simulate(ctx, logger, clients.Initialize, xrProc, func(ctx context.Context) (bool, error) {
+			if err := checkComposites(ctx, clients.XpClients.Definition, in.resources); err != nil {
+				return false, err
+			}
 			hasDiffs, err := xrProc.PerformDiff(ctx, in.resources, clients.XpClients.Composition.FindMatchingComposition)
 			return hasDiffs, errors.Wrap(err, "cannot simulate composite resources")
 		})
@@ -402,6 +406,25 @@ func loadInputs(paths []string) (*inputs, error) {
 	default:
 		return nil, errors.Errorf("-f inputs mix Compositions with other resources (%s %q); simulate Compositions and composite resources in separate runs", others[0].GetKind(), others[0].GetName())
 	}
+}
+
+// checkComposites rejects resources that no XRD in the cluster defines as a
+// composite resource or claim, such as package metadata, a Provider or a
+// ConfigMap, which the engine would otherwise fail on with no hint at what -f
+// accepts. The definition client caches the XRDs when it initializes, so the
+// check costs no extra calls.
+func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, resources []*un.Unstructured) error {
+	for _, r := range resources {
+		gvk := r.GroupVersionKind()
+		if xrd, err := defs.GetXRDForClaim(ctx, gvk); err == nil && xrd != nil {
+			continue
+		}
+		if xrd, err := defs.GetXRDForXR(ctx, gvk); err == nil && xrd != nil {
+			continue
+		}
+		return errors.Errorf("-f inputs include %s %q (%s), which no XRD in the cluster defines as a composite resource or claim; -f accepts a project file alone, Composition files, or composite resource or claim files", gvk.Kind, r.GetName(), gvk.GroupVersion())
+	}
+	return nil
 }
 
 // isProjectFile reports whether path is a project file. A directory is not.

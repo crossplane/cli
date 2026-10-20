@@ -1,3 +1,5 @@
+//go:build integration
+
 /*
 Copyright 2026 The Crossplane Authors.
 

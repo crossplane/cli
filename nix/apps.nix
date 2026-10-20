@@ -60,7 +60,7 @@ in
           ${pkgs.lib.optionalString (
             envtestAssets != null
           ) ''export KUBEBUILDER_ASSETS="''${KUBEBUILDER_ASSETS:-${envtestAssets}}"''}
-          go test ./internal/diff/integration/... "$@"
+          go test -tags integration ./internal/diff/integration/... "$@"
         '';
       }
     );

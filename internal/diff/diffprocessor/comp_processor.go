@@ -36,6 +36,7 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
+	"github.com/crossplane/cli/v2/internal/diff/compare"
 	"github.com/crossplane/cli/v2/internal/diff/ref"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
@@ -704,7 +705,7 @@ func (p *DefaultCompDiffProcessor) cliCompositionRevision(res *un.Unstructured, 
 // Both kinds of mask can hide a real difference, so neither may gate the analysis:
 //   - the user's --ignore-paths, which could cover something load-bearing for rendering (anything
 //     under spec.pipeline[].input, say);
-//   - the renderer's display-only suppressions, which cover fields Crossplane nonetheless hashes
+//   - the comparison's display-only suppressions, which cover fields Crossplane nonetheless hashes
 //     into a composition's identity, and so into whether a new CompositionRevision is created.
 //
 // `scope` is therefore computed with every mask lifted. See issue #453.
@@ -787,12 +788,9 @@ func (p *DefaultCompDiffProcessor) calculateCompositionDiff(ctx context.Context,
 
 	// Calculate the composition diff directly without dry-run apply
 	// (compositions are static YAML documents that don't need server-side processing)
-	diffOptions := renderer.DefaultDiffOptions()
-	diffOptions.UseColors = p.config.Colorize
-	diffOptions.Compact = p.config.Compact
-	diffOptions.IgnorePaths = p.config.IgnorePaths
+	diffOptions := p.config.GetCompareOptions()
 
-	compDiff, err := renderer.GenerateDiffWithOptions(ctx, originalCompUnstructured, newCompUnstructured, p.config.Logger, diffOptions)
+	compDiff, err := compare.GenerateDiff(ctx, originalCompUnstructured, newCompUnstructured, p.config.Logger, diffOptions)
 	if err != nil {
 		return compositionComparison{}, errors.Wrap(err, "cannot calculate composition diff")
 	}
@@ -814,7 +812,7 @@ func (p *DefaultCompDiffProcessor) calculateCompositionDiff(ctx context.Context,
 	}
 
 	// Nothing to display. That is not the same as unchanged: both the user's --ignore-paths and the
-	// renderer's display-only suppressions could be hiding a real difference. Re-compare with every
+	// comparison's display-only suppressions could be hiding a real difference. Re-compare with every
 	// mask lifted (ForVerdict) to find out.
 	//
 	// The masks are display preferences; whether the composition changed is a fact about the object.
@@ -825,7 +823,7 @@ func (p *DefaultCompDiffProcessor) calculateCompositionDiff(ctx context.Context,
 	diffOptions.IgnorePaths = nil
 	diffOptions.ForVerdict = true
 
-	unmasked, err := renderer.GenerateDiffWithOptions(ctx, originalCompUnstructured, newCompUnstructured, p.config.Logger, diffOptions)
+	unmasked, err := compare.GenerateDiff(ctx, originalCompUnstructured, newCompUnstructured, p.config.Logger, diffOptions)
 	if err != nil {
 		return compositionComparison{}, errors.Wrap(err, "cannot calculate composition diff with masks lifted")
 	}
@@ -842,9 +840,9 @@ func (p *DefaultCompDiffProcessor) calculateCompositionDiff(ctx context.Context,
 	revisionNamePredictable := true
 
 	if anyChange {
-		diffOptions.IgnorePaths = []string{renderer.PathLastAppliedConfiguration}
+		diffOptions.IgnorePaths = []string{compare.PathLastAppliedConfiguration}
 
-		withoutLastApplied, err := renderer.GenerateDiffWithOptions(ctx, originalCompUnstructured, newCompUnstructured, p.config.Logger, diffOptions)
+		withoutLastApplied, err := compare.GenerateDiff(ctx, originalCompUnstructured, newCompUnstructured, p.config.Logger, diffOptions)
 		if err != nil {
 			return compositionComparison{}, errors.Wrap(err, "cannot calculate composition diff excluding last-applied-configuration")
 		}

@@ -9,6 +9,7 @@ import (
 
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
+	"github.com/crossplane/cli/v2/internal/diff/compare"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
 )
@@ -221,7 +222,7 @@ type ComponentFactories struct {
 	Defaulter func(schema k8.SchemaClient, def xp.DefinitionClient, policy DefaultingPolicy) Defaulter
 
 	// DiffCalculator creates a DiffCalculator
-	DiffCalculator func(apply k8.ApplyClient, access k8.AccessChecker, tree xp.ResourceTreeClient, resourceManager ResourceManager, logger logging.Logger, diffOptions renderer.DiffOptions, dryRunOn DryRunOn, predictor Defaulter) DiffCalculator
+	DiffCalculator func(apply k8.ApplyClient, access k8.AccessChecker, tree xp.ResourceTreeClient, resourceManager ResourceManager, logger logging.Logger, compareOptions compare.Options, dryRunOn DryRunOn, predictor Defaulter) DiffCalculator
 
 	// DiffRenderer creates a DiffRenderer
 	DiffRenderer func(logger logging.Logger, diffOptions renderer.DiffOptions) renderer.DiffRenderer
@@ -445,7 +446,7 @@ func WithDefaulterFactory(factory func(k8.SchemaClient, xp.DefinitionClient, Def
 }
 
 // WithDiffCalculatorFactory sets the DiffCalculator factory function.
-func WithDiffCalculatorFactory(factory func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, renderer.DiffOptions, DryRunOn, Defaulter) DiffCalculator) ProcessorOption {
+func WithDiffCalculatorFactory(factory func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter) DiffCalculator) ProcessorOption {
 	return func(config *ProcessorConfig) {
 		config.Factories.DiffCalculator = factory
 	}
@@ -479,6 +480,11 @@ func WithFunctionProviderFactory(factory func(xp.FunctionClient, logging.Logger)
 	}
 }
 
+// GetCompareOptions returns the compare.Options based on the ProcessorConfig.
+func (c *ProcessorConfig) GetCompareOptions() compare.Options {
+	return compare.Options{IgnorePaths: c.IgnorePaths}
+}
+
 // GetDiffOptions returns DiffOptions based on the ProcessorConfig.
 func (c *ProcessorConfig) GetDiffOptions() renderer.DiffOptions {
 	opts := renderer.DefaultDiffOptions()
@@ -486,7 +492,6 @@ func (c *ProcessorConfig) GetDiffOptions() renderer.DiffOptions {
 	opts.Compact = c.Compact
 	opts.MinimizeComposition = c.MinimizeComposition
 
-	opts.IgnorePaths = c.IgnorePaths
 	if c.OutputFormat != "" {
 		opts.Format = c.OutputFormat
 	}

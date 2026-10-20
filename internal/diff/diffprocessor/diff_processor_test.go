@@ -32,6 +32,7 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
+	"github.com/crossplane/cli/v2/internal/diff/compare"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
@@ -566,7 +567,7 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 					}
 				}),
 				// Override the diff calculator factory to return actual diffs
-				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, renderer.DiffOptions, DryRunOn, Defaulter) DiffCalculator {
+				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter) DiffCalculator {
 					return &tu.MockDiffCalculator{
 						CalculateNonRemovalDiffsFn: func(context.Context, *cmp.Unstructured, render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 							diffs := make(map[string]*dt.ResourceDiff)
@@ -1028,7 +1029,7 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 						},
 					}
 				}),
-				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, renderer.DiffOptions, DryRunOn, Defaulter) DiffCalculator {
+				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter) DiffCalculator {
 					return &tu.MockDiffCalculator{
 						CalculateNonRemovalDiffsFn: func(_ context.Context, rendered *cmp.Unstructured, _ render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 							if rendered.GetName() == tt.failRender {
@@ -3090,7 +3091,7 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 						},
 					}
 				}),
-				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, renderer.DiffOptions, DryRunOn, Defaulter) DiffCalculator {
+				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter) DiffCalculator {
 					return &tu.MockDiffCalculator{
 						CalculateNonRemovalDiffsFn: func(_ context.Context, xr *cmp.Unstructured, _ render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 							// Return a simple diff for the XR to make the test pass

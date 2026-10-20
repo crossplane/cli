@@ -17,18 +17,11 @@ limitations under the License.
 */
 
 // This file is the simulate harness: the one function every integration
-// case funnels through. It ports crossplane-diff's command layer
-// (origin/main 6a140b6: cmd/diff/main.go's CommonCmdFields and
-// engineLimitVars, cmd_utils.go's defaultProcessorOptions,
-// comp.go/xr.go's processor wiring and Run bodies) onto this repository's
-// ported engine, driving it with CLI-style arguments the way the real
-// commands' kong wiring does.
-//
-// It exists because `crossplane project simulate` does not yet cover the
-// whole surface these cases need. When it does, replace runSimulate's
-// body with a call to the real command and no case table changes: the
-// cases are CLI args plus an expected exit code and expected output, and
-// runSimulate is the only thing standing between them and execution.
+// case funnels through. The cases are crossplane-diff's (origin/main
+// 6a140b6), written as its comp and xr commands' CLI args plus an expected
+// exit code and output. runSimulate translates those args into
+// `crossplane project simulate` args and runs the real command through
+// kong against the case's envtest cluster, so no case table changes.
 //
 // # Gap and environment skips
 //
@@ -49,56 +42,45 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/alecthomas/kong"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	ld "github.com/crossplane/cli/v2/cmd/crossplane/common/load"
-	"github.com/crossplane/cli/v2/internal/diff/client"
+	"github.com/crossplane/cli/v2/cmd/crossplane/project"
+	"github.com/crossplane/cli/v2/internal/config"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/ref"
-	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/docker"
+	"github.com/crossplane/cli/v2/internal/terminal"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
-// simArgs mirrors the crossplane-diff flags the integration cases pass:
-// the CommonCmdFields subset the runner threads, plus each command's
-// positional files. Defaults match crossplane-diff's, including the
-// engineLimitVars defaults main.go feeds kong.
+// simArgs mirrors the crossplane-diff flags the integration cases pass,
+// plus each command's positional files, so runSimulate can translate
+// them into project simulate's flags.
 type simArgs struct {
-	Timeout             time.Duration `default:"1m"                                                                                         help:"How long to run before timing out."`
-	Namespace           string        `help:"Namespace of the composite resources."`
-	Output              string        `default:"diff"                                                                                       enum:"diff,json,yaml"                         help:"Output format (diff, json, or yaml)."                            name:"output"         short:"o"`
-	OutputVersion       string        `default:"v1"                                                                                         enum:"v1,v2"                                  help:"Schema version of structured (-o json|yaml) output (v1 or v2)."  name:"output-version"`
-	NoColor             bool          `help:"Disable colorized output."                                                                     name:"no-color"`
-	MaxNestedDepth      int           `default:"${max_nested_depth}"                                                                        help:"Maximum depth for nested XR recursion." name:"max-nested-depth"`
-	MaxIterations       int           `default:"${max_iterations}"                                                                          help:"Maximum render iterations."             name:"max-iterations"`
-	IgnorePaths         []string      `help:"Paths to ignore in diffs."                                                                     name:"ignore-paths"`
-	FunctionCredentials string        `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."    name:"function-credentials"                   placeholder:"PATH"`
-	EventualState       bool          `help:"Show eventual state after all reconciliation cycles complete."                                 name:"eventual-state"`
-	DryRunOn            string        `default:"all"                                                                                        enum:"existing,all"                           help:"Which resources to verify against the apiserver with a dry run." name:"dry-run-on"`
-	Resource            []string      `help:"Composite resources to scope to."                                                              sep:","`
-	IncludeManual       bool          `help:"Include composites with a manual update policy."                                               name:"include-manual"`
-	AnalyzeUnchanged    bool          `help:"Analyze compositions identical to their in-cluster version (deprecated; --analyze-on=always)." name:"analyze-unchanged"`
-	AnalyzeOn           string        `help:"Smallest composition change that triggers per-composite impact analysis."                      name:"analyze-on"`
-	Files               []string      `arg:""                                                                                               help:"Input files."                           optional:""`
-
-	// functionSecrets holds the Secrets --function-credentials loaded at
-	// parse time, the way crossplane-diff's kong MapperValue and
-	// simulate's own flag do: a bad path fails before any build or
-	// cluster connection.
-	functionSecrets []corev1.Secret
+	Timeout                time.Duration `default:"1m"                                                         help:"How long to run before timing out."`
+	CrossplaneRenderBinary string        `help:"Local crossplane binary to render with."                       name:"crossplane-render-binary"`
+	Namespace              string        `help:"Namespace of the composite resources."`
+	Output                 string        `default:"diff"                                                       enum:"diff,json,yaml"                     help:"Output format (diff, json, or yaml)."                            name:"output"         short:"o"`
+	OutputVersion          string        `default:"v1"                                                         enum:"v1,v2"                              help:"Schema version of structured (-o json|yaml) output (v1 or v2)."  name:"output-version"`
+	NoColor                bool          `help:"Disable colorized output."                                     name:"no-color"`
+	IgnorePaths            []string      `help:"Paths to ignore in diffs."                                     name:"ignore-paths"`
+	FunctionCredentials    string        `help:"Secret credentials to pass to Functions."                      name:"function-credentials"               placeholder:"PATH"`
+	EventualState          bool          `help:"Show eventual state after all reconciliation cycles complete." name:"eventual-state"`
+	DryRunOn               string        `default:"all"                                                        enum:"existing,all"                       help:"Which resources to verify against the apiserver with a dry run." name:"dry-run-on"`
+	Resource               []string      `help:"Composite resources to scope to."                              sep:","`
+	IncludeManual          bool          `help:"Include composites with a manual update policy."               name:"include-manual"`
+	AnalyzeUnchanged       bool          `help:"Analyze compositions identical to their in-cluster version."   name:"analyze-unchanged"`
+	AnalyzeOn              string        `help:"Smallest composition change that triggers impact analysis."    name:"analyze-on"`
+	Files                  []string      `arg:""                                                               help:"Input files."                       optional:""`
 }
 
 // parseSimulateArgs parses one case's CLI-style args. A parse failure is
@@ -107,7 +89,7 @@ func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simA
 	t.Helper()
 
 	var a simArgs
-	parser, err := kong.New(&a, engineLimitVars(), kong.Name(string(testType)))
+	parser, err := kong.New(&a, kong.Name(string(testType)))
 	if err != nil {
 		t.Fatalf("failed to create kong parser: %v", err)
 	}
@@ -116,64 +98,13 @@ func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simA
 		t.Fatalf("failed to parse args %v: %v", args, err)
 	}
 
-	if a.FunctionCredentials != "" {
-		secrets, err := loadFunctionSecrets(a.FunctionCredentials)
-		if err != nil {
-			t.Fatalf("failed to load --function-credentials %q: %v", a.FunctionCredentials, err)
-		}
-		if len(secrets) == 0 {
-			t.Fatalf("no Secret resources found in %q: file must contain v1/Secret resources", a.FunctionCredentials)
-		}
-		a.functionSecrets = secrets
-	}
-
 	return &a
-}
-
-// loadFunctionSecrets mirrors simulate's loadFunctionCredentials: the v1
-// Secrets in a YAML file or directory, other resources skipped.
-func loadFunctionSecrets(path string) ([]corev1.Secret, error) {
-	loader, err := ld.NewLoader(path)
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot create loader for path %q", path)
-	}
-	resources, err := loader.Load()
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot load resources from %q", path)
-	}
-
-	secrets := make([]corev1.Secret, 0, len(resources))
-	for _, res := range resources {
-		if res.GetKind() != "Secret" || res.GetAPIVersion() != "v1" {
-			continue
-		}
-		secret := corev1.Secret{}
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(res.UnstructuredContent(), &secret); err != nil {
-			return nil, errors.Wrapf(err, "cannot convert Secret %q to corev1.Secret", res.GetName())
-		}
-		secrets = append(secrets, secret)
-	}
-	return secrets, nil
-}
-
-// engineLimitVars ports crossplane-diff main.go's kong.Vars of the same
-// name: the engine's defaults for --max-nested-depth and
-// --max-iterations, so the flags' defaults follow the engine rather than
-// a number duplicated here.
-func engineLimitVars() kong.Option {
-	return kong.Vars{
-		"max_nested_depth": strconv.Itoa(dp.DefaultMaxNestedDepth),
-		"max_iterations":   strconv.Itoa(dp.DefaultMaxRenderIterations),
-	}
 }
 
 // simulateGap returns the reason the parsed args cannot run against the
 // current simulate surface, or "" when they can. The runner calls it
 // before starting envtest, so a skipped case costs nothing, and
 // runSimulate never executes args it could not express.
-//
-// Keep this in sync with cmd/crossplane/project/simulate.go's flags: a
-// flag that lands there moves out of here, and its cases start running.
 func simulateGap(_ DiffTestType, a *simArgs) string {
 	// simulate scopes to one composite resource with --name (with
 	// --namespace for a namespaced one); it cannot express the repeated
@@ -185,222 +116,122 @@ func simulateGap(_ DiffTestType, a *simArgs) string {
 	return ""
 }
 
-// runSimulate runs one case's args against the diff engine wired the way
-// crossplane-diff's comp and xr commands wire it, and returns the exit
-// code the command would exit with, the error it would fail with, and
-// everything it wrote. Fresh clients per call, the way a second CLI
-// invocation would see cold caches; the determinism cases rely on it.
+// simulateArgv translates the parsed crossplane-diff args into project
+// simulate's: the input files as -f, a single --resource as --name (and
+// --namespace), --include-manual as --include-pinned, and
+// --analyze-unchanged as its replacement --analyze-on=always. --exit-code
+// makes simulate exit 3 on changes, as crossplane-diff always does.
+func simulateArgv(t *testing.T, a *simArgs) []string {
+	t.Helper()
+
+	argv := []string{
+		"project", "simulate", "--exit-code",
+		"--timeout=" + a.Timeout.String(),
+		"--output=" + a.Output,
+		"--output-version=" + a.OutputVersion,
+		"--dry-run-on=" + a.DryRunOn,
+	}
+	for _, f := range a.Files {
+		argv = append(argv, "-f", f)
+	}
+
+	ns := a.Namespace
+	if len(a.Resource) == 1 {
+		r, err := ref.Parse(a.Resource[0])
+		if err != nil {
+			t.Fatalf("cannot parse --resource %q: %v", a.Resource[0], err)
+		}
+		ns = r.Namespace
+		argv = append(argv, "--name="+r.Name)
+	}
+	if ns != "" {
+		argv = append(argv, "--namespace="+ns)
+	}
+
+	if a.NoColor {
+		argv = append(argv, "--no-color")
+	}
+	for _, p := range a.IgnorePaths {
+		argv = append(argv, "--ignore-paths="+p)
+	}
+	if a.FunctionCredentials != "" {
+		argv = append(argv, "--function-credentials="+a.FunctionCredentials)
+	}
+	if a.EventualState {
+		argv = append(argv, "--eventual-state")
+	}
+	if a.IncludeManual {
+		argv = append(argv, "--include-pinned")
+	}
+
+	switch {
+	case a.AnalyzeOn != "":
+		argv = append(argv, "--analyze-on="+a.AnalyzeOn)
+	case a.AnalyzeUnchanged:
+		argv = append(argv, "--analyze-on=always")
+	}
+
+	return argv
+}
+
+// runSimulate runs one case's args through the real `crossplane project
+// simulate` command against cfg, and returns the exit code the command
+// would exit with, the error it would fail with, and everything it wrote.
+// Each call parses a fresh command, so a second run starts with cold
+// client caches just as a second CLI invocation would; the determinism
+// cases rely on it.
 func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []string, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
 	a := parseSimulateArgs(t, testType, args)
 
-	// Bind an advisory collector the way main() does, so advisories land
-	// on stderr AND in structured output.
-	logger := tu.TestLogger(t, true)
-	advisories := dp.NewAdvisoryCollector(stderr)
-
-	exitCode := dp.ExitCodeSuccess
-
-	run := func() (int, error) {
-		clients, err := client.New(cfg, logger)
-		if err != nil {
-			return dp.ExitCodeToolError, errors.Wrap(err, "cannot create clients")
-		}
-
-		opts := processorOptions(a, stdout, stderr, logger, advisories)
-		xrProc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
-
-		loader, err := ld.NewCompositeLoader(a.Files)
-		if err != nil {
-			return dp.ExitCodeToolError, errors.Wrap(err, "cannot create resource loader")
-		}
-
-		ctx, cancel, err := initializeClients(context.Background(), a.Timeout, clients, logger)
-		if err != nil {
-			return dp.ExitCodeToolError, err
-		}
-		defer cancel()
-
-		// An interrupted run reports the interruption, not the cancelled
-		// calls it caused. Registered after cancel, so it runs before it:
-		// the run's own cancel must not read as an interrupt.
-		err = func() (err error) {
-			defer func() {
-				if dp.Interrupted(ctx) {
-					exitCode, err = dp.ExitCodeInterrupted, dp.ErrInterrupted
-				}
-			}()
-
-			// Covers paths that return before rendering; Cleanup is
-			// idempotent.
-			defer dp.CleanupDetached(ctx, procFor(testType, xrProc, clients, opts), logger)
-
-			switch testType {
-			case XRDiffTest:
-				resources, err := loader.Load()
-				if err != nil {
-					return errors.Wrap(err, "cannot load resources")
-				}
-
-				if err := xrProc.Initialize(ctx); err != nil {
-					return errors.Wrap(err, "cannot initialize diff processor")
-				}
-
-				hasDiffs, err := xrProc.PerformDiff(ctx, resources, clients.XpClients.Composition.FindMatchingComposition)
-				exitCode = dp.DetermineExitCode(err, hasDiffs)
-				if err != nil {
-					return errors.Wrap(err, "unable to process one or more resources")
-				}
-
-				return nil
-
-			case CompositionDiffTest:
-				proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
-
-				if err := proc.Initialize(ctx); err != nil {
-					return errors.Wrap(err, "cannot initialize composition diff processor")
-				}
-
-				compositions, err := loader.Load()
-				if err != nil {
-					return errors.Wrap(err, "cannot load compositions")
-				}
-
-				// A single --resource scopes to one composite resource, as
-				// simulate's --name does; the repeated and comma-separated
-				// forms never reach here (simulateGap skips them first).
-				refs, err := ref.ParseAll(a.Resource)
-				if err != nil {
-					return err
-				}
-
-				hasDiffs, err := proc.DiffComposition(ctx, compositions, a.Namespace, refs)
-				exitCode = dp.DetermineExitCode(err, hasDiffs)
-				if err != nil {
-					return errors.Wrap(err, "unable to process composition diff")
-				}
-
-				return nil
-			}
-
-			t.Fatalf("unknown test type %q", testType)
-			return nil
-		}()
-
-		return exitCode, err
+	var cli struct {
+		Project project.Cmd `cmd:""`
 	}
-
-	return run()
-}
-
-// procFor builds the composition processor for a comp run, for
-// CleanupDetached: the comp command cleans up the composition processor,
-// which wraps the XR processor the render engine runs on.
-func procFor(testType DiffTestType, xrProc dp.DiffProcessor, clients *client.Clients, opts []dp.ProcessorOption) dp.Cleaner {
-	if testType != CompositionDiffTest {
-		return xrProc
-	}
-	return dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
-}
-
-// initializeClients ports crossplane-diff's initializeAppContext over the
-// ported client bundle: the run context bounded by the timeout, with the
-// clients initialized on it.
-func initializeClients(sigCtx context.Context, timeout time.Duration, clients *client.Clients, log logging.Logger) (context.Context, context.CancelFunc, error) {
-	ctx, cancel := context.WithTimeout(sigCtx, timeout)
-	if err := clients.Initialize(ctx, log); err != nil {
-		cancel()
-		return nil, nil, errors.Wrap(err, "cannot initialize client")
-	}
-
-	return ctx, cancel, nil
-}
-
-// processorOptions returns the options both processors get, replicating
-// crossplane-diff's defaultProcessorOptions (cmd/diff/cmd_utils.go) — the
-// single source of truth for behavior defaults in the command layer —
-// plus the wiring its comp and xr commands add around the logger, the
-// advisory channel, stdout and stderr.
-func processorOptions(a *simArgs, stdout, stderr io.Writer, logger logging.Logger, advisories *dp.AdvisoryCollector) []dp.ProcessorOption {
-	// IgnorePaths carries only what the user asked to mask. The paths that
-	// are always filtered (kubectl's last-applied-configuration) are
-	// stripped unconditionally by the renderer instead — see
-	// renderer.alwaysIgnoredPaths. Prepending them here would make "the
-	// user passed --ignore-paths" indistinguishable from "we always ignore
-	// something", which comp-diff relies on to tell an edited composition
-	// from a merely re-applied one.
-	opts := make([]dp.ProcessorOption, 0, 15)
-	opts = append(opts,
-		dp.WithLogger(logger),
-		dp.WithAdvisories(advisories),
-		dp.WithColorize(!a.NoColor),
-		dp.WithMaxNestedDepth(a.maxNestedDepth()),
-		dp.WithMaxRenderIterations(a.maxIterations()),
-		dp.WithEventualState(a.EventualState),
-		dp.WithIgnorePaths(a.IgnorePaths),
-		dp.WithDryRunOn(dp.DryRunOn(a.DryRunOn)),
-		dp.WithIncludeManual(a.IncludeManual),
-		dp.WithMinimizeComposition(false),
-		dp.WithAnalyzeOn(a.analyzeOn()),
-		dp.WithStdout(stdout),
-		dp.WithStderr(stderr),
+	parser, err := kong.New(&cli,
+		kong.Vars{"project_file": clixpkg.ProjectFile},
+		kong.Writers(stdout, stderr),
+		kong.Exit(func(int) { t.Fatal("kong tried to exit the test binary") }),
+		kong.BindTo(context.Background(), (*context.Context)(nil)),
+		kong.BindTo(tu.TestLogger(t, true), (*logging.Logger)(nil)),
+		kong.BindTo(terminal.NewNopSpinnerPrinter(), (*terminal.SpinnerPrinter)(nil)),
+		kong.Bind(&config.Config{}),
 	)
+	if err != nil {
+		t.Fatalf("failed to create kong parser: %v", err)
+	}
 
-	var outputFormat renderer.OutputFormat
+	argv := simulateArgv(t, a)
+	kctx, err := parser.Parse(argv)
+	if err != nil {
+		t.Fatalf("failed to parse project simulate args %v: %v", argv, err)
+	}
 
-	switch renderer.OutputFormat(a.Output) {
-	case renderer.OutputFormatJSON:
-		outputFormat = renderer.OutputFormatJSON
-	case renderer.OutputFormatYAML:
-		outputFormat = renderer.OutputFormatYAML
-	case renderer.OutputFormatDiff:
-		outputFormat = renderer.OutputFormatDiff
+	// Inject the case's cluster in place of the kubeconfig, and render the
+	// way crossplane-diff's tests did: with the local crossplane binary
+	// when there is one, and colorized unless --no-color.
+	cli.Project.Simulate.Hooks = &project.SimulateHooks{
+		RESTConfig:   cfg,
+		RenderBinary: a.CrossplaneRenderBinary,
+		Terminal:     true,
+	}
+
+	err = kctx.Run()
+
+	var ec kong.ExitCoder
+	switch {
+	case err == nil:
+		return dp.ExitCodeSuccess, nil
+	case errors.As(err, &ec) && ec.ExitCode() == dp.ExitCodeDiffDetected:
+		// simulate signals changes found under --exit-code with an error
+		// carrying the exit code; crossplane-diff, whose cases these are,
+		// signals them with the exit code alone.
+		return dp.ExitCodeDiffDetected, nil
+	case errors.As(err, &ec):
+		return ec.ExitCode(), err
 	default:
-		// Empty string or unrecognized values fall back to the human-readable diff.
-		outputFormat = renderer.OutputFormatDiff
+		return dp.ExitCodeToolError, err
 	}
-
-	opts = append(opts, dp.WithOutputFormat(outputFormat), dp.WithOutputVersion(renderer.OutputVersion(a.OutputVersion)))
-
-	// Function credentials load at parse time in crossplane-diff (a kong
-	// MapperValue), as parseSimulateArgs does here; the processor gets
-	// them only when the flag loaded some.
-	if len(a.functionSecrets) > 0 {
-		opts = append(opts, dp.WithFunctionCredentials(a.functionSecrets))
-	}
-
-	return opts
-}
-
-// analyzeOn ports crossplane-diff comp.go's analyzeOn(): the
-// --analyze-on value, or --analyze-unchanged's equivalent "always", or
-// the engine default with neither.
-func (a *simArgs) analyzeOn() dp.AnalyzeOn {
-	if a.AnalyzeOn != "" {
-		return dp.AnalyzeOn(a.AnalyzeOn)
-	}
-	if a.AnalyzeUnchanged {
-		return dp.AnalyzeOnAlways
-	}
-	return dp.AnalyzeOnAnyChange
-}
-
-// maxNestedDepth and maxIterations resolve the kong-var defaults, which
-// kong leaves as "${max_nested_depth}" text when the vars are not fed to
-// the parser — engineLimitVars feeds them, so these only guard that.
-func (a *simArgs) maxNestedDepth() int {
-	if strings.HasPrefix(strconv.Itoa(a.MaxNestedDepth), "$") || a.MaxNestedDepth == 0 {
-		return dp.DefaultMaxNestedDepth
-	}
-	return a.MaxNestedDepth
-}
-
-func (a *simArgs) maxIterations() int {
-	if a.MaxIterations == 0 {
-		return dp.DefaultMaxRenderIterations
-	}
-	return a.MaxIterations
 }
 
 // dockerAvailable reports whether the local Docker daemon answers, which
@@ -411,12 +242,6 @@ var dockerAvailable = sync.OnceValue(func() bool {
 	defer cancel()
 	return docker.Check(ctx) == nil
 })
-
-// ExitCode carries the exit code a run determined, matching
-// crossplane-diff's cmd/diff type the case tables were written against.
-type ExitCode struct {
-	Code int
-}
 
 // envtestBinariesAvailable reports whether the envtest control plane's
 // binaries are reachable: KUBEBUILDER_ASSETS points at them, or the

@@ -551,7 +551,7 @@ func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, f
 		dp.WithMinimizeComposition(c.MinimizeComposition),
 		dp.WithAnalyzeOn(dp.AnalyzeOn(c.AnalyzeOn)),
 		dp.WithDryRunOn(dp.DryRunOn(c.DryRunOn)),
-		dp.WithIgnorePaths(append([]string{lastAppliedPath}, c.IgnorePaths...)),
+		dp.WithIgnorePaths(c.IgnorePaths),
 		dp.WithOutputFormat(renderer.OutputFormat(c.Output)),
 		dp.WithOutputVersion(renderer.OutputVersion(c.OutputVersion)),
 		dp.WithIncludeManual(c.IncludePinned),
@@ -606,9 +606,6 @@ func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	return ok && term.IsTerminal(f.Fd())
 }
-
-// lastAppliedPath is always ignored in diffs, as in crossplane-diff.
-const lastAppliedPath = "metadata.annotations[kubectl.kubernetes.io/last-applied-configuration]"
 
 // errChangesDetected is the error a run with --exit-code returns when it
 // finds changes.

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
@@ -101,6 +102,18 @@ func (c cursor) index(i int) cursor {
 // applier-owned fields do.
 func (c cursor) removable(owned *fieldpath.Set) bool {
 	return owned == nil || ownedLeaf(owned, c.fp)
+}
+
+// FieldChanges returns the changes that turn actual into planned, with paths
+// rooted at the top level (e.g. metadata.labels.team). A nil planned yields
+// actual-only changes, as for a delete; a nil actual yields planned-only
+// changes, as for a create.
+func FieldChanges(actual, planned map[string]any) []FieldChange {
+	out := diffMaps(cursor{}, actual, planned, nil)
+	for i := range out {
+		out[i].Path = strings.TrimPrefix(out[i].Path, ".")
+	}
+	return out
 }
 
 // createChanges flattens a desired map into planned-only field changes, so a

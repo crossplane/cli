@@ -172,7 +172,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		plans = append(plans, planner.Plan(ctx, desired))
 	}
 
-	if err := renderer.Render(k.Stdout, plans); err != nil {
+	if err := renderer.Render(k.Stdout, plan.NewResult(plans)); err != nil {
 		return err
 	}
 	return exitStatus(plans)

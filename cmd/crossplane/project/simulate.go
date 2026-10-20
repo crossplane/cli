@@ -59,9 +59,9 @@ var simulateHelp string
 // simulateCmd previews how a project's compositions would change the
 // composite resources in a cluster.
 type simulateCmd struct {
-	ProjectFile    string `default:"${project_file}"   help:"Path to project definition."                 short:"f"`
-	MaxConcurrency uint   `default:"8"                 help:"Max concurrent function builds."`
-	CacheDir       string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents." name:"cache-dir"`
+	Input          []string `default:"${project_file}"   help:"Path to the project file to simulate."       placeholder:"PATH" sep:"none" short:"f"`
+	MaxConcurrency uint     `default:"8"                 help:"Max concurrent function builds."`
+	CacheDir       string   `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents." name:"cache-dir"`
 
 	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                       predictor:"context"                                                          short:"c"`
 	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                               predictor:"namespace"                                                        short:"n"`
@@ -159,6 +159,12 @@ func (c *simulateCmd) Help() string {
 // during parsing, so an unsupported render backend fails before any build or
 // cluster connection.
 func (c *simulateCmd) Validate() error {
+	// ponytail: -f takes one project file for now; Composition and XR
+	// files are the next input modes (crossplane/cli#367).
+	if len(c.Input) != 1 {
+		return errors.Errorf("-f takes exactly one project file, got %d inputs", len(c.Input))
+	}
+
 	if c.MaxIterations < 1 {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
 	}
@@ -189,7 +195,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		return err
 	}
 
-	projFilePath, err := filepath.Abs(c.ProjectFile)
+	projFilePath, err := filepath.Abs(c.Input[0])
 	if err != nil {
 		return err
 	}
@@ -198,7 +204,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 
 	proj, err := projectfile.Parse(projFS, projFileName)
 	if err != nil {
-		return errors.Wrapf(err, "failed to parse project file %q", c.ProjectFile)
+		return errors.Wrapf(err, "failed to parse project file %q", c.Input[0])
 	}
 
 	comps, err := project.LoadCompositions(proj, projFS)

@@ -45,3 +45,5 @@ AGENTS.md
 
 # Ignore local dev environment variables
 .env
+/coverage-integration.txt
+/coverage-merged.txt

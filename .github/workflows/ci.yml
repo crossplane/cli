@@ -133,6 +133,13 @@ jobs:
       - name: Run Integration Tests
         run: nix run .#integration-test --option warn-dirty false
 
+      - name: Publish Integration Test Coverage
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          flags: integration
+          file: coverage-integration.txt
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   # Build all artifacts
   build-artifacts:
     permissions:

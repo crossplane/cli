@@ -60,7 +60,10 @@ in
           ${pkgs.lib.optionalString (
             envtestAssets != null
           ) ''export KUBEBUILDER_ASSETS="''${KUBEBUILDER_ASSETS:-${envtestAssets}}"''}
-          go test -tags integration ./internal/diff/integration/... "$@"
+          # -coverpkg credits the tests' coverage to the packages they exercise;
+          # without it the profile only covers the test package itself.
+          go test -tags integration -covermode=count -coverpkg=./... \
+            -coverprofile=coverage-integration.txt ./internal/diff/integration/... "$@"
         '';
       }
     );

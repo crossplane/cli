@@ -69,7 +69,8 @@ type simulateCmd struct {
 	IncludePinned bool          `help:"Also simulate composite resources with a Manual composition update policy, which don't adopt the new revision."`
 	MaxIterations int           `default:"20"                                                                                                          help:"Max render iterations per composite resource to resolve requirements."`
 	Timeout       time.Duration `default:"1m"                                                                                                          help:"Max time for the simulation, not counting function builds."`
-	Output        string        `default:"diff"                                                                                                        enum:"diff,json,yaml"                                                        help:"Output format. One of: diff, json, yaml." short:"o"`
+	Output        string        `default:"diff"                                                                                                        enum:"diff,json,yaml"                                                        help:"Output format. One of: diff, json, yaml."                                                 short:"o"`
+	OutputVersion string        `default:"v1"                                                                                                          enum:"v1,v2"                                                                 help:"Schema version of structured (-o json|yaml) output (v1 or v2). Has no effect on -o diff."`
 	ExitCode      bool          `help:"Exit with status 3 when the simulation finds changes."`
 
 	NoColor                  bool                `help:"Disable colorized output."`
@@ -299,6 +300,7 @@ func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, f
 		dp.WithDryRunOn(dp.DryRunOn(c.DryRunOn)),
 		dp.WithIgnorePaths(append([]string{lastAppliedPath}, c.IgnorePaths...)),
 		dp.WithOutputFormat(renderer.OutputFormat(c.Output)),
+		dp.WithOutputVersion(renderer.OutputVersion(c.OutputVersion)),
 		dp.WithIncludeManual(c.IncludePinned),
 		dp.WithMaxRenderIterations(c.MaxIterations),
 		dp.WithFunctionProviderFactory(dp.NewProjectFunctionProviderFactory(fns)),

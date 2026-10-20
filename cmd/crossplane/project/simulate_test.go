@@ -85,6 +85,7 @@ func TestSimulateFlags(t *testing.T) {
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        time.Minute,
 				Output:         "diff",
+				OutputVersion:  "v1",
 				MaxNestedDepth: 10,
 				DryRunOn:       "all",
 			}},
@@ -94,7 +95,7 @@ func TestSimulateFlags(t *testing.T) {
 			args: []string{
 				"-f", "p.yaml", "-c", "staging", "-n", "team-a", "--name", "db",
 				"--include-pinned", "--max-iterations", "3", "--timeout", "2m",
-				"--max-concurrency", "2", "-o", "json", "--crossplane-version", "v2.3.4", "--exit-code",
+				"--max-concurrency", "2", "-o", "json", "--output-version", "v2", "--crossplane-version", "v2.3.4", "--exit-code",
 				"--as", "jane", "--as-group", "admins",
 			},
 			want: want{cmd: &simulateCmd{
@@ -107,6 +108,7 @@ func TestSimulateFlags(t *testing.T) {
 				Timeout:           2 * time.Minute,
 				MaxConcurrency:    2,
 				Output:            "json",
+				OutputVersion:     "v2",
 				ExitCode:          true,
 				CrossplaneVersion: "v2.3.4",
 				MaxNestedDepth:    10,
@@ -126,6 +128,7 @@ func TestSimulateFlags(t *testing.T) {
 				MaxIterations:            dp.DefaultMaxRenderIterations,
 				Timeout:                  time.Minute,
 				Output:                   "diff",
+				OutputVersion:            "v1",
 				NoColor:                  true,
 				Compact:                  true,
 				MaxNestedDepth:           3,
@@ -147,6 +150,7 @@ func TestSimulateFlags(t *testing.T) {
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        time.Minute,
 				Output:         "diff",
+				OutputVersion:  "v1",
 				MaxNestedDepth: 10,
 				DryRunOn:       "all",
 				FunctionCredentials: FunctionCredentials{Path: creds, Secrets: []corev1.Secret{{
@@ -173,6 +177,11 @@ func TestSimulateFlags(t *testing.T) {
 		"UnknownAnalyzeOn": {
 			reason: "Unknown --analyze-on values should be rejected.",
 			args:   []string{"--analyze-on", "never"},
+			want:   want{err: true},
+		},
+		"UnknownOutputVersion": {
+			reason: "Structured output schema versions other than v1 and v2 should be rejected.",
+			args:   []string{"--output-version", "v3"},
 			want:   want{err: true},
 		},
 		"UnknownOutput": {
@@ -204,6 +213,7 @@ func TestSimulateFlags(t *testing.T) {
 				MaxIterations:   dp.DefaultMaxRenderIterations,
 				Timeout:         time.Minute,
 				Output:          "diff",
+				OutputVersion:   "v1",
 				MaxNestedDepth:  10,
 				DryRunOn:        "all",
 				CrossplaneImage: "example.com/crossplane:stable",
@@ -281,6 +291,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: stderr}}
 	c := &simulateCmd{
 		Output:            "yaml",
+		OutputVersion:     "v2",
 		IncludePinned:     true,
 		MaxIterations:     7,
 		CrossplaneVersion: "v2.3.4",
@@ -304,6 +315,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 
 	type got struct {
 		OutputFormat        renderer.OutputFormat
+		OutputVersion       renderer.OutputVersion
 		IncludeManual       bool
 		MaxRenderIterations int
 		CrossplaneVersion   string
@@ -326,6 +338,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	}
 	want := got{
 		OutputFormat:        renderer.OutputFormatYAML,
+		OutputVersion:       renderer.OutputVersionV2,
 		IncludeManual:       true,
 		MaxRenderIterations: 7,
 		CrossplaneVersion:   "v2.3.4",
@@ -348,6 +361,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	}
 	g := got{
 		OutputFormat:        cfg.OutputFormat,
+		OutputVersion:       cfg.OutputVersion,
 		IncludeManual:       cfg.IncludeManual,
 		MaxRenderIterations: cfg.MaxRenderIterations,
 		CrossplaneVersion:   cfg.CrossplaneVersion,

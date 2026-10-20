@@ -1202,10 +1202,10 @@ func TestDefaultDiffProcessor_PerformDiff_LateWarningsReachStructuredOutput(t *t
 	}
 }
 
-// TestDefaultDiffProcessor_PerformDiff_StderrErrorOutput verifies that when
-// resource processing fails, detailed errors are written to stderr for human visibility.
-// This tests the WithStderr option and the stderr error output path.
-func TestDefaultDiffProcessor_PerformDiff_StderrErrorOutput(t *testing.T) {
+// TestDefaultDiffProcessor_PerformDiff_ReturnsErrorNotStderr verifies that when
+// resource processing fails, the returned error names the resource and carries
+// the detail, and nothing is written to stderr: the command prints the error once.
+func TestDefaultDiffProcessor_PerformDiff_ReturnsErrorNotStderr(t *testing.T) {
 	ctx := t.Context()
 
 	// Create test resource
@@ -1263,17 +1263,14 @@ func TestDefaultDiffProcessor_PerformDiff_StderrErrorOutput(t *testing.T) {
 		t.Fatal("PerformDiff() expected error but got none")
 	}
 
-	// Verify stderr contains the error output
-	stderrOutput := stderrBuf.String()
-
-	// The error should be formatted using FormatError() which produces:
-	// "ERROR: {ResourceID}: {Message}"
-	if !strings.Contains(stderrOutput, "ERROR: XR1/my-xr-1:") {
-		t.Errorf("Expected stderr to contain 'ERROR: XR1/my-xr-1:', got: %q", stderrOutput)
+	for _, want := range []string{"unable to process resource XR1/my-xr-1", "composition not found"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Expected the returned error to contain %q, got: %v", want, err)
+		}
 	}
 
-	if !strings.Contains(stderrOutput, "composition not found") {
-		t.Errorf("Expected stderr to contain 'composition not found' error detail, got: %q", stderrOutput)
+	if stderrBuf.Len() != 0 {
+		t.Errorf("Expected nothing on stderr, got: %q", stderrBuf.String())
 	}
 }
 

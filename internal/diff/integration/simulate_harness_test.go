@@ -176,7 +176,8 @@ func simulateArgv(t *testing.T, a *simArgs) []string {
 
 // runSimulate runs one case's args through the real `crossplane project
 // simulate` command against cfg, and returns the exit code the command
-// would exit with, the error it would fail with, and everything it wrote.
+// would exit with, the error it would fail with, and everything it wrote,
+// including the error as main prints it.
 // Each call parses a fresh command, so a second run starts with cold
 // client caches just as a second CLI invocation would; the determinism
 // cases rely on it.
@@ -190,6 +191,7 @@ func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []s
 	}
 	status := &common.ExitStatus{}
 	parser, err := kong.New(&cli,
+		kong.Name("crossplane"),
 		kong.Vars{"project_file": clixpkg.ProjectFile},
 		kong.Writers(stdout, stderr),
 		kong.Exit(func(int) { t.Fatal("kong tried to exit the test binary") }),
@@ -219,9 +221,13 @@ func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []s
 	}
 
 	err = kctx.Run()
+	// Exit as main does: print an error the way FatalIfErrorf does, the only
+	// place errors are printed, and exit with its ExitCoder's code or 1;
+	// otherwise exit with the status the command set.
+	if err != nil {
+		parser.Errorf("%s", err)
+	}
 
-	// Exit as main does: an error with its ExitCoder's code or 1, otherwise
-	// with the status the command set.
 	var ec kong.ExitCoder
 	switch {
 	case err == nil:

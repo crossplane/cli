@@ -347,19 +347,16 @@ func TestDefaultDiffRenderer_RenderDiffs(t *testing.T) {
 	}
 }
 
+// TestDefaultDiffRenderer_RenderDiffs_WithErrors pins that the renderer does not print errors: the
+// processor returns them to the command, which prints them once.
 func TestDefaultDiffRenderer_RenderDiffs_WithErrors(t *testing.T) {
 	tests := map[string]struct {
-		errs     []dt.OutputError
-		expected []string
+		errs []dt.OutputError
 	}{
 		"ErrorsWithResourceID": {
 			errs: []dt.OutputError{
 				{ResourceID: "Resource/my-resource", Message: "failed to render"},
 				{ResourceID: "OtherResource/other", Message: "connection refused"},
-			},
-			expected: []string{
-				"ERROR: Resource/my-resource: failed to render",
-				"ERROR: OtherResource/other: connection refused",
 			},
 		},
 		"ErrorsWithEmptyResourceID": {
@@ -367,14 +364,9 @@ func TestDefaultDiffRenderer_RenderDiffs_WithErrors(t *testing.T) {
 				{ResourceID: "", Message: "cluster connection timeout"},
 				{ResourceID: "Resource/has-id", Message: "specific error"},
 			},
-			expected: []string{
-				"ERROR: <global>: cluster connection timeout",
-				"ERROR: Resource/has-id: specific error",
-			},
 		},
 		"NoErrors": {
-			errs:     []dt.OutputError{},
-			expected: []string{},
+			errs: []dt.OutputError{},
 		},
 	}
 
@@ -382,11 +374,10 @@ func TestDefaultDiffRenderer_RenderDiffs_WithErrors(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			logger := tu.TestLogger(t, false)
 
-			// Errors go to stderr now, so capture stderr
-			var stderr bytes.Buffer
+			var stdout, stderr bytes.Buffer
 
 			opts := DefaultDiffOptions()
-			opts.Stdout = &bytes.Buffer{} // discard stdout
+			opts.Stdout = &stdout
 			opts.Stderr = &stderr
 
 			renderer := NewDiffRenderer(logger, opts)
@@ -396,11 +387,11 @@ func TestDefaultDiffRenderer_RenderDiffs_WithErrors(t *testing.T) {
 				t.Fatalf("RenderDiffs() failed with error: %v", err)
 			}
 
-			output := stderr.String()
-
-			for _, expectedMsg := range tt.expected {
-				if !strings.Contains(output, expectedMsg) {
-					t.Errorf("Expected stderr to contain %q but it didn't\nStderr: %s", expectedMsg, output)
+			for _, e := range tt.errs {
+				for name, out := range map[string]string{"stdout": stdout.String(), "stderr": stderr.String()} {
+					if strings.Contains(out, e.Message) {
+						t.Errorf("Expected %s not to contain error %q, got: %q", name, e.Message, out)
+					}
 				}
 			}
 		})

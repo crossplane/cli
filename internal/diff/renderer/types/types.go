@@ -408,22 +408,11 @@ type FieldValidationError struct {
 	Value any `json:"value,omitempty"`
 }
 
-// FormatError returns a human-readable error string.
-// If ResourceID is empty, it uses "<global>" to indicate a system-level error
-// not tied to any specific resource (e.g., cluster connection issues).
-func (e OutputError) FormatError() string {
-	resourceID := e.ResourceID
-	if resourceID == "" {
-		resourceID = "<global>"
-	}
-
-	return fmt.Sprintf("ERROR: %s: %s", resourceID, e.Message)
-}
-
 // OutputWarning is a non-fatal advisory: something the user should know that does not invalidate the
-// diff or stop the run. Warnings follow the same dual-emission contract as OutputError — written to
-// stderr for humans and included in structured output for machines — but deliberately do NOT affect
-// the exit code. A consumer gating on failure checks errors[], not warnings[].
+// diff or stop the run. Warnings follow a dual-emission contract — written to stderr for humans when
+// raised and included in structured output for machines — but deliberately do NOT affect the exit
+// code. An OutputError instead goes into structured output and is returned to the command, which
+// prints it once. A consumer gating on failure checks errors[], not warnings[].
 //
 // Context carries the details of the occurrence from the raising call site (e.g. which composition,
 // which secrets are missing). It is a map rather than being flattened into Message so machine
@@ -445,8 +434,8 @@ type Advisories interface {
 	Raise(w OutputWarning)
 }
 
-// FormatWarning renders the warning as a single human-readable stderr line, mirroring
-// OutputError.FormatError. Context pairs are appended in sorted key order so output is stable
+// FormatWarning renders the warning as a single human-readable stderr line. Context pairs are
+// appended in sorted key order so output is stable
 // across runs (Go map iteration is not).
 func (w OutputWarning) FormatWarning() string {
 	if len(w.Context) == 0 {

@@ -47,8 +47,8 @@ const (
 	ExitCodeInterrupted = 130
 )
 
-// ErrInterrupted is the error an interrupted run reports, in errors[] and on stderr, in place of the
-// cancelled calls the interruption caused.
+// ErrInterrupted is the error an interrupted run reports, in errors[] and as the command's error, in
+// place of the cancelled calls the interruption caused.
 var ErrInterrupted = errors.New("run interrupted by signal; results are incomplete")
 
 // Interrupted reports whether the run context ctx was cancelled by a signal. The run context is a
@@ -198,7 +198,7 @@ func NewOutputError(resourceID string, err error) dt.OutputError {
 //
 // The inner SchemaValidationError deliberately gets an empty ResourceID: its
 // Error() would otherwise prefix "schema validation error for <id>: ", which
-// both duplicates the id that OutputError.FormatError already prints and
+// both duplicates the id OutputError.ResourceID already carries and
 // mislabels an admission rejection as a schema problem.
 func NewAdmissionRejectionError(rejectedDesc string, obj *un.Unstructured, err error) *SchemaValidationError {
 	msg := fmt.Sprintf("the cluster rejected %s: %s", rejectedDesc, err.Error())

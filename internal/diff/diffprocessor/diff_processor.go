@@ -317,8 +317,8 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 		res := toRender[i].Resource
 		resourceID := fmt.Sprintf("%s/%s", groups[i].XR.Kind, groups[i].XR.Name)
 
-		// Debug, not Info: this failure is already surfaced as an OutputError, which goes to
-		// stderr and into structured output. Raising it as a warning too would double-report it.
+		// Debug, not Info: this failure is already surfaced in the returned error and as an
+		// OutputError in the output. Raising it as a warning too would double-report it.
 		p.config.Logger.Debug("Failed to process resource",
 			"resource", resourceID,
 			"namespace", res.GetNamespace(),
@@ -338,8 +338,8 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 	}
 
 	// Third: renders that reach one resource in ways no single diff can represent. Collected before the
-	// output is rendered so they reach errors[] and stderr like any other error; the output is still
-	// rendered, so structured output stays valid.
+	// output is rendered so they reach errors[] and the returned error like any other error; the output
+	// is still rendered, so structured output stays valid.
 	for _, err := range validator.RenderOverlaps(groups) {
 		errs = append(errs, err)
 		outputErrors = append(outputErrors, dt.OutputError{Message: err.Error()})
@@ -352,8 +352,10 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 
 	outputErrors = withInterruption(ctx, outputErrors)
 
-	// Always render (even if only errors exist) to ensure valid structured output
-	// The renderer will include errors in the structured output and write them to stderr
+	// Always render (even if only errors exist) to ensure valid structured output. The renderer
+	// includes errors in structured output but does not print them: they are returned, below, to the
+	// command, which prints them once. Every outputErrors entry has its counterpart in errs, except
+	// the interruption's, which the command reports itself.
 	err := p.diffRenderer.RenderDiffs(groups, outputErrors, p.config.Advisories.Advisories())
 	if err != nil {
 		p.config.Logger.Debug("Failed to render diffs", "error", err)

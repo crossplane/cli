@@ -209,6 +209,8 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 		// is still rendered.
 		verifyOutput func(t *testing.T, output string)
 		wantErr      bool
+		// wantErrContains, when set, must appear in the returned error.
+		wantErrContains string
 	}{
 		// In v2 a composition that fails to process carries its error as a structured errors[] entry,
 		// and the top-level errors[] lists it too.
@@ -227,6 +229,8 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 					WithCompositionErrorContaining("cannot convert composition"))
 			},
 			wantErr: true,
+			// The renderer prints no errors, so the returned one must name the composition.
+			wantErrContains: "failed to process all compositions: unable to process resource Composition/test-composition: cannot convert composition",
 		},
 		"SuccessfulDiff": {
 			namespace:    "default",
@@ -488,6 +492,10 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Errorf("DiffComposition() error = %v, wantErr %v", err, tt.wantErr)
 				return
+			}
+
+			if tt.wantErrContains != "" && !strings.Contains(err.Error(), tt.wantErrContains) {
+				t.Errorf("DiffComposition() error = %v, want it to contain %q", err, tt.wantErrContains)
 			}
 
 			if tt.verifyOutput != nil {
@@ -1587,10 +1595,10 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRCompositionLookup(t *te
 	}
 }
 
-// TestDefaultCompDiffProcessor_DiffComposition_StderrErrorOutput verifies that when
-// XR processing fails, detailed errors are written to stderr for human visibility.
-// This tests the WithStderr option and the stderr error output path.
-func TestDefaultCompDiffProcessor_DiffComposition_StderrErrorOutput(t *testing.T) {
+// TestDefaultCompDiffProcessor_DiffComposition_ReturnsErrorNotStderr verifies that
+// when XR processing fails, the returned error names the failing XR and carries the
+// detail, and nothing is written to stderr: the command prints the error once.
+func TestDefaultCompDiffProcessor_DiffComposition_ReturnsErrorNotStderr(t *testing.T) {
 	ctx := t.Context()
 
 	// Create test composition
@@ -1658,21 +1666,17 @@ func TestDefaultCompDiffProcessor_DiffComposition_StderrErrorOutput(t *testing.T
 
 	// Should return error because one XR failed
 	if err == nil {
-		t.Error("Expected error due to XR processing failure, got nil")
+		t.Fatal("Expected error due to XR processing failure, got nil")
 	}
 
-	// Verify stderr contains the error details
-	stderrOutput := stderrBuf.String()
-	if !strings.Contains(stderrOutput, "ERROR:") {
-		t.Errorf("Expected stderr to contain 'ERROR:', got: %q", stderrOutput)
+	for _, want := range []string{"impact analysis failed for 1 XR(s)", "unable to process resource XResource/fail-xr", "render pipeline failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Expected the returned error to contain %q, got: %v", want, err)
+		}
 	}
 
-	if !strings.Contains(stderrOutput, "XResource/fail-xr") {
-		t.Errorf("Expected stderr to contain resource ID 'XResource/fail-xr', got: %q", stderrOutput)
-	}
-
-	if !strings.Contains(stderrOutput, "render pipeline failed") {
-		t.Errorf("Expected stderr to contain error message 'render pipeline failed', got: %q", stderrOutput)
+	if stderrBuf.Len() != 0 {
+		t.Errorf("Expected nothing on stderr, got: %q", stderrBuf.String())
 	}
 }
 

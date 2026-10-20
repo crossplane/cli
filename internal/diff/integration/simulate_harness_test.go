@@ -174,14 +174,7 @@ func engineLimitVars() kong.Option {
 //
 // Keep this in sync with cmd/crossplane/project/simulate.go's flags: a
 // flag that lands there moves out of here, and its cases start running.
-func simulateGap(testType DiffTestType, a *simArgs) string {
-	// The project simulate command previews compositions from a project;
-	// XR files as input (crossplane-diff's xr command, issue #367's
-	// `project simulate -f xr.yaml`) is not implemented yet.
-	if testType == XRDiffTest {
-		return "gap: simulate has no xr mode (XR files as input) yet"
-	}
-
+func simulateGap(_ DiffTestType, a *simArgs) string {
 	// simulate scopes to one composite resource with --name (with
 	// --namespace for a namespaced one); it cannot express the repeated
 	// or comma-separated --resource scoping these cases need.

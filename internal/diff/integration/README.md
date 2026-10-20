@@ -7,26 +7,25 @@ the harness wiring differs.
 
 ## How a case runs
 
-Every case is CLI-style arguments plus an expected exit code and expected
-output, funneled through one function: `runSimulate` in
-`simulate_harness_test.go`. The harness wires this repository's ported
-diff engine (`internal/diff/diffprocessor`) the way crossplane-diff's
-`comp` and `xr` commands wire it — same options, same load path, same
-`DetermineExitCode` — and reports the exit code the command would exit
-with.
-
-When `crossplane project simulate` grows the surface these cases need,
-`runSimulate`'s body is replaced with a call to the real command. No case
-table changes.
+Every case is crossplane-diff CLI-style arguments plus an expected exit
+code and expected output, funneled through one function: `runSimulate` in
+`simulate_harness_test.go`. It translates the arguments into
+`crossplane project simulate` arguments (input files as `-f`, a single
+`--resource` as `--name`, `--include-manual` as `--include-pinned`,
+`--analyze-unchanged` as `--analyze-on=always`, plus `--exit-code`) and
+runs the real command through kong. `project.SimulateHooks` points the
+command at the case's envtest cluster in place of a kubeconfig, so the
+cases run in parallel. Composition cases run simulate's Composition-file
+mode, XR cases its composite resource mode.
 
 ## Skips
 
 Cases are never dropped. A case the current simulate surface cannot
 express is ported in full and skipped with a greppable reason:
 
-- `gap:<feature>` — the simulate command lacks the feature. Enable the
-  cases by implementing the feature and removing the gap from
-  `simulateGap`.
+- `gap:<feature>` — the simulate command lacks the feature, or behaves
+  differently from crossplane-diff. Enable the cases by implementing the
+  feature and removing the gap from `simulateGap`.
 - `env:<reason>` — the environment lacks something. The render engine
   runs functions as Docker containers (no Docker daemon skips the case),
   and envtest needs `KUBEBUILDER_ASSETS` pointing at kube-apiserver/etcd

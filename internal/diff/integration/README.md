@@ -41,14 +41,15 @@ in the source tables, with the upstream reason carried verbatim).
 # Full suite (Docker + envtest assets required):
 CROSSPLANE_CRDS_DIR=<crossplane v2.4.1 cluster/crds> \
 KUBEBUILDER_ASSETS=$(setup-envtest use -p path) \
-go test -v ./internal/diff/integration/
+go test -tags integration -v ./internal/diff/integration/
 
 # One case:
-go test -run 'TestCompDiffIntegration/CompositionChangeImpactsXRs' ./internal/diff/integration/
+go test -tags integration -run 'TestCompDiffIntegration/CompositionChangeImpactsXRs' ./internal/diff/integration/
 ```
 
-`CROSSPLANE_CRDS_DIR` is set for you by `nix run .#test` (the pinned
-Crossplane v2.4.1 CRDs from `nix/crossplane-crds.nix`). Without any of
-these environment pieces the suite skips with an `env:` reason rather
-than fail, so `go test ./...` stays green everywhere the unit suite
-runs.
+The suite is behind the `integration` build tag, so `go test ./...` and
+`nix run .#test` do not compile it. `nix run .#integration-test` runs it
+with `CROSSPLANE_CRDS_DIR` (the pinned Crossplane v2.4.1 CRDs from
+`nix/crossplane-crds.nix`) and `KUBEBUILDER_ASSETS` set for you. Without
+Docker or envtest assets, the cases skip with an `env:` reason rather
+than fail.

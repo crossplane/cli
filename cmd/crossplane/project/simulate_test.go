@@ -80,7 +80,7 @@ func TestSimulateFlags(t *testing.T) {
 		"Defaults": {
 			reason: "With no flags the defaults should apply.",
 			want: want{cmd: &simulateCmd{
-				ProjectFile:    "crossplane-project.yaml",
+				Input:          []string{"crossplane-project.yaml"},
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        time.Minute,
@@ -99,7 +99,7 @@ func TestSimulateFlags(t *testing.T) {
 				"--as", "jane", "--as-group", "admins",
 			},
 			want: want{cmd: &simulateCmd{
-				ProjectFile:       "p.yaml",
+				Input:             []string{"p.yaml"},
 				Context:           "staging",
 				Namespace:         "team-a",
 				Name:              "db",
@@ -123,7 +123,7 @@ func TestSimulateFlags(t *testing.T) {
 				"--minimize-composition", "--analyze-on", "always", "--dry-run-on", "existing",
 			},
 			want: want{cmd: &simulateCmd{
-				ProjectFile:              "crossplane-project.yaml",
+				Input:                    []string{"crossplane-project.yaml"},
 				MaxConcurrency:           8,
 				MaxIterations:            dp.DefaultMaxRenderIterations,
 				Timeout:                  time.Minute,
@@ -145,7 +145,7 @@ func TestSimulateFlags(t *testing.T) {
 			reason: "--function-credentials should load the Secrets in the file at parse time.",
 			args:   []string{"--function-credentials", creds},
 			want: want{cmd: &simulateCmd{
-				ProjectFile:    "crossplane-project.yaml",
+				Input:          []string{"crossplane-project.yaml"},
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        time.Minute,
@@ -179,6 +179,11 @@ func TestSimulateFlags(t *testing.T) {
 			args:   []string{"--analyze-on", "never"},
 			want:   want{err: true},
 		},
+		"TwoInputs": {
+			reason: "-f should take exactly one project file.",
+			args:   []string{"-f", "a.yaml", "-f", "b.yaml"},
+			want:   want{err: true},
+		},
 		"UnknownOutputVersion": {
 			reason: "Structured output schema versions other than v1 and v2 should be rejected.",
 			args:   []string{"--output-version", "v3"},
@@ -208,7 +213,7 @@ func TestSimulateFlags(t *testing.T) {
 			reason: "A render image with no comparable version should be accepted.",
 			args:   []string{"--crossplane-image", "example.com/crossplane:stable"},
 			want: want{cmd: &simulateCmd{
-				ProjectFile:     "crossplane-project.yaml",
+				Input:           []string{"crossplane-project.yaml"},
 				MaxConcurrency:  8,
 				MaxIterations:   dp.DefaultMaxRenderIterations,
 				Timeout:         time.Minute,

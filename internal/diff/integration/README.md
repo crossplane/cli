@@ -53,3 +53,17 @@ with `CROSSPLANE_CRDS_DIR` (the pinned Crossplane v2.4.1 CRDs from
 `nix/crossplane-crds.nix`) and `KUBEBUILDER_ASSETS` set for you. Without
 Docker or envtest assets, the cases skip with an `env:` reason rather
 than fail.
+
+## Coverage
+
+`nix run .#integration-test` writes `coverage-integration.txt`
+(`-covermode=count -coverpkg=./...`); CI uploads it to Codecov with flag
+`integration`, next to the unit tests' `unittests` flag, and Codecov
+merges them per commit. To merge locally with the unit profile from the
+sandboxed check:
+
+```sh
+nix build .#checks.$(nix eval --raw --impure --expr builtins.currentSystem).test
+{ cat result/coverage.txt; tail -n +2 coverage-integration.txt; } > coverage-merged.txt
+go tool cover -func=coverage-merged.txt | tail -1
+```

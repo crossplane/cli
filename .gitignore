@@ -48,3 +48,4 @@ AGENTS.md
 
 # Integration test coverage (nix run .#integration-test)
 /coverage-integration.txt
+/coverage-merged.txt

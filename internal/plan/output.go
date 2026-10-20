@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -50,9 +51,13 @@ type Summary struct {
 	NoOp        int `json:"noop"`
 	Approximate int `json:"approximate"`
 	Errored     int `json:"errored"`
+	// Deferred counts composites pinned to a composition revision, which
+	// applying changes nothing for. It does not count as a change.
+	Deferred int `json:"deferred,omitempty"`
 }
 
-// Summarize counts the given plans.
+// Summarize counts the given plans. It cannot know about deferred
+// composites; whoever builds Composites sets Summary.Deferred.
 func Summarize(plans []*ResourcePlan) Summary {
 	var s Summary
 	for _, p := range plans {
@@ -82,16 +87,97 @@ func Summarize(plans []*ResourcePlan) Summary {
 // ResultFormatVersion versions the serialized result schema so automation
 // consuming it can detect incompatible changes. The schema is alpha; the
 // version moves to 1.0 when it stabilizes.
-const ResultFormatVersion = "0.1"
+const ResultFormatVersion = "0.2"
+
+// CompositeStatus is the outcome of simulating one composite resource.
+type CompositeStatus string
+
+// The statuses a composite can have.
+const (
+	CompositeChanged   CompositeStatus = "changed"
+	CompositeUnchanged CompositeStatus = "unchanged"
+	CompositeError     CompositeStatus = "error"
+	// CompositeDeferred means the composite is pinned to a composition
+	// revision, so applying changes nothing for it yet.
+	CompositeDeferred CompositeStatus = "deferred"
+	// CompositeSkipped means the composite was not simulated, for Reason.
+	CompositeSkipped CompositeStatus = "skipped"
+)
+
+// CompositeResult is the per-composite outcome of a project simulate run.
+type CompositeResult struct {
+	Ref    ResourceRef     `json:"ref"`
+	Status CompositeStatus `json:"status"`
+	// Reason is the machine-readable reason a composite was deferred or
+	// skipped.
+	Reason string `json:"reason,omitempty"`
+	// Detail elaborates on Reason, e.g. the pinned revision.
+	Detail string `json:"detail,omitempty"`
+}
+
+// Error is an error from a simulate run, optionally anchored to a resource.
+type Error struct {
+	Resource           *ResourceRef        `json:"resource,omitempty"`
+	Message            string              `json:"message"`
+	ValidationFailures []ValidationFailure `json:"validationFailures,omitempty"`
+}
+
+// ValidationFailure is one resource that failed schema validation.
+type ValidationFailure struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name,omitempty"`
+	Namespace  string `json:"namespace,omitempty"`
+	// Status is the validator's outcome, e.g. invalid or missingSchema.
+	Status string                 `json:"status"`
+	Errors []FieldValidationError `json:"errors,omitempty"`
+}
+
+// FieldValidationError is one field-level validation error.
+type FieldValidationError struct {
+	// Type categorizes the error: schema, cel, unknownField or defaulting.
+	Type    string `json:"type"`
+	Field   string `json:"field,omitempty"`
+	Message string `json:"message"`
+	Value   any    `json:"value,omitempty"`
+}
+
+// Warning is an advisory that did not fail the run.
+type Warning struct {
+	Message string            `json:"message"`
+	Context map[string]string `json:"context,omitempty"`
+}
+
+// CompositionResult is the outcome for one changed Composition.
+type CompositionResult struct {
+	Ref            ResourceRef     `json:"ref"`
+	RevisionImpact *RevisionImpact `json:"revisionImpact,omitempty"`
+}
+
+// RevisionImpact says whether applying a Composition creates a revision, and
+// which composites would adopt it.
+type RevisionImpact struct {
+	// ChangeScope is none, metadata or spec.
+	ChangeScope         string `json:"changeScope"`
+	CreatesRevision     bool   `json:"createsRevision"`
+	RepointedComposites int    `json:"repointedComposites"`
+	// PredictedRevision is the revision's predicted name; empty when it
+	// cannot be predicted.
+	PredictedRevision string `json:"predictedRevision,omitempty"`
+}
 
 // Result is the serialized form of a simulate run, for -o json|yaml. Errored
 // is the primary gate for wrapping automation: when true, at least one
 // resource could not be planned and the run's answer is incomplete.
 type Result struct {
-	FormatVersion string          `json:"formatVersion"`
-	Errored       bool            `json:"errored"`
-	Summary       Summary         `json:"summary"`
-	Plans         []*ResourcePlan `json:"plans"`
+	FormatVersion string              `json:"formatVersion"`
+	Errored       bool                `json:"errored"`
+	Summary       Summary             `json:"summary"`
+	Composites    []CompositeResult   `json:"composites,omitempty"`
+	Compositions  []CompositionResult `json:"compositions,omitempty"`
+	Plans         []*ResourcePlan     `json:"plans"`
+	Errors        []Error             `json:"errors,omitempty"`
+	Warnings      []Warning           `json:"warnings,omitempty"`
 }
 
 // NewResult assembles the serializable Result for the given plans.
@@ -105,9 +191,9 @@ func NewResult(plans []*ResourcePlan) Result {
 	}
 }
 
-// A Renderer writes resource plans to w in one output format.
+// A Renderer writes a simulate result to w in one output format.
 type Renderer interface {
-	Render(w io.Writer, plans []*ResourcePlan) error
+	Render(w io.Writer, r Result) error
 }
 
 // NewRenderer returns the Renderer for the given output format.
@@ -126,9 +212,9 @@ func NewRenderer(format string) (Renderer, error) {
 // jsonRenderer renders the serialized Result as indented JSON.
 type jsonRenderer struct{}
 
-// Render writes the plans to w as JSON.
-func (jsonRenderer) Render(w io.Writer, plans []*ResourcePlan) error {
-	out, err := json.MarshalIndent(NewResult(plans), "", "  ")
+// Render writes the result to w as JSON.
+func (jsonRenderer) Render(w io.Writer, r Result) error {
+	out, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return errors.Wrap(err, "cannot marshal plans to JSON")
 	}
@@ -139,9 +225,9 @@ func (jsonRenderer) Render(w io.Writer, plans []*ResourcePlan) error {
 // yamlRenderer renders the serialized Result as YAML.
 type yamlRenderer struct{}
 
-// Render writes the plans to w as YAML.
-func (yamlRenderer) Render(w io.Writer, plans []*ResourcePlan) error {
-	out, err := yaml.Marshal(NewResult(plans))
+// Render writes the result to w as YAML.
+func (yamlRenderer) Render(w io.Writer, r Result) error {
+	out, err := yaml.Marshal(r)
 	if err != nil {
 		return errors.Wrap(err, "cannot marshal plans to YAML")
 	}
@@ -150,26 +236,131 @@ func (yamlRenderer) Render(w io.Writer, plans []*ResourcePlan) error {
 }
 
 // planRenderer renders the human-readable plan format: a header and change
-// tree per resource, then a summary with warnings.
+// tree per resource, then a summary with warnings. When any plan or
+// composite names a composite, plans print grouped under an
+// "XR: Kind.group name" header. Run-level Errors and Warnings are not
+// printed; the command reports them on stderr.
 type planRenderer struct{}
 
-// Render writes the plans to w in the human-readable plan format.
-func (planRenderer) Render(w io.Writer, plans []*ResourcePlan) error {
-	for _, p := range plans {
-		_, _ = fmt.Fprintln(w, header(p))
-		if p.Error != "" {
-			_, _ = fmt.Fprintf(w, "    cannot plan: %s\n", p.Error)
-			_, _ = fmt.Fprintln(w)
+// Render writes the result to w in the human-readable plan format.
+func (planRenderer) Render(w io.Writer, r Result) error {
+	if len(r.Composites) == 0 && !slices.ContainsFunc(r.Plans, func(p *ResourcePlan) bool { return p.Composite != nil }) {
+		for _, p := range r.Plans {
+			renderPlan(w, p)
+		}
+	} else {
+		renderGrouped(w, r)
+	}
+	renderSummary(w, r.Plans, r.Summary)
+	return nil
+}
+
+// renderGrouped prints ungrouped plans first, then each composite (in
+// Composites order, then any only plans name) with its plans indented
+// beneath. A composite's own plan is omitted when it is a no-op.
+func renderGrouped(w io.Writer, r Result) {
+	var refs []ResourceRef
+	byRef := map[ResourceRef][]*ResourcePlan{}
+	status := map[ResourceRef]CompositeResult{}
+	for _, c := range r.Composites {
+		if _, ok := status[c.Ref]; !ok {
+			refs = append(refs, c.Ref)
+		}
+		status[c.Ref] = c
+	}
+	for _, p := range r.Plans {
+		if p.Composite == nil {
+			renderPlan(w, p)
 			continue
 		}
-		if p.Approximate {
-			_, _ = fmt.Fprintf(w, "    (approximate: %s)\n", p.FallbackReason)
+		ref := *p.Composite
+		if _, ok := status[ref]; !ok {
+			if _, seen := byRef[ref]; !seen {
+				refs = append(refs, ref)
+			}
 		}
-		renderChangeTree(w, p.Changes)
+		byRef[ref] = append(byRef[ref], p)
+	}
+
+	for _, ref := range refs {
+		renderComposite(w, status[ref], ref, byRef[ref])
+	}
+}
+
+// renderComposite prints one composite's header, its deferral or skip note,
+// and its plans indented beneath.
+func renderComposite(w io.Writer, c CompositeResult, ref ResourceRef, plans []*ResourcePlan) {
+	_, _ = fmt.Fprintln(w, compositeHeader(c, ref))
+	switch c.Status {
+	case CompositeDeferred:
+		pinned := "Pinned to a composition revision"
+		if c.Detail != "" {
+			pinned += " (" + c.Detail + ")"
+		}
+		_, _ = fmt.Fprintf(w, "    %s; apply changes nothing until the\n", pinned)
+		_, _ = fmt.Fprintln(w, "    revision advances. Rerun with --include-pinned to preview that moment.")
+	case CompositeSkipped:
+		if c.Detail != "" {
+			_, _ = fmt.Fprintf(w, "    %s\n", c.Detail)
+		}
+	case CompositeChanged, CompositeUnchanged, CompositeError:
+	}
+	var block strings.Builder
+	for _, p := range plans {
+		if p.Action == ActionNoOp && p.Error == "" && p.ResourceRef() == ref {
+			continue
+		}
+		renderPlan(&block, p)
+	}
+	for line := range strings.Lines(block.String()) {
+		if line != "\n" {
+			line = "  " + line
+		}
+		_, _ = fmt.Fprint(w, line)
+	}
+	if block.Len() == 0 {
 		_, _ = fmt.Fprintln(w)
 	}
-	renderSummary(w, plans)
-	return nil
+}
+
+// compositeHeader returns e.g. "XR: XNetwork.example.org prod-network".
+func compositeHeader(c CompositeResult, ref ResourceRef) string {
+	gvk := schema.FromAPIVersionAndKind(ref.APIVersion, ref.Kind)
+	name := ref.Name
+	if ref.Namespace != "" {
+		name = ref.Namespace + "/" + name
+	}
+	h := fmt.Sprintf("XR: %s.%s %s", gvk.Kind, gvk.Group, name)
+	switch c.Status {
+	case CompositeDeferred:
+		h += " (deferred)"
+	case CompositeSkipped:
+		h += " (skipped"
+		if c.Reason != "" {
+			h += ": " + c.Reason
+		}
+		h += ")"
+	case CompositeChanged, CompositeUnchanged, CompositeError:
+	}
+	return h
+}
+
+// renderPlan prints one resource's header and change tree. A delete prints
+// only its header, Terraform-style, though it carries actual-only changes.
+func renderPlan(w io.Writer, p *ResourcePlan) {
+	_, _ = fmt.Fprintln(w, header(p))
+	if p.Error != "" {
+		_, _ = fmt.Fprintf(w, "    cannot plan: %s\n", p.Error)
+		_, _ = fmt.Fprintln(w)
+		return
+	}
+	if p.Approximate {
+		_, _ = fmt.Fprintf(w, "    (approximate: %s)\n", p.FallbackReason)
+	}
+	if p.Action != ActionDelete {
+		renderChangeTree(w, p.Changes)
+	}
+	_, _ = fmt.Fprintln(w)
 }
 
 // header returns the per-resource line, e.g.
@@ -255,9 +446,7 @@ func renderChangeTree(w io.Writer, changes []FieldChange) {
 	}
 }
 
-func renderSummary(w io.Writer, plans []*ResourcePlan) {
-	s := Summarize(plans)
-
+func renderSummary(w io.Writer, plans []*ResourcePlan, s Summary) {
 	line := fmt.Sprintf("Plan: %d to add, %d to change, %d to destroy", s.Create, s.Update, s.Destroy)
 	if s.Replace > 0 {
 		verb := "requires"
@@ -267,6 +456,9 @@ func renderSummary(w io.Writer, plans []*ResourcePlan) {
 		line += fmt.Sprintf(", %d %s replacement", s.Replace, verb)
 	}
 	_, _ = fmt.Fprintln(w, line+".")
+	if s.Deferred > 0 {
+		_, _ = fmt.Fprintf(w, "%s deferred (pinned to a composition revision).\n", pluralize(s.Deferred, "composite resource", "composite resources"))
+	}
 
 	if s.Replace > 0 {
 		named := 0

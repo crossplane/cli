@@ -109,7 +109,7 @@ Warning: 1 resource could not be planned.
 	if err != nil {
 		t.Fatalf("NewRenderer(plan): unexpected error: %v", err)
 	}
-	if err := r.Render(&buf, testPlans()); err != nil {
+	if err := r.Render(&buf, NewResult(testPlans())); err != nil {
 		t.Fatalf("Render(plan): unexpected error: %v", err)
 	}
 	if diff := cmp.Diff(want, buf.String()); diff != "" {
@@ -195,7 +195,7 @@ func TestRenderJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRenderer(json): unexpected error: %v", err)
 	}
-	if err := r.Render(&buf, testPlans()); err != nil {
+	if err := r.Render(&buf, NewResult(testPlans())); err != nil {
 		t.Fatalf("Render(json): unexpected error: %v", err)
 	}
 
@@ -224,5 +224,106 @@ func TestSummarize(t *testing.T) {
 	want := Summary{Create: 1, Update: 1, Replace: 1, NoOp: 1, Approximate: 1, Errored: 1}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("Summarize(...): -want, +got:\n%s", diff)
+	}
+}
+
+func TestRenderPlanGrouped(t *testing.T) {
+	xr := ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
+	pinned := ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "staging-network"}
+	r := Result{
+		Summary: Summary{Update: 1, Destroy: 1, NoOp: 1, Deferred: 1},
+		Composites: []CompositeResult{
+			{Ref: xr, Status: CompositeChanged},
+			{Ref: pinned, Status: CompositeDeferred, Reason: "manual_policy", Detail: "compositionRevisionRef: net-6"},
+		},
+		Plans: []*ResourcePlan{
+			// The XR's own no-op plan is not printed.
+			{APIVersion: xr.APIVersion, Kind: xr.Kind, Name: xr.Name, Action: ActionNoOp, Composite: &xr},
+			{
+				APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "SecurityGroupRule", Name: "prod-network-ssh",
+				Action: ActionUpdate, Composite: &xr,
+				Changes: []FieldChange{{Path: "spec.forProvider.fromPort", Actual: &Value{Value: 22}, Planned: &Value{Value: 2222}}},
+			},
+			{
+				APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "Route", Name: "prod-network-default",
+				Action: ActionDelete, Composite: &xr,
+				Changes: FieldChanges(map[string]any{"spec": map[string]any{"region": "us-west-1"}}, nil),
+			},
+		},
+	}
+	want := `XR: XNetwork.example.org prod-network
+  [~] SecurityGroupRule.ec2.aws.upbound.io prod-network-ssh (update)
+      spec:
+        forProvider:
+          ~ fromPort: 22 -> 2222
+
+  [-] Route.ec2.aws.upbound.io prod-network-default (delete)
+
+XR: XNetwork.example.org staging-network (deferred)
+    Pinned to a composition revision (compositionRevisionRef: net-6); apply changes nothing until the
+    revision advances. Rerun with --include-pinned to preview that moment.
+
+Plan: 0 to add, 1 to change, 1 to destroy.
+1 composite resource deferred (pinned to a composition revision).
+`
+	var buf bytes.Buffer
+	r2, _ := NewRenderer(FormatPlan)
+	if err := r2.Render(&buf, r); err != nil {
+		t.Fatalf("Render(plan): unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(want, buf.String()); diff != "" {
+		t.Errorf("Render(plan): -want, +got:\n%s", diff)
+	}
+}
+
+func TestRenderJSONProjectFields(t *testing.T) {
+	xr := ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
+	in := Result{
+		FormatVersion: ResultFormatVersion,
+		Errored:       true,
+		Summary:       Summary{Destroy: 1, Deferred: 1},
+		Composites:    []CompositeResult{{Ref: xr, Status: CompositeDeferred, Reason: "manual_policy"}},
+		Compositions: []CompositionResult{{
+			Ref:            ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "net"},
+			RevisionImpact: &RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2, PredictedRevision: "net-abc1234"},
+		}},
+		Plans: []*ResourcePlan{{
+			APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: ActionDelete, Composite: &xr,
+			Changes: []FieldChange{{Path: "data.k", Actual: &Value{Value: "v"}}},
+			DryRun:  &Verification{SkipReason: "forbidden", Detail: "no create permission"},
+		}},
+		Errors: []Error{{
+			Resource: &xr, Message: "invalid",
+			ValidationFailures: []ValidationFailure{{
+				APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Status: "invalid",
+				Errors: []FieldValidationError{{Type: "schema", Field: "data", Message: "bad"}},
+			}},
+		}},
+		Warnings: []Warning{{Message: "heads up", Context: map[string]string{"k": "v"}}},
+	}
+	var buf bytes.Buffer
+	r, _ := NewRenderer(FormatJSON)
+	if err := r.Render(&buf, in); err != nil {
+		t.Fatalf("Render(json): unexpected error: %v", err)
+	}
+	got := Result{}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("Render(json): output is not valid JSON: %v", err)
+	}
+	if diff := cmp.Diff(in, got); diff != "" {
+		t.Errorf("Render(json): -want, +got:\n%s", diff)
+	}
+}
+
+func TestRenderJSONOmitsProjectFields(t *testing.T) {
+	var buf bytes.Buffer
+	r, _ := NewRenderer(FormatJSON)
+	if err := r.Render(&buf, NewResult(testPlans())); err != nil {
+		t.Fatalf("Render(json): unexpected error: %v", err)
+	}
+	for _, k := range []string{`"composites"`, `"compositions"`, `"errors"`, `"warnings"`, `"deferred"`, `"composite"`, `"dryRun"`} {
+		if bytes.Contains(buf.Bytes(), []byte(k)) {
+			t.Errorf("Render(json): resource simulate output should omit %s", k)
+		}
 	}
 }

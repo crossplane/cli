@@ -234,7 +234,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		plans = append(plans, c.simulateOne(ctx, kubeClient, rmapper, defaultNamespace, mgr, stores, crds, desired))
 	}
 
-	return renderer.Render(k.Stdout, plans)
+	return renderer.Render(k.Stdout, plan.NewResult(plans))
 }
 
 // imageConfigs returns the ImageConfigs to rewrite provider image paths with:

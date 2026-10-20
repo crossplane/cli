@@ -100,6 +100,13 @@ type ResourcePlan struct {
 	FallbackReason string `json:"fallbackReason,omitempty"`
 	// Error is set when no plan could be computed for this resource at all.
 	Error string `json:"error,omitempty"`
+	// Composite is the composite resource (XR or claim) this resource belongs
+	// to, set by project simulate. Plans with a Composite render grouped
+	// under it.
+	Composite *ResourceRef `json:"composite,omitempty"`
+	// DryRun is set when the resource's desired state could not be verified
+	// against the API server; nil means it was verified (or not applicable).
+	DryRun *Verification `json:"dryRun,omitempty"`
 
 	// Desired is the resource the plan is for. It is carried for rendering
 	// (the plan output shows the user's own manifest, annotated) and is not
@@ -107,9 +114,36 @@ type ResourcePlan struct {
 	Desired *unstructured.Unstructured `json:"-"`
 }
 
+// ResourceRef identifies a resource.
+type ResourceRef struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	Namespace  string `json:"namespace,omitempty"`
+}
+
+// Verification records a server-side dry run that did not happen.
+type Verification struct {
+	// Performed is false whenever a Verification is present; it is kept so
+	// the serialized object is self-describing.
+	Performed bool `json:"performed"`
+	// SkipReason says why the dry run was not performed.
+	SkipReason string `json:"skipReason,omitempty"`
+	// Detail is the underlying cause as reported by the cluster.
+	Detail string `json:"detail,omitempty"`
+	// StorageVersion is the CRD's storage version, set when it differs from
+	// the version the resource was requested at.
+	StorageVersion string `json:"storageVersion,omitempty"`
+}
+
 // GroupVersionKind returns the plan's resource type.
 func (p *ResourcePlan) GroupVersionKind() schema.GroupVersionKind {
 	return schema.FromAPIVersionAndKind(p.APIVersion, p.Kind)
+}
+
+// ResourceRef returns the plan's resource identity.
+func (p *ResourcePlan) ResourceRef() ResourceRef {
+	return ResourceRef{APIVersion: p.APIVersion, Kind: p.Kind, Name: p.Name, Namespace: p.Namespace}
 }
 
 // NewResourcePlan returns a ResourcePlan identifying the given desired

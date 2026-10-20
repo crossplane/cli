@@ -276,3 +276,34 @@ func TestFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestFieldChanges(t *testing.T) {
+	cases := map[string]struct {
+		actual, planned map[string]any
+		want            []FieldChange
+	}{
+		"DeleteIsActualOnly": {
+			actual: map[string]any{"metadata": map[string]any{"labels": map[string]any{"team": "a"}}, "spec": map[string]any{"size": 1}},
+			want: []FieldChange{
+				{Path: "metadata.labels.team", Actual: &Value{Value: "a"}},
+				{Path: "spec.size", Actual: &Value{Value: 1}},
+			},
+		},
+		"CreateIsPlannedOnly": {
+			planned: map[string]any{"spec": map[string]any{"size": 1}},
+			want:    []FieldChange{{Path: "spec.size", Planned: &Value{Value: 1}}},
+		},
+		"Update": {
+			actual:  map[string]any{"spec": map[string]any{"size": 1}},
+			planned: map[string]any{"spec": map[string]any{"size": 2}},
+			want:    []FieldChange{{Path: "spec.size", Actual: &Value{Value: 1}, Planned: &Value{Value: 2}}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if diff := cmp.Diff(tc.want, FieldChanges(tc.actual, tc.planned)); diff != "" {
+				t.Errorf("FieldChanges(...): -want, +got:\n%s", diff)
+			}
+		})
+	}
+}

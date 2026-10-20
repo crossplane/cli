@@ -22,6 +22,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,10 +180,19 @@ func TestSimulateFlags(t *testing.T) {
 			args:   []string{"--analyze-on", "never"},
 			want:   want{err: true},
 		},
-		"TwoInputs": {
-			reason: "-f should take exactly one project file.",
-			args:   []string{"-f", "a.yaml", "-f", "b.yaml"},
-			want:   want{err: true},
+		"RepeatedInput": {
+			reason: "-f should be repeatable, and a comma should not split a path.",
+			args:   []string{"-f", "a.yaml", "-f", "b,c.yaml"},
+			want: want{cmd: &simulateCmd{
+				Input:          []string{"a.yaml", "b,c.yaml"},
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        time.Minute,
+				Output:         "diff",
+				OutputVersion:  "v1",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+			}},
 		},
 		"UnknownOutputVersion": {
 			reason: "Structured output schema versions other than v1 and v2 should be rejected.",
@@ -314,7 +324,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	}
 
 	cfg := dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), []pkgv1.Function{}) {
+	for _, o := range c.processorOptions(k, logging.NewNopLogger(), []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn"}}}) {
 		o(&cfg)
 	}
 
@@ -390,7 +400,31 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	if diff := cmp.Diff(want, g); diff != "" {
 		t.Errorf("processorOptions(...): -want, +got:\n%s", diff)
 	}
+
+	// Without project functions every function comes from the cluster, so
+	// there is nothing to overlay.
+	cfg = dp.ProcessorConfig{}
+	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil) {
+		o(&cfg)
+	}
+	if cfg.Factories.FunctionProvider != nil {
+		t.Errorf("processorOptions(..., nil): want no function provider overlay, got one")
+	}
+
+	// The test hooks render with a local binary and colorize as for a
+	// terminal.
+	c.Hooks = &SimulateHooks{RenderBinary: "/bin/crossplane", Terminal: true}
+	c.CrossplaneVersion = ""
+	cfg = dp.ProcessorConfig{}
+	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil) {
+		o(&cfg)
+	}
+	if cfg.CrossplaneRenderBinary != "/bin/crossplane" || !cfg.Colorize {
+		t.Errorf("processorOptions(...) with hooks: want render binary %q and colorize, got %q and %t", "/bin/crossplane", cfg.CrossplaneRenderBinary, cfg.Colorize)
+	}
 }
+
+var _ dp.CompDiffProcessor = &fakeCompProc{}
 
 // fakeCompProc is a CompDiffProcessor that records its calls.
 type fakeCompProc struct {
@@ -537,7 +571,8 @@ func TestSimulateRun(t *testing.T) {
 				cancel()
 			}
 
-			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), tc.args.initClients, tc.args.proc, []*un.Unstructured{{}})
+			diff := tc.args.cmd.diffCompositions(tc.args.proc, []*un.Unstructured{{}}, compositionMode)
+			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), tc.args.initClients, tc.args.proc, diff)
 
 			if diff := cmp.Diff(tc.want.code, exitCode(err)); diff != "" {
 				t.Errorf("\n%s\nsimulate(...): -want exit code, +got:\n%s", tc.reason, diff)
@@ -556,6 +591,226 @@ func TestSimulateRun(t *testing.T) {
 			}
 			if tc.args.proc.cleanups == 0 {
 				t.Errorf("\n%s\nsimulate(...): processor was not cleaned up", tc.reason)
+			}
+		})
+	}
+}
+
+func TestLoadInputs(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	proj := write("crossplane-project.yaml", "apiVersion: dev.crossplane.io/v1alpha1\nkind: Project\nmetadata:\n  name: p\n")
+	comp := write("comp.yaml", `apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: c
+spec:
+  compositeTypeRef:
+    apiVersion: example.org/v1
+    kind: XThing
+  mode: Pipeline
+  pipeline:
+  - step: render
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+`)
+	xr := write("xr.yaml", "apiVersion: example.org/v1\nkind: XThing\nmetadata:\n  name: x\n")
+	claim := write("claim.yaml", "apiVersion: example.org/v1\nkind: Thing\nmetadata:\n  name: t\n  namespace: default\n")
+	// A GoTemplate of its own is a resource, not a pipeline input.
+	goTemplate := write("gotemplate.yaml", "apiVersion: gotemplating.fn.crossplane.io/v1beta1\nkind: GoTemplate\nsource: Inline\n")
+	comps := write("comps/a.yaml", "apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: a\n")
+	empty := write("empty.yaml", "# nothing here\n")
+	notProject := write("meta.yaml", "apiVersion: meta.pkg.crossplane.io/v1\nkind: Configuration\nmetadata:\n  name: cfg\n")
+
+	type want struct {
+		mode        inputMode
+		projectFile string
+		names       []string
+		err         string
+	}
+
+	cases := map[string]struct {
+		reason string
+		paths  []string
+		want   want
+	}{
+		"ProjectFile": {
+			reason: "A single project file should select project mode.",
+			paths:  []string{proj},
+			want:   want{mode: projectMode, projectFile: proj},
+		},
+		"Composition": {
+			reason: "A Composition should select composition mode; its pipeline inputs are part of it.",
+			paths:  []string{comp},
+			want:   want{mode: compositionMode, names: []string{"c"}},
+		},
+		"CompositionDirectory": {
+			reason: "A directory of Compositions should select composition mode.",
+			paths:  []string{filepath.Dir(comps)},
+			want:   want{mode: compositionMode, names: []string{"a"}},
+		},
+		"Compositions": {
+			reason: "Several Composition files should select composition mode.",
+			paths:  []string{comp, comps},
+			want:   want{mode: compositionMode, names: []string{"c", "a"}},
+		},
+		"XRAndClaim": {
+			reason: "Composite resources and claims should select XR mode.",
+			paths:  []string{xr, claim},
+			want:   want{mode: xrMode, names: []string{"x", "t"}},
+		},
+		"NonProjectSingleFile": {
+			reason: "A single file that isn't a project file should be loaded as resources.",
+			paths:  []string{notProject},
+			want:   want{mode: xrMode, names: []string{"cfg"}},
+		},
+		"ProjectWithResources": {
+			reason: "A project file combined with resource files should be rejected.",
+			paths:  []string{proj, xr},
+			want:   want{err: "a project file must be the only -f input"},
+		},
+		"ProjectInDirectory": {
+			reason: "A directory holding a project file should be rejected the same way.",
+			paths:  []string{dir},
+			want:   want{err: "a project file must be the only -f input"},
+		},
+		"CompositionWithXR": {
+			reason: "Compositions mixed with composite resources should be rejected.",
+			paths:  []string{comp, xr},
+			want:   want{err: `-f inputs mix Compositions with other resources (XThing "x")`},
+		},
+		"CompositionWithStandaloneGoTemplate": {
+			reason: "A resource that only looks like a pipeline input should still count as another resource.",
+			paths:  []string{comp, goTemplate, goTemplate},
+			want:   want{err: "-f inputs mix Compositions with other resources (GoTemplate"},
+		},
+		"Empty": {
+			reason: "Inputs with no resources should be rejected.",
+			paths:  []string{empty},
+			want:   want{err: "no resources found"},
+		},
+		"Missing": {
+			reason: "A missing input should be rejected.",
+			paths:  []string{filepath.Join(dir, "nope.yaml")},
+			want:   want{err: "cannot read -f input"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := loadInputs(tc.paths)
+			if tc.want.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
+					t.Fatalf("\n%s\nloadInputs(%v): want error containing %q, got %v", tc.reason, tc.paths, tc.want.err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("\n%s\nloadInputs(%v): %v", tc.reason, tc.paths, err)
+			}
+			names := []string{}
+			for _, r := range got.resources {
+				names = append(names, r.GetName())
+			}
+			if diff := cmp.Diff(tc.want, want{mode: got.mode, projectFile: got.projectFile, names: names}, cmp.AllowUnexported(want{}), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nloadInputs(%v): -want, +got:\n%s", tc.reason, tc.paths, diff)
+			}
+		})
+	}
+}
+
+func TestValidateModeFlags(t *testing.T) {
+	cases := map[string]struct {
+		reason string
+		mode   inputMode
+		args   []string
+		err    string
+	}{
+		"ProjectAcceptsAll": {
+			reason: "A project accepts every flag.",
+			mode:   projectMode,
+			args:   []string{"-n", "a", "--name", "b", "--include-pinned", "--max-concurrency", "2", "--cache-dir", "/c", "--analyze-on", "always", "--minimize-composition"},
+		},
+		"CompositionAcceptsScope": {
+			reason: "Compositions accept the flags that scope their impact.",
+			mode:   compositionMode,
+			args:   []string{"-n", "a", "--name", "b", "--include-pinned", "--analyze-on", "always", "--minimize-composition"},
+		},
+		"CompositionRejectsBuildFlags": {
+			reason: "Compositions use the cluster's functions, so the build flags don't apply.",
+			mode:   compositionMode,
+			args:   []string{"--max-concurrency", "2"},
+			err:    "--max-concurrency configures the project's function builds",
+		},
+		"XRRejectsCacheDir": {
+			reason: "Composite resources use the cluster's functions, so the build flags don't apply.",
+			mode:   xrMode,
+			args:   []string{"--cache-dir", "/c"},
+			err:    "--cache-dir configures the project's function builds",
+		},
+		"XRRejectsNamespace": {
+			reason: "Composite resource files name what to simulate, so -n doesn't apply.",
+			mode:   xrMode,
+			args:   []string{"-n", "a"},
+			err:    "--namespace selects which composite resources a Composition change reaches",
+		},
+		"XRRejectsIncludePinned": {
+			reason: "--include-pinned doesn't apply to composite resource files.",
+			mode:   xrMode,
+			args:   []string{"--include-pinned"},
+			err:    "--include-pinned selects",
+		},
+		"XRAcceptsCommon": {
+			reason: "Composite resources accept the flags shared with crossplane-diff's xr command.",
+			mode:   xrMode,
+			args:   []string{"-o", "json", "--no-color", "--ignore-paths", "a.b", "--eventual-state", "--timeout", "2m", "--dry-run-on", "existing"},
+		},
+		"DefaultsAreNotSet": {
+			reason: "Flags left at their defaults, or set from the environment, are not rejected.",
+			mode:   xrMode,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CROSSPLANE_XPKG_CACHE", "/env-cache")
+
+			var cli struct {
+				Simulate simulateCmd `cmd:""`
+			}
+			parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}))
+			if err != nil {
+				t.Fatalf("kong.New(...): %v", err)
+			}
+			k, err := parser.Parse(append([]string{"simulate"}, tc.args...))
+			if err != nil {
+				t.Fatalf("Parse(%v): %v", tc.args, err)
+			}
+
+			err = validateModeFlags(tc.mode, setFlags(k))
+			if tc.err == "" {
+				if err != nil {
+					t.Errorf("\n%s\nvalidateModeFlags(...): %v", tc.reason, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("\n%s\nvalidateModeFlags(...): want error containing %q, got %v", tc.reason, tc.err, err)
 			}
 		})
 	}

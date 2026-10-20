@@ -18,6 +18,7 @@ package project
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -30,11 +31,13 @@ import (
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
 	ld "github.com/crossplane/cli/v2/cmd/crossplane/common/load"
@@ -56,12 +59,13 @@ import (
 //go:embed help/simulate.md
 var simulateHelp string
 
-// simulateCmd previews how a project's compositions would change the
-// composite resources in a cluster.
+// simulateCmd previews how a project's compositions, or changed Composition
+// or composite resource files, would change the composite resources in a
+// cluster.
 type simulateCmd struct {
-	Input          []string `default:"${project_file}"   help:"Path to the project file to simulate."       placeholder:"PATH" sep:"none" short:"f"`
+	Input          []string `default:"${project_file}"   help:"Project file (default), or changed Composition or composite resource files. Repeatable; - reads standard input." placeholder:"PATH" sep:"none" short:"f"`
 	MaxConcurrency uint     `default:"8"                 help:"Max concurrent function builds."`
-	CacheDir       string   `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents." name:"cache-dir"`
+	CacheDir       string   `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                                                     name:"cache-dir"`
 
 	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                       predictor:"context"                                                          short:"c"`
 	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                               predictor:"namespace"                                                        short:"n"`
@@ -92,6 +96,25 @@ type simulateCmd struct {
 	CrossplaneImage   string `help:"Override the full crossplane render image reference. Minimum v2.3.4 when its tag is a semantic version." placeholder:"IMAGE"   xor:"crossplane-render-backend"`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
+
+	// Hooks is for tests; the CLI never sets it.
+	Hooks *SimulateHooks `kong:"-"`
+}
+
+// SimulateHooks replace what project simulate otherwise takes from its
+// environment, so a test can run the real command against a cluster it
+// started. Fields left zero keep the CLI's behavior.
+type SimulateHooks struct {
+	// RESTConfig replaces loading the kubeconfig.
+	RESTConfig *rest.Config
+
+	// RenderBinary renders with this local crossplane binary instead of the
+	// crossplane render image.
+	RenderBinary string
+
+	// Terminal colorizes diffs as if stdout were a terminal, unless
+	// --no-color is set.
+	Terminal bool
 }
 
 // FunctionCredentials holds Secret credentials loaded from a file path. It
@@ -159,12 +182,6 @@ func (c *simulateCmd) Help() string {
 // during parsing, so an unsupported render backend fails before any build or
 // cluster connection.
 func (c *simulateCmd) Validate() error {
-	// ponytail: -f takes one project file for now; Composition and XR
-	// files are the next input modes (crossplane/cli#367).
-	if len(c.Input) != 1 {
-		return errors.Errorf("-f takes exactly one project file, got %d inputs", len(c.Input))
-	}
-
 	if c.MaxIterations < 1 {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
 	}
@@ -181,43 +198,36 @@ func (c *simulateCmd) Validate() error {
 	return nil
 }
 
-// Run builds the project's functions and previews its compositions against
-// the cluster.
+// Run previews the inputs -f names against the cluster: a project's
+// compositions, with its functions built locally, or changed Composition or
+// composite resource files, with functions from the cluster.
 func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config) error {
+	in, err := loadInputs(c.Input)
+	if err != nil {
+		return err
+	}
+	if err := validateModeFlags(in.mode, setFlags(k)); err != nil {
+		return err
+	}
+
 	if err := docker.Check(sigCtx); err != nil {
-		return errors.Wrap(err, "cannot connect to Docker, which project simulate needs to build and run functions")
+		return errors.Wrap(err, "cannot connect to Docker, which project simulate needs to run functions")
 	}
 
 	// Load the kubeconfig before the slow function build, so a bad context
 	// fails fast.
-	restCfg, _, err := kube.RESTConfig(c.Context, c.Impersonation)
+	restCfg, err := c.restConfig()
 	if err != nil {
 		return err
 	}
 
-	projFilePath, err := filepath.Abs(c.Input[0])
-	if err != nil {
-		return err
-	}
-	projFS := afero.NewBasePathFs(afero.NewOsFs(), filepath.Dir(projFilePath))
-	projFileName := filepath.Base(projFilePath)
-
-	proj, err := projectfile.Parse(projFS, projFileName)
-	if err != nil {
-		return errors.Wrapf(err, "failed to parse project file %q", c.Input[0])
-	}
-
-	comps, err := project.LoadCompositions(proj, projFS)
-	if err != nil {
-		return errors.Wrap(err, "cannot load compositions from project")
-	}
-	if len(comps) == 0 {
-		return errors.Errorf("no Compositions found under the project's APIs path %q", proj.Spec.Paths.APIs)
-	}
-
-	fns, err := project.LoadFunctions(sigCtx, logger, sp, cliCfg, projFS, projFilePath, projFileName, c.MaxConcurrency, c.newClientAndResolver)
-	if err != nil {
-		return err
+	var fns []pkgv1.Function
+	comps := in.resources
+	if in.mode == projectMode {
+		comps, fns, err = c.buildProject(sigCtx, logger, sp, cliCfg, in.projectFile)
+		if err != nil {
+			return err
+		}
 	}
 
 	clients, err := client.New(restCfg, logger)
@@ -227,7 +237,6 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 
 	opts := c.processorOptions(k, logger, fns)
 	xrProc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
-	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
 
 	// ponytail: the timeout bounds the whole simulation because the diff
 	// engine has no per-XR deadline. Make it per composite resource once the
@@ -235,13 +244,252 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	ctx, cancel := context.WithTimeout(sigCtx, c.Timeout)
 	defer cancel()
 
-	return c.simulate(ctx, logger, clients.Initialize, proc, comps)
+	if in.mode == xrMode {
+		// Compositions and functions come from the cluster, as in
+		// crossplane-diff's xr command. A claim is simulated as its XR; the
+		// design's printing of the result under the claim's name
+		// (crossplane/cli#367) belongs in the renderer, keyed by the claim
+		// labels the engine copies onto the XR.
+		return c.simulate(ctx, logger, clients.Initialize, xrProc, func(ctx context.Context) (bool, error) {
+			hasDiffs, err := xrProc.PerformDiff(ctx, in.resources, clients.XpClients.Composition.FindMatchingComposition)
+			return hasDiffs, errors.Wrap(err, "cannot simulate composite resources")
+		})
+	}
+
+	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
+	return c.simulate(ctx, logger, clients.Initialize, proc, c.diffCompositions(proc, comps, in.mode))
 }
 
-// simulate initializes the clients and processor and previews comps, mapping
-// the result to the command's exit status. ctx must not be cancelled by its
-// owner until simulate returns, so a cancellation reads as an interrupt.
-func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, initClients func(context.Context, logging.Logger) error, proc dp.CompDiffProcessor, comps []*un.Unstructured) (err error) {
+// restConfig returns the cluster to simulate against: the hooks' when set,
+// otherwise the kubeconfig's.
+func (c *simulateCmd) restConfig() (*rest.Config, error) {
+	if c.Hooks != nil && c.Hooks.RESTConfig != nil {
+		return c.Hooks.RESTConfig, nil
+	}
+	cfg, _, err := kube.RESTConfig(c.Context, c.Impersonation)
+	return cfg, err
+}
+
+// buildProject returns the project's compositions and its locally built
+// functions.
+func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config, projectFile string) ([]*un.Unstructured, []pkgv1.Function, error) {
+	projFilePath, err := filepath.Abs(projectFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	projFS := afero.NewBasePathFs(afero.NewOsFs(), filepath.Dir(projFilePath))
+	projFileName := filepath.Base(projFilePath)
+
+	proj, err := projectfile.Parse(projFS, projFileName)
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "failed to parse project file %q", projectFile)
+	}
+
+	comps, err := project.LoadCompositions(proj, projFS)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "cannot load compositions from project")
+	}
+	if len(comps) == 0 {
+		return nil, nil, errors.Errorf("no Compositions found under the project's APIs path %q", proj.Spec.Paths.APIs)
+	}
+
+	fns, err := project.LoadFunctions(ctx, logger, sp, cliCfg, projFS, projFilePath, projFileName, c.MaxConcurrency, c.newClientAndResolver)
+	if err != nil {
+		return nil, nil, err
+	}
+	return comps, fns, nil
+}
+
+// diffCompositions returns the diff simulate runs for Compositions: their
+// impact on the composite resources in scope.
+func (c *simulateCmd) diffCompositions(proc dp.CompDiffProcessor, comps []*un.Unstructured, mode inputMode) func(context.Context) (bool, error) {
+	msg := "cannot simulate Compositions"
+	if mode == projectMode {
+		msg = "cannot simulate project"
+	}
+	return func(ctx context.Context) (bool, error) {
+		ns, refs := c.scope()
+		hasDiffs, err := proc.DiffComposition(ctx, comps, ns, refs)
+		return hasDiffs, errors.Wrap(err, msg)
+	}
+}
+
+// inputMode is what -f names, which decides where the simulation's
+// Compositions and functions come from.
+type inputMode int
+
+const (
+	// projectMode simulates a project: its Compositions, with its functions
+	// built locally and overlaid on the cluster's.
+	projectMode inputMode = iota
+	// compositionMode simulates changed Compositions against the composite
+	// resources on the cluster that use them, with the cluster's functions.
+	compositionMode
+	// xrMode simulates changed composite resources (or claims) with the
+	// cluster's Compositions and functions.
+	xrMode
+)
+
+// inputs are the loaded -f inputs.
+type inputs struct {
+	mode inputMode
+
+	// projectFile is the project file, in projectMode.
+	projectFile string
+
+	// resources are the Compositions or composite resources to simulate,
+	// in the other modes.
+	resources []*un.Unstructured
+}
+
+// loadInputs loads and classifies the -f inputs. A single project file
+// selects projectMode. Anything else is loaded as resources: Compositions
+// select compositionMode, and resources with no Composition among them
+// select xrMode. A project file among other inputs, or Compositions mixed
+// with other resources, are rejected.
+func loadInputs(paths []string) (*inputs, error) {
+	if len(paths) == 1 && paths[0] != "-" {
+		isProj, err := isProjectFile(paths[0])
+		if err != nil {
+			return nil, err
+		}
+		if isProj {
+			return &inputs{mode: projectMode, projectFile: paths[0]}, nil
+		}
+	}
+
+	loader, err := ld.NewCompositeLoader(paths)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot load -f inputs")
+	}
+	resources, err := loader.Load()
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot load -f inputs")
+	}
+	// The loader also returns each Composition's pipeline step inputs, which
+	// are part of the Composition rather than resources of their own.
+	stepInputs, err := pipelineInputs(resources)
+	if err != nil {
+		return nil, err
+	}
+
+	var comps, others []*un.Unstructured
+	for _, r := range resources {
+		gvk := r.GroupVersionKind()
+		switch {
+		case gvk.GroupVersion().String() == projectfile.APIVersion && gvk.Kind == projectfile.Kind:
+			return nil, errors.New("a project file must be the only -f input, named by its path; pass it alone, or pass Composition or composite resource files without it")
+		case gvk == apiextensionsv1.CompositionGroupVersionKind:
+			comps = append(comps, r)
+		default:
+			key, err := json.Marshal(r.Object)
+			if err != nil {
+				return nil, errors.Wrapf(err, "cannot compare %s %q to Composition pipeline inputs", gvk.Kind, r.GetName())
+			}
+			if stepInputs[string(key)] > 0 {
+				stepInputs[string(key)]--
+				continue
+			}
+			others = append(others, r)
+		}
+	}
+
+	switch {
+	case len(comps) == 0:
+		return &inputs{mode: xrMode, resources: others}, nil
+	case len(others) == 0:
+		return &inputs{mode: compositionMode, resources: comps}, nil
+	default:
+		return nil, errors.Errorf("-f inputs mix Compositions with other resources (%s %q); simulate Compositions and composite resources in separate runs", others[0].GetKind(), others[0].GetName())
+	}
+}
+
+// isProjectFile reports whether path is a project file. A directory is not.
+func isProjectFile(path string) (bool, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false, errors.Wrapf(err, "cannot read -f input %q", path)
+	}
+	if fi.IsDir() {
+		return false, nil
+	}
+	isProj, err := projectfile.IsProjectFile(afero.NewOsFs(), path)
+	return isProj, errors.Wrapf(err, "cannot read -f input %q", path)
+}
+
+// pipelineInputs returns the JSON of every pipeline step input of the
+// Compositions in resources, counted, so loadInputs can tell the inputs the
+// loader extracted from those Compositions from resources of their own.
+func pipelineInputs(resources []*un.Unstructured) (map[string]int, error) {
+	inputs := map[string]int{}
+	for _, r := range resources {
+		if r.GroupVersionKind() != apiextensionsv1.CompositionGroupVersionKind {
+			continue
+		}
+		steps, _, _ := un.NestedSlice(r.Object, "spec", "pipeline")
+		for _, step := range steps {
+			in, ok := step.(map[string]any)["input"]
+			if !ok || in == nil {
+				continue
+			}
+			key, err := json.Marshal(in)
+			if err != nil {
+				return nil, errors.Wrapf(err, "cannot read the pipeline inputs of Composition %q", r.GetName())
+			}
+			inputs[string(key)]++
+		}
+	}
+	return inputs, nil
+}
+
+// validateModeFlags rejects flags set on the command line that don't apply
+// to mode. Composite resource files name the composite resources to
+// simulate, so the flags that pick and tune which ones a Composition change
+// reaches don't apply to them, as in crossplane-diff, whose xr command lacks
+// its comp command's equivalents. Functions come from the cluster unless -f
+// names a project, so the build flags apply only to a project.
+func validateModeFlags(mode inputMode, set map[string]bool) error {
+	if mode == projectMode {
+		return nil
+	}
+	for _, f := range []string{"max-concurrency", "cache-dir"} {
+		if set[f] {
+			return errors.Errorf("--%s configures the project's function builds, so it applies only when -f names a project file; Composition and composite resource files use the cluster's functions", f)
+		}
+	}
+	if mode != xrMode {
+		return nil
+	}
+	for _, f := range []string{"namespace", "name", "include-pinned", "minimize-composition", "analyze-on"} {
+		if set[f] {
+			return errors.Errorf("--%s selects which composite resources a Composition change reaches, so it doesn't apply when -f names composite resource files; drop it, or pass Composition or project files", f)
+		}
+	}
+	return nil
+}
+
+// setFlags returns the names of the flags set on the command line, not
+// those left at their defaults or set from the environment.
+func setFlags(k *kong.Context) map[string]bool {
+	set := map[string]bool{}
+	for _, p := range k.Path {
+		if p.Flag != nil {
+			set[p.Flag.Name] = true
+		}
+	}
+	return set
+}
+
+// processor is what simulate initializes and cleans up around a diff.
+type processor interface {
+	Initialize(ctx context.Context) error
+	dp.Cleaner
+}
+
+// simulate initializes the clients and processor and runs diff, mapping the
+// result to the command's exit status. ctx must not be cancelled by its owner
+// until simulate returns, so a cancellation reads as an interrupt.
+func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, initClients func(context.Context, logging.Logger) error, proc processor, diff func(context.Context) (bool, error)) (err error) {
 	// An interrupted run reports the interruption, not the cancelled calls it
 	// caused.
 	defer func() {
@@ -257,15 +505,14 @@ func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, initC
 		return errors.Wrap(err, "cannot initialize clients")
 	}
 	if err := proc.Initialize(ctx); err != nil {
-		return errors.Wrap(err, "cannot initialize composition diff processor")
+		return errors.Wrap(err, "cannot initialize diff processor")
 	}
 
-	ns, refs := c.scope()
-	hasDiffs, err := proc.DiffComposition(ctx, comps, ns, refs)
+	hasDiffs, err := diff(ctx)
 	if err != nil {
-		// DiffComposition has already rendered the result, including its
-		// errors. A run that failed only schema validation exits 2.
-		return exitError{error: errors.Wrap(err, "cannot simulate project"), code: dp.DetermineExitCode(err, false)}
+		// The diff has already rendered the result, including its errors. A
+		// run that failed only schema validation exits 2.
+		return exitError{error: err, code: dp.DetermineExitCode(err, false)}
 	}
 
 	// Changes are what a simulation is for, so they fail the run only when
@@ -297,7 +544,7 @@ func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, f
 		dp.WithAdvisories(dp.NewAdvisoryCollector(k.Stderr)),
 		dp.WithStdout(k.Stdout),
 		dp.WithStderr(k.Stderr),
-		dp.WithColorize(!c.NoColor && isTerminal(k.Stdout)),
+		dp.WithColorize(!c.NoColor && (c.Hooks != nil && c.Hooks.Terminal || isTerminal(k.Stdout))),
 		dp.WithCompact(c.Compact),
 		dp.WithMaxNestedDepth(c.MaxNestedDepth),
 		dp.WithEventualState(c.EventualState),
@@ -309,7 +556,12 @@ func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, f
 		dp.WithOutputVersion(renderer.OutputVersion(c.OutputVersion)),
 		dp.WithIncludeManual(c.IncludePinned),
 		dp.WithMaxRenderIterations(c.MaxIterations),
-		dp.WithFunctionProviderFactory(dp.NewProjectFunctionProviderFactory(fns)),
+	}
+
+	// Project functions, built locally, replace the cluster's. With none,
+	// every function comes from the cluster.
+	if len(fns) > 0 {
+		opts = append(opts, dp.WithFunctionProviderFactory(dp.NewProjectFunctionProviderFactory(fns)))
 	}
 
 	if len(c.FunctionCredentials.Secrets) > 0 {
@@ -326,6 +578,9 @@ func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, f
 	}
 	if c.CrossplaneImage != "" {
 		opts = append(opts, dp.WithCrossplaneImage(c.CrossplaneImage))
+	}
+	if c.Hooks != nil && c.Hooks.RenderBinary != "" {
+		opts = append(opts, dp.WithCrossplaneRenderBinary(c.Hooks.RenderBinary))
 	}
 
 	return opts

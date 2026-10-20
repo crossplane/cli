@@ -75,9 +75,8 @@ func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, defaultNamesp
 	}
 }
 
-// Plan plans a single resource: fetch its live counterpart, route it to a
-// diff server, and fall back to the approximate client-side diff when no
-// server can plan it. Failures become per-resource errors so one resource
+// Plan plans a single resource: fetch its live counterpart, then plan it
+// with PlanWithLive. Failures become per-resource errors so one resource
 // never fails the whole run.
 func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) *plan.ResourcePlan {
 	if desired.GetName() == "" {
@@ -86,13 +85,21 @@ func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) 
 		return rp
 	}
 
-	live, err := fetchLive(ctx, p.kube, p.rmapper, p.defaultNamespace, desired)
+	live, err := p.fetchLive(ctx, desired)
 	if err != nil {
 		rp := plan.NewResourcePlan(desired)
 		rp.Error = fmt.Sprintf("cannot fetch live resource: %s", err)
 		return rp
 	}
+	return p.PlanWithLive(ctx, desired, live)
+}
 
+// PlanWithLive plans a single resource against an already-fetched live
+// counterpart, or nil when none exists: route it to a diff server, and fall
+// back to the approximate client-side diff when no server can plan it.
+// Failures become per-resource errors so one resource never fails the whole
+// run.
+func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.Unstructured) *plan.ResourcePlan {
 	// Crossplane's external tags survive every apply (the provider's
 	// initializer re-adds them), so a preview must never claim they would be
 	// removed.
@@ -128,10 +135,10 @@ func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) 
 // fetchLive returns the live counterpart of the desired resource, or nil when
 // it does not exist (including when its kind is not installed on the
 // cluster), in which case the resource plans as a create.
-func fetchLive(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, defaultNamespace string, desired *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+func (p *Planner) fetchLive(ctx context.Context, desired *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	gvk := desired.GroupVersionKind()
 
-	mapping, err := rmapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	mapping, err := p.rmapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
 		// The kind is not served by the cluster: nothing can exist yet. The
 		// diff server can still plan the resource as a create.
@@ -142,13 +149,13 @@ func fetchLive(ctx context.Context, kubeClient client.Client, rmapper meta.RESTM
 	if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
 		key.Namespace = desired.GetNamespace()
 		if key.Namespace == "" {
-			key.Namespace = defaultNamespace
+			key.Namespace = p.defaultNamespace
 		}
 	}
 
 	live := &unstructured.Unstructured{}
 	live.SetGroupVersionKind(gvk)
-	if err := kubeClient.Get(ctx, key, live); err != nil {
+	if err := p.kube.Get(ctx, key, live); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}

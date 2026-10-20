@@ -39,6 +39,7 @@ import (
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
@@ -51,7 +52,7 @@ func parseSimulate(t *testing.T, args ...string) (*simulateCmd, error) {
 	var cli struct {
 		Simulate simulateCmd `cmd:""`
 	}
-	parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}))
+	parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}), kong.Bind(&common.ExitStatus{}))
 	if err != nil {
 		t.Fatalf("kong.New(...): %v", err)
 	}
@@ -98,7 +99,7 @@ func TestSimulateFlags(t *testing.T) {
 			args: []string{
 				"-f", "p.yaml", "-c", "staging", "-n", "team-a", "--name", "db",
 				"--include-pinned", "--max-iterations", "3", "--timeout", "2m",
-				"--max-concurrency", "2", "-o", "json", "--output-version", "v2", "--crossplane-version", "v2.3.4", "--exit-code",
+				"--max-concurrency", "2", "-o", "json", "--output-version", "v2", "--crossplane-version", "v2.3.4",
 				"--as", "jane", "--as-group", "admins",
 			},
 			want: want{cmd: &simulateCmd{
@@ -112,7 +113,6 @@ func TestSimulateFlags(t *testing.T) {
 				MaxConcurrency:    2,
 				Output:            "json",
 				OutputVersion:     "v2",
-				ExitCode:          true,
 				CrossplaneVersion: "v2.3.4",
 				MaxNestedDepth:    10,
 				DryRunOn:          "all",
@@ -454,9 +454,10 @@ func (f *fakeCompProc) Cleanup(context.Context) error {
 	return nil
 }
 
-func exitCode(err error) int {
+// exitCode returns the code main would exit with for err and status.
+func exitCode(err error, status *common.ExitStatus) int {
 	if err == nil {
-		return 0
+		return status.Code
 	}
 	var ec kong.ExitCoder
 	if errors.As(err, &ec) {
@@ -494,30 +495,25 @@ func TestSimulateRun(t *testing.T) {
 			want:   want{diffed: true},
 		},
 		"Changes": {
-			reason: "Changes alone should not fail the run.",
+			reason: "Changes should exit 3, as a result rather than an error.",
 			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
 				return true, nil
 			}}},
-			want: want{diffed: true},
+			want: want{code: dp.ExitCodeDiffDetected, diffed: true},
 		},
-		"ChangesWithExitCode": {
-			reason: "With --exit-code, changes should exit 3.",
-			args: args{cmd: simulateCmd{ExitCode: true}, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
-				return true, nil
-			}}},
-			want: want{code: dp.ExitCodeDiffDetected, err: errChangesDetected, diffed: true},
-		},
-		"NoChangesWithExitCode": {
-			reason: "With --exit-code, a run with no changes should still succeed.",
-			args:   args{cmd: simulateCmd{ExitCode: true}, initClients: noInit, proc: &fakeCompProc{}},
-			want:   want{diffed: true},
-		},
-		"ErrorWithExitCode": {
-			reason: "With --exit-code, a tool error should still exit 1, not 3.",
-			args: args{cmd: simulateCmd{ExitCode: true}, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
+		"ErrorWithChanges": {
+			reason: "A tool error should exit 1, not 3, even when there are changes.",
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
 				return true, errBoom
 			}}},
 			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
+		},
+		"SchemaValidationErrorWithChanges": {
+			reason: "A schema validation failure should exit 2, not 3, even when there are changes.",
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
+				return true, dp.NewSchemaValidationError("XR/db", "invalid", errBoom)
+			}}},
+			want: want{code: dp.ExitCodeSchemaValidation, err: errBoom, diffed: true},
 		},
 		"Namespaced": {
 			reason: "--namespace alone should reach DiffComposition as the namespace.",
@@ -557,11 +553,11 @@ func TestSimulateRun(t *testing.T) {
 			want: want{code: dp.ExitCodeSchemaValidation, err: errBoom, diffed: true},
 		},
 		"Interrupted": {
-			reason: "An interrupted run should report the interruption and exit 130, whatever it returned.",
+			reason: "An interrupted run should return the interruption, whatever it returned, which main exits 130 for.",
 			args: args{cancel: true, initClients: noInit, proc: &fakeCompProc{diffFn: func(ctx context.Context) (bool, error) {
-				return false, ctx.Err()
+				return true, ctx.Err()
 			}}},
-			want: want{code: dp.ExitCodeInterrupted, err: dp.ErrInterrupted, diffed: true},
+			want: want{code: dp.ExitCodeToolError, err: dp.ErrInterrupted, diffed: true},
 		},
 	}
 
@@ -574,9 +570,10 @@ func TestSimulateRun(t *testing.T) {
 			}
 
 			diff := tc.args.cmd.diffCompositions(tc.args.proc, []*un.Unstructured{{}}, compositionMode)
-			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), tc.args.initClients, tc.args.proc, diff)
+			status := &common.ExitStatus{}
+			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), status, tc.args.initClients, tc.args.proc, diff)
 
-			if diff := cmp.Diff(tc.want.code, exitCode(err)); diff != "" {
+			if diff := cmp.Diff(tc.want.code, exitCode(err, status)); diff != "" {
 				t.Errorf("\n%s\nsimulate(...): -want exit code, +got:\n%s", tc.reason, diff)
 			}
 			if !errors.Is(err, tc.want.err) {
@@ -795,7 +792,7 @@ func TestValidateModeFlags(t *testing.T) {
 			var cli struct {
 				Simulate simulateCmd `cmd:""`
 			}
-			parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}))
+			parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}), kong.Bind(&common.ExitStatus{}))
 			if err != nil {
 				t.Fatalf("kong.New(...): %v", err)
 			}

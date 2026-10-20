@@ -31,8 +31,8 @@ in
       src = self;
 
       # The sandbox has no Docker daemon, so the integration tests' render
-      # engine cases skip here (env: guards). CI runs the full suite, with
-      # Docker, through the `test` app in nix/apps.nix instead.
+      # engine cases still skip there (env: guards); the envtest cluster
+      # cases that do not need Docker can run.
       env = {
         CGO_ENABLED = "0";
         CROSSPLANE_CRDS_DIR = crossplaneCRDs;

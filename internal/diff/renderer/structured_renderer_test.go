@@ -557,10 +557,10 @@ func TestStructuredDiffRenderer_GroupsByXR(t *testing.T) {
 	}
 }
 
-// TestStructuredDiffRenderer_RenderDiffs_ErrorsToStderr verifies that errors are
-// written to stderr for human visibility in addition to being included in the
-// structured output for machine parsing.
-func TestStructuredDiffRenderer_RenderDiffs_ErrorsToStderr(t *testing.T) {
+// TestStructuredDiffRenderer_RenderDiffs_ErrorsInOutputOnly verifies that errors
+// are included in the structured output for machine parsing but not written to
+// stderr: the processor returns them to the command, which prints them once.
+func TestStructuredDiffRenderer_RenderDiffs_ErrorsInOutputOnly(t *testing.T) {
 	errs := []dt.OutputError{
 		{ResourceID: "example.org/v1/XResource/my-xr", Message: "failed to render XR: missing composition"},
 		{Message: "cluster connection timeout"},
@@ -587,15 +587,14 @@ func TestStructuredDiffRenderer_RenderDiffs_ErrorsToStderr(t *testing.T) {
 				t.Fatalf("RenderDiffs() failed: %v", err)
 			}
 
-			// Verify errors are in stderr
 			stderrOut := stderr.String()
 			for _, e := range errs {
-				if !strings.Contains(stderrOut, e.FormatError()) {
-					t.Errorf("Expected stderr to contain %q, got: %q", e.FormatError(), stderrOut)
+				if strings.Contains(stderrOut, e.Message) {
+					t.Errorf("Expected stderr not to contain error %q, got: %q", e.Message, stderrOut)
 				}
 			}
 
-			// Verify errors are ALSO in structured output (stdout)
+			// Verify errors are in structured output (stdout)
 			var output StructuredDiffOutput
 
 			switch format {

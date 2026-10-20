@@ -288,24 +288,44 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 	totalXRErrors := len(output.Errors)
 	output.Errors = withInterruption(ctx, output.Errors)
 
-	// Always render output (even if all compositions failed) to ensure valid structured output
-	// The renderer will include errors in the structured output and write them to stderr
+	// Always render output (even if all compositions failed) to ensure valid structured output. The
+	// renderer includes errors in structured output but does not print them: they are returned, below,
+	// to the command, which prints them once.
 	if err := p.compDiffRenderer.RenderCompDiff(output); err != nil {
 		return hasDiffs, errors.Wrap(err, "failed to render composition diff")
 	}
 
-	// Check for XR processing errors after rendering (so users see the output first).
-	// Return an error so CI/CD pipelines get a non-zero exit code when impact analysis failed.
+	// Check for failures after rendering (so users see the output first), and return an error so
+	// CI/CD pipelines get a non-zero exit code. The renderer does not print errors, so the returned
+	// error names each failing resource. A run in which only some compositions failed still
+	// succeeds: each failure is in the output, under its composition.
+	var errs []error
+
 	if totalXRErrors > 0 {
-		return hasDiffs, errors.Errorf("impact analysis failed for %d XR(s)", totalXRErrors)
+		errs = append(errs, errors.Wrapf(outputErrorsJoined(output.Errors[:totalXRErrors]), "impact analysis failed for %d XR(s)", totalXRErrors))
 	}
 
-	// Return error if all compositions failed
 	if compositionErrors > 0 && compositionErrors == len(output.Compositions) {
-		return hasDiffs, errors.New("failed to process all compositions")
+		failed := make([]dt.OutputError, 0, compositionErrors)
+		for _, comp := range output.Compositions {
+			failed = append(failed, *comp.Error)
+		}
+
+		errs = append(errs, errors.Wrap(outputErrorsJoined(failed), "failed to process all compositions"))
 	}
 
-	return hasDiffs, nil
+	return hasDiffs, errors.Join(errs...)
+}
+
+// outputErrorsJoined returns errs as one error that names each one's resource, the way PerformDiff
+// names the resources it failed to process.
+func outputErrorsJoined(errs []dt.OutputError) error {
+	joined := make([]error, 0, len(errs))
+	for _, e := range errs {
+		joined = append(joined, errors.Errorf("unable to process resource %s: %s", e.ResourceID, e.Message))
+	}
+
+	return errors.Join(joined...)
 }
 
 // preflightResourceRefs resolves user --resource refs against every supplied composition before

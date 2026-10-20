@@ -170,7 +170,8 @@ type ProcessorConfig struct {
 	// Stdout is the writer for diff output (defaults to os.Stdout)
 	Stdout io.Writer
 
-	// Stderr is the writer for error output (defaults to os.Stderr)
+	// Stderr is the writer for warnings (defaults to os.Stderr). Errors are
+	// returned to the caller, not written here.
 	Stderr io.Writer
 
 	// Logger is the logger to use
@@ -371,7 +372,7 @@ func WithStdout(w io.Writer) ProcessorOption {
 	}
 }
 
-// WithStderr sets the writer for error output.
+// WithStderr sets the writer for warnings.
 func WithStderr(w io.Writer) ProcessorOption {
 	return func(config *ProcessorConfig) {
 		config.Stderr = w

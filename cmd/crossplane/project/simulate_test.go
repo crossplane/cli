@@ -365,7 +365,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		HasFunctionProvider: true,
 		Compact:             true,
 		MaxNestedDepth:      4,
-		IgnorePaths:         []string{lastAppliedPath, "a.b"},
+		IgnorePaths:         []string{"a.b"},
 		Credentials:         c.FunctionCredentials.Secrets,
 		RegistryOverride:    "reg.example.com",
 		EventualState:       true,

@@ -1078,8 +1078,10 @@ func TestDefaultCompDiffProcessor_buildImpactAnalysis(t *testing.T) {
 	validationErr := &SchemaValidationError{Message: "validation failed", Failures: failures}
 
 	modified := &dt.ResourceDiff{DiffType: dt.DiffTypeModified}
+	equal := &dt.ResourceDiff{DiffType: dt.DiffTypeEqual}
 
 	tests := map[string]struct {
+		keep        func(*un.Unstructured) bool
 		result      *XRDiffResult
 		wantImpact  dt.XRImpact
 		wantSummary dt.AffectedResourcesSummary
@@ -1121,6 +1123,21 @@ func TestDefaultCompDiffProcessor_buildImpactAnalysis(t *testing.T) {
 			wantImpact:  dt.XRImpact{ObjectReference: ref, Status: dt.XRStatusUnchanged},
 			wantSummary: dt.AffectedResourcesSummary{Total: 1, Unchanged: 1},
 		},
+		"UnchangedCarriesNoDiffsByDefault": {
+			result:      &XRDiffResult{Diffs: map[string]*dt.ResourceDiff{"Bucket/my-bucket": equal}},
+			wantImpact:  dt.XRImpact{ObjectReference: ref, Status: dt.XRStatusUnchanged},
+			wantSummary: dt.AffectedResourcesSummary{Total: 1, Unchanged: 1},
+		},
+		"UnchangedCarriesKeptEqualDiffs": {
+			keep:   func(*un.Unstructured) bool { return true },
+			result: &XRDiffResult{Diffs: map[string]*dt.ResourceDiff{"Bucket/my-bucket": equal}},
+			wantImpact: dt.XRImpact{
+				ObjectReference: ref,
+				Status:          dt.XRStatusUnchanged,
+				Diffs:           map[string]*dt.ResourceDiff{"Bucket/my-bucket": equal},
+			},
+			wantSummary: dt.AffectedResourcesSummary{Total: 1, Unchanged: 1},
+		},
 	}
 
 	for name, tt := range tests {
@@ -1130,7 +1147,8 @@ func TestDefaultCompDiffProcessor_buildImpactAnalysis(t *testing.T) {
 				results[dt.MakeDiffKeyFromResource(xr)] = tt.result
 			}
 
-			impacts, summary := (&DefaultCompDiffProcessor{}).buildImpactAnalysis([]*un.Unstructured{xr}, results)
+			p := &DefaultCompDiffProcessor{config: ProcessorConfig{KeepEqualDiffs: tt.keep}}
+			impacts, summary := p.buildImpactAnalysis([]*un.Unstructured{xr}, results)
 
 			if diff := gcmp.Diff([]dt.XRImpact{tt.wantImpact}, impacts); diff != "" {
 				t.Errorf("buildImpactAnalysis() impacts mismatch (-want +got):\n%s", diff)

@@ -60,6 +60,11 @@ type Options struct {
 	// Callers should also clear IgnorePaths for such a comparison, for the same reason — the user's
 	// masks are a display preference too.
 	ForVerdict bool
+
+	// KeepEqualDiffs, when set, names the composed resources whose diff is kept even when equal, so a
+	// caller can refine them further (for example, plan them against the provider). Nil keeps none,
+	// which is the default. It is read by the diff calculator, not by GenerateDiff.
+	KeepEqualDiffs func(*un.Unstructured) bool
 }
 
 // GetLineDiff performs a proper line-by-line diff and returns the raw diffs.

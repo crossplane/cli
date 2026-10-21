@@ -23,6 +23,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 )
 
 // SortImages analyzes an image map produced by the project builder and picks
@@ -50,4 +51,36 @@ func SortImages(imgMap ImageTagMap, repo string) (cfgImage v1.Image, fnImages ma
 	}
 
 	return cfgImage, fnImages, nil
+}
+
+// An EmbeddedDigest is the repository and index digest an embedded function
+// is pushed with.
+type EmbeddedDigest struct {
+	Repository name.Repository
+	Digest     v1.Hash
+}
+
+// EmbeddedFunctionDigests returns the repository and index digest of each
+// embedded function in an image map produced by the project builder, keyed by
+// the function's name in the cluster. The digest is computed as push does, so
+// it matches the digest a Function installed from the pushed package pins.
+func EmbeddedFunctionDigests(imgMap ImageTagMap, repo string) (map[string]EmbeddedDigest, error) {
+	_, fnImages, err := SortImages(imgMap, repo)
+	if err != nil {
+		return nil, err
+	}
+
+	digests := make(map[string]EmbeddedDigest, len(fnImages))
+	for r, imgs := range fnImages {
+		idx, _, err := BuildIndex(imgs...)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to construct index for function %q", r)
+		}
+		dgst, err := idx.Digest()
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to get index digest for function %q", r)
+		}
+		digests[xpkg.ToDNSLabel(r.RepositoryStr())] = EmbeddedDigest{Repository: r, Digest: dgst}
+	}
+	return digests, nil
 }

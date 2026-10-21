@@ -18,9 +18,12 @@ package projectfile
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/spf13/afero"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
@@ -368,5 +371,102 @@ func TestUpdate(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("on-disk contents (-want +got):\n%s", diff)
+	}
+}
+
+func TestLoad(t *testing.T) {
+	// t.Chdir makes these tests unsuitable for t.Parallel.
+	const validProject = `apiVersion: dev.crossplane.io/v1alpha1
+kind: Project
+metadata:
+  name: test
+spec:
+  repository: xpkg.crossplane.io/foo/bar
+`
+
+	type args struct {
+		files map[string]string // relative to the temp dir
+		chdir string            // relative to the temp dir
+		path  string            // absolute if it starts with "@"; the temp dir is prepended
+	}
+	type want struct {
+		name   string
+		rooted string // file that must exist in the returned fs
+		err    error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"AbsolutePath": {
+			reason: "An absolute path should load the project and root the fs at its directory.",
+			args: args{
+				files: map[string]string{"proj/crossplane-project.yaml": validProject},
+				path:  "@proj/crossplane-project.yaml",
+			},
+			want: want{name: "test", rooted: "crossplane-project.yaml"},
+		},
+		"RelativePath": {
+			reason: "A relative path should resolve against the working directory, and the fs should be rooted at the project directory.",
+			args: args{
+				files: map[string]string{"proj/crossplane-project.yaml": validProject, "proj/other.txt": ""},
+				chdir: ".",
+				path:  "proj/crossplane-project.yaml",
+			},
+			want: want{name: "test", rooted: "other.txt"},
+		},
+		"MissingFile": {
+			reason: "A missing project file should return an error.",
+			args:   args{path: "@crossplane-project.yaml"},
+			want:   want{err: cmpopts.AnyError},
+		},
+		"InvalidProject": {
+			reason: "A file that isn't a valid project should return an error.",
+			args: args{
+				files: map[string]string{"crossplane-project.yaml": `apiVersion: foo.example.com/v1
+kind: Other
+`},
+				path: "@crossplane-project.yaml",
+			},
+			want: want{err: cmpopts.AnyError},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			for p, content := range tc.args.files {
+				full := filepath.Join(dir, p)
+				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.args.chdir != "" {
+				t.Chdir(filepath.Join(dir, tc.args.chdir))
+			}
+			path := tc.args.path
+			if strings.HasPrefix(path, "@") {
+				path = filepath.Join(dir, path[1:])
+			}
+
+			proj, projFS, err := Load(path)
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("\n%s\nLoad(...): -want err, +got err:\n%s", tc.reason, diff)
+			}
+			if err != nil {
+				return
+			}
+			if diff := cmp.Diff(tc.want.name, proj.Name); diff != "" {
+				t.Errorf("\n%s\nLoad(...): -want name, +got name:\n%s", tc.reason, diff)
+			}
+			if ok, err := afero.Exists(projFS, tc.want.rooted); err != nil || !ok {
+				t.Errorf("\n%s\nLoad(...): fs not rooted at project dir, %q missing (err: %v)", tc.reason, tc.want.rooted, err)
+			}
+		})
 	}
 }

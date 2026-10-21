@@ -14,16 +14,25 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package dependency manages schema generation for Crossplane project
-// dependencies.
+// Package dependency manages the dependencies of Crossplane projects: it records
+// them in the project file, fetches their packages into the shared package
+// cache, and finds the schema sources they contribute. Generating schemas from
+// those sources is the schema manager's job.
 package dependency
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"maps"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/google/go-containerregistry/pkg/name"
 	conregv1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/spf13/afero"
@@ -40,19 +49,16 @@ import (
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/git"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	smanager "github.com/crossplane/cli/v2/internal/schemas/manager"
-	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
 // Manager manages dependencies for a Crossplane project, including fetching
-// packages, extracting CRDs, and generating schemas.
+// packages and listing the schema sources they provide.
 type Manager struct {
 	proj     *v1alpha1.Project
 	projFS   afero.Fs
 	projFile string
-	schemas  *smanager.Manager
 
 	gitCloner       git.Cloner
 	gitAuthProvider git.AuthProvider
@@ -61,51 +67,22 @@ type Manager struct {
 	resolver *clixpkg.Resolver
 
 	updateMutex sync.Mutex
-
-	// visited tracks package refs already processed during this invocation,
-	// deduplicating shared transitive dependencies and breaking cycles.
-	visited   map[string]struct{}
-	visitedMu sync.Mutex
 }
 
 // ManagerOption configures the dependency manager.
 type ManagerOption func(*managerOptions)
 
 type managerOptions struct {
-	projFile         string
-	schemaFS         afero.Fs
-	schemaGenerators []generator.Interface
-	schemaRunner     runner.SchemaRunner
-	gitAuthProvider  git.AuthProvider
-	client           runtimexpkg.Client
-	resolver         *clixpkg.Resolver
+	projFile        string
+	gitAuthProvider git.AuthProvider
+	client          runtimexpkg.Client
+	resolver        *clixpkg.Resolver
 }
 
 // WithProjectFile sets the path to the project file.
 func WithProjectFile(path string) ManagerOption {
 	return func(opts *managerOptions) {
 		opts.projFile = path
-	}
-}
-
-// WithSchemaFS sets the filesystem to use for schemas.
-func WithSchemaFS(fs afero.Fs) ManagerOption {
-	return func(opts *managerOptions) {
-		opts.schemaFS = fs
-	}
-}
-
-// WithSchemaRunner sets the runner to use when generating schemas.
-func WithSchemaRunner(r runner.SchemaRunner) ManagerOption {
-	return func(opts *managerOptions) {
-		opts.schemaRunner = r
-	}
-}
-
-// WithSchemaGenerators sets the schema generators to call.
-func WithSchemaGenerators(gs []generator.Interface) ManagerOption {
-	return func(opts *managerOptions) {
-		opts.schemaGenerators = gs
 	}
 }
 
@@ -132,18 +109,10 @@ func WithResolver(r *clixpkg.Resolver) ManagerOption {
 	}
 }
 
-// NewManager returns an initialized dependency manager. The default schema
-// generators are configured with every generator option off, so a caller that
-// generates schemas must pass WithSchemaGenerators to honor the feature flags
-// in the user's config.
+// NewManager returns an initialized dependency manager.
 func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) *Manager {
 	options := &managerOptions{
-		projFile:         clixpkg.ProjectFile,
-		schemaFS:         afero.NewBasePathFs(projFS, proj.Spec.Paths.Schemas),
-		schemaGenerators: generator.AllLanguages(),
-		schemaRunner: runner.NewRealSchemaRunner(
-			runner.WithImageConfig(proj.Spec.ImageConfigs),
-		),
+		projFile:        clixpkg.ProjectFile,
 		gitAuthProvider: &git.HTTPSAuthProvider{},
 	}
 
@@ -151,23 +120,39 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 		opt(options)
 	}
 
-	schemas := smanager.New(
-		options.schemaFS,
-		options.schemaGenerators,
-		options.schemaRunner,
-	)
-
 	return &Manager{
 		proj:            proj,
 		projFS:          projFS,
 		projFile:        options.projFile,
-		schemas:         schemas,
 		gitCloner:       &git.DefaultCloner{},
 		gitAuthProvider: options.gitAuthProvider,
 		client:          options.client,
 		resolver:        options.resolver,
-		visited:         make(map[string]struct{}),
 	}
+}
+
+// NewCachedManager returns a dependency manager for a project that fetches
+// packages through the xpkg cache in cacheDir, or in DefaultCacheDir if it is
+// empty. projFile is the project file's path; only its base name is used,
+// because projFS is rooted at the project directory.
+func NewCachedManager(proj *v1alpha1.Project, projFS afero.Fs, projFile, cacheDir string, opts ...ManagerOption) (*Manager, error) {
+	if cacheDir == "" {
+		cacheDir = DefaultCacheDir()
+	}
+	client, err := clixpkg.NewClient(
+		clixpkg.NewRemoteFetcher(),
+		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
+		clixpkg.WithImageConfigs(proj.Spec.ImageConfigs),
+	)
+	if err != nil {
+		return nil, err
+	}
+	opts = append([]ManagerOption{
+		WithProjectFile(filepath.Base(projFile)),
+		WithXpkgClient(client),
+		WithResolver(clixpkg.NewResolver(client)),
+	}, opts...)
+	return NewManager(proj, projFS, opts...), nil
 }
 
 // ResolveRef resolves a version constraint in an OCI ref to a concrete tag.  If
@@ -178,30 +163,400 @@ func (m *Manager) ResolveRef(ref string) (name.Reference, error) {
 	return resolved, err
 }
 
-// AddPackage adds a package to the dependency manager. If refresh is set, the
-// package's ref will be re-resolved regardless of whether it is cached.
-// Schemas are also generated recursively for the dependencies declared in the
-// package's metadata.
-func (m *Manager) AddPackage(ctx context.Context, ref string, refresh bool) (*schema.GroupVersionKind, error) {
-	return m.addPackage(ctx, ref, refresh)
+// maxResolveRounds caps the rounds of the fixed point in Resolve, so that
+// requirements that keep changing each other's selections fail instead of
+// looping.
+const maxResolveRounds = 50
+
+// ResolveOptions configures Resolve.
+type ResolveOptions struct {
+	// Refresh resolves version constraints against the registry and pulls
+	// packages again, ignoring Locked.
+	Refresh bool
+
+	// Locked holds the pins of the schema lock, keyed by source key. Unless
+	// Refresh is set, a locked version is kept as long as it still satisfies
+	// the requirements, and a locked git commit is cloned instead of the ref.
+	Locked map[string]smanager.LockedSource
 }
 
-func (m *Manager) addPackage(ctx context.Context, ref string, refresh bool) (*schema.GroupVersionKind, error) {
-	// Record the ref unconditionally: top-level calls must always fully
-	// process the package so callers get its GVK, while transitive walks
-	// consult the visited set before recursing.
-	m.claim(ref)
+// A Warning reports a requirement that the resolved dependencies do not meet.
+type Warning struct {
+	// Package is the repository of the direct dependency.
+	Package string
 
-	resolvedRef, version, err := m.resolver.Resolve(ctx, ref)
+	// Version is the version the direct dependency resolved to.
+	Version string
+
+	// Requirer is the package that requires a different version.
+	Requirer string
+
+	// Constraint is the version constraint that Version violates.
+	Constraint string
+}
+
+// String returns the warning as a message.
+func (w Warning) String() string {
+	return fmt.Sprintf("dependency %s resolved to %s, which does not satisfy %s required by %s", w.Package, w.Version, w.Constraint, w.Requirer)
+}
+
+// A requirement is a version of a package that a requirer asks for. The
+// project is the requirer of its direct dependencies, and has an empty name.
+type requirement struct {
+	requirer string
+	version  string
+}
+
+func (r requirement) String() string {
+	requirer, version := r.requirer, r.version
+	if requirer == "" {
+		requirer = "the project"
+	}
+	if version == "" {
+		version = "any version"
+	}
+	return fmt.Sprintf("%s requires %s", requirer, version)
+}
+
+// A selection is the package version chosen for a repository.
+type selection struct {
+	ref     string
+	version string
+	pkg     *runtimexpkg.Package
+	gvk     *schema.GroupVersionKind
+	crdFS   afero.Fs
+
+	// requires are the versions of the packages that this package depends on,
+	// by repository.
+	requires map[string]string
+}
+
+// A resolution is the outcome of resolving dependencies.
+type resolution struct {
+	sources  []smanager.Source
+	warnings []Warning
+
+	// gvks are the runtime GVKs of the resolved packages, by repository.
+	gvks map[string]*schema.GroupVersionKind
+}
+
+// A resolver finds the package versions that satisfy the requirements of a set
+// of dependencies. It is single use.
+type resolver struct {
+	m    *Manager
+	opts ResolveOptions
+
+	// direct are the versions the project asks for, by repository.
+	direct map[string]string
+
+	selected map[string]*selection
+
+	// decided and fetched remember earlier work for the rest of the
+	// resolution. They are only written between rounds.
+	decided map[string]string
+	fetched map[string]*selection
+}
+
+// Resolve returns the schema sources of every dependency in the project,
+// direct and transitive, sorted by key. Packages are fetched, from the cache if
+// present, to find their dependencies.
+//
+// The versions are chosen deterministically. A direct dependency's version wins
+// over what other packages require, and a Warning is returned for each
+// requirement it violates. Otherwise the highest version that satisfies every
+// requirement wins. Unless opts.Refresh is set, the locked version is
+// preferred when it still satisfies them.
+//
+// Callers that reconcile the schema lock must add the project's own sources,
+// such as its XRDs, to the result.
+func (m *Manager) Resolve(ctx context.Context, opts ResolveOptions) ([]smanager.Source, []Warning, error) {
+	res, err := m.resolve(ctx, m.proj.Spec.Dependencies, opts)
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot resolve %s", ref)
+		return nil, nil, err
+	}
+	return res.sources, res.warnings, nil
+}
+
+func (m *Manager) resolve(ctx context.Context, deps []v1alpha1.Dependency, opts ResolveOptions) (*resolution, error) {
+	r := &resolver{
+		m:        m,
+		opts:     opts,
+		direct:   make(map[string]string),
+		selected: make(map[string]*selection),
+		decided:  make(map[string]string),
+		fetched:  make(map[string]*selection),
 	}
 
+	sources := make(map[string]smanager.Source)
+	for _, dep := range deps {
+		if dep.Type == v1alpha1.DependencyTypeXpkg {
+			if dep.Xpkg == nil {
+				return nil, errors.New("xpkg dependency has no package reference")
+			}
+			r.direct[dep.Xpkg.Package] = dep.Xpkg.Version
+			continue
+		}
+
+		src, err := m.source(dep)
+		if err != nil {
+			return nil, err
+		}
+		// Clone the locked commit instead of whatever the ref points to now.
+		if pin, ok := opts.Locked[src.Key()]; ok && !opts.Refresh && dep.Git != nil && git.CheckSHA1Hash(pin.Pin) {
+			if src, err = m.pinnedSource(dep, pin.Pin); err != nil {
+				return nil, err
+			}
+		}
+		if _, ok := sources[src.Key()]; !ok {
+			sources[src.Key()] = src
+		}
+	}
+
+	if err := r.run(ctx); err != nil {
+		return nil, err
+	}
+
+	res := &resolution{
+		warnings: r.warnings(),
+		gvks:     make(map[string]*schema.GroupVersionKind),
+	}
+	for repo, sel := range r.selected {
+		res.gvks[repo] = sel.gvk
+		src := smanager.NewXpkgSource(sel.pkg.Source, sel.version, sel.pkg.Digest, sel.crdFS)
+		sources[src.Key()] = src
+	}
+	for _, k := range slices.Sorted(maps.Keys(sources)) {
+		res.sources = append(res.sources, sources[k])
+	}
+	return res, nil
+}
+
+// source returns the schema source of a dependency that is not a package.
+func (m *Manager) source(dep v1alpha1.Dependency) (smanager.Source, error) {
+	switch {
+	case dep.Git != nil:
+		return smanager.NewGitSource(dep, m.gitCloner, m.gitAuthProvider), nil
+	case dep.HTTP != nil:
+		return smanager.NewHTTPSource(dep), nil
+	case dep.K8s != nil:
+		return smanager.NewK8sSource(dep), nil
+	default:
+		return nil, errors.New("dependency has no source configured")
+	}
+}
+
+// pinnedSource returns the schema source of a dependency that is not a
+// package. A git dependency is cloned at pin instead of its ref.
+func (m *Manager) pinnedSource(dep v1alpha1.Dependency, pin string) (smanager.Source, error) {
+	if dep.Git != nil {
+		return smanager.NewPinnedGitSource(dep, pin, m.gitCloner, m.gitAuthProvider), nil
+	}
+	return m.source(dep)
+}
+
+// run selects package versions until a round changes nothing. Each round bases
+// its choices on the previous round's selections only, so the order in which
+// packages are fetched does not matter.
+func (r *resolver) run(ctx context.Context) error {
+	for range maxResolveRounds {
+		reqs := r.requirements()
+		repos := slices.Sorted(maps.Keys(reqs))
+
+		type result struct {
+			decision string
+			sel      *selection
+		}
+		results := make([]result, len(repos))
+
+		eg, egCtx := errgroup.WithContext(ctx)
+		for i, repo := range repos {
+			eg.Go(func() error {
+				ref, err := r.decide(egCtx, repo, reqs[repo])
+				if err != nil {
+					return err
+				}
+				results[i].decision = ref
+				if cur := r.selected[repo]; cur != nil && cur.ref == ref {
+					return nil
+				}
+				if sel, ok := r.fetched[ref]; ok {
+					results[i].sel = sel
+					return nil
+				}
+				results[i].sel, err = r.fetch(egCtx, ref)
+				return err
+			})
+		}
+		if err := eg.Wait(); err != nil {
+			return err
+		}
+
+		// Apply the results in a fixed order.
+		changed := false
+		for i, repo := range repos {
+			r.decided[decisionKey(repo, reqs[repo])] = results[i].decision
+			if results[i].sel == nil {
+				continue
+			}
+			r.fetched[results[i].sel.ref] = results[i].sel
+			r.selected[repo] = results[i].sel
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+	}
+	return errors.New("dependency resolution does not converge")
+}
+
+// requirements returns what is required of each package that is still needed,
+// sorted by requirer. A package is needed if the project depends on it, or if
+// a needed package that has been selected depends on it. Selections of packages
+// that are no longer needed are dropped.
+func (r *resolver) requirements() map[string][]requirement {
+	reqs := make(map[string][]requirement)
+	needed := make(map[string]bool)
+
+	queue := slices.Sorted(maps.Keys(r.direct))
+	for _, repo := range queue {
+		needed[repo] = true
+		reqs[repo] = append(reqs[repo], requirement{version: r.direct[repo]})
+	}
+	for len(queue) > 0 {
+		repo := queue[0]
+		queue = queue[1:]
+
+		sel := r.selected[repo]
+		if sel == nil {
+			continue
+		}
+		for _, dep := range slices.Sorted(maps.Keys(sel.requires)) {
+			reqs[dep] = append(reqs[dep], requirement{requirer: repo, version: sel.requires[dep]})
+			if !needed[dep] {
+				needed[dep] = true
+				queue = append(queue, dep)
+			}
+		}
+	}
+
+	for repo := range r.selected {
+		if !needed[repo] {
+			delete(r.selected, repo)
+		}
+	}
+	for _, rs := range reqs {
+		slices.SortFunc(rs, func(a, b requirement) int {
+			return strings.Compare(a.requirer, b.requirer)
+		})
+	}
+	return reqs
+}
+
+func decisionKey(repo string, reqs []requirement) string {
+	parts := make([]string, 0, len(reqs)+1)
+	parts = append(parts, repo)
+	for _, req := range reqs {
+		parts = append(parts, req.requirer+"="+req.version)
+	}
+	return strings.Join(parts, "\x00")
+}
+
+// decide returns the reference of the version of repo that satisfies reqs.
+func (r *resolver) decide(ctx context.Context, repo string, reqs []requirement) (string, error) {
+	if ref, ok := r.decided[decisionKey(repo, reqs)]; ok {
+		return ref, nil
+	}
+
+	// A direct dependency wins over everything else.
+	if reqs[0].requirer == "" {
+		reqs = reqs[:1]
+	}
+
+	var digests, tags, constraints []string
+	for _, req := range reqs {
+		switch _, err := semver.NewConstraint(req.version); {
+		case req.version == "":
+		case isDigest(req.version):
+			digests = append(digests, req.version)
+		case err != nil:
+			tags = append(tags, req.version)
+		default:
+			constraints = append(constraints, req.version)
+		}
+	}
+
+	ref, err := r.choose(ctx, repo, digests, tags, constraints)
+	if err != nil {
+		descs := make([]string, len(reqs))
+		for i, req := range reqs {
+			descs[i] = req.String()
+		}
+		return "", errors.Wrapf(err, "cannot resolve %s (%s)", repo, strings.Join(descs, ", "))
+	}
+	return ref, nil
+}
+
+func isDigest(version string) bool {
+	_, err := conregv1.NewHash(version)
+	return err == nil
+}
+
+func (r *resolver) choose(ctx context.Context, repo string, digests, tags, constraints []string) (string, error) {
+	switch {
+	case len(digests) > 0:
+		// Packages that agree on the digest agree on the version.
+		if d := slices.Compact(slices.Sorted(slices.Values(digests))); len(d) > 1 {
+			return "", errors.Errorf("conflicting digests %s", strings.Join(d, ", "))
+		}
+		dgst, err := name.NewDigest(xpkgRef(repo, digests[0]), name.StrictValidation)
+		if err != nil {
+			return "", err
+		}
+		return dgst.String(), nil
+
+	case len(tags) > 0:
+		if len(constraints) > 0 || len(slices.Compact(slices.Sorted(slices.Values(tags)))) > 1 {
+			return "", errors.Errorf("incompatible versions %s", strings.Join(append(tags, constraints...), ", "))
+		}
+		tag, err := name.NewTag(xpkgRef(repo, tags[0]), name.StrictValidation)
+		if err != nil {
+			return "", err
+		}
+		return tag.String(), nil
+	}
+
+	if len(constraints) == 0 {
+		constraints = []string{">=v0.0.0"}
+	}
+
+	// Stay on the locked version if it is still allowed, to not depend on the
+	// registry.
+	if locked, ok := r.opts.Locked["xpkg://"+repo]; ok && !r.opts.Refresh && locked.Version != "" {
+		if v, err := semver.NewVersion(locked.Version); err == nil {
+			if c, err := semver.NewConstraint(strings.Join(constraints, ", ")); err == nil && c.Check(v) {
+				n, err := name.NewRepository(repo, name.StrictValidation)
+				if err != nil {
+					return "", err
+				}
+				return n.Tag(locked.Version).String(), nil
+			}
+		}
+	}
+
+	resolved, _, err := r.m.resolver.ResolveConstraints(ctx, repo, constraints)
+	if err != nil {
+		return "", err
+	}
+	return resolved.String(), nil
+}
+
+// fetch gets the package at ref and records what it requires.
+func (r *resolver) fetch(ctx context.Context, ref string) (*selection, error) {
 	pullPolicy := corev1.PullIfNotPresent
-	if refresh {
+	if r.opts.Refresh {
 		pullPolicy = corev1.PullAlways
 	}
-	pkg, err := m.client.Get(ctx, resolvedRef.String(), runtimexpkg.WithPullPolicy(pullPolicy))
+	pkg, err := r.m.client.Get(ctx, ref, runtimexpkg.WithPullPolicy(pullPolicy))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to fetch %s", ref)
 	}
@@ -215,52 +570,45 @@ func (m *Manager) addPackage(ctx context.Context, ref string, refresh bool) (*sc
 		return nil, errors.Wrapf(err, "cannot extract CRDs from %s", ref)
 	}
 
-	// Use the resolved version so constraint and exact-version inputs
-	// collapse to one schema-lock entry. Digest-pinned refs (no resolved
-	// version) intentionally use a digest-form ID and remain separate.
-	id := pkg.Source + "@" + pkg.Digest
-	if version != "" {
-		id = pkg.Source + ":" + version
+	// The tag is not part of the source key, so constraint, exact-version and
+	// digest-pinned refs to one package share a schema-lock entry.
+	var version string
+	if tag, err := name.NewTag(ref, name.StrictValidation); err == nil {
+		version = tag.TagStr()
 	}
-	src := smanager.NewXpkgSource(id, pkg.Digest, crdFS)
-	if err := m.schemas.Add(ctx, src); err != nil {
-		return nil, err
+
+	requires := make(map[string]string)
+	for _, dep := range pkg.GetDependencies() {
+		if depRepo := dependencyRepo(dep); depRepo != "" {
+			requires[depRepo] = dep.Version
+		}
 	}
-	if err := m.addTransitiveDeps(ctx, pkg, refresh); err != nil {
-		return nil, err
-	}
-	return gvk, nil
+	return &selection{ref: ref, version: version, pkg: pkg, gvk: gvk, crdFS: crdFS, requires: requires}, nil
 }
 
-// addTransitiveDeps generates schemas for the dependencies declared in the
-// package's metadata. Transitive dependencies are not added to the project
-// file.
-func (m *Manager) addTransitiveDeps(ctx context.Context, pkg *runtimexpkg.Package, refresh bool) error {
-	for _, dep := range pkg.GetDependencies() {
-		repo := dependencyRepo(dep)
-		if repo == "" {
+// warnings returns the requirements that direct dependencies override.
+func (r *resolver) warnings() []Warning {
+	var warnings []Warning
+	reqs := r.requirements()
+	for _, repo := range slices.Sorted(maps.Keys(r.direct)) {
+		sel := r.selected[repo]
+		if sel == nil || sel.version == "" {
 			continue
 		}
-		ref := xpkgRef(repo, dep.Version)
-		if !m.claim(ref) {
-			continue // Already processed (or in progress) this invocation.
+		v, err := semver.NewVersion(sel.version)
+		if err != nil {
+			continue
 		}
-		if _, err := m.addPackage(ctx, ref, refresh); err != nil {
-			return errors.Wrapf(err, "cannot add transitive dependency %s of %s", ref, pkg.Source)
+		for _, req := range reqs[repo] {
+			if req.requirer == "" {
+				continue
+			}
+			if c, err := semver.NewConstraint(req.version); err == nil && !c.Check(v) {
+				warnings = append(warnings, Warning{Package: repo, Version: sel.version, Requirer: req.requirer, Constraint: req.version})
+			}
 		}
 	}
-	return nil
-}
-
-// claim records ref as processed and reports whether it was newly claimed.
-func (m *Manager) claim(ref string) bool {
-	m.visitedMu.Lock()
-	defer m.visitedMu.Unlock()
-	if _, ok := m.visited[ref]; ok {
-		return false
-	}
-	m.visited[ref] = struct{}{}
-	return true
+	return warnings
 }
 
 // dependencyRepo returns the OCI repository of a package metadata dependency,
@@ -310,20 +658,29 @@ func runtimeGVKForPackage(pkg *runtimexpkg.Package) (*schema.GroupVersionKind, e
 	}, nil
 }
 
-// AddDependency adds a dependency, generates schemas for it, and persists the
-// dependency to the project file.
+// AddDependency checks that a dependency can be fetched, caches it if it is a
+// package, and persists it to the project file. It does not generate schemas;
+// `crossplane schema update` does.
 func (m *Manager) AddDependency(ctx context.Context, dep *v1alpha1.Dependency) error {
-	gvk, err := m.addDependencyNoWrite(ctx, dep, false)
+	// Fetching the sources proves that the dependency exists, so a typo in a
+	// URL or version is caught here and not at the next schema update. Nothing
+	// is generated.
+	res, err := m.resolve(ctx, []v1alpha1.Dependency{*dep}, ResolveOptions{})
 	if err != nil {
+		return err
+	}
+	if err := hashAll(ctx, res.sources); err != nil {
 		return err
 	}
 
 	// For xpkg dependencies, fill in the apiVersion and kind. We don't care
 	// about these for development purposes, but they are required to install an
 	// xpkg dependency into a cluster at runtime.
-	if dep.Type == v1alpha1.DependencyTypeXpkg && dep.Xpkg != nil && gvk != nil {
-		dep.Xpkg.APIVersion = gvk.GroupVersion().String()
-		dep.Xpkg.Kind = gvk.Kind
+	if dep.Type == v1alpha1.DependencyTypeXpkg && dep.Xpkg != nil {
+		if gvk := res.gvks[dep.Xpkg.Package]; gvk != nil {
+			dep.Xpkg.APIVersion = gvk.GroupVersion().String()
+			dep.Xpkg.Kind = gvk.Kind
+		}
 	}
 
 	m.updateMutex.Lock()
@@ -335,60 +692,89 @@ func (m *Manager) AddDependency(ctx context.Context, dep *v1alpha1.Dependency) e
 	})
 }
 
-// AddAll adds all dependencies configured in the project. If ch is non-nil,
-// events will be sent for each dependency as it is processed.
-func (m *Manager) AddAll(ctx context.Context, ch async.EventChannel) error {
-	return m.addAll(ctx, ch, false)
-}
-
-// RefreshAll re-resolves every dependency's version constraint against the
-// registry. Used by `dependency update-cache`.
-func (m *Manager) RefreshAll(ctx context.Context, ch async.EventChannel) error {
-	return m.addAll(ctx, ch, true)
-}
-
-func (m *Manager) addAll(ctx context.Context, ch async.EventChannel, refresh bool) error {
+// hashAll hashes the sources, which fetches their content.
+func hashAll(ctx context.Context, sources []smanager.Source) error {
 	eg, egCtx := errgroup.WithContext(ctx)
-
-	for i := range m.proj.Spec.Dependencies {
-		dep := &m.proj.Spec.Dependencies[i]
-		desc := "Updating dependency " + GetSourceDescription(*dep)
+	for _, s := range sources {
 		eg.Go(func() error {
-			ch.SendEvent(desc, async.EventStatusStarted)
-			if _, err := m.addDependencyNoWrite(egCtx, dep, refresh); err != nil {
-				ch.SendEvent(desc, async.EventStatusFailure)
-				return err
-			}
-			ch.SendEvent(desc, async.EventStatusSuccess)
-			return nil
+			_, err := s.Hash(egCtx)
+			return errors.Wrapf(err, "cannot fetch %s", s.Key())
 		})
 	}
-
 	return eg.Wait()
 }
 
-func (m *Manager) addDependencyNoWrite(ctx context.Context, dep *v1alpha1.Dependency, refresh bool) (*schema.GroupVersionKind, error) {
-	switch {
-	case dep.Type == v1alpha1.DependencyTypeXpkg:
-		if dep.Xpkg == nil {
-			return nil, errors.New("xpkg dependency has no package reference")
-		}
-
-		return m.addPackage(ctx, xpkgRef(dep.Xpkg.Package, dep.Xpkg.Version), refresh)
-	case dep.Git != nil:
-		return nil, m.schemas.Add(ctx, smanager.NewGitSource(*dep, m.gitCloner, m.gitAuthProvider))
-	case dep.HTTP != nil:
-		return nil, m.schemas.Add(ctx, smanager.NewHTTPSource(*dep))
-	case dep.K8s != nil:
-		return nil, m.schemas.Add(ctx, smanager.NewK8sSource(*dep))
-	default:
-		return nil, errors.New("dependency has no source configured")
+// RefreshAll re-resolves every dependency's version constraint against the
+// registry and refreshes the package cache. It also fetches the git, http and
+// Kubernetes dependencies. Used by `dependency update-cache`.
+func (m *Manager) RefreshAll(ctx context.Context, ch async.EventChannel) error {
+	descs := make([]string, len(m.proj.Spec.Dependencies))
+	for i, dep := range m.proj.Spec.Dependencies {
+		descs[i] = "Updating dependency " + GetSourceDescription(dep)
+		ch.SendEvent(descs[i], async.EventStatusStarted)
 	}
+
+	err := func() error {
+		sources, _, err := m.Resolve(ctx, ResolveOptions{Refresh: true})
+		if err != nil {
+			return err
+		}
+		return hashAll(ctx, sources)
+	}()
+
+	status := async.EventStatusSuccess
+	if err != nil {
+		status = async.EventStatusFailure
+	}
+	for _, desc := range descs {
+		ch.SendEvent(desc, status)
+	}
+	return err
 }
 
-// Clean removes all generated schemas.
-func (m *Manager) Clean() error {
-	return m.projFS.RemoveAll(m.proj.Spec.Paths.Schemas)
+// FetchPinned returns the source locked under key, fetched at the pin recorded
+// in the lock instead of being resolved again. A package is taken from the
+// cache if it is there.
+func (m *Manager) FetchPinned(ctx context.Context, key string, entry smanager.LockedSource) (smanager.Source, error) {
+	if strings.HasPrefix(key, "xpkg://") {
+		pkg, err := m.client.Get(ctx, entry.Pin, runtimexpkg.WithPullPolicy(corev1.PullIfNotPresent))
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to fetch %s", entry.Pin)
+		}
+		crdFS, err := clixpkg.CRDFilesystem(pkg.Package)
+		if err != nil {
+			return nil, errors.Wrapf(err, "cannot extract CRDs from %s", entry.Pin)
+		}
+		return smanager.NewXpkgSource(pkg.Source, entry.Version, pkg.Digest, crdFS), nil
+	}
+
+	for _, dep := range m.proj.Spec.Dependencies {
+		if dep.Type == v1alpha1.DependencyTypeXpkg {
+			continue
+		}
+		src, err := m.source(dep)
+		if err != nil {
+			return nil, err
+		}
+		if src.Key() != key {
+			continue
+		}
+
+		if dep.Git != nil {
+			return m.pinnedSource(dep, entry.Pin)
+		}
+		if dep.HTTP != nil {
+			hash, err := src.Hash(ctx)
+			if err != nil {
+				return nil, errors.Wrapf(err, "cannot fetch %s", key)
+			}
+			if hash != entry.Pin {
+				return nil, errors.Errorf("%s changed: its hash is %s, but the lock has %s", key, hash, entry.Pin)
+			}
+		}
+		return src, nil
+	}
+	return nil, errors.Errorf("no dependency in the project provides %s", key)
 }
 
 // CleanPackages removes the per-user xpkg cache directory at root.
@@ -397,6 +783,22 @@ func CleanPackages(root string, fs afero.Fs) error {
 		return errors.Wrapf(err, "cannot remove xpkg cache at %s", root)
 	}
 	return nil
+}
+
+// DependenciesHash returns a hash of the project's dependencies. It does not
+// depend on their order, and changes when any dependency changes.
+func DependenciesHash(proj *v1alpha1.Project) (string, error) {
+	deps := slices.Clone(proj.Spec.Dependencies)
+	slices.SortStableFunc(deps, func(a, b v1alpha1.Dependency) int {
+		return strings.Compare(GetSourceDescription(a), GetSourceDescription(b))
+	})
+
+	bs, err := json.Marshal(deps)
+	if err != nil {
+		return "", errors.Wrap(err, "cannot marshal dependencies")
+	}
+	sum := sha256.Sum256(bs)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // GetSourceDescription returns a human-readable description of a dependency.

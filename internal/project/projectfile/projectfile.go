@@ -18,6 +18,8 @@ limitations under the License.
 package projectfile
 
 import (
+	"path/filepath"
+
 	"github.com/spf13/afero"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
@@ -49,6 +51,21 @@ func IsProjectFile(fs afero.Fs, filePath string) (bool, error) {
 	}
 
 	return tm.APIVersion == APIVersion && tm.Kind == Kind, nil
+}
+
+// Load parses the project file at the given OS path. It returns the project,
+// with defaults applied, and a filesystem rooted at the project directory.
+func Load(path string) (*v1alpha1.Project, afero.Fs, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	projFS := afero.NewBasePathFs(afero.NewOsFs(), filepath.Dir(abs))
+	proj, err := Parse(projFS, filepath.Base(abs))
+	if err != nil {
+		return nil, nil, err
+	}
+	return proj, projFS, nil
 }
 
 // Parse parses and validates the project file, returning a Project with

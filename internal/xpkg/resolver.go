@@ -93,6 +93,37 @@ func (r *Resolver) Resolve(ctx context.Context, ref string) (name.Reference, str
 	return repo.Tag(v), v, nil
 }
 
+// ResolveConstraints returns the highest version of repo that satisfies every
+// constraint, as a tag reference together with the version. The constraints are
+// combined with a logical AND, so a constraint using "||" should be passed
+// on its own.
+func (r *Resolver) ResolveConstraints(ctx context.Context, repo string, constraints []string) (name.Reference, string, error) {
+	if len(constraints) == 0 {
+		return nil, "", errors.Errorf("no version constraints for %s", repo)
+	}
+
+	n, err := name.NewRepository(repo, name.StrictValidation)
+	if err != nil {
+		return nil, "", errors.Wrapf(err, "invalid repository %s", repo)
+	}
+
+	sc, err := semver.NewConstraint(strings.Join(constraints, ", "))
+	if err != nil {
+		return nil, "", errors.Wrapf(err, "invalid version constraints %q", constraints)
+	}
+
+	tags, err := r.client.ListVersions(ctx, n.Name())
+	if err != nil {
+		return nil, "", errors.Wrapf(err, "cannot list versions for %s", n)
+	}
+	v := highestSatisfying(tags, sc)
+	if v == "" {
+		return nil, "", errors.Errorf("cannot find version to satisfy constraint %s", sc)
+	}
+
+	return n.Tag(v), v, nil
+}
+
 // highestSatisfying returns the original-form string of the highest
 // version in tags that satisfies c, or "" if none matches.
 func highestSatisfying(tags []string, c *semver.Constraints) string {

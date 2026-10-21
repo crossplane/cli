@@ -138,6 +138,13 @@ type ProjectSchemas struct {
 	// Supported values are "go", "json", "kcl", "python", and "rust". If not
 	// specified, schemas are generated for all supported languages.
 	Languages []string `json:"languages,omitempty"`
+
+	// APIGroups restricts schema generation to resources whose API group
+	// matches one of the listed globs, e.g. "*.aws.upbound.io" or
+	// "kubernetes.crossplane.io". Use it to avoid generating thousands of files
+	// for provider APIs the project never uses. If not specified, schemas are
+	// generated for all API groups.
+	APIGroups []string `json:"apiGroups,omitempty"`
 }
 
 // GetLanguages returns the configured schema languages, or nil if no Schemas
@@ -147,6 +154,15 @@ func (s *ProjectSchemas) GetLanguages() []string {
 		return nil
 	}
 	return s.Languages
+}
+
+// GetAPIGroups returns the configured API group globs, or nil if no Schemas
+// config is set. It is safe to call on a nil receiver.
+func (s *ProjectSchemas) GetAPIGroups() []string {
+	if s == nil {
+		return nil
+	}
+	return s.APIGroups
 }
 
 // ProjectPaths configures the locations of various parts of the project, for

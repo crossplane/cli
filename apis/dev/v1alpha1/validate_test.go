@@ -185,6 +185,51 @@ func TestValidate(t *testing.T) {
 				`schemas.languages[1]: "fortran" is not a supported schema language`,
 			},
 		},
+		"ValidAPIGroupGlobs": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Schemas: &ProjectSchemas{
+						APIGroups: []string{"*.m.upbound.io", "kubernetes.crossplane.io"},
+					},
+				},
+			},
+		},
+		"EmptyAPIGroupGlob": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Schemas: &ProjectSchemas{
+						APIGroups: []string{""},
+					},
+				},
+			},
+			expectedErrors: []string{
+				"schemas.apiGroups[0]: glob must not be empty",
+			},
+		},
+		"MalformedAPIGroupGlob": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Schemas: &ProjectSchemas{
+						APIGroups: []string{"*.aws.upbound.io", "[a-"},
+					},
+				},
+			},
+			expectedErrors: []string{
+				`schemas.apiGroups[1]: "[a-" is not a valid glob`,
+			},
+		},
 		"ValidAPIDependency": {
 			input: &Project{
 				ObjectMeta: metav1.ObjectMeta{

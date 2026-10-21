@@ -17,6 +17,7 @@ limitations under the License.
 package manager
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -36,6 +38,7 @@ import (
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/spf13/afero"
+	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
@@ -56,15 +59,29 @@ const (
 
 // Source is a source of resources for which schemas can be generated.
 type Source interface {
-	// ID returns a unique identifier for this source.
-	ID() string
-	// Version returns a revision identifier for this source.
-	Version(ctx context.Context) (string, error)
+	// Key returns a stable identifier for this source. It never encodes a
+	// version, so a new revision of a source replaces its lock entry instead of
+	// orphaning it.
+	Key() string
+	// Hash returns the authoritative content hash of this source. It is what
+	// gets recorded in the lock as the source hash.
+	Hash(ctx context.Context) (string, error)
 	// Resources returns a filesystem containing resources for which schemas
 	// need to be generated.
 	Resources(ctx context.Context) (afero.Fs, error)
 	// Type returns the type of source.
 	Type() SourceType
+}
+
+// Pinned is implemented by sources that can be fetched again by an immutable
+// reference. The manager records it in the lock when it adds the source.
+type Pinned interface {
+	// Pin returns the immutable reference of the source's content, for example
+	// a digest or a commit.
+	Pin(ctx context.Context) (string, error)
+	// Version returns the human-meaningful version the pin was resolved from,
+	// such as a tag or ref. It may be empty.
+	Version() string
 }
 
 // calculateFilesystemHash calculates a SHA256 hash of the filesystem contents.
@@ -112,26 +129,118 @@ func calculateFilesystemHash(filesystem afero.Fs, sourceType SourceType) (string
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
-// fsSource is a resource source backed by a filesystem.
+// fsKeyPrefix prefixes the keys of filesystem sources, which are the project's
+// own local APIs.
+const fsKeyPrefix = "fs://"
+
+// isLocalKey returns true if the key belongs to a local source. It is for lock
+// entries, whose sources may not be at hand.
+func isLocalKey(key string) bool {
+	return strings.HasPrefix(key, fsKeyPrefix)
+}
+
+// isDefinitionKind returns true for the kinds of the documents that define a
+// local API.
+func isDefinitionKind(kind string) bool {
+	return kind == "CompositeResourceDefinition" || kind == "CustomResourceDefinition"
+}
+
+// fsDocument is one API definition document of a filesystem source.
+type fsDocument struct {
+	path string
+	doc  []byte
+}
+
+// fsSource is a resource source backed by a filesystem. Only its XRD and CRD
+// documents count: they are what Resources returns and what Hash covers, so
+// the hash and the generator input always agree.
 type fsSource struct {
 	id string
 	fs afero.Fs
+
+	once sync.Once
+	docs []fsDocument
+	err  error
 }
 
-func (f *fsSource) ID() string {
-	return "fs://" + f.id
+func (f *fsSource) Key() string {
+	return fsKeyPrefix + f.id
 }
 
-func (f *fsSource) Version(_ context.Context) (string, error) {
-	return calculateFilesystemHash(f.fs, SourceTypeCRD)
+func (f *fsSource) Hash(_ context.Context) (string, error) {
+	docs, err := f.definitions()
+	if err != nil {
+		return "", err
+	}
+
+	// Paths are part of the hash so renaming a file or splitting it into two
+	// changes it.
+	h := sha256.New()
+	for _, d := range docs {
+		_, _ = h.Write([]byte(d.path))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(d.doc)
+		_, _ = h.Write([]byte{0})
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func (f *fsSource) Resources(_ context.Context) (afero.Fs, error) {
-	return f.fs, nil
+	docs, err := f.definitions()
+	if err != nil {
+		return nil, err
+	}
+
+	byPath := make(map[string][][]byte)
+	var paths []string
+	for _, d := range docs {
+		if _, ok := byPath[d.path]; !ok {
+			paths = append(paths, d.path)
+		}
+		byPath[d.path] = append(byPath[d.path], d.doc)
+	}
+
+	out := afero.NewMemMapFs()
+	for _, p := range paths {
+		if err := out.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			return nil, err
+		}
+		if err := afero.WriteFile(out, p, bytes.Join(byPath[p], []byte("---\n")), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func (f *fsSource) Type() SourceType {
 	return SourceTypeCRD
+}
+
+// definitions returns the XRD and CRD documents of the filesystem in walk
+// order. It reads the filesystem once.
+func (f *fsSource) definitions() ([]fsDocument, error) {
+	f.once.Do(func() {
+		f.err = afero.Walk(f.fs, ".", func(p string, info fs.FileInfo, err error) error {
+			if err != nil || info.IsDir() || !isYAML(p) {
+				return err
+			}
+			content, err := afero.ReadFile(f.fs, p)
+			if err != nil {
+				return err
+			}
+			return eachYAMLDocument(content, func(doc []byte) error {
+				// Documents that don't parse aren't definitions.
+				var res struct {
+					Kind string `json:"kind"`
+				}
+				if err := yaml.Unmarshal(doc, &res); err == nil && isDefinitionKind(res.Kind) {
+					f.docs = append(f.docs, fsDocument{path: p, doc: doc})
+				}
+				return nil
+			})
+		})
+	})
+	return f.docs, f.err
 }
 
 // NewFSSource returns a new filesystem-backed resource source. The id should
@@ -144,17 +253,18 @@ func NewFSSource(id string, fs afero.Fs) Source {
 // xpkgSource is a source backed by extracted CRDs from an xpkg. Unlike the
 // up CLI, this always generates client-side (never uses pre-packaged schemas).
 type xpkgSource struct {
-	id      string
-	version string
-	crdFS   afero.Fs
+	key    string
+	ref    string
+	digest string
+	crdFS  afero.Fs
 }
 
-func (s *xpkgSource) ID() string {
-	return "xpkg://" + s.id
+func (s *xpkgSource) Key() string {
+	return "xpkg://" + s.key
 }
 
-func (s *xpkgSource) Version(_ context.Context) (string, error) {
-	return s.version, nil
+func (s *xpkgSource) Hash(_ context.Context) (string, error) {
+	return s.digest, nil
 }
 
 func (s *xpkgSource) Resources(_ context.Context) (afero.Fs, error) {
@@ -165,13 +275,24 @@ func (s *xpkgSource) Type() SourceType {
 	return SourceTypeCRD
 }
 
-// NewXpkgSource returns a new xpkg-backed resource source. The crdFS should
-// contain extracted CRD YAML files from the package.
-func NewXpkgSource(id, version string, crdFS afero.Fs) Source {
+func (s *xpkgSource) Pin(_ context.Context) (string, error) {
+	return s.key + "@" + s.digest, nil
+}
+
+func (s *xpkgSource) Version() string {
+	return s.ref
+}
+
+// NewXpkgSource returns a new xpkg-backed resource source. The key identifies
+// the package without its version (e.g. its repository), the ref is the
+// resolved tag or version, and the digest is the resolved package digest. The
+// crdFS should contain extracted CRD YAML files from the package.
+func NewXpkgSource(key, ref, digest string, crdFS afero.Fs) Source {
 	return &xpkgSource{
-		id:      id,
-		version: version,
-		crdFS:   crdFS,
+		key:    key,
+		ref:    ref,
+		digest: digest,
+		crdFS:  crdFS,
 	}
 }
 
@@ -185,9 +306,12 @@ type gitSource struct {
 	sourceType   SourceType
 	fs           afero.Fs
 	commitSHA    string
+	// cloneRef is what to clone when it differs from the dependency's ref, i.e.
+	// the commit a lock pinned. Empty means clone gitRef.Ref.
+	cloneRef string
 }
 
-func (g *gitSource) ID() string {
+func (g *gitSource) Key() string {
 	id := fmt.Sprintf("git://%s", g.gitRef.Repository)
 	if g.gitRef.Path != "" {
 		id = fmt.Sprintf("%s/%s", id, g.gitRef.Path)
@@ -195,7 +319,7 @@ func (g *gitSource) ID() string {
 	return id
 }
 
-func (g *gitSource) Version(ctx context.Context) (string, error) {
+func (g *gitSource) Hash(ctx context.Context) (string, error) {
 	if g.commitSHA != "" {
 		return g.commitSHA, nil
 	}
@@ -211,7 +335,11 @@ func (g *gitSource) Resources(_ context.Context) (afero.Fs, error) {
 		return g.fs, nil
 	}
 
-	ref := g.normalizeRef(g.gitRef.Ref)
+	cloneRef := g.cloneRef
+	if cloneRef == "" {
+		cloneRef = g.gitRef.Ref
+	}
+	ref := g.normalizeRef(cloneRef)
 
 	var memFS billy.Filesystem
 	var lastErr error
@@ -265,6 +393,14 @@ func (g *gitSource) Type() SourceType {
 	return g.sourceType
 }
 
+func (g *gitSource) Pin(ctx context.Context) (string, error) {
+	return g.Hash(ctx)
+}
+
+func (g *gitSource) Version() string {
+	return g.gitRef.Ref
+}
+
 func (g *gitSource) normalizeRef(ref string) string {
 	if ref == "" {
 		return "refs/heads/main"
@@ -300,6 +436,14 @@ func (g *gitSource) verifyClone(fs billy.Filesystem, path string) error {
 
 // NewGitSource returns a new git-backed resource source.
 func NewGitSource(dep v1alpha1.Dependency, cloner git.Cloner, authProvider git.AuthProvider) Source {
+	return NewPinnedGitSource(dep, "", cloner, authProvider)
+}
+
+// NewPinnedGitSource returns a git-backed resource source that clones pin, a
+// commit, instead of the dependency's ref. Its Version is still the ref, so a
+// lock written from it keeps the branch or tag the pin was resolved from. An
+// empty pin clones the ref.
+func NewPinnedGitSource(dep v1alpha1.Dependency, pin string, cloner git.Cloner, authProvider git.AuthProvider) Source {
 	sourceType := SourceTypeCRD
 	if dep.Type == v1alpha1.DependencyTypeK8s {
 		sourceType = SourceTypeOpenAPI
@@ -310,6 +454,7 @@ func NewGitSource(dep v1alpha1.Dependency, cloner git.Cloner, authProvider git.A
 		cloner:       cloner,
 		authProvider: authProvider,
 		sourceType:   sourceType,
+		cloneRef:     pin,
 	}
 }
 
@@ -326,11 +471,11 @@ type httpSource struct {
 	fs         afero.Fs
 }
 
-func (h *httpSource) ID() string {
+func (h *httpSource) Key() string {
 	return fmt.Sprintf("http://%s", h.httpRef.URL)
 }
 
-func (h *httpSource) Version(ctx context.Context) (string, error) {
+func (h *httpSource) Hash(ctx context.Context) (string, error) {
 	if h.fs != nil {
 		return h.calculateHash()
 	}
@@ -395,6 +540,14 @@ func (h *httpSource) Type() SourceType {
 	return h.sourceType
 }
 
+func (h *httpSource) Pin(ctx context.Context) (string, error) {
+	return h.Hash(ctx)
+}
+
+func (h *httpSource) Version() string {
+	return ""
+}
+
 func (h *httpSource) calculateHash() (string, error) {
 	return calculateFilesystemHash(h.fs, h.sourceType)
 }
@@ -440,12 +593,18 @@ type k8sOpenAPISource struct {
 	fs     afero.Fs
 }
 
-func (k *k8sOpenAPISource) ID() string {
+func (k *k8sOpenAPISource) Key() string {
 	return fmt.Sprintf("k8s://%s", k.k8sRef.Version)
 }
 
-func (k *k8sOpenAPISource) Version(_ context.Context) (string, error) {
-	return k.k8sRef.Version, nil
+// Hash hashes the downloaded OpenAPI specs rather than the release string, so
+// a changed spec is noticed even when the version is not.
+func (k *k8sOpenAPISource) Hash(ctx context.Context) (string, error) {
+	fromFS, err := k.Resources(ctx)
+	if err != nil {
+		return "", err
+	}
+	return calculateFilesystemHash(fromFS, SourceTypeOpenAPI)
 }
 
 func (k *k8sOpenAPISource) Resources(ctx context.Context) (afero.Fs, error) {
@@ -518,6 +677,14 @@ func (k *k8sOpenAPISource) Resources(ctx context.Context) (afero.Fs, error) {
 
 func (k *k8sOpenAPISource) Type() SourceType {
 	return SourceTypeOpenAPI
+}
+
+func (k *k8sOpenAPISource) Pin(_ context.Context) (string, error) {
+	return k.k8sRef.Version, nil
+}
+
+func (k *k8sOpenAPISource) Version() string {
+	return k.k8sRef.Version
 }
 
 // NewK8sSource returns a source for Kubernetes built-in APIs.

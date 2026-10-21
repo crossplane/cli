@@ -14,8 +14,23 @@ with `--repository`.
 > building and pushing a project.
 
 The build reuses the dependency cache populated by `crossplane dependency add`
-and `crossplane dependency update-cache`. Override the cache location with
-`--cache-dir` or the `CROSSPLANE_XPKG_CACHE` environment variable.
+and `crossplane schema update`. Override the cache location with `--cache-dir`
+or the `CROSSPLANE_XPKG_CACHE` environment variable.
+
+If the project has no schema lock yet, the build runs a schema update first and
+writes the lock. Otherwise the build never changes the project's generated
+schemas or the schema lock, and never resolves versions again, so a new release
+of a dependency can't change or break it. It checks that the schemas match the
+lock, and fails if a source changed, the project's dependencies changed, or a
+generated file was modified. Files that are missing are recreated from the exact
+versions the lock pins, which works offline when the packages are cached. Run
+`crossplane schema update` to accept changes and update the lock, or
+`crossplane schema generate` to restore modified files.
+
+Creating the lock or recreating missing schema files may clone git
+dependencies. The build authenticates with the same `--git-token` and
+`--git-username` flags, or the `CROSSPLANE_GIT_TOKEN` and
+`CROSSPLANE_GIT_USERNAME` environment variables, as `dependency add`.
 
 The CLI builds embedded functions onto a runtime base image from a registry, and
 caches those image layers on disk under `crossplane/base-images` in your user

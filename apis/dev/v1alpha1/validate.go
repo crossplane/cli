@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -109,6 +110,20 @@ func (s *ProjectSchemas) Validate() []error {
 	if s == nil {
 		return nil
 	}
+	errs := s.validateLanguages()
+	for i, glob := range s.APIGroups {
+		if glob == "" {
+			errs = append(errs, errors.Errorf("schemas.apiGroups[%d]: glob must not be empty", i))
+			continue
+		}
+		if _, err := path.Match(glob, ""); err != nil {
+			errs = append(errs, errors.Wrapf(err, "schemas.apiGroups[%d]: %q is not a valid glob", i, glob))
+		}
+	}
+	return errs
+}
+
+func (s *ProjectSchemas) validateLanguages() []error {
 	if s.Languages == nil {
 		return nil
 	}

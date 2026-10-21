@@ -19,7 +19,6 @@ package dependency
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
@@ -27,12 +26,10 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/internal/async"
-	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/git"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
-	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
 	_ "embed"
 )
@@ -40,12 +37,13 @@ import (
 //go:embed help/update-cache.md
 var updateHelp string
 
-// updateCacheCmd updates the dependency cache by regenerating all schemas.
+// updateCacheCmd refreshes the shared xpkg package cache and fetches the
+// project's other dependencies.
 type updateCacheCmd struct {
+	git.HTTPSAuthFlags `embed:""`
+
 	ProjectFile string `default:"${project_file}"   help:"Path to project definition file."            short:"f"`
 	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents." name:"cache-dir"`
-	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"  help:"Token for git HTTPS authentication."`
-	GitUsername string `default:"x-access-token"    env:"CROSSPLANE_GIT_USERNAME"                      help:"Username for git HTTPS authentication."`
 }
 
 func (c *updateCacheCmd) Help() string {
@@ -53,57 +51,18 @@ func (c *updateCacheCmd) Help() string {
 }
 
 // Run executes the update-cache command.
-func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
+func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
 	ctx := context.Background()
 
-	projFilePath, err := filepath.Abs(c.ProjectFile)
-	if err != nil {
-		return err
-	}
-	projDirPath := filepath.Dir(projFilePath)
-	projFS := afero.NewBasePathFs(afero.NewOsFs(), projDirPath)
-
-	proj, err := projectfile.Parse(projFS, filepath.Base(c.ProjectFile))
+	proj, projFS, err := projectfile.Load(c.ProjectFile)
 	if err != nil {
 		return err
 	}
 
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	client, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-		clixpkg.WithImageConfigs(proj.Spec.ImageConfigs),
-	)
+	m, err := dependency.NewCachedManager(proj, projFS, c.ProjectFile, c.CacheDir, dependency.WithGitAuthProvider(c.gitAuth()))
 	if err != nil {
 		return err
 	}
-	resolver := clixpkg.NewResolver(client)
-
-	opts := []dependency.ManagerOption{
-		dependency.WithProjectFile(c.ProjectFile),
-		dependency.WithSchemaGenerators(generator.Filter(
-			generator.AllLanguages(
-				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-				generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
-			),
-			proj.Spec.Schemas.GetLanguages(),
-		)),
-		dependency.WithXpkgClient(client),
-		dependency.WithResolver(resolver),
-	}
-
-	if c.GitToken != "" {
-		opts = append(opts, dependency.WithGitAuthProvider(&gitAuthProvider{
-			username: c.GitUsername,
-			token:    c.GitToken,
-		}))
-	}
-
-	m := dependency.NewManager(proj, projFS, opts...)
 
 	logger.Debug("Updating all dependencies")
 	return sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
@@ -111,14 +70,17 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 	})
 }
 
+// gitAuth returns the git authentication configured by the command's flags.
+func (c *updateCacheCmd) gitAuth() git.AuthProvider {
+	return c.AuthProvider()
+}
+
 //go:embed help/clean-cache.md
 var cleanHelp string
 
-// cleanCacheCmd removes all generated schemas.
+// cleanCacheCmd removes the shared xpkg package cache.
 type cleanCacheCmd struct {
-	ProjectFile  string `default:"${project_file}"                                                help:"Path to project definition file."            short:"f"`
-	CacheDir     string `env:"CROSSPLANE_XPKG_CACHE"                                              help:"Directory for cached xpkg package contents." name:"cache-dir"`
-	KeepPackages bool   `help:"Keep cached xpkg package contents; remove only generated schemas." name:"keep-packages"`
+	CacheDir string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents." name:"cache-dir"`
 }
 
 func (c *cleanCacheCmd) Help() string {
@@ -127,36 +89,14 @@ func (c *cleanCacheCmd) Help() string {
 
 // Run executes the clean-cache command.
 func (c *cleanCacheCmd) Run(k *kong.Context, _ logging.Logger) error {
-	projFilePath, err := filepath.Abs(c.ProjectFile)
-	if err != nil {
-		return err
+	cacheDir := c.CacheDir
+	if cacheDir == "" {
+		cacheDir = dependency.DefaultCacheDir()
 	}
-	projDirPath := filepath.Dir(projFilePath)
-	projFS := afero.NewBasePathFs(afero.NewOsFs(), projDirPath)
-
-	proj, err := projectfile.Parse(projFS, filepath.Base(c.ProjectFile))
-	if err != nil {
+	if err := dependency.CleanPackages(cacheDir, afero.NewOsFs()); err != nil {
 		return err
 	}
 
-	m := dependency.NewManager(proj, projFS,
-		dependency.WithProjectFile(c.ProjectFile),
-	)
-
-	if err := m.Clean(); err != nil {
-		return err
-	}
-
-	if !c.KeepPackages {
-		cacheDir := c.CacheDir
-		if cacheDir == "" {
-			cacheDir = dependency.DefaultCacheDir()
-		}
-		if err := dependency.CleanPackages(cacheDir, afero.NewOsFs()); err != nil {
-			return err
-		}
-	}
-
-	fmt.Fprintln(k.Stdout, "Schema cache cleaned") //nolint:errcheck // TODO(adamwg): Clean up output.
+	fmt.Fprintln(k.Stdout, "Package cache cleaned") //nolint:errcheck // TODO(adamwg): Clean up output.
 	return nil
 }

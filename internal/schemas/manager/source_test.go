@@ -17,6 +17,8 @@ limitations under the License.
 package manager
 
 import (
+	"errors"
+	"os"
 	"testing"
 
 	"github.com/go-git/go-billy/v5"
@@ -25,6 +27,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/storage"
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/spf13/afero"
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
@@ -118,7 +121,7 @@ func TestGitSourceVersion(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			gotVersion, err := tc.source.Version(t.Context())
+			gotVersion, err := tc.source.Hash(t.Context())
 
 			if tc.wantError {
 				if err == nil {
@@ -135,6 +138,67 @@ func TestGitSourceVersion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewPinnedGitSource(t *testing.T) {
+	t.Parallel()
+
+	const sha = "abc123def456789012345678901234567890abcd"
+
+	type args struct {
+		pin string
+	}
+	type want struct {
+		cloned  string
+		version string
+		err     error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"Pinned": {
+			reason: "A pinned source clones the commit but still reports the branch as its version.",
+			args:   args{pin: sha},
+			want:   want{cloned: sha, version: "main"},
+		},
+		"Unpinned": {
+			reason: "Without a pin the dependency's ref is cloned.",
+			want:   want{cloned: "refs/heads/main", version: "main"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cloner := &recordingCloner{mockCloner: mockCloner{ref: plumbing.NewHashReference("refs/heads/main", plumbing.NewHash(sha))}}
+			dep := v1alpha1.Dependency{Git: &v1alpha1.GitDependency{Repository: "https://example.com/r.git", Ref: "main"}}
+			src := NewPinnedGitSource(dep, tc.args.pin, cloner, &mockAuthProvider{})
+
+			_, err := src.Hash(t.Context())
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("%s\nHash(...): -want err, +got err:\n%s", tc.reason, diff)
+			}
+			got := want{cloned: cloner.refName, version: src.(Pinned).Version()}
+			if diff := cmp.Diff(tc.want, got, cmp.AllowUnexported(want{}), cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("%s\nNewPinnedGitSource(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+// recordingCloner remembers the ref it was asked to clone.
+type recordingCloner struct {
+	mockCloner
+	refName string
+}
+
+func (r *recordingCloner) CloneRepository(st storage.Storer, fs billy.Filesystem, auth git.AuthProvider, opts git.CloneOptions) (*plumbing.Reference, error) {
+	r.refName = opts.RefName
+	return r.mockCloner.CloneRepository(st, fs, auth, opts)
 }
 
 func TestGitSourceResources(t *testing.T) {
@@ -259,7 +323,7 @@ func TestGitSourceID(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			gotID := tc.source.ID()
+			gotID := tc.source.Key()
 			if diff := cmp.Diff(tc.wantID, gotID); diff != "" {
 				t.Errorf("(-want +got):\n%s", diff)
 			}
@@ -676,6 +740,274 @@ func TestCalculateFilesystemHashDifferentContent(t *testing.T) {
 
 			if hash1 == hash2 {
 				t.Errorf("different content should produce different hashes")
+			}
+		})
+	}
+}
+
+func TestSourceVersionAndHash(t *testing.T) {
+	t.Parallel()
+
+	openAPIFS := afero.NewMemMapFs()
+	_ = afero.WriteFile(openAPIFS, "api__v1_openapi.json", []byte(`{"a":1}`), 0o600)
+
+	type args struct {
+		source Source
+	}
+	type want struct {
+		key     string
+		version string
+		hash    string
+		err     error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"XpkgHashIsDigestNotTag": {
+			reason: "The lock must pin the resolved digest; the tag is only the version shown to people.",
+			args:   args{source: NewXpkgSource("xpkg.upbound.io/acme/provider", "v1.2.3", "sha256:abc", nil)},
+			want:   want{key: "xpkg://xpkg.upbound.io/acme/provider", version: "v1.2.3", hash: "sha256:abc"},
+		},
+		"K8sHashIsContentNotRelease": {
+			reason: "A k8s source is hashed by its fetched OpenAPI bytes so a changed spec is noticed without a version bump.",
+			args:   args{source: &k8sOpenAPISource{k8sRef: &v1alpha1.K8sDependency{Version: "1.33.0"}, fs: openAPIFS}},
+			want: want{
+				key:     "k8s://1.33.0",
+				version: "1.33.0",
+				hash:    "015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862",
+			},
+		},
+		"GitRefIsBranchHashIsCommit": {
+			reason: "A git source's version is the configured branch or tag; its hash is the commit.",
+			args: args{source: &gitSource{
+				gitRef:    &v1alpha1.GitDependency{Repository: "https://example.com/r.git", Ref: "main"},
+				commitSHA: "deadbeef",
+			}},
+			want: want{key: "git://https://example.com/r.git", version: "main", hash: "deadbeef"},
+		},
+		"PinnedGitKeepsBranchAsVersion": {
+			reason: "A git source cloned from a locked commit still reports the branch it was resolved from, so the lock keeps it.",
+			args: args{source: &gitSource{
+				gitRef:    &v1alpha1.GitDependency{Repository: "https://example.com/r.git", Ref: "main"},
+				cloneRef:  "abc123def456789012345678901234567890abcd",
+				commitSHA: "abc123def456789012345678901234567890abcd",
+			}},
+			want: want{key: "git://https://example.com/r.git", version: "main", hash: "abc123def456789012345678901234567890abcd"},
+		},
+		"FSHasNoVersion": {
+			reason: "A filesystem source has no version.",
+			args:   args{source: NewFSSource("apis", afero.NewMemMapFs())},
+			want: want{
+				key:  "fs://apis",
+				hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			gotVersion := ""
+			if p, ok := tc.args.source.(Pinned); ok {
+				gotVersion = p.Version()
+			}
+			gotHash, err := tc.args.source.Hash(t.Context())
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("%s\nHash(...): -want err, +got err:\n%s", tc.reason, diff)
+			}
+			got := want{key: tc.args.source.Key(), version: gotVersion, hash: gotHash}
+			if diff := cmp.Diff(tc.want, got, cmp.AllowUnexported(want{}), cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("%s\nKey(), Version(), Hash(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestFSSourceHash(t *testing.T) {
+	t.Parallel()
+
+	const (
+		xrd       = "apiVersion: apiextensions.crossplane.io/v2\nkind: CompositeResourceDefinition\nmetadata:\n  name: a\n"
+		xrdEdited = "apiVersion: apiextensions.crossplane.io/v2\nkind: CompositeResourceDefinition\nmetadata:\n  name: b\n"
+		crd       = "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: c\n"
+		other     = "apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: x\n"
+	)
+
+	type args struct {
+		a map[string]string
+		b map[string]string
+	}
+	type want struct {
+		same bool
+		err  error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"AddingCompositionIsIgnored": {
+			reason: "A Composition is not an API definition, so adding one must not change the hash.",
+			args: args{
+				a: map[string]string{"xrd.yaml": xrd},
+				b: map[string]string{"xrd.yaml": xrd, "composition.yaml": other},
+			},
+			want: want{same: true},
+		},
+		"EditingExampleAndWorkflowIsIgnored": {
+			reason: "Examples, workflows and function YAML are not API definitions.",
+			args: args{
+				a: map[string]string{"xrd.yaml": xrd, "examples/xr.yaml": "kind: XR\nspec: {a: 1}\n", ".github/ci.yaml": "name: ci\n", "fn/fn.yaml": "kind: Function\n"},
+				b: map[string]string{"xrd.yaml": xrd, "examples/xr.yaml": "kind: XR\nspec: {a: 2}\n", ".github/ci.yaml": "name: ci2\n", "fn/fn.yaml": "kind: Function\nx: y\n"},
+			},
+			want: want{same: true},
+		},
+		"NonYAMLIsIgnored": {
+			reason: "Only YAML files are read.",
+			args: args{
+				a: map[string]string{"xrd.yaml": xrd},
+				b: map[string]string{"xrd.yaml": xrd, "README.md": xrd},
+			},
+			want: want{same: true},
+		},
+		"EditingXRDChangesHash": {
+			reason: "Editing an XRD must change the hash.",
+			args: args{
+				a: map[string]string{"xrd.yaml": xrd},
+				b: map[string]string{"xrd.yaml": xrdEdited},
+			},
+			want: want{same: false},
+		},
+		"CRDCountsAnyGroup": {
+			reason: "A CRD counts regardless of its apiVersion group.",
+			args: args{
+				a: map[string]string{"crd.yaml": crd},
+				b: map[string]string{},
+			},
+			want: want{same: false},
+		},
+		"RenamingFileChangesHash": {
+			reason: "Renaming a file with an XRD must change the hash.",
+			args: args{
+				a: map[string]string{"a.yaml": xrd},
+				b: map[string]string{"b.yaml": xrd},
+			},
+			want: want{same: false},
+		},
+		"SplittingFileChangesHash": {
+			reason: "Splitting one multi-document file into two files must change the hash.",
+			args: args{
+				a: map[string]string{"all.yaml": xrd + "---\n" + crd},
+				b: map[string]string{"xrd.yaml": xrd, "crd.yaml": crd},
+			},
+			want: want{same: false},
+		},
+		"SameContentSameHash": {
+			reason: "The hash is deterministic.",
+			args: args{
+				a: map[string]string{"b.yaml": crd, "a.yaml": xrd},
+				b: map[string]string{"a.yaml": xrd, "b.yaml": crd},
+			},
+			want: want{same: true},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			hash := func(files map[string]string) (string, error) {
+				fs := afero.NewMemMapFs()
+				for p, c := range files {
+					_ = afero.WriteFile(fs, p, []byte(c), 0o600)
+				}
+				return NewFSSource("apis", fs).Hash(t.Context())
+			}
+
+			ha, errA := hash(tc.args.a)
+			hb, errB := hash(tc.args.b)
+			err := errors.Join(errA, errB)
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("%s\nHash(...): -want err, +got err:\n%s", tc.reason, diff)
+			}
+			got := want{same: ha == hb}
+			if diff := cmp.Diff(tc.want, got, cmp.AllowUnexported(want{}), cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("%s\nHash(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestFSSourceResources(t *testing.T) {
+	t.Parallel()
+
+	const (
+		xrd   = "apiVersion: apiextensions.crossplane.io/v2\nkind: CompositeResourceDefinition\nmetadata:\n  name: a\n"
+		crd   = "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: c\n"
+		other = "apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: x\n"
+	)
+
+	type args struct {
+		files map[string]string
+	}
+	type want struct {
+		files map[string]string
+		err   error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"DropsOtherDocuments": {
+			reason: "Only XRDs and CRDs are returned; files without any are omitted.",
+			args: args{files: map[string]string{
+				"xrd.yaml":         xrd,
+				"composition.yaml": other,
+				"README.md":        "hi",
+				".github/ci.yaml":  "name: ci\n",
+			}},
+			want: want{files: map[string]string{"xrd.yaml": xrd}},
+		},
+		"KeepsMultiDocumentFiles": {
+			reason: "Definitions of a multi-document file stay together, other documents are dropped.",
+			args: args{files: map[string]string{
+				"sub/all.yml": xrd + "---\n" + other + "---\n" + crd,
+			}},
+			want: want{files: map[string]string{"sub/all.yml": xrd + "---\n" + crd}},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fs := afero.NewMemMapFs()
+			for p, c := range tc.args.files {
+				_ = afero.WriteFile(fs, p, []byte(c), 0o600)
+			}
+			out, err := NewFSSource("apis", fs).Resources(t.Context())
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("%s\nResources(...): -want err, +got err:\n%s", tc.reason, diff)
+			}
+
+			got := want{files: map[string]string{}}
+			_ = afero.Walk(out, ".", func(p string, info os.FileInfo, err error) error {
+				if err != nil || info.IsDir() {
+					return err
+				}
+				b, _ := afero.ReadFile(out, p)
+				got.files[p] = string(b)
+				return nil
+			})
+			if diff := cmp.Diff(tc.want, got, cmp.AllowUnexported(want{})); diff != "" {
+				t.Errorf("%s\nResources(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

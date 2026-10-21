@@ -24,8 +24,11 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/go-containerregistry/pkg/name"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 )
+
+var errBoom = errors.New("boom")
 
 // fakeClient is a fake xpkg.Client whose ListVersions returns a fixed
 // list of tags and whose Get is unused by the resolver.
@@ -145,6 +148,83 @@ func TestResolver_Resolve(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.want.version, gotVer); diff != "" {
 				t.Errorf("Resolve(...), -want verfsion +got versfion:\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestResolver_ResolveConstraints(t *testing.T) {
+	tags := []string{"v1.0.0", "v1.1.0", "v1.2.0", "v2.0.0", "latest"}
+
+	type args struct {
+		repo        string
+		constraints []string
+		listErr     error
+	}
+
+	type want struct {
+		ref     name.Reference
+		version string
+		err     error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"SingleConstraint": {
+			reason: "A single constraint resolves to the highest matching version.",
+			args:   args{repo: "pkg.example/foo", constraints: []string{">=v1.0.0, <v2.0.0"}},
+			want: want{
+				ref:     name.MustParseReference("pkg.example/foo:v1.2.0"),
+				version: "v1.2.0",
+			},
+		},
+		"IntersectionOfConstraints": {
+			reason: "Every constraint must hold, so the result is the highest version in the intersection.",
+			args:   args{repo: "pkg.example/foo", constraints: []string{">=v1.0.0", "<v1.2.0"}},
+			want: want{
+				ref:     name.MustParseReference("pkg.example/foo:v1.1.0"),
+				version: "v1.1.0",
+			},
+		},
+		"EmptyIntersection": {
+			reason: "Constraints that no version satisfies together are an error.",
+			args:   args{repo: "pkg.example/foo", constraints: []string{">=v2.0.0", "<v1.2.0"}},
+			want:   want{err: cmpopts.AnyError},
+		},
+		"NoConstraints": {
+			reason: "Resolving without constraints is an error.",
+			args:   args{repo: "pkg.example/foo"},
+			want:   want{err: cmpopts.AnyError},
+		},
+		"InvalidConstraint": {
+			reason: "A constraint that does not parse is an error.",
+			args:   args{repo: "pkg.example/foo", constraints: []string{"not-a-constraint"}},
+			want:   want{err: cmpopts.AnyError},
+		},
+		"ListError": {
+			reason: "A registry failure is returned.",
+			args:   args{repo: "pkg.example/foo", constraints: []string{">=v1.0.0"}, listErr: errBoom},
+			want:   want{err: cmpopts.AnyError},
+		},
+	}
+
+	for tname, tc := range cases {
+		t.Run(tname, func(t *testing.T) {
+			r := NewResolver(&fakeClient{tags: tags, listErr: tc.args.listErr})
+			gotRef, gotVer, err := r.ResolveConstraints(context.Background(), tc.args.repo, tc.args.constraints)
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("%s\nResolveConstraints(...), -want error, +got error:\n%s", tc.reason, diff)
+			}
+
+			ignoreUnexported := cmpopts.IgnoreUnexported(name.Registry{}, name.Repository{}, name.Tag{}, name.Digest{})
+			if diff := cmp.Diff(tc.want.ref, gotRef, ignoreUnexported); diff != "" {
+				t.Errorf("%s\nResolveConstraints(...), -want ref +got ref:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(tc.want.version, gotVer); diff != "" {
+				t.Errorf("%s\nResolveConstraints(...), -want version +got version:\n%s", tc.reason, diff)
 			}
 		})
 	}

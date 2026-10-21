@@ -86,8 +86,10 @@ func BuildWithMaxConcurrency(n uint) BuilderOption {
 	}
 }
 
-// BuildWithSchemaManager sets the schema manager that will be used to generate
-// language-specific schemas from XRDs before building functions.
+// BuildWithSchemaManager sets the schema manager that will be used to verify
+// that the project's generated schemas match the schema lock before building
+// functions. Verification recreates missing schema files but never changes the
+// lock.
 func BuildWithSchemaManager(m *manager.Manager) BuilderOption {
 	return func(b *Builder) {
 		b.schemaManager = m
@@ -95,8 +97,7 @@ func BuildWithSchemaManager(m *manager.Manager) BuilderOption {
 }
 
 // BuildWithDependencyManager sets the dependency manager that will be used to
-// ensure schemas are present for the project's declared dependencies before
-// building functions.
+// find the project's declared dependencies when verifying schemas.
 func BuildWithDependencyManager(m *dependency.Manager) BuilderOption {
 	return func(b *Builder) {
 		b.dependencyManager = m
@@ -172,6 +173,26 @@ type Builder struct {
 	baseImageCacheDir  string
 }
 
+// verifySchemas verifies the schemas of the project's APIs and dependencies
+// against the schema lock. If there is no lock yet, it runs a schema update to
+// create one.
+func (b *Builder) verifySchemas(ctx context.Context, project *devv1alpha1.Project, projectFS afero.Fs, ch async.EventChannel) error {
+	ok, err := b.schemaManager.HasLock()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		ch.SendEvent("No schema lock; running schema update", async.EventStatusStarted)
+		if _, err := UpdateSchemas(ctx, b.schemaManager, b.dependencyManager, project, projectFS, ch, false); err != nil {
+			ch.SendEvent("No schema lock; running schema update", async.EventStatusFailure)
+			return err
+		}
+		ch.SendEvent("No schema lock; running schema update", async.EventStatusSuccess)
+		return nil
+	}
+	return VerifySchemas(ctx, b.schemaManager, b.dependencyManager, project, projectFS, false)
+}
+
 // Build builds a project into a set of packages. It returns a map containing
 // images that were built from the project. The returned map will always include
 // one image with the ConfigurationTag, which is the configuration package built
@@ -214,15 +235,14 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 		return nil, errors.Wrap(err, "failed to resolve functions")
 	}
 
-	apisSource := projectFS
-	apiExcludes := []string{
-		project.Spec.Paths.Examples,
-		project.Spec.Paths.Functions,
-		project.Spec.Paths.Operations,
-	}
-	if project.Spec.Paths.APIs != "/" {
-		apisSource = afero.NewBasePathFs(projectFS, project.Spec.Paths.APIs)
-		apiExcludes = []string{}
+	apisSource := apisFS(project, projectFS)
+	apiExcludes := []string{}
+	if project.Spec.Paths.APIs == "/" {
+		apiExcludes = []string{
+			project.Spec.Paths.Examples,
+			project.Spec.Paths.Functions,
+			project.Spec.Paths.Operations,
+		}
 	}
 
 	// Not all projects have operations; ignore them if not present.
@@ -262,23 +282,17 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 	}
 	o.eventCh.SendEvent("Collecting resources", async.EventStatusSuccess)
 
-	// Generate schemas for declared dependencies. The dependency manager
-	// short-circuits sources whose recorded version still matches, so this is
-	// cheap on the steady-state path.
-	if b.dependencyManager != nil {
-		if err := b.dependencyManager.AddAll(ctx, o.eventCh); err != nil {
-			return nil, errors.Wrap(err, "failed to generate dependency schemas")
-		}
-	}
-
-	// Generate language-specific schemas from XRDs.
+	// Check that the generated schemas match the schema lock, recreating files
+	// that are missing. Unless there is no lock yet, a build never changes the
+	// lock or the schemas' content, so it is reproducible; `crossplane schema
+	// update` does that.
 	if b.schemaManager != nil {
-		o.eventCh.SendEvent("Generating schemas", async.EventStatusStarted)
-		if _, err := b.schemaManager.Generate(ctx, manager.NewFSSource(project.Spec.Paths.APIs, apisSource)); err != nil {
-			o.eventCh.SendEvent("Generating schemas", async.EventStatusFailure)
-			return nil, errors.Wrap(err, "failed to generate schemas")
+		o.eventCh.SendEvent("Verifying schemas", async.EventStatusStarted)
+		if err := b.verifySchemas(ctx, project, projectFS, o.eventCh); err != nil {
+			o.eventCh.SendEvent("Verifying schemas", async.EventStatusFailure)
+			return nil, errors.Wrap(err, "schemas are out of date")
 		}
-		o.eventCh.SendEvent("Generating schemas", async.EventStatusSuccess)
+		o.eventCh.SendEvent("Verifying schemas", async.EventStatusSuccess)
 	}
 
 	// Build the resolved functions.

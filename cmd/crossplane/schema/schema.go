@@ -14,24 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package dependency
+// Package schema contains commands for managing the generated schemas of a
+// project.
+package schema
 
-import (
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/go-git/go-git/v5/plumbing/transport/http"
-)
-
-type gitAuthProvider struct {
-	username string
-	token    string
-}
-
-func (g *gitAuthProvider) GetAuthMethod() (transport.AuthMethod, error) {
-	if g.token != "" {
-		return &http.BasicAuth{
-			Username: g.username,
-			Password: g.token,
-		}, nil
-	}
-	return nil, nil
+// Cmd contains commands for managing schemas.
+type Cmd struct {
+	Update   updateCmd   `cmd:"" help:"Update schemas and the schema lock from the project's APIs and dependencies."`
+	Generate generateCmd `cmd:"" help:"Recreate missing and modified schemas from the schema lock."`
+	Status   statusCmd   `cmd:"" help:"Show generated schemas that differ from the schema lock."`
+	Clean    cleanCmd    `cmd:"" help:"Remove generated schemas and the schema lock."`
 }

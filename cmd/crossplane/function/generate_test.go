@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/afero"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,7 +31,6 @@ import (
 	apiextv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
 	v1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
-	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
@@ -460,7 +460,6 @@ func TestRunErrors(t *testing.T) {
 		name             string
 		language         string
 		seedFunctionsFS  map[string][]byte
-		cfg              *config.Config
 		stage            string // "afterApply" or "run"
 		wantErrSubstring string
 	}{
@@ -478,22 +477,6 @@ func TestRunErrors(t *testing.T) {
 			stage:            "run",
 			wantErrSubstring: "already exists and is not empty",
 		},
-		"DirectoryNotEmptyWithGoRuntimeObjects": {
-			// Run reads the feature flag out of the config it's handed, so
-			// exercise the flag-on path too. Asserting on the generated
-			// artifacts isn't possible here: that needs the real schema
-			// runner, which runs a container.
-			name:     "my-func",
-			language: "go-templating",
-			seedFunctionsFS: map[string][]byte{
-				"my-func/existing.txt": []byte("data"),
-			},
-			cfg: &config.Config{
-				Features: config.Features{GenerateGoRuntimeObjects: true},
-			},
-			stage:            "run",
-			wantErrSubstring: "already exists and is not empty",
-		},
 	}
 
 	for name, tc := range cases {
@@ -504,16 +487,12 @@ func TestRunErrors(t *testing.T) {
 				functionsFS: seedFS(t, tc.seedFunctionsFS),
 				projFS:      afero.NewMemMapFs(),
 			}
-			cfg := tc.cfg
-			if cfg == nil {
-				cfg = &config.Config{}
-			}
 			var err error
 			switch tc.stage {
 			case "afterApply":
 				err = c.AfterApply()
 			case "run":
-				err = c.Run(terminal.NewSpinnerPrinter(io.Discard, false), cfg)
+				err = c.Run(nil, terminal.NewSpinnerPrinter(io.Discard, false))
 			}
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrSubstring)
@@ -709,6 +688,74 @@ func TestAddStepToComposition(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.wantFirstStep, result.Spec.Pipeline[0].Step); diff != "" {
 				t.Errorf("first step mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestRunSchemaHint(t *testing.T) {
+	type args struct {
+		language    string
+		seedSchemas map[string][]byte
+		seedDirs    []string
+	}
+	type want struct {
+		hint bool
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"MissingSchemaDir": {
+			reason: "The hint should be printed when the schema language directory doesn't exist.",
+			args:   args{language: "go-templating"},
+			want:   want{hint: true},
+		},
+		"EmptySchemaDir": {
+			reason: "The hint should be printed when the schema language directory is empty.",
+			args:   args{language: "go-templating", seedDirs: []string{"json"}},
+			want:   want{hint: true},
+		},
+		"PopulatedSchemaDir": {
+			reason: "The hint should not be printed when schemas exist.",
+			args: args{
+				language: "go-templating",
+				seedSchemas: map[string][]byte{
+					"json/index.schema.json": []byte("{}"),
+				},
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			schemasFS := seedFS(t, tc.args.seedSchemas)
+			for _, d := range tc.args.seedDirs {
+				if err := schemasFS.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var out bytes.Buffer
+			k := &kong.Context{Kong: &kong.Kong{Stdout: &out}}
+			c := &generateCmd{
+				Name:        "my-func",
+				Language:    tc.args.language,
+				proj:        testProject(),
+				functionsFS: afero.NewMemMapFs(),
+				projFS:      afero.NewMemMapFs(),
+				schemasFS:   schemasFS,
+				fsPath:      "functions/my-func",
+			}
+			if err := c.Run(k, terminal.NewSpinnerPrinter(io.Discard, false)); err != nil {
+				t.Fatalf("\n%s\nRun(...): unexpected error: %v", tc.reason, err)
+			}
+
+			got := strings.Contains(out.String(), "No json schemas found; run `crossplane schema update`")
+			if diff := cmp.Diff(tc.want.hint, got); diff != "" {
+				t.Errorf("\n%s\nRun(...): -want hint printed, +got hint printed:\n%s\noutput: %q", tc.reason, diff, out.String())
 			}
 		})
 	}

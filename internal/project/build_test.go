@@ -18,8 +18,11 @@ package project
 
 import (
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,10 +38,15 @@ import (
 	"github.com/spf13/afero"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project/functions"
+	"github.com/crossplane/cli/v2/internal/schemas/generator"
+	"github.com/crossplane/cli/v2/internal/schemas/manager"
+	"github.com/crossplane/cli/v2/internal/schemas/runner"
 )
 
 // xrdYAML returns an XRD manifest for a resource with the given group/kind.
@@ -294,6 +302,318 @@ func TestBuilderDependsOn(t *testing.T) {
 	}
 	if diff := cmp.Diff(2, foundArchs); diff != "" {
 		t.Errorf("function arch images (-want +got):\n%s", diff)
+	}
+}
+
+// fakeSchemaGenerator generates one fixed file per source, whatever the source
+// contains, so tests can tell generated files from the lock's point of view.
+type fakeSchemaGenerator struct{}
+
+func (fakeSchemaGenerator) Language() string { return "fake" }
+
+func (fakeSchemaGenerator) GenerateFromCRD(_ context.Context, _ afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
+	out := afero.NewMemMapFs()
+	return out, afero.WriteFile(out, "schema.txt", []byte("generated"), 0o644)
+}
+
+func (fakeSchemaGenerator) GenerateFromOpenAPI(_ context.Context, _ afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
+	return nil, nil
+}
+
+// failingClient is an xpkg client that fails the test on any call, to prove a
+// build doesn't touch the registry.
+type failingClient struct {
+	t *testing.T
+}
+
+func (c failingClient) Get(_ context.Context, ref string, _ ...xpkg.GetOption) (*xpkg.Package, error) {
+	c.t.Errorf("unexpected Get(%q)", ref)
+	return nil, errors.New("unexpected registry access")
+}
+
+func (c failingClient) ListVersions(_ context.Context, repo string, _ ...xpkg.GetOption) ([]string, error) {
+	c.t.Errorf("unexpected ListVersions(%q)", repo)
+	return nil, errors.New("unexpected registry access")
+}
+
+// perFileGenerator generates one file per input file, named after it, so tests
+// can tell the files of different sources apart.
+type perFileGenerator struct{}
+
+func (perFileGenerator) Language() string { return "fake" }
+
+func (perFileGenerator) GenerateFromCRD(_ context.Context, from afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
+	out := afero.NewMemMapFs()
+	err := afero.Walk(from, ".", func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		return afero.WriteFile(out, filepath.Base(p)+".txt", []byte("generated "+filepath.Base(p)), 0o644)
+	})
+	return out, err
+}
+
+func (perFileGenerator) GenerateFromOpenAPI(_ context.Context, _ afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
+	return nil, nil
+}
+
+func TestBuilderBuild_VerifiesSchemas(t *testing.T) {
+	t.Parallel()
+
+	const schemaFile = "fake/schema.txt"
+
+	type args struct {
+		// lock seeds the schema lock, as `crossplane schema update` would, before
+		// the build.
+		lock bool
+		// change modifies the project or the schemas between update and build.
+		change func(t *testing.T, proj *devv1alpha1.Project, projFS, schemaFS afero.Fs)
+	}
+	type want struct {
+		err error
+		// errMsg is a substring of the error message, which is the behavior
+		// under test: it tells the user which command to run.
+		errMsg string
+		// lockWritten is whether the build creates the lock. Otherwise it must
+		// leave the lock alone.
+		lockWritten bool
+		// schema is the content of the generated file afterwards, "" if absent.
+		schema string
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"MatchesLock": {
+			reason: "A build whose schemas match the lock succeeds and leaves them alone.",
+			args:   args{lock: true},
+			want:   want{schema: "generated"},
+		},
+		"MissingFileIsRecreated": {
+			reason: "A deleted generated file is restored, because that doesn't change what is locked.",
+			args: args{lock: true, change: func(t *testing.T, _ *devv1alpha1.Project, _, schemaFS afero.Fs) {
+				t.Helper()
+				if err := schemaFS.Remove(schemaFile); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			want: want{schema: "generated"},
+		},
+		"NoLock": {
+			reason: "Without a lock the build runs a schema update, which writes the lock and the schemas.",
+			want:   want{schema: "generated", lockWritten: true},
+		},
+		"DependenciesChangedSinceLock": {
+			reason: "A dependency added after the lock was written fails the build without resolving it, because a build never touches the registry.",
+			args: args{lock: true, change: func(t *testing.T, proj *devv1alpha1.Project, _, _ afero.Fs) {
+				t.Helper()
+				proj.Spec.Dependencies = append(proj.Spec.Dependencies, *xpkgDependency("xpkg.example/provider", ">=v1"))
+			}},
+			want: want{err: cmpopts.AnyError, errMsg: "crossplane schema update", schema: "generated"},
+		},
+		"XRDChangedSinceLock": {
+			reason: "An XRD edited after the lock was written makes the lock stale; the build must not silently regenerate.",
+			args: args{lock: true, change: func(t *testing.T, _ *devv1alpha1.Project, projFS, _ afero.Fs) {
+				t.Helper()
+				if err := afero.WriteFile(projFS, "apis/db.yaml", []byte(xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase")+"# changed\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			want: want{err: cmpopts.AnyError, errMsg: "crossplane schema update", schema: "generated"},
+		},
+		"ModifiedFile": {
+			reason: "A hand-edited generated file is not overwritten by a build.",
+			args: args{lock: true, change: func(t *testing.T, _ *devv1alpha1.Project, _, schemaFS afero.Fs) {
+				t.Helper()
+				if err := afero.WriteFile(schemaFS, schemaFile, []byte("edited"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			want: want{err: cmpopts.AnyError, errMsg: "crossplane schema generate", schema: "edited"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			projFS := afero.NewMemMapFs()
+			writeProject(t, projFS,
+				map[string]string{
+					"db.yaml":      xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase"),
+					"db-comp.yaml": compositionYAML("xdatabase-comp", "acme.example.com", "XDatabase"),
+				}, nil)
+			proj := &devv1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+				Spec:       devv1alpha1.ProjectSpec{Repository: "xpkg.crossplane.io/example/test"},
+			}
+			proj.Default()
+
+			schemaFS := afero.NewMemMapFs()
+			schemas := manager.New(schemaFS, []generator.Interface{fakeSchemaGenerator{}}, nil)
+			if tc.args.lock {
+				if err := schemas.Add(t.Context(), APISchemaSource(proj, projFS)); err != nil {
+					t.Fatal(err)
+				}
+				depsHash, err := dependency.DependenciesHash(proj)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := schemas.SetDependenciesHash(depsHash); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.args.change != nil {
+				tc.args.change(t, proj, projFS, schemaFS)
+			}
+			lockBefore, _ := afero.ReadFile(schemaFS, ".lock.json")
+
+			b := NewBuilder(
+				BuildWithFunctionIdentifier(functions.FakeIdentifier),
+				BuildWithSchemaManager(schemas),
+				BuildWithDependencyManager(dependency.NewManager(proj, projFS, dependency.WithXpkgClient(failingClient{t: t}))),
+			)
+			_, err := b.Build(t.Context(), proj, projFS)
+
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("%s\nBuild(...): -want err, +got err:\n%s", tc.reason, diff)
+			}
+			if tc.want.errMsg != "" && (err == nil || !strings.Contains(err.Error(), tc.want.errMsg)) {
+				t.Errorf("%s\nBuild(...): err = %v, want error containing %q", tc.reason, err, tc.want.errMsg)
+			}
+			got, _ := afero.ReadFile(schemaFS, schemaFile)
+			if diff := cmp.Diff(tc.want.schema, string(got)); diff != "" {
+				t.Errorf("%s\ngenerated file (-want +got):\n%s", tc.reason, diff)
+			}
+			lockAfter, _ := afero.ReadFile(schemaFS, ".lock.json")
+			if tc.want.lockWritten {
+				if len(lockBefore) != 0 || len(lockAfter) == 0 {
+					t.Errorf("%s\nBuild should have written the lock; before %d bytes, after %d bytes", tc.reason, len(lockBefore), len(lockAfter))
+				}
+				return
+			}
+			if diff := cmp.Diff(string(lockBefore), string(lockAfter)); diff != "" {
+				t.Errorf("%s\nBuild must never change the lock (-before +after):\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestBuilderBuild_RecreatesDependencySchemas(t *testing.T) {
+	t.Parallel()
+
+	const crd = `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: widgets.example.org
+spec:
+  group: example.org
+  names:
+    kind: Widget
+    plural: widgets
+  scope: Namespaced
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, crd)
+	}))
+	t.Cleanup(srv.Close)
+
+	type args struct {
+		// remove is the generated file deleted after the update.
+		remove string
+	}
+	type want struct {
+		// files are the generated files that exist after the build.
+		files []string
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"MissingDependencyFile": {
+			reason: "A deleted dependency file is recreated from the pin in the lock, without resolving the dependency again.",
+			args:   args{remove: "fake/crd.yaml.txt"},
+			want:   want{files: []string{"fake/crd.yaml.txt", "fake/db.yaml.txt"}},
+		},
+		"MissingLocalFile": {
+			reason: "A deleted file of the project's own APIs is recreated from the project, without fetching any dependency.",
+			args:   args{remove: "fake/db.yaml.txt"},
+			want:   want{files: []string{"fake/crd.yaml.txt", "fake/db.yaml.txt"}},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			projFS := afero.NewMemMapFs()
+			writeProject(t, projFS,
+				map[string]string{
+					"db.yaml":      xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase"),
+					"db-comp.yaml": compositionYAML("xdatabase-comp", "acme.example.com", "XDatabase"),
+				}, nil)
+			proj := &devv1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+				Spec: devv1alpha1.ProjectSpec{
+					Repository: "xpkg.crossplane.io/example/test",
+					Dependencies: []devv1alpha1.Dependency{{
+						Type: devv1alpha1.DependencyTypeCRD,
+						HTTP: &devv1alpha1.HTTPDependency{URL: srv.URL + "/crd.yaml"},
+					}},
+				},
+			}
+			proj.Default()
+
+			schemaFS := afero.NewMemMapFs()
+			schemas := manager.New(schemaFS, []generator.Interface{perFileGenerator{}}, nil)
+			deps := dependency.NewManager(proj, projFS, dependency.WithXpkgClient(failingClient{t: t}))
+
+			if _, err := UpdateSchemas(t.Context(), schemas, deps, proj, projFS, nil, false); err != nil {
+				t.Fatalf("%s\nUpdateSchemas(...): %v", tc.reason, err)
+			}
+			if err := schemaFS.Remove(tc.args.remove); err != nil {
+				t.Fatal(err)
+			}
+
+			b := NewBuilder(
+				BuildWithFunctionIdentifier(functions.FakeIdentifier),
+				BuildWithSchemaManager(schemas),
+				BuildWithDependencyManager(deps),
+			)
+			if _, err := b.Build(t.Context(), proj, projFS); err != nil {
+				t.Fatalf("%s\nBuild(...): %v", tc.reason, err)
+			}
+
+			var got []string
+			for _, f := range []string{"fake/crd.yaml.txt", "fake/db.yaml.txt"} {
+				if ok, _ := afero.Exists(schemaFS, f); ok {
+					got = append(got, f)
+				}
+			}
+			if diff := cmp.Diff(tc.want.files, got); diff != "" {
+				t.Errorf("%s\ngenerated files (-want +got):\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+// xpkgDependency returns an xpkg dependency on the given package and version.
+func xpkgDependency(pkg, version string) *devv1alpha1.Dependency {
+	return &devv1alpha1.Dependency{
+		Type: devv1alpha1.DependencyTypeXpkg,
+		Xpkg: &devv1alpha1.XpkgDependency{APIVersion: "pkg.crossplane.io/v1", Kind: "Provider", Package: pkg, Version: version},
 	}
 }
 

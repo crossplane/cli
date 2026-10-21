@@ -44,15 +44,12 @@ import (
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/git"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/controlplane"
 	"github.com/crossplane/cli/v2/internal/project/functions"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
-	"github.com/crossplane/cli/v2/internal/schemas/manager"
-	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
-	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
 	_ "embed"
 )
@@ -62,6 +59,8 @@ var runHelp string
 
 // runCmd builds a project and runs it in a local dev control plane.
 type runCmd struct {
+	git.HTTPSAuthFlags `embed:""`
+
 	ProjectFile    string `default:"${project_file}"       help:"Path to project definition."                 short:"f"`
 	Repository     string `help:"Override the repository." optional:""`
 	MaxConcurrency uint   `default:"8"                     help:"Max concurrent builds."`
@@ -151,39 +150,13 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 
 	concurrency := max(1, c.MaxConcurrency)
 
-	schemasFS := afero.NewBasePathFs(c.projFS, c.proj.Spec.Paths.Schemas)
-	generators := generator.Filter(
-		generator.AllLanguages(
-			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
-		),
-		c.proj.Spec.Schemas.GetLanguages(),
-	)
-	schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs))
-	schemaMgr := manager.New(schemasFS, generators, schemaRunner)
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	client, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-		clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs),
+	schemaMgr := project.NewSchemaManager(c.proj, c.projFS, cfg.Features)
+	depMgr, err := dependency.NewCachedManager(c.proj, c.projFS, c.ProjectFile, c.CacheDir,
+		dependency.WithGitAuthProvider(c.AuthProvider()),
 	)
 	if err != nil {
 		return err
 	}
-	resolver := clixpkg.NewResolver(client)
-
-	depMgr := dependency.NewManager(c.proj, c.projFS,
-		dependency.WithProjectFile(c.ProjectFile),
-		dependency.WithSchemaFS(schemasFS),
-		dependency.WithSchemaGenerators(generators),
-		dependency.WithSchemaRunner(schemaRunner),
-		dependency.WithXpkgClient(client),
-		dependency.WithResolver(resolver),
-	)
 
 	// The builder may decompress function runtime tarballs into this directory;
 	// the built images read from it lazily, so we remove it only after they have

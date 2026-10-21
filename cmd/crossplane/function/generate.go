@@ -19,7 +19,6 @@ package function
 import (
 	"archive/tar"
 	"bytes"
-	"context"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -29,6 +28,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/alecthomas/kong"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/afero"
 	"github.com/spf13/afero/tarfs"
@@ -39,13 +39,9 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	v1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
-	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	"github.com/crossplane/cli/v2/internal/kcl"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
-	"github.com/crossplane/cli/v2/internal/schemas/manager"
-	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
@@ -148,33 +144,9 @@ func functionSchemaLanguage(functionLang string) string {
 }
 
 // Run generates a function scaffold.
-func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error {
+func (c *generateCmd) Run(k *kong.Context, sp terminal.SpinnerPrinter) error {
 	if err := c.validatePaths(); err != nil {
 		return err
-	}
-
-	ctx := context.Background()
-	apisFS := afero.NewBasePathFs(c.projFS, c.proj.Spec.Paths.APIs)
-	if c.proj.Spec.Paths.APIs == "/" {
-		apisFS = c.projFS
-	}
-	schemaMgr := manager.New(
-		c.schemasFS,
-		generator.Filter(
-			generator.AllLanguages(
-				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-				generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
-			),
-			c.proj.Spec.Schemas.GetLanguages(),
-		),
-		runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs)),
-	)
-
-	if err := sp.WrapWithSuccessSpinner("Generating schemas", func() error {
-		_, err := schemaMgr.Generate(ctx, manager.NewFSSource(c.proj.Spec.Paths.APIs, apisFS))
-		return err
-	}); err != nil {
-		return errors.Wrap(err, "failed to generate schemas")
 	}
 
 	type generatorFunc func(afero.Fs) error
@@ -234,7 +206,24 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 		}
 	}
 
+	// The function imports the project's schemas. This command doesn't generate
+	// them, so that only `crossplane schema update` changes the schema lock.
+	schemaLang := functionSchemaLanguage(c.Language)
+	if populated, err := c.hasSchemas(schemaLang); err == nil && !populated {
+		fmt.Fprintf(k.Stdout, "No %s schemas found; run `crossplane schema update` so the function can import them.\n", schemaLang) //nolint:errcheck // Best-effort output.
+	}
 	return nil
+}
+
+// hasSchemas returns true if the project has generated schemas for the given
+// language.
+func (c *generateCmd) hasSchemas(lang string) (bool, error) {
+	exists, err := afero.DirExists(c.schemasFS, lang)
+	if err != nil || !exists {
+		return false, err
+	}
+	empty, err := afero.IsEmpty(c.schemasFS, lang)
+	return !empty, err
 }
 
 func (c *generateCmd) validatePaths() error {

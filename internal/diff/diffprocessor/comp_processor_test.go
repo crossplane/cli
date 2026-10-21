@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	gcmp "github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -1270,6 +1271,70 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_RevisionName(t *testing.T) {
 				t.Errorf("%s\ncollectXRDiffs() modified the supplied composite (-before +after):\n%s", tt.reason, diff)
 			}
 		})
+	}
+}
+
+// TestDefaultCompDiffProcessor_collectXRDiffs_PerXR covers XRTimeout and AfterXRDiff in comp: each
+// affected composite gets its own deadline and fails alone, with no diffs, and the hook sees each
+// successful composite's diffs.
+func TestDefaultCompDiffProcessor_collectXRDiffs_PerXR(t *testing.T) {
+	slow := tu.NewResource("example.org/v1", "XResource", "slow").Build()
+	fast := tu.NewResource("example.org/v1", "XResource", "fast").Build()
+	failing := tu.NewResource("example.org/v1", "XResource", "failing").Build()
+	diff := &dt.ResourceDiff{ResourceName: "cm", DiffType: dt.DiffTypeAdded}
+
+	var hooked []string
+	processor := &DefaultCompDiffProcessor{
+		xrProc: &tu.MockDiffProcessor{
+			DiffSingleResourceFn: func(ctx context.Context, xr *un.Unstructured, _ types.CompositionProvider) (map[string]*dt.ResourceDiff, error) {
+				if xr.GetName() == "slow" {
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}
+				return map[string]*dt.ResourceDiff{xr.GetName(): diff}, nil
+			},
+		},
+		config: ProcessorConfig{
+			Logger:    tu.TestLogger(t, false),
+			XRTimeout: 50 * time.Millisecond,
+			AfterXRDiff: func(_ context.Context, diffs map[string]*dt.ResourceDiff) error {
+				for name := range diffs {
+					hooked = append(hooked, name)
+					if name == "failing" {
+						return errors.New("plan failed")
+					}
+				}
+				return nil
+			},
+		},
+	}
+
+	comp := tu.NewComposition("comp").WithCompositeTypeRef("example.org/v1", "XResource").WithPipelineMode().BuildAsUnstructured()
+	results := processor.collectXRDiffs(t.Context(), []*un.Unstructured{slow, fast, failing}, comp, "", nil)
+
+	got := map[string]string{}
+	for _, xr := range []*un.Unstructured{slow, fast, failing} {
+		r := results[dt.MakeDiffKeyFromResource(xr)]
+		if r.Error != nil {
+			if len(r.Diffs) != 0 {
+				t.Errorf("collectXRDiffs(): failed composite %s carries diffs", xr.GetName())
+			}
+			got[xr.GetName()] = r.Error.Error()
+			continue
+		}
+		got[xr.GetName()] = fmt.Sprintf("%d diffs", len(r.Diffs))
+	}
+
+	want := map[string]string{
+		"slow":    "unable to process resource example.org/v1/XResource//slow: timed out after 50ms: context deadline exceeded",
+		"fast":    "1 diffs",
+		"failing": "unable to process resource example.org/v1/XResource//failing: plan failed",
+	}
+	if diff := gcmp.Diff(want, got); diff != "" {
+		t.Errorf("collectXRDiffs(): -want, +got:\n%s", diff)
+	}
+	if diff := gcmp.Diff([]string{"fast", "failing"}, hooked); diff != "" {
+		t.Errorf("collectXRDiffs(): AfterXRDiff calls -want, +got:\n%s", diff)
 	}
 }
 

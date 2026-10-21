@@ -851,8 +851,41 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 		validator *validation
 		// failRender names an input XR whose render fails.
 		failRender string
+		// slowRender names an input XR whose render runs until its context ends.
+		slowRender string
+		xrTimeout  time.Duration
+		afterXR    func(context.Context, map[string]*dt.ResourceDiff) error
 		want       got
 	}{
+		// An XR that runs out of its own XRTimeout fails alone, as a failed render does; the next
+		// one still renders.
+		"XRTimeoutFailsOnlyThatXR": {
+			resources:  []*un.Unstructured{xr("my-xr-1"), xr("my-xr-2")},
+			slowRender: "my-xr-1",
+			xrTimeout:  50 * time.Millisecond,
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("my-xr-1"), ref("my-xr-2")},
+				GroupErrs:  map[string]string{"my-xr-1": "timed out after 50ms: cannot calculate diffs for composed resources: context deadline exceeded"},
+				GlobalErrs: []string{"timed out after 50ms: cannot calculate diffs for composed resources: context deadline exceeded"},
+				Err:        "unable to process resource XR1/my-xr-1: timed out after 50ms: cannot calculate diffs for composed resources: context deadline exceeded",
+			},
+		},
+		// An AfterXRDiff error fails its XR with none of its diffs, as a failed render does.
+		"AfterXRDiffErrorFailsTheXR": {
+			resources: []*un.Unstructured{xr("my-xr-1")},
+			afterXR: func(_ context.Context, diffs map[string]*dt.ResourceDiff) error {
+				if diffs[sharedKey] == nil {
+					return errors.New("hook got no diffs")
+				}
+				return errors.New("plan failed")
+			},
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("my-xr-1")},
+				GroupErrs:  map[string]string{"my-xr-1": "plan failed"},
+				GlobalErrs: []string{"plan failed"},
+				Err:        "unable to process resource XR1/my-xr-1: plan failed",
+			},
+		},
 		// An input ToRender already rejected is not rendered; its verdict is a group error, in errors[],
 		// and on the returned error.
 		"InputRejectedBeforeRenderingIsNotRendered": {
@@ -975,9 +1008,13 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 				}),
 				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter) DiffCalculator {
 					return &tu.MockDiffCalculator{
-						CalculateNonRemovalDiffsFn: func(_ context.Context, rendered *cmp.Unstructured, _ render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+						CalculateNonRemovalDiffsFn: func(ctx context.Context, rendered *cmp.Unstructured, _ render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 							if rendered.GetName() == tt.failRender {
 								return nil, types.RenderedResources{}, errors.New("render failed")
+							}
+							if rendered.GetName() == tt.slowRender {
+								<-ctx.Done()
+								return nil, types.RenderedResources{}, ctx.Err()
 							}
 
 							diff := bucket("parent", "same", rendered.GetName())
@@ -990,6 +1027,8 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 					}
 				}),
 			)
+
+			opts = append(opts, WithXRTimeout(tt.xrTimeout), WithAfterXRDiff(tt.afterXR))
 
 			if v := tt.validator; v != nil {
 				opts = append(opts, WithInputValidatorFactory(func(dt.Advisories, []*un.Unstructured) InputValidator {

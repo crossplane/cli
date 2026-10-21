@@ -17,9 +17,12 @@ limitations under the License.
 package generator
 
 import (
+	"bytes"
 	"context"
+	"io/fs"
 	"maps"
 	"path"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -100,6 +103,13 @@ type rustGenerator struct{}
 
 func (rustGenerator) Language() string {
 	return devv1alpha1.SchemaLanguageRust
+}
+
+// Fingerprint reports that this generator has no output-affecting options. It
+// runs in-process, so its output changes only with the CLI version, which the
+// lock fingerprints separately.
+func (rustGenerator) Fingerprint() string {
+	return ""
 }
 
 // GenerateFromCRD generates Rust models for the XRDs and CRDs in the given
@@ -895,6 +905,62 @@ func rustWriteDoc(sb *strings.Builder, indent, doc string) {
 		}
 		sb.WriteString(indent + "/// " + line + "\n")
 	}
+}
+
+// MergeGeneratedSchemas combines the crates generated from several sources
+// into one. Each source's crate declares only its own modules, in src/lib.rs,
+// the mod.rs files and Cargo.toml's features, so those files differ between
+// sources and are rebuilt for the merged crate instead of copied. Every other
+// file is a model, which two sources may both emit, such as the shared
+// Kubernetes types, but must emit identically.
+func (rustGenerator) MergeGeneratedSchemas(parts []afero.Fs) (afero.Fs, error) {
+	out := afero.NewMemMapFs()
+	crateFS := afero.NewBasePathFs(out, rustModelsDir)
+	for _, part := range parts {
+		if part == nil {
+			continue
+		}
+		partCrate := afero.NewBasePathFs(part, rustModelsDir)
+		err := afero.Walk(partCrate, ".", func(p string, info fs.FileInfo, err error) error {
+			if err != nil || info.IsDir() || rustModuleTreeFile(p) {
+				return err
+			}
+			content, err := afero.ReadFile(partCrate, p)
+			if err != nil {
+				return err
+			}
+			existing, err := afero.ReadFile(crateFS, p)
+			switch {
+			case err == nil:
+				if !bytes.Equal(existing, content) {
+					return errors.Errorf("conflicting generated Rust file %s: two sources produced different content for it", p)
+				}
+				return nil
+			case !errors.Is(err, fs.ErrNotExist):
+				return err
+			}
+			if err := crateFS.MkdirAll(path.Dir(p), 0o755); err != nil {
+				return err
+			}
+			return afero.WriteFile(crateFS, p, content, 0o644)
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := BuildRustModuleTree(crateFS); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// rustModuleTreeFile reports whether a path in a generated crate is one that
+// BuildRustModuleTree writes: the manifest, src/lib.rs, or a mod.rs. No model
+// file is named like these, since "mod" and "lib" are escaped (see
+// rustFileStem).
+func rustModuleTreeFile(p string) bool {
+	p = filepath.ToSlash(p)
+	return p == "Cargo.toml" || p == rustSrcDir+"/lib.rs" || path.Base(p) == "mod.rs"
 }
 
 // BuildRustModuleTree rewrites everything about the generated Rust crate rooted

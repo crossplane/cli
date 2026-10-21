@@ -640,7 +640,11 @@ func (m *Manager) stageTree(lang string) (map[string]string, error) {
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot merge the %s schemas of the project's dependencies and its own APIs", lang)
 		}
-		if err := copyParts(parts, treeStage); err != nil {
+		// The merged tree is assembled like any other: the cache holds
+		// verbatim generator output, and the models/ prefix most generators
+		// use (Rust and TypeScript included) is stripped here, once, so it
+		// can never be stripped twice.
+		if err := copyPartsStrippingModels(parts, treeStage); err != nil {
 			return nil, errors.Wrapf(err, "failed to assemble the %s tree", lang)
 		}
 	} else {

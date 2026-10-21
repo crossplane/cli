@@ -70,8 +70,7 @@ type simArgs struct {
 	Timeout                time.Duration `default:"1m"                                                         help:"How long to run before timing out."`
 	CrossplaneRenderBinary string        `help:"Local crossplane binary to render with."                       name:"crossplane-render-binary"`
 	Namespace              string        `help:"Namespace of the composite resources."`
-	Output                 string        `default:"diff"                                                       enum:"diff,json,yaml"                     help:"Output format (diff, json, or yaml)."                            name:"output"         short:"o"`
-	OutputVersion          string        `default:"v1"                                                         enum:"v1,v2"                              help:"Schema version of structured (-o json|yaml) output (v1 or v2)."  name:"output-version"`
+	Output                 string        `default:"diff"                                                       enum:"diff,json,yaml"                     help:"Output format (diff, json, or yaml)."                            name:"output"     short:"o"`
 	NoColor                bool          `help:"Disable colorized output."                                     name:"no-color"`
 	IgnorePaths            []string      `help:"Paths to ignore in diffs."                                     name:"ignore-paths"`
 	FunctionCredentials    string        `help:"Secret credentials to pass to Functions."                      name:"function-credentials"               placeholder:"PATH"`
@@ -121,9 +120,8 @@ func simulateGap(_ DiffTestType, a *simArgs) string {
 // simulate's: the input files as -f, a single --resource as --name (and
 // --namespace), --include-manual as --include-pinned, and
 // --analyze-unchanged as its replacement --analyze-on=always. The output
-// stays crossplane-diff's: its default diff is passed explicitly, since
-// simulate defaults to -o plan, and json or yaml always carry
-// --output-version, which selects its structured schema over plan.Result.
+// is passed explicitly: crossplane-diff's default diff, since simulate
+// defaults to -o plan, and json or yaml as plan.Result.
 func simulateArgv(t *testing.T, a *simArgs) []string {
 	t.Helper()
 
@@ -132,9 +130,6 @@ func simulateArgv(t *testing.T, a *simArgs) []string {
 		"--timeout=" + a.Timeout.String(),
 		"--output=" + a.Output,
 		"--dry-run-on=" + a.DryRunOn,
-	}
-	if a.Output != "diff" {
-		argv = append(argv, "--output-version="+a.OutputVersion)
 	}
 	for _, f := range a.Files {
 		argv = append(argv, "-f", f)

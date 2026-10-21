@@ -41,6 +41,7 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/diff/types"
+	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
 func TestDefaultCompDiffProcessor_findResourcesUsingComposition(t *testing.T) {
@@ -199,12 +200,11 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 	}
 
 	tests := map[string]struct {
-		compositions  []*un.Unstructured
-		namespace     string
-		analyzeOn     AnalyzeOn
-		outputFormat  renderer.OutputFormat
-		outputVersion renderer.OutputVersion
-		setupMocks    func() xp.Clients
+		compositions []*un.Unstructured
+		namespace    string
+		analyzeOn    AnalyzeOn
+		outputFormat renderer.OutputFormat
+		setupMocks   func() xp.Clients
 		// verifyOutput runs whether or not DiffComposition returns an error, since a failed composition
 		// is still reported, and so still rendered.
 		verifyOutput func(t *testing.T, output string)
@@ -212,18 +212,16 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 		// wantErrContains, when set, must appear in the returned error.
 		wantErrContains string
 	}{
-		// In v2 a composition that fails to process carries its error as a structured errors[] entry,
-		// and the top-level errors[] lists it too.
-		"FailedCompositionReportsStructuredErrorsV2": {
-			namespace:     "default",
-			compositions:  []*un.Unstructured{malformedComp()},
-			outputFormat:  renderer.OutputFormatJSON,
-			outputVersion: renderer.OutputVersionV2,
-			setupMocks:    singleXRMocks,
+		// A composition that fails to process carries its error on its plan, and the top-level errors[]
+		// lists it too.
+		"FailedCompositionReportsStructuredErrors": {
+			namespace:    "default",
+			compositions: []*un.Unstructured{malformedComp()},
+			outputFormat: renderer.OutputFormatJSON,
+			setupMocks:   singleXRMocks,
 			verifyOutput: func(t *testing.T, output string) {
 				t.Helper()
 				tu.AssertStructuredCompDiff(t, output, tu.ExpectCompDiff().
-					WithOutputVersion("v2").
 					WithError("Composition/test-composition").
 					WithComposition("test-composition").
 					WithCompositionErrorContaining("cannot convert composition"))
@@ -486,7 +484,7 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 			}
 
 			if tt.verifyOutput != nil {
-				tt.verifyOutput(t, renderCompReport(t, output, tt.outputFormat, tt.outputVersion))
+				tt.verifyOutput(t, renderCompReport(t, output, tt.outputFormat))
 			}
 		})
 	}
@@ -2112,14 +2110,23 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 	})
 }
 
-// renderCompReport renders a DiffComposition report the way the comp command does, in the given format
-// (empty means the human-readable diff) and structured output version (empty means the default), and
-// returns what it wrote to stdout.
-func renderCompReport(t *testing.T, output *dt.CompDiffOutput, format renderer.OutputFormat, version renderer.OutputVersion) string {
+// renderCompReport renders a DiffComposition report in the given format (empty means the
+// human-readable diff) and returns what it wrote to stdout. JSON is project simulate's: the report
+// mapped onto plan.Result.
+func renderCompReport(t *testing.T, output *dt.CompDiffOutput, format renderer.OutputFormat) string {
 	t.Helper()
 
 	if output == nil {
 		return ""
+	}
+
+	if format == renderer.OutputFormatJSON {
+		out, err := json.Marshal(simulate.FromCompReport(output))
+		if err != nil {
+			t.Fatalf("json.Marshal(): %v", err)
+		}
+
+		return string(out)
 	}
 
 	var stdout bytes.Buffer
@@ -2131,10 +2138,6 @@ func renderCompReport(t *testing.T, output *dt.CompDiffOutput, format renderer.O
 
 	if format != "" {
 		opts.Format = format
-	}
-
-	if version != "" {
-		opts.OutputVersion = version
 	}
 
 	logger := tu.TestLogger(t, false)

@@ -104,7 +104,7 @@ func TestSimulateFlags(t *testing.T) {
 			args: []string{
 				"-f", "p.yaml", "-c", "staging", "-n", "team-a", "--name", "db",
 				"--include-pinned", "--max-iterations", "3", "--timeout", "2m",
-				"--max-concurrency", "2", "-o", "json", "--output-version", "v2", "--crossplane-version", "v2.3.4",
+				"--max-concurrency", "2", "-o", "json", "--crossplane-version", "v2.3.4",
 				"--as", "jane", "--as-group", "admins",
 			},
 			want: want{cmd: &simulateCmd{
@@ -117,7 +117,6 @@ func TestSimulateFlags(t *testing.T) {
 				Timeout:           2 * time.Minute,
 				MaxConcurrency:    2,
 				Output:            "json",
-				OutputVersion:     "v2",
 				CrossplaneVersion: "v2.3.4",
 				MaxNestedDepth:    10,
 				DryRunOn:          "all",
@@ -198,43 +197,9 @@ func TestSimulateFlags(t *testing.T) {
 				DryRunOn:       "all",
 			}},
 		},
-		"UnknownOutputVersion": {
-			reason: "Structured output schema versions other than v1 and v2 should be rejected.",
-			args:   []string{"--output-version", "v3"},
-			want:   want{err: true},
-		},
 		"UnknownOutput": {
 			reason: "Output formats other than plan, diff, json and yaml should be rejected.",
 			args:   []string{"-o", "xml"},
-			want:   want{err: true},
-		},
-		"OutputVersionWithStructuredOutput": {
-			reason: "--output-version should be accepted with -o yaml.",
-			args:   []string{"-o", "yaml", "--output-version", "v1"},
-			want: want{cmd: &simulateCmd{
-				Input:          []string{"crossplane-project.yaml"},
-				MaxConcurrency: 8,
-				MaxIterations:  dp.DefaultMaxRenderIterations,
-				Timeout:        time.Minute,
-				Output:         "yaml",
-				OutputVersion:  "v1",
-				MaxNestedDepth: 10,
-				DryRunOn:       "all",
-			}},
-		},
-		"OutputVersionWithDefaultOutput": {
-			reason: "--output-version should be rejected with the default -o plan, which has no structured schema.",
-			args:   []string{"--output-version", "v1"},
-			want:   want{err: true},
-		},
-		"OutputVersionWithPlan": {
-			reason: "--output-version should be rejected with -o plan.",
-			args:   []string{"-o", "plan", "--output-version", "v2"},
-			want:   want{err: true},
-		},
-		"OutputVersionWithDiff": {
-			reason: "--output-version should be rejected with -o diff.",
-			args:   []string{"-o", "diff", "--output-version", "v1"},
 			want:   want{err: true},
 		},
 		"ZeroIterations": {
@@ -439,19 +404,18 @@ func TestSimulateDiffOptions(t *testing.T) {
 		want   func(o *renderer.DiffOptions)
 	}{
 		"UnsetFlagsSelectHumanDiff": {
-			reason: "Unset flags should select the human-readable diff and the renderer's default output version, uncolorized off a terminal.",
+			reason: "Unset flags should select the human-readable diff, uncolorized off a terminal.",
 			want: func(o *renderer.DiffOptions) {
 				o.UseColors = false
 			},
 		},
 		"StructuredFlagsCarryThrough": {
-			reason: "The format, version and compact flags should reach the renderer.",
-			cmd:    simulateCmd{Output: "json", OutputVersion: "v2", NoColor: true, Compact: true},
+			reason: "The format and compact flags should reach the renderer.",
+			cmd:    simulateCmd{Output: "json", NoColor: true, Compact: true},
 			want: func(o *renderer.DiffOptions) {
 				o.UseColors = false
 				o.Compact = true
 				o.Format = renderer.OutputFormatJSON
-				o.OutputVersion = renderer.OutputVersionV2
 			},
 		},
 		"UnknownFormatFallsBackToHumanDiff": {
@@ -495,8 +459,8 @@ func TestSimulateDiffOptions(t *testing.T) {
 }
 
 // TestSimulateRenderReports pins which renderer each -o value selects, for
-// both report types: plan.Result for plan, json and yaml, the engine's human
-// diff for diff, and its v1/v2 schema only under --output-version.
+// both report types: plan.Result for plan, json and yaml, and the engine's
+// human diff for diff.
 func TestSimulateRenderReports(t *testing.T) {
 	xr := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
 	cm := &un.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": "cm"}, "data": map[string]any{"k": "v"}}}
@@ -565,18 +529,6 @@ func TestSimulateRenderReports(t *testing.T) {
 			cmd:      simulateCmd{Output: "diff"},
 			wantXR:   contains("+++ ConfigMap/cm", "Summary: 1 added"),
 			wantComp: contains("=== Composition Changes ===", "=== Affected Composite Resources ==="),
-		},
-		"JSONWithOutputVersion": {
-			reason:   "-o json with --output-version should print the engine's structured schema at that version.",
-			cmd:      simulateCmd{Output: "json", OutputVersion: "v2"},
-			wantXR:   contains(`"outputVersion": "v2"`),
-			wantComp: contains(`"outputVersion": "v2"`),
-		},
-		"YAMLWithOutputVersion": {
-			reason:   "-o yaml with --output-version should print the engine's structured schema at that version.",
-			cmd:      simulateCmd{Output: "yaml", OutputVersion: "v1"},
-			wantXR:   contains("outputVersion: v1"),
-			wantComp: contains("outputVersion: v1"),
 		},
 	}
 

@@ -80,10 +80,6 @@ type simulateCmd struct {
 	MaxIterations int           `default:"20"                                                                                                          help:"Max render iterations per composite resource to resolve requirements."`
 	Timeout       time.Duration `default:"1m"                                                                                                          help:"Max time for the simulation, not counting function builds."`
 	Output        string        `default:"plan"                                                                                                        enum:"plan,diff,json,yaml"                                                   help:"Output format. One of: plan, diff, json, yaml." short:"o"`
-	// ponytail: OutputVersion keeps crossplane-diff's v1/v2 structured schema
-	// reachable while the integration tests still assert on it. It goes once
-	// they assert on plan.Result.
-	OutputVersion string `default:"" enum:",v1,v2" help:"Emit crossplane-diff's structured schema (v1 or v2) for -o json|yaml instead of the plan result." hidden:""`
 
 	NoColor                  bool                `help:"Disable colorized output."`
 	Compact                  bool                `help:"Show compact diffs with minimal context."`
@@ -192,9 +188,6 @@ func (c *simulateCmd) Help() string {
 func (c *simulateCmd) Validate() error {
 	if c.MaxIterations < 1 {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
-	}
-	if c.OutputVersion != "" && c.Output != plan.FormatJSON && c.Output != plan.FormatYAML {
-		return errors.Errorf("--output-version selects a structured schema, so it applies only with -o json or -o yaml, not -o %s", c.Output)
 	}
 
 	// The two flags are mutually exclusive (kong xor), so at most one of
@@ -650,23 +643,15 @@ func (c *simulateCmd) diffOptions(k *kong.Context) renderer.DiffOptions {
 		opts.Format = renderer.OutputFormatDiff
 	}
 
-	if c.OutputVersion != "" {
-		opts.OutputVersion = renderer.OutputVersion(c.OutputVersion)
-	}
-
 	return opts
 }
 
 // renderXRReport writes an xr or project run's report in the format -o
-// selects: the engine's human diff for diff, its v1/v2 structured schema for
-// json or yaml when --output-version is set, and plan.Result otherwise.
+// selects: the engine's human diff for diff, and plan.Result otherwise.
 func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport) error {
 	opts := c.diffOptions(k)
-	switch {
-	case c.Output == string(renderer.OutputFormatDiff):
+	if c.Output == string(renderer.OutputFormatDiff) {
 		return renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
-	case c.OutputVersion != "":
-		return renderer.NewStructuredDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
 	}
 	return c.renderPlan(k, simulate.FromXRReport(r), dt.XRDryRunWarnings(r.Groups))
 }
@@ -676,11 +661,8 @@ func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *
 func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput) error {
 	opts := c.diffOptions(k)
 	opts.MinimizeComposition = c.MinimizeComposition
-	switch {
-	case c.Output == string(renderer.OutputFormatDiff):
+	if c.Output == string(renderer.OutputFormatDiff) {
 		return renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts).RenderCompDiff(o)
-	case c.OutputVersion != "":
-		return renderer.NewStructuredCompDiffRenderer(logger, opts).RenderCompDiff(o)
 	}
 	return c.renderPlan(k, simulate.FromCompReport(o), dt.CompDryRunWarnings(o))
 }

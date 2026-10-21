@@ -49,11 +49,19 @@ type DiffOptions struct {
 	// per composition, omitting the full YAML diff body. Only consumed by the
 	// human-readable composition diff renderer; structured output is unaffected.
 	MinimizeComposition bool
-
-	// OutputVersion selects the schema of structured (JSON/YAML) output. Empty means
-	// OutputVersionV1. The human-readable diff format ignores it.
-	OutputVersion OutputVersion
 }
+
+// OutputFormat represents the desired output format for diffs.
+type OutputFormat string
+
+const (
+	// OutputFormatDiff is the default human-readable diff format.
+	OutputFormatDiff OutputFormat = "diff"
+	// OutputFormatJSON outputs structured JSON.
+	OutputFormatJSON OutputFormat = "json"
+	// OutputFormatYAML outputs structured YAML.
+	OutputFormatYAML OutputFormat = "yaml"
+)
 
 // DefaultDiffOptions returns the default options with colors enabled.
 func DefaultDiffOptions() DiffOptions {
@@ -61,7 +69,6 @@ func DefaultDiffOptions() DiffOptions {
 		Stdout:         os.Stdout,
 		Stderr:         os.Stderr,
 		Format:         OutputFormatDiff,
-		OutputVersion:  OutputVersionV1,
 		UseColors:      true,
 		AddPrefix:      "+ ",
 		DeletePrefix:   "- ",

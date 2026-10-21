@@ -67,9 +67,6 @@ func diffs(ds ...*dt.ResourceDiff) map[string]*dt.ResourceDiff {
 	return m
 }
 
-//go:fix inline
-func ref(p plan.ResourceRef) *plan.ResourceRef { return new(p) }
-
 func notes() []string { return []string{noteProviderPlanNotRun} }
 
 func TestFromXRReport(t *testing.T) {

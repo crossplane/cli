@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -85,8 +84,11 @@ type Manager struct {
 	// visitedMu and reset with visited.
 	collected map[string][]string
 
-	// warnings receives non-fatal problems found while collecting sources.
-	warnings io.Writer
+	// warnings are the non-fatal problems the last source collection found.
+	// They are kept rather than printed, because collection runs under a
+	// spinner that owns the terminal; see PrintWarnings. Guarded by
+	// visitedMu and reset with visited.
+	warnings []string
 }
 
 // ManagerOption configures the dependency manager.
@@ -100,7 +102,6 @@ type managerOptions struct {
 	gitAuthProvider  git.AuthProvider
 	client           runtimexpkg.Client
 	resolver         *clixpkg.Resolver
-	warnings         io.Writer
 }
 
 // WithProjectFile sets the path to the project file.
@@ -154,14 +155,6 @@ func WithResolver(r *clixpkg.Resolver) ManagerOption {
 	}
 }
 
-// WithWarningWriter sets where non-fatal problems found while collecting
-// schema sources are written. The default is os.Stderr.
-func WithWarningWriter(w io.Writer) ManagerOption {
-	return func(opts *managerOptions) {
-		opts.warnings = w
-	}
-}
-
 // NewManager returns an initialized dependency manager. The default schema
 // generators are configured with every generator option off, so a caller that
 // generates schemas must pass WithSchemaGenerators to honor the feature flags
@@ -175,7 +168,6 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 			runner.WithImageConfig(proj.Spec.ImageConfigs),
 		),
 		gitAuthProvider: &git.HTTPSAuthProvider{},
-		warnings:        os.Stderr,
 	}
 
 	for _, opt := range opts {
@@ -200,7 +192,6 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 		visited:         make(map[string]struct{}),
 		collected:       make(map[string][]string),
 		fetched:         make(map[string]*runtimexpkg.Package),
-		warnings:        options.warnings,
 	}
 }
 
@@ -315,6 +306,25 @@ func (m *Manager) resetVisited() {
 	defer m.visitedMu.Unlock()
 	m.visited = make(map[string]struct{})
 	m.collected = make(map[string][]string)
+	m.warnings = nil
+}
+
+// Warnings returns the non-fatal problems the last source collection found,
+// such as a package resolved to more than one version.
+func (m *Manager) Warnings() []string {
+	m.visitedMu.Lock()
+	defer m.visitedMu.Unlock()
+	return slices.Clone(m.warnings)
+}
+
+// PrintWarnings writes the last source collection's warnings to w, one per
+// line. Commands call it once their spinners have stopped: collection runs
+// under a spinner, and a warning written to the same terminal mid-spin would
+// be garbled by it.
+func (m *Manager) PrintWarnings(w io.Writer) {
+	for _, warning := range m.Warnings() {
+		_, _ = fmt.Fprintln(w, "warning: "+warning)
+	}
 }
 
 // dependencyRepo returns the OCI repository of a package metadata dependency,
@@ -562,7 +572,7 @@ func (m *Manager) warnMultipleVersions() {
 		for i := range versions {
 			versions[i] = strings.TrimLeft(versions[i], ":@")
 		}
-		_, _ = fmt.Fprintf(m.warnings, "warning: the project's dependencies resolve %s to more than one version (%s); schemas are generated from all of them, which can produce conflicting models for the kinds they share. Align the version constraints so they resolve to one version.\n", repo, strings.Join(versions, ", "))
+		m.warnings = append(m.warnings, fmt.Sprintf("the project's dependencies resolve %s to more than one version (%s); schemas are generated from all of them, which can produce conflicting models for the kinds they share. Align the version constraints so they resolve to one version.", repo, strings.Join(versions, ", ")))
 	}
 }
 

@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/spf13/afero"
 )
 
@@ -38,9 +40,14 @@ func TestRustMergeGeneratedSchemas(t *testing.T) {
 	}
 
 	cases := map[string]struct {
-		reason  string
-		parts   []map[string]string
-		wantErr string
+		reason string
+		parts  []map[string]string
+		// wantErr is cmpopts.AnyError if merging must fail.
+		wantErr error
+		// errMsg is part of the error message. The error is built with
+		// errors.Errorf, so there is no sentinel to compare against, and the
+		// message naming the conflicting file is the behavior under test.
+		errMsg string
 		// wantLib are lines src/lib.rs must contain.
 		wantLib []string
 	}{
@@ -58,7 +65,8 @@ func TestRustMergeGeneratedSchemas(t *testing.T) {
 				{"models/src/io/objectmeta.rs": "one"},
 				{"models/src/io/objectmeta.rs": "two"},
 			},
-			wantErr: "conflicting generated Rust file src/io/objectmeta.rs",
+			wantErr: cmpopts.AnyError,
+			errMsg:  "conflicting generated Rust file src/io/objectmeta.rs",
 		},
 	}
 
@@ -71,14 +79,14 @@ func TestRustMergeGeneratedSchemas(t *testing.T) {
 				parts = append(parts, part(t, files))
 			}
 			merged, err := rustGenerator{}.MergeGeneratedSchemas(parts)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("%s\nwant error containing %q, got %v", tc.reason, tc.wantErr, err)
-				}
-				return
+			if diff := cmp.Diff(tc.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("%s\nMergeGeneratedSchemas(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
 			if err != nil {
-				t.Fatalf("%s\nMergeGeneratedSchemas(...): %v", tc.reason, err)
+				if !strings.Contains(err.Error(), tc.errMsg) {
+					t.Errorf("%s\nMergeGeneratedSchemas(...): error %q does not contain %q", tc.reason, err, tc.errMsg)
+				}
+				return
 			}
 			lib, err := afero.ReadFile(merged, "models/src/lib.rs")
 			if err != nil {

@@ -383,7 +383,7 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		return nil, errors.Wrap(err, "cannot load project functions")
 	}
 
-	if err := sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
+	buildErr := sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
 		schemasFS := afero.NewBasePathFs(projFS, proj.Spec.Paths.Schemas)
 		schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(proj.Spec.ImageConfigs))
 		schemaMgr := manager.New(schemasFS, generators, schemaRunner)
@@ -417,8 +417,12 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		embeddedFns, err := project.EmbeddedFunctionsToDaemon(ctx, imgMap)
 		fns = append(fns, embeddedFns...)
 		return err
-	}); err != nil {
-		return nil, errors.Wrap(err, "cannot build embedded functions")
+	})
+	// Collection warnings are printed once the spinner has stopped, failed or
+	// not: a warning can explain the failure.
+	depMgr.PrintWarnings(os.Stderr)
+	if buildErr != nil {
+		return nil, errors.Wrap(buildErr, "cannot build embedded functions")
 	}
 
 	return fns, nil

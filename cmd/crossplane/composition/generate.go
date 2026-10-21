@@ -19,6 +19,7 @@ package composition
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -121,9 +122,15 @@ func (c *generateCmd) AfterApply(cfg *config.Config) error {
 func (c *generateCmd) Run(sp terminal.SpinnerPrinter) error {
 	ctx := context.Background()
 
-	if err := sp.WrapWithSuccessSpinner("Ensuring function-auto-ready dependency", func() error {
+	err := sp.WrapWithSuccessSpinner("Ensuring function-auto-ready dependency", func() error {
 		return c.ensureFunctionAutoReady(ctx)
-	}); err != nil {
+	})
+	// Collection warnings are printed once the spinner has stopped, failed or
+	// not: a warning can explain the failure.
+	if c.depManager != nil {
+		c.depManager.PrintWarnings(os.Stderr)
+	}
+	if err != nil {
 		return errors.Wrap(err, "failed to ensure function-auto-ready dependency")
 	}
 

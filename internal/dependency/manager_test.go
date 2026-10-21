@@ -1243,12 +1243,12 @@ func TestManager_CollectSources_WarnsOnMultipleVersions(t *testing.T) {
 		WithSchemaGenerators([]generator.Interface{}),
 		WithXpkgClient(fc),
 		WithResolver(clixpkg.NewResolver(fc)),
-		WithWarningWriter(&warnings),
 	)
 
 	if _, err := m.CollectSources(context.Background(), nil); err != nil {
 		t.Fatalf("CollectSources: %v", err)
 	}
+	m.PrintWarnings(&warnings)
 	want := "warning: the project's dependencies resolve " + family + " to more than one version (v1.0.0, v1.1.0)"
 	if !strings.Contains(warnings.String(), want) {
 		t.Errorf("warnings = %q, want it to contain %q", warnings.String(), want)
@@ -1260,6 +1260,7 @@ func TestManager_CollectSources_WarnsOnMultipleVersions(t *testing.T) {
 	if _, err := m.CollectSources(context.Background(), nil); err != nil {
 		t.Fatalf("CollectSources: %v", err)
 	}
+	m.PrintWarnings(&warnings)
 	if got := strings.Count(warnings.String(), "warning:"); got != 1 {
 		t.Errorf("second collection printed %d warnings, want 1:\n%s", got, warnings.String())
 	}
@@ -1288,11 +1289,11 @@ func TestManager_CollectSources_NoWarningForOneVersion(t *testing.T) {
 		WithSchemaGenerators([]generator.Interface{}),
 		WithXpkgClient(fc),
 		WithResolver(clixpkg.NewResolver(fc)),
-		WithWarningWriter(&warnings),
 	)
 	if _, err := m.CollectSources(context.Background(), nil); err != nil {
 		t.Fatalf("CollectSources: %v", err)
 	}
+	m.PrintWarnings(&warnings)
 	if warnings.Len() != 0 {
 		t.Errorf("unexpected warnings: %s", warnings.String())
 	}

@@ -18,6 +18,7 @@ package dependency
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -108,9 +109,13 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 
 	desc := dependency.GetSourceDescription(dep)
 	logger.Debug("Adding dependency", "dependency", desc)
-	return sp.WrapWithSuccessSpinner("Adding "+desc, func() error {
+	err = sp.WrapWithSuccessSpinner("Adding "+desc, func() error {
 		return m.AddDependency(ctx, &dep)
 	})
+	// Collection warnings are printed once the spinner has stopped, failed or
+	// not: a warning can explain the failure.
+	m.PrintWarnings(os.Stderr)
+	return err
 }
 
 func (c *addCmd) buildDependency() (v1alpha1.Dependency, error) {

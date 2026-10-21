@@ -23,6 +23,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -198,8 +199,10 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 		runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs)),
 	)
 
-	if err := sp.WrapWithSuccessSpinner("Generating schemas", func() error {
-		depMgr, err := c.newDependencyManager(cfg)
+	var depMgr *dependency.Manager
+	err := sp.WrapWithSuccessSpinner("Generating schemas", func() error {
+		var err error
+		depMgr, err = c.newDependencyManager(cfg)
 		if err != nil {
 			return err
 		}
@@ -214,7 +217,13 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 			return errors.Wrap(err, "cannot fetch the project's dependencies, whose models the function needs; check network access and registry credentials")
 		}
 		return schemaMgr.GenerateFromMultipleSources(ctx, depSources, manager.NewProjectAPIsSource(c.projFS, c.proj.Spec.Paths))
-	}); err != nil {
+	})
+	// Collection warnings are printed once the spinner has stopped, failed or
+	// not: a warning can explain the failure.
+	if depMgr != nil {
+		depMgr.PrintWarnings(os.Stderr)
+	}
+	if err != nil {
 		return errors.Wrap(err, "failed to generate schemas")
 	}
 

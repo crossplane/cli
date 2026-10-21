@@ -19,6 +19,7 @@ package dependency
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/alecthomas/kong"
@@ -106,9 +107,13 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 	m := dependency.NewManager(proj, projFS, opts...)
 
 	logger.Debug("Updating all dependencies")
-	return sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
+	err = sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
 		return m.RefreshAll(ctx, ch)
 	})
+	// Collection warnings are printed once the spinner has stopped, failed or
+	// not: a warning can explain the failure.
+	m.PrintWarnings(os.Stderr)
+	return err
 }
 
 //go:embed help/clean-cache.md

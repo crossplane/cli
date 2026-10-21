@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
@@ -86,7 +85,7 @@ func newCursor(root string) cursor {
 }
 
 func (c cursor) field(k string) cursor {
-	next := cursor{str: c.str + "." + k, fp: c.fp, inList: c.inList}
+	next := cursor{str: JoinKey(c.str, k), fp: c.fp, inList: c.inList}
 	if !c.inList {
 		next.fp = append(slices.Clip(c.fp), fieldpath.PathElement{FieldName: &k})
 	}
@@ -109,11 +108,7 @@ func (c cursor) removable(owned *fieldpath.Set) bool {
 // actual-only changes, as for a delete; a nil actual yields planned-only
 // changes, as for a create.
 func FieldChanges(actual, planned map[string]any) []FieldChange {
-	out := diffMaps(cursor{}, actual, planned, nil)
-	for i := range out {
-		out[i].Path = strings.TrimPrefix(out[i].Path, ".")
-	}
-	return out
+	return diffMaps(cursor{}, actual, planned, nil)
 }
 
 // createChanges flattens a desired map into planned-only field changes, so a

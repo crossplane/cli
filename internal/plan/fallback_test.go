@@ -307,3 +307,78 @@ func TestFieldChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestFallbackObjects(t *testing.T) {
+	desired := mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.1.0.0/16"}})
+	live := mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}})
+
+	t.Run("Update", func(t *testing.T) {
+		got := Fallback(desired, live, "test")
+		if diff := cmp.Diff(live, got.Before); diff != "" {
+			t.Errorf("Fallback(...).Before: -want live, +got:\n%s", diff)
+		}
+		if diff := cmp.Diff(desired, got.After); diff != "" {
+			t.Errorf("Fallback(...).After: -want desired, +got:\n%s", diff)
+		}
+	})
+
+	t.Run("Create", func(t *testing.T) {
+		if got := Fallback(desired, nil, "test"); got.Before != nil {
+			t.Errorf("Fallback(...).Before: want nil for a create, got %v", got.Before)
+		}
+	})
+}
+
+func TestRedactSecret(t *testing.T) {
+	secret := func(data, stringData any) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "s"}}}
+		if data != nil {
+			u.Object["data"] = data
+		}
+		if stringData != nil {
+			u.Object["stringData"] = stringData
+		}
+		return u
+	}
+
+	cases := map[string]struct {
+		reason string
+		in     *unstructured.Unstructured
+		want   *unstructured.Unstructured
+	}{
+		"Nil": {
+			reason: "Nil stays nil.",
+		},
+		"NotASecret": {
+			reason: "Any other kind is returned as is.",
+			in:     mr(map[string]any{"data": map[string]any{"k": "v"}}),
+			want:   mr(map[string]any{"data": map[string]any{"k": "v"}}),
+		},
+		"Secret": {
+			reason: "Each data and stringData value is redacted; keys and other fields stay.",
+			in:     secret(map[string]any{"a": "x", "b": "y"}, map[string]any{"c": "z"}),
+			want:   secret(map[string]any{"a": "(sensitive value)", "b": "(sensitive value)"}, map[string]any{"c": "(sensitive value)"}),
+		},
+		"MalformedData": {
+			reason: "A data field that is not a map is redacted whole.",
+			in:     secret("raw", nil),
+			want:   secret("(sensitive value)", nil),
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var before *unstructured.Unstructured
+			if tc.in != nil {
+				before = tc.in.DeepCopy()
+			}
+			got := RedactSecret(tc.in)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("\n%s\nRedactSecret(...): -want, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(before, tc.in); diff != "" {
+				t.Errorf("\n%s\nRedactSecret(...): must not modify its input: -before, +after:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

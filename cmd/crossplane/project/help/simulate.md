@@ -42,6 +42,36 @@ composite resources a Composition change reaches, so composite resource files
 don't take them. `--max-concurrency` and `--cache-dir` configure the project's
 function builds, so only a project file takes them.
 
+The `-o` flag picks the output format:
+
+- `plan`, the default, prints each change as a field-level plan, grouped under
+  the composite resource it belongs to. A changed Composition prints first,
+  with whether applying it creates a new Composition revision.
+- `json` and `yaml` print the same plan as a structured result, for CI and
+  other tools.
+- `diff` prints the line diff `crossplane-diff` prints.
+
+For example, a changed Composition prints a plan like this:
+
+```
+[~] Composition.apiextensions.crossplane.io xnetworks.example.org (update)
+    Applying this creates a new CompositionRevision, which 1 composite would adopt.
+    spec:
+      pipeline[0]:
+        input:
+          ~ region: "us-west-1" -> "us-east-1"
+
+XR: XNetwork.example.org team-a/prod-network
+  [~] VPC.ec2.aws.upbound.io prod-network (update)
+      spec:
+        forProvider:
+          ~ region: "us-west-1" -> "us-east-1"
+
+Plan: 0 to add, 2 to change, 0 to destroy.
+
+Note: Cloud-layer plan not run (provider diff servers not yet wired).
+```
+
 The `--timeout` flag bounds the whole simulation, not each composite resource.
 It doesn't include the time spent building functions.
 
@@ -56,12 +86,10 @@ The command accepts the same diff-tuning flags as `crossplane-diff`:
 - `--analyze-on` sets the smallest Composition change that triggers impact
   analysis: `spec-change`, `any-change`, or `always`.
 - `--minimize-composition` collapses each changed Composition to one line in
-  the diff output.
+  `-o diff` output.
 - `--eventual-state` shows the state after all reconciliation cycles complete.
 - `--max-recv-message-size` raises the function gRPC message limit, in MB.
-- `--no-color` and `--compact` change how the diff prints.
-- `--output-version` picks the schema version of JSON and YAML output: `v1`,
-  the default, or `v2`.
+- `--no-color` and `--compact` change how `-o diff` prints.
 
 The command exits with one of these statuses, so a CI pipeline can gate on
 the result:
@@ -95,10 +123,16 @@ Simulate a single namespaced composite resource:
 crossplane project simulate -n team-a --name=my-database
 ```
 
-Print the result as JSON:
+Print the plan as JSON:
 
 ```shell
 crossplane project simulate -o json
+```
+
+Print the line diff `crossplane-diff` prints:
+
+```shell
+crossplane project simulate -o diff
 ```
 
 Simulate a changed Composition without a project:

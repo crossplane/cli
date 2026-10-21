@@ -19,6 +19,7 @@ package project
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -29,11 +30,13 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/sergi/go-diff/diffmatchpatch"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/yaml"
 
 	xperrors "github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
@@ -45,6 +48,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
+	"github.com/crossplane/cli/v2/internal/plan"
 )
 
 // parseSimulate parses args as `simulate` flags, running kong's validation.
@@ -90,8 +94,7 @@ func TestSimulateFlags(t *testing.T) {
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        time.Minute,
-				Output:         "diff",
-				OutputVersion:  "v1",
+				Output:         "plan",
 				MaxNestedDepth: 10,
 				DryRunOn:       "all",
 			}},
@@ -132,8 +135,7 @@ func TestSimulateFlags(t *testing.T) {
 				MaxConcurrency:           8,
 				MaxIterations:            dp.DefaultMaxRenderIterations,
 				Timeout:                  time.Minute,
-				Output:                   "diff",
-				OutputVersion:            "v1",
+				Output:                   "plan",
 				NoColor:                  true,
 				Compact:                  true,
 				MaxNestedDepth:           3,
@@ -154,8 +156,7 @@ func TestSimulateFlags(t *testing.T) {
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        time.Minute,
-				Output:         "diff",
-				OutputVersion:  "v1",
+				Output:         "plan",
 				MaxNestedDepth: 10,
 				DryRunOn:       "all",
 				FunctionCredentials: FunctionCredentials{Path: creds, Secrets: []corev1.Secret{{
@@ -192,8 +193,7 @@ func TestSimulateFlags(t *testing.T) {
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        time.Minute,
-				Output:         "diff",
-				OutputVersion:  "v1",
+				Output:         "plan",
 				MaxNestedDepth: 10,
 				DryRunOn:       "all",
 			}},
@@ -204,8 +204,37 @@ func TestSimulateFlags(t *testing.T) {
 			want:   want{err: true},
 		},
 		"UnknownOutput": {
-			reason: "Output formats other than diff, json and yaml should be rejected.",
-			args:   []string{"-o", "plan"},
+			reason: "Output formats other than plan, diff, json and yaml should be rejected.",
+			args:   []string{"-o", "xml"},
+			want:   want{err: true},
+		},
+		"OutputVersionWithStructuredOutput": {
+			reason: "--output-version should be accepted with -o yaml.",
+			args:   []string{"-o", "yaml", "--output-version", "v1"},
+			want: want{cmd: &simulateCmd{
+				Input:          []string{"crossplane-project.yaml"},
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        time.Minute,
+				Output:         "yaml",
+				OutputVersion:  "v1",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+			}},
+		},
+		"OutputVersionWithDefaultOutput": {
+			reason: "--output-version should be rejected with the default -o plan, which has no structured schema.",
+			args:   []string{"--output-version", "v1"},
+			want:   want{err: true},
+		},
+		"OutputVersionWithPlan": {
+			reason: "--output-version should be rejected with -o plan.",
+			args:   []string{"-o", "plan", "--output-version", "v2"},
+			want:   want{err: true},
+		},
+		"OutputVersionWithDiff": {
+			reason: "--output-version should be rejected with -o diff.",
+			args:   []string{"-o", "diff", "--output-version", "v1"},
 			want:   want{err: true},
 		},
 		"ZeroIterations": {
@@ -231,8 +260,7 @@ func TestSimulateFlags(t *testing.T) {
 				MaxConcurrency:  8,
 				MaxIterations:   dp.DefaultMaxRenderIterations,
 				Timeout:         time.Minute,
-				Output:          "diff",
-				OutputVersion:   "v1",
+				Output:          "plan",
 				MaxNestedDepth:  10,
 				DryRunOn:        "all",
 				CrossplaneImage: "example.com/crossplane:stable",
@@ -466,6 +494,113 @@ func TestSimulateDiffOptions(t *testing.T) {
 	}
 }
 
+// TestSimulateRenderReports pins which renderer each -o value selects, for
+// both report types: plan.Result for plan, json and yaml, the engine's human
+// diff for diff, and its v1/v2 schema only under --output-version.
+func TestSimulateRenderReports(t *testing.T) {
+	xr := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
+	cm := &un.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": "cm"}, "data": map[string]any{"k": "v"}}}
+	added := &dt.ResourceDiff{
+		Gvk: cm.GroupVersionKind(), ResourceName: "cm", DiffType: dt.DiffTypeAdded,
+		Desired:   dt.ResourceViews{Raw: cm, Clean: cm},
+		LineDiffs: []diffmatchpatch.Diff{{Type: diffmatchpatch.DiffInsert, Text: "data:\n  k: v\n"}},
+	}
+	xrReport := &dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xr, Diffs: map[string]*dt.ResourceDiff{added.GetDiffKey(): added}}}}
+	compReport := &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
+		Name:           "net",
+		RevisionImpact: dt.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1},
+		ImpactAnalysis: []dt.XRImpact{{ObjectReference: xr, Status: dt.XRStatusUnchanged}},
+	}}}
+
+	// isPlanResult checks out decodes as a plan.Result naming the composite.
+	isPlanResult := func(unmarshal func([]byte, any) error) func(*testing.T, string) {
+		return func(t *testing.T, out string) {
+			t.Helper()
+			var r plan.Result
+			if err := unmarshal([]byte(out), &r); err != nil {
+				t.Fatalf("output is not a plan.Result: %v\n%s", err, out)
+			}
+			if r.FormatVersion != plan.ResultFormatVersion || len(r.Composites) != 1 || r.Composites[0].Ref.Name != "prod" {
+				t.Errorf("want a plan.Result for composite prod, got:\n%s", out)
+			}
+		}
+	}
+	contains := func(subs ...string) func(*testing.T, string) {
+		return func(t *testing.T, out string) {
+			t.Helper()
+			for _, sub := range subs {
+				if !strings.Contains(out, sub) {
+					t.Errorf("want output containing %q, got:\n%s", sub, out)
+				}
+			}
+		}
+	}
+
+	cases := map[string]struct {
+		reason   string
+		cmd      simulateCmd
+		wantXR   func(*testing.T, string)
+		wantComp func(*testing.T, string)
+	}{
+		"Plan": {
+			reason:   "-o plan, the default, should print the plan text, with the revision impact under the Composition.",
+			cmd:      simulateCmd{Output: "plan"},
+			wantXR:   contains("XR: XNetwork.example.org prod\n  [+] ConfigMap. cm (create)\n      data:\n        + k: \"v\"", "Plan: 1 to add", "Note: "),
+			wantComp: contains("[=] Composition.apiextensions.crossplane.io net (no-op)\n    Applying this creates a new CompositionRevision, which 1 composite would adopt.", "XR: XNetwork.example.org prod", "Note: "),
+		},
+		"JSON": {
+			reason:   "-o json should print plan.Result as JSON.",
+			cmd:      simulateCmd{Output: "json"},
+			wantXR:   isPlanResult(json.Unmarshal),
+			wantComp: isPlanResult(json.Unmarshal),
+		},
+		"YAML": {
+			reason:   "-o yaml should print plan.Result as YAML.",
+			cmd:      simulateCmd{Output: "yaml"},
+			wantXR:   isPlanResult(func(b []byte, v any) error { return yaml.Unmarshal(b, v) }),
+			wantComp: isPlanResult(func(b []byte, v any) error { return yaml.Unmarshal(b, v) }),
+		},
+		"Diff": {
+			reason:   "-o diff should print the engine's human diff.",
+			cmd:      simulateCmd{Output: "diff"},
+			wantXR:   contains("+++ ConfigMap/cm", "Summary: 1 added"),
+			wantComp: contains("=== Composition Changes ===", "=== Affected Composite Resources ==="),
+		},
+		"JSONWithOutputVersion": {
+			reason:   "-o json with --output-version should print the engine's structured schema at that version.",
+			cmd:      simulateCmd{Output: "json", OutputVersion: "v2"},
+			wantXR:   contains(`"outputVersion": "v2"`),
+			wantComp: contains(`"outputVersion": "v2"`),
+		},
+		"YAMLWithOutputVersion": {
+			reason:   "-o yaml with --output-version should print the engine's structured schema at that version.",
+			cmd:      simulateCmd{Output: "yaml", OutputVersion: "v1"},
+			wantXR:   contains("outputVersion: v1"),
+			wantComp: contains("outputVersion: v1"),
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			tc.cmd.NoColor = true
+			for kind, run := range map[string]struct {
+				render func(*kong.Context) error
+				want   func(*testing.T, string)
+			}{
+				"xr":   {func(k *kong.Context) error { return tc.cmd.renderXRReport(k, logging.NewNopLogger(), xrReport) }, tc.wantXR},
+				"comp": {func(k *kong.Context) error { return tc.cmd.renderCompReport(k, logging.NewNopLogger(), compReport) }, tc.wantComp},
+			} {
+				stdout := &bytes.Buffer{}
+				k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: &bytes.Buffer{}}}
+				if err := run.render(k); err != nil {
+					t.Fatalf("\n%s\nrender %s report: %v", tc.reason, kind, err)
+				}
+				t.Run(kind, func(t *testing.T) { run.want(t, stdout.String()) })
+			}
+		})
+	}
+}
+
 // TestWithRenderError pins that a render failure reads exactly as it did when the processor joined it
 // with the run's own errors: one flat list, not a list nested in a list.
 func TestWithRenderError(t *testing.T) {
@@ -640,6 +775,10 @@ func TestSimulateRun(t *testing.T) {
 				cancel()
 			}
 
+			// kong sets -o's default when it parses the flags.
+			if tc.args.cmd.Output == "" {
+				tc.args.cmd.Output = "plan"
+			}
 			k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
 			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, compositionMode)
 			status := &common.ExitStatus{}

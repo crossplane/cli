@@ -2468,3 +2468,86 @@ func TestDefaultDiffCalculator_CalculateNonRemovalDiffsRendered(t *testing.T) {
 		})
 	}
 }
+
+// TestDefaultDiffCalculator_KeepEqualDiffs checks that an equal composed diff is dropped by default and
+// kept only for the resources the KeepEqualDiffs predicate names.
+func TestDefaultDiffCalculator_KeepEqualDiffs(t *testing.T) {
+	existingXR := tu.NewResource("example.org/v1", "XR", "test-xr").WithUID("xr-uid").Build()
+	existingComposed := tu.NewResource("example.org/v1", "Composed", "cpd-1").
+		WithCompositeOwner("test-xr").
+		WithCompositionResourceName("resource-1").
+		ControlledBy(existingXR).
+		WithSpecField("field", "value").
+		Build()
+
+	xrKey := "example.org/v1/XR//test-xr"
+	composedKey := "example.org/v1/Composed//cpd-1"
+
+	tests := map[string]struct {
+		reason string
+		keep   func(*un.Unstructured) bool
+		want   map[string]dt.DiffType
+	}{
+		"NilKeepsNone": {
+			reason: "Unset, an equal composed diff is dropped; only the XR's own diff is stored.",
+			want:   map[string]dt.DiffType{xrKey: dt.DiffTypeEqual},
+		},
+		"PredicateFalseKeepsNone": {
+			reason: "A predicate that declines the resource drops its equal diff.",
+			keep:   func(*un.Unstructured) bool { return false },
+			want:   map[string]dt.DiffType{xrKey: dt.DiffTypeEqual},
+		},
+		"PredicateTrueKeepsEqual": {
+			reason: "A predicate that names the resource keeps its equal diff.",
+			keep:   func(u *un.Unstructured) bool { return u.GetKind() == "Composed" },
+			want:   map[string]dt.DiffType{xrKey: dt.DiffTypeEqual, composedKey: dt.DiffTypeEqual},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			logger := tu.TestLogger(t, false)
+			resourceClient := tu.NewMockResourceClient().
+				WithResourcesExist(existingXR, existingComposed).
+				WithResourcesFoundByLabel([]*un.Unstructured{existingComposed}, "crossplane.io/composite", "test-xr").
+				Build()
+
+			calculator := NewDiffCalculator(
+				tu.NewMockApplyClient().WithSuccessfulDryRun().Build(),
+				tu.NewMockAccessChecker().Build(),
+				tu.NewMockResourceTreeClient().WithEmptyResourceTree().Build(),
+				NewResourceManager(resourceClient, tu.NewMockDefinitionClient().Build(), tu.NewMockResourceTreeClient().Build(), logger, NewAdvisoryCollector(nil)),
+				logger,
+				compare.Options{KeepEqualDiffs: tt.keep},
+				DryRunOnAll,
+				&tu.MockDefaulter{},
+			)
+
+			xr := &cmp.Unstructured{}
+			xr.SetUnstructuredContent(existingXR.DeepCopy().UnstructuredContent())
+
+			rendered := tu.NewResource("example.org/v1", "Composed", "cpd-1").
+				WithCompositeOwner("test-xr").
+				WithCompositionResourceName("resource-1").
+				WithSpecField("field", "value").
+				BuildUComposed()
+
+			diffs, _, err := calculator.CalculateNonRemovalDiffs(t.Context(), xr, render.CompositionOutputs{
+				CompositeResource: xr,
+				ComposedResources: []cpd.Unstructured{*rendered},
+			})
+			if err != nil {
+				t.Fatalf("%s\nCalculateNonRemovalDiffs(): unexpected error: %v", tt.reason, err)
+			}
+
+			got := make(map[string]dt.DiffType, len(diffs))
+			for k, d := range diffs {
+				got[k] = d.DiffType
+			}
+
+			if diff := gcmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("%s\nCalculateNonRemovalDiffs(): -want, +got:\n%s", tt.reason, diff)
+			}
+		})
+	}
+}

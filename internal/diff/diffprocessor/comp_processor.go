@@ -1237,6 +1237,11 @@ func (p *DefaultCompDiffProcessor) buildImpactAnalysis(xrs []*un.Unstructured, r
 			summary.WithChanges++
 		default:
 			impact.Status = dt.XRStatusUnchanged
+			// Renderers ignore an unchanged impact's diffs; they are carried only for a caller that kept
+			// equal diffs to refine them.
+			if result != nil && p.config.KeepEqualDiffs != nil {
+				impact.Diffs = result.Diffs
+			}
 			summary.Unchanged++
 		}
 

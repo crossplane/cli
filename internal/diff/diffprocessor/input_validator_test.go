@@ -484,6 +484,14 @@ func TestRenderOverlapErrors(t *testing.T) {
 			reason: "Equal diffs appear in no rendered view, so merging them loses nothing.",
 			groups: two(func(i int) *dt.ResourceDiff { return bucket(dt.DiffTypeEqual, []string{"a", "b"}[i], "u", "v") }),
 		},
+		"KeptEqualBesideModifiedDisagrees": {
+			reason: "A kept-equal rendering of one object beside a modified one is a disagreement: applying both " +
+				"inputs either changes the object or does not, and no single diff says which.",
+			groups: two(func(i int) *dt.ResourceDiff {
+				return bucket([]dt.DiffType{dt.DiffTypeEqual, dt.DiffTypeModified}[i], "parent", "u", []string{"1", "2"}[i])
+			}),
+			want: []string{disagreement},
+		},
 		"SameControllerIdenticalIsMerged": {
 			reason: "One change reached twice through one controller; the controller is compared by name, not UID.",
 			groups: two(func(i int) *dt.ResourceDiff { return bucket(dt.DiffTypeModified, "parent", []string{"1", "2"}[i], "v") }),

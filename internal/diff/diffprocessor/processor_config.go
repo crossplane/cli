@@ -2,6 +2,7 @@ package diffprocessor
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
@@ -141,6 +142,11 @@ type ProcessorConfig struct {
 
 	// IgnorePaths is a list of paths to ignore when calculating diffs
 	IgnorePaths []string
+
+	// KeepEqualDiffs, when set, names the composed resources whose diff is kept even when equal, and
+	// makes an unchanged composite's impact carry its diffs. Nil, the default, keeps none. Every
+	// HasChanges and renderer skips equal diffs, so this only adds diffs a caller can refine further.
+	KeepEqualDiffs func(*un.Unstructured) bool
 
 	// FunctionCredentials holds Secret credentials to pass to Functions during rendering
 	FunctionCredentials []corev1.Secret
@@ -296,6 +302,14 @@ func WithIgnorePaths(ignorePaths []string) ProcessorOption {
 	}
 }
 
+// WithKeepEqualDiffs keeps the equal diffs of the composed resources keep reports true for (see
+// ProcessorConfig.KeepEqualDiffs).
+func WithKeepEqualDiffs(keep func(*un.Unstructured) bool) ProcessorOption {
+	return func(config *ProcessorConfig) {
+		config.KeepEqualDiffs = keep
+	}
+}
+
 // WithFunctionCredentials sets the credentials to pass to Functions during rendering.
 func WithFunctionCredentials(creds []corev1.Secret) ProcessorOption {
 	return func(config *ProcessorConfig) {
@@ -413,7 +427,7 @@ func WithFunctionProviderFactory(factory func(xp.FunctionClient, logging.Logger)
 
 // GetCompareOptions returns the compare.Options based on the ProcessorConfig.
 func (c *ProcessorConfig) GetCompareOptions() compare.Options {
-	return compare.Options{IgnorePaths: c.IgnorePaths}
+	return compare.Options{IgnorePaths: c.IgnorePaths, KeepEqualDiffs: c.KeepEqualDiffs}
 }
 
 // SetDefaultFactories sets default component factory functions if not already set.

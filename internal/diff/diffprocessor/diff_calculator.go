@@ -338,7 +338,7 @@ func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr
 		}
 
 		diffKey := diff.GetDiffKey()
-		if diff.DiffType != dt.DiffTypeEqual {
+		if diff.DiffType != dt.DiffTypeEqual || (c.diffOptions.KeepEqualDiffs != nil && c.diffOptions.KeepEqualDiffs(un)) {
 			diffs[diffKey] = diff
 		}
 

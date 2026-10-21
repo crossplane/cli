@@ -176,7 +176,7 @@ Note: Cloud-layer plan not run (provider diff servers not yet wired).
 			args:     append([]string{"-o", "json"}, compArgs...),
 			wantResult: &planShape{
 				Summary:    plan.Summary{Update: 3, NoOp: 2},
-				Composites: []plan.CompositeResult{{Ref: another, Status: plan.CompositeChanged}, {Ref: xnop, Status: plan.CompositeChanged}},
+				Composites: []plan.CompositeResult{{Ref: another, Status: plan.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: plan.CompositeChanged, Composition: &comp}},
 				Compositions: []plan.CompositionResult{{
 					Ref:            comp,
 					RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},

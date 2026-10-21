@@ -116,6 +116,9 @@ type CompositeResult struct {
 	// Pinned marks a composite simulated although it is pinned to a
 	// composition revision, previewing the moment that revision advances.
 	Pinned bool `json:"pinned,omitempty"`
+	// Composition is the Composition whose change reaches this composite,
+	// set only for a composition simulate run.
+	Composition *ResourceRef `json:"composition,omitempty"`
 }
 
 // Error is an error from a simulate run, optionally anchored to a resource.

@@ -316,6 +316,7 @@ func TestFromCompReport(t *testing.T) {
 		return plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: name}
 	}
 	xrErr := dt.OutputError{ResourceID: "XNetwork/prod", Message: "render failed"}
+	dbPlan := plan.ResourceRef{APIVersion: compPlan.APIVersion, Kind: compPlan.Kind, Name: "db"}
 
 	cases := map[string]struct {
 		reason string
@@ -337,7 +338,7 @@ func TestFromCompReport(t *testing.T) {
 			want: plan.Result{
 				FormatVersion: plan.ResultFormatVersion,
 				Summary:       plan.Summary{Update: 1, Destroy: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeChanged}},
+				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeChanged, Composition: &compPlan}},
 				Compositions: []plan.CompositionResult{{
 					Ref:            compPlan,
 					RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1, PredictedRevision: "net-abc1234"},
@@ -366,9 +367,9 @@ func TestFromCompReport(t *testing.T) {
 				FormatVersion: plan.ResultFormatVersion,
 				Summary:       plan.Summary{NoOp: 1, Deferred: 1},
 				Composites: []plan.CompositeResult{
-					{Ref: named("pinned"), Status: plan.CompositeDeferred, Reason: "manual_policy", Detail: "compositionRevisionRef: net-6"},
-					{Ref: named("selector"), Status: plan.CompositeSkipped, Reason: "revision_selector_mismatch", Detail: "channel=stable"},
-					{Ref: named("deleting"), Status: plan.CompositeSkipped, Reason: "deleting"},
+					{Ref: named("pinned"), Status: plan.CompositeDeferred, Composition: &compPlan, Reason: "manual_policy", Detail: "compositionRevisionRef: net-6"},
+					{Ref: named("selector"), Status: plan.CompositeSkipped, Composition: &compPlan, Reason: "revision_selector_mismatch", Detail: "channel=stable"},
+					{Ref: named("deleting"), Status: plan.CompositeSkipped, Composition: &compPlan, Reason: "deleting"},
 				},
 				Compositions: []plan.CompositionResult{{Ref: compPlan}},
 				Plans:        []*plan.ResourcePlan{compNoOp},
@@ -383,7 +384,7 @@ func TestFromCompReport(t *testing.T) {
 			want: plan.Result{
 				FormatVersion: plan.ResultFormatVersion,
 				Summary:       plan.Summary{NoOp: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeUnchanged, Pinned: true}},
+				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeUnchanged, Composition: &compPlan, Pinned: true}},
 				Compositions:  []plan.CompositionResult{{Ref: compPlan}},
 				Plans:         []*plan.ResourcePlan{compNoOp},
 				Notes:         notes(),
@@ -425,6 +426,27 @@ func TestFromCompReport(t *testing.T) {
 				Notes:  notes(),
 			},
 		},
+		"CompositesNameTheirComposition": {
+			reason: "Each affected composite names the Composition whose change reaches it.",
+			in: &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{
+				{Name: "net", ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: dt.XRStatusUnchanged}}},
+				{Name: "db", ImpactAnalysis: []dt.XRImpact{filtered("qa", dt.FilterReasonDeleting, "")}},
+			}},
+			want: plan.Result{
+				FormatVersion: plan.ResultFormatVersion,
+				Summary:       plan.Summary{NoOp: 2},
+				Composites: []plan.CompositeResult{
+					{Ref: xrPlan, Status: plan.CompositeUnchanged, Composition: &compPlan},
+					{Ref: named("qa"), Status: plan.CompositeSkipped, Composition: &dbPlan, Reason: "deleting"},
+				},
+				Compositions: []plan.CompositionResult{{Ref: compPlan}, {Ref: dbPlan}},
+				Plans: []*plan.ResourcePlan{
+					compNoOp,
+					{APIVersion: dbPlan.APIVersion, Kind: dbPlan.Kind, Name: dbPlan.Name, Action: plan.ActionNoOp},
+				},
+				Notes: notes(),
+			},
+		},
 		"XRErrorAndRunErrors": {
 			reason: "An errored XR's error is anchored to it and not repeated; the interruption is a run error.",
 			in: &dt.CompDiffOutput{
@@ -438,7 +460,7 @@ func TestFromCompReport(t *testing.T) {
 				FormatVersion: plan.ResultFormatVersion,
 				Errored:       true,
 				Summary:       plan.Summary{NoOp: 1, Errored: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeError}},
+				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeError, Composition: &compPlan}},
 				Compositions:  []plan.CompositionResult{{Ref: compPlan}},
 				Plans: []*plan.ResourcePlan{
 					compNoOp,

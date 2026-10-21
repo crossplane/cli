@@ -121,6 +121,7 @@ func FromCompReport(o *dt.CompDiffOutput) plan.Result {
 		for _, impact := range comp.ImpactAnalysis {
 			xr := resourceRef(impact.ObjectReference)
 			c := compositeResult(impact)
+			c.Composition = &ref
 			if impact.Error != nil {
 				a.addError(xr, *impact.Error, &xr)
 				owned = append(owned, *impact.Error)

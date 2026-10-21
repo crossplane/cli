@@ -180,18 +180,18 @@ spec:
 				t.Fatalf("cannot write manifest: %v", err)
 			}
 
-			got, err := loadProviderInputs(path)
+			got, err := LoadProviderInputs(path)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("%s\nloadProviderInputs(...): want an error containing %q, got %v", tc.reason, tc.wantErr, err)
+					t.Fatalf("%s\nLoadProviderInputs(...): want an error containing %q, got %v", tc.reason, tc.wantErr, err)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("%s\nloadProviderInputs(...): unexpected error: %v", tc.reason, err)
+				t.Fatalf("%s\nLoadProviderInputs(...): unexpected error: %v", tc.reason, err)
 			}
 			if diff := cmp.Diff(tc.want, got, cmp.Comparer(func(a, b netip.Addr) bool { return a == b })); diff != "" {
-				t.Errorf("%s\nloadProviderInputs(...): -want, +got:\n%s", tc.reason, diff)
+				t.Errorf("%s\nLoadProviderInputs(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}
@@ -221,8 +221,8 @@ func TestNeedsDocker(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := needsDocker(tc.inputs); got != tc.want {
-				t.Errorf("%s\nneedsDocker(...): want %t, got %t", tc.reason, tc.want, got)
+			if got := NeedsDocker(tc.inputs); got != tc.want {
+				t.Errorf("%s\nNeedsDocker(...): want %t, got %t", tc.reason, tc.want, got)
 			}
 		})
 	}

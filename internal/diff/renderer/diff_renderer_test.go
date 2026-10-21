@@ -492,3 +492,14 @@ func xrGroup(kind, name string, diffs map[string]*dt.ResourceDiff) dt.XRDiffGrou
 		Diffs: diffs,
 	}
 }
+
+// The counts string keeps upstream's format, adding replaced= only when a diff is replaced.
+func TestDiffCountsString(t *testing.T) {
+	if got, want := (diffCounts{added: 1}).String(), "added=1 modified=0 removed=0 equal=0 output=0"; got != want {
+		t.Errorf("String(): got %q, want %q", got, want)
+	}
+
+	if got, want := (diffCounts{modified: 2, replaced: 1}).String(), "added=0 modified=2 removed=0 equal=0 replaced=1 output=0"; got != want {
+		t.Errorf("String(): got %q, want %q", got, want)
+	}
+}

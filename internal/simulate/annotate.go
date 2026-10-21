@@ -176,9 +176,6 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 // "- path: actual" and "+ path: planned" pair per change, with computed
 // values and replacement marked as elsewhere. It returns d when no change has
 // a value to print.
-//
-// ponytail: D-17 does not cover drift, and this block is pending the user's
-// confirmation; drop or change it here alone.
 func driftDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	if !isChange(pp.Action) {
 		return d

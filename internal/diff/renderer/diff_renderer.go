@@ -170,8 +170,12 @@ func (c diffCounts) plus(other diffCounts) diffCounts {
 // structured-logging pass could later swap this for a logr.Marshaler to regain
 // per-field queryability.)
 func (c diffCounts) String() string {
-	return fmt.Sprintf("added=%d modified=%d removed=%d equal=%d replaced=%d output=%d",
-		c.added, c.modified, c.removed, c.equal, c.replaced, c.output)
+	s := fmt.Sprintf("added=%d modified=%d removed=%d equal=%d", c.added, c.modified, c.removed, c.equal)
+	if c.replaced > 0 {
+		s += fmt.Sprintf(" replaced=%d", c.replaced)
+	}
+
+	return s + fmt.Sprintf(" output=%d", c.output)
 }
 
 // summaryLine formats a "N added, N modified, N removed" fragment, omitting

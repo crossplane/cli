@@ -200,9 +200,12 @@ type assembler struct {
 }
 
 type listedChange struct {
-	action  plan.Action
-	changes []plan.FieldChange
-	dryRun  *plan.Verification
+	action       plan.Action
+	changes      []plan.FieldChange
+	dryRun       *plan.Verification
+	err          string
+	approximate  bool
+	replacePaths []string
 }
 
 func newAssembler(provider map[string]*plan.ResourcePlan) *assembler {
@@ -235,7 +238,10 @@ func (a *assembler) addDiff(d *dt.ResourceDiff, composite *plan.ResourceRef) boo
 	p.Composite = composite
 	changed := p.Error == "" && isChange(p.Action)
 
-	lc := listedChange{action: p.Action, changes: p.Changes, dryRun: p.DryRun}
+	lc := listedChange{
+		action: p.Action, changes: p.Changes, dryRun: p.DryRun,
+		err: p.Error, approximate: p.Approximate, replacePaths: p.ReplacePaths,
+	}
 	if slices.ContainsFunc(a.listed[key], func(l listedChange) bool { return reflect.DeepEqual(l, lc) }) {
 		return changed
 	}

@@ -1,764 +1,368 @@
 package testutils
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
+
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/plan"
 )
 
-func TestParseStructuredOutput(t *testing.T) {
-	tests := []struct {
-		name      string
-		input     string
-		wantErr   bool
-		wantAdded int
+// resultJSON serializes r the way project simulate's -o json does.
+func resultJSON(t *testing.T, r plan.Result) string {
+	t.Helper()
+
+	out, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("json.Marshal(): %v", err)
+	}
+
+	return string(out)
+}
+
+func val(v any) *plan.Value { return &plan.Value{Value: v} }
+
+// checkAssertion runs assert against a throwaway T and reports whether it failed as wantFail says.
+func checkAssertion(t *testing.T, name string, wantFail bool, assert func(*testing.T)) {
+	t.Helper()
+
+	inner := &testing.T{}
+	assert(inner)
+
+	if inner.Failed() != wantFail {
+		t.Errorf("%s: failed = %t, want %t", name, inner.Failed(), wantFail)
+	}
+}
+
+var (
+	xrA = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XBucket", Name: "changed-xr", Namespace: "default"}
+	xrB = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XBucket", Name: "unchanged-xr", Namespace: "default"}
+	xrC = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XBucket", Name: "broken-xr", Namespace: "default"}
+)
+
+// xrResult is an xr run: one changed XR (a modified Bucket, a created ConfigMap and a deleted Secret),
+// one unchanged XR, and one errored XR.
+func xrResult() plan.Result {
+	plans := []*plan.ResourcePlan{
+		{
+			APIVersion: "example.org/v1", Kind: "Bucket", Name: "bucket-a", Namespace: "default", Action: plan.ActionUpdate, Composite: &xrA,
+			Changes: []plan.FieldChange{
+				{Path: "spec.region", Actual: val("us-east-1"), Planned: val("us-west-2")},
+				{Path: `metadata.annotations["example.org/source"]`, Actual: val("old"), Planned: val("new")},
+			},
+		},
+		{
+			APIVersion: "v1", Kind: "ConfigMap", Name: "cm-x7k2p", Namespace: "default", Action: plan.ActionCreate, Composite: &xrA,
+			Changes: []plan.FieldChange{
+				{Path: "data.key", Planned: val("value")},
+				{Path: "spec.items[0].name", Planned: val("first")},
+				{Path: "spec.items[1].name", Planned: val("second")},
+			},
+		},
+		{
+			APIVersion: "v1", Kind: "Secret", Name: "gone", Namespace: "default", Action: plan.ActionDelete, Composite: &xrA,
+			Changes: []plan.FieldChange{{Path: "type", Actual: val("Opaque")}},
+		},
+		{APIVersion: xrB.APIVersion, Kind: xrB.Kind, Name: xrB.Name, Namespace: xrB.Namespace, Action: plan.ActionNoOp, Composite: &xrB},
+		{APIVersion: xrC.APIVersion, Kind: xrC.Kind, Name: xrC.Name, Namespace: xrC.Namespace, Error: "cannot get composition", Composite: &xrC},
+	}
+
+	return plan.Result{
+		Summary: plan.Summarize(plans),
+		Composites: []plan.CompositeResult{
+			{Ref: xrA, Status: plan.CompositeChanged},
+			{Ref: xrB, Status: plan.CompositeUnchanged},
+			{Ref: xrC, Status: plan.CompositeError},
+		},
+		Plans:    plans,
+		Errors:   []plan.Error{{Resource: &xrC, Message: "cannot get composition"}},
+		Warnings: []plan.Warning{{Message: "something advisory", Context: map[string]string{"composition": "c"}}},
+	}
+}
+
+func TestParseResult(t *testing.T) {
+	if _, err := ParseResult(`{"plans": [`); err == nil {
+		t.Error("ParseResult(): want an error for malformed JSON")
+	}
+
+	got, err := ParseResult(resultJSON(t, xrResult()))
+	if err != nil {
+		t.Fatalf("ParseResult(): %v", err)
+	}
+
+	if len(got.Plans) != 5 || len(got.Composites) != 3 {
+		t.Errorf("ParseResult(): got %d plans and %d composites, want 5 and 3", len(got.Plans), len(got.Composites))
+	}
+}
+
+func TestAssertStructuredDiff(t *testing.T) {
+	out := resultJSON(t, xrResult())
+
+	// Any resource expectation pins the change count, so a case about one change lists the others.
+	withoutBucket := func() *ExpectedDiff {
+		return ExpectDiff().WithAddedResource("ConfigMap", "cm-x7k2p", "default").And().WithRemovedResource("Secret", "gone", "default").And()
+	}
+	withoutConfigMap := func() *ExpectedDiff {
+		return ExpectDiff().WithModifiedResource("Bucket", "bucket-a", "default").And().WithRemovedResource("Secret", "gone", "default").And()
+	}
+
+	cases := map[string]struct {
+		want     DiffExpectation
+		wantFail bool
 	}{
-		{
-			name: "valid JSON with summary",
-			input: `{
-				"summary": {"added": 1, "modified": 2, "removed": 0},
-				"changes": []
-			}`,
-			wantErr:   false,
-			wantAdded: 1,
+		"Summary":      {want: ExpectDiff().WithSummary(1, 1, 1)},
+		"WrongSummary": {want: ExpectDiff().WithSummary(0, 1, 1), wantFail: true},
+		"AllChanges": {want: ExpectDiff().
+			WithModifiedResource("Bucket", "bucket-a", "default").
+			WithFieldChange("spec.region", "us-east-1", "us-west-2").
+			WithFieldChange("metadata.annotations['example.org/source']", "old", "new").
+			And().
+			WithAddedResource("ConfigMap", "cm-x7k2p", "default").
+			WithField("data.key", "value").
+			WithField("spec.items", []any{map[string]any{"name": "first"}, map[string]any{"name": "second"}}).
+			WithField("spec.items[1].name", "second").
+			And().
+			WithRemovedResource("Secret", "gone", "default").
+			WithField("type", "Opaque")},
+		// Any resource expectation pins the change count, so an unlisted change fails.
+		"UnlistedChange": {want: ExpectDiff().
+			WithModifiedResource("Bucket", "bucket-a", "default").And().
+			WithAddedResource("ConfigMap", "cm-x7k2p", "default"), wantFail: true},
+		"WrongAction": {want: ExpectDiff().WithAddedResource("Bucket", "bucket-a", "default"), wantFail: true},
+		"WrongNewValue": {
+			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.region", "us-east-1", "eu-west-1"),
+			wantFail: true,
 		},
-		{
-			name:    "invalid JSON",
-			input:   `{invalid}`,
-			wantErr: true,
+		"WrongOldValue": {
+			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.region", "eu-west-1", "us-west-2"),
+			wantFail: true,
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			output, err := ParseStructuredOutput(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseStructuredOutput() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if !tt.wantErr && output.Summary.Added != tt.wantAdded {
-				t.Errorf("Summary.Added = %d, want %d", output.Summary.Added, tt.wantAdded)
-			}
-		})
-	}
-}
-
-func TestAssertStructuredDiff_Summary(t *testing.T) {
-	jsonOutput := `{
-		"summary": {"added": 1, "modified": 2, "removed": 3},
-		"changes": []
-	}`
-
-	// This should pass - matching summary
-	AssertStructuredDiff(t, jsonOutput, ExpectDiff().WithSummary(1, 2, 3))
-}
-
-func TestAssertStructuredDiff_AddedResource(t *testing.T) {
-	jsonOutput := `{
-		"summary": {"added": 1, "modified": 0, "removed": 0},
-		"changes": [{
-			"type": "added",
-			"apiVersion": "v1alpha1",
-			"kind": "XNopResource",
-			"name": "test-resource",
-			"namespace": "default",
-			"diff": {
-				"spec": {
-					"spec": {
-						"forProvider": {
-							"configData": "new-value"
-						}
-					}
-				}
-			}
-		}]
-	}`
-
-	AssertStructuredDiff(t, jsonOutput,
-		ExpectDiff().
-			WithSummary(1, 0, 0).
-			WithAddedResource("XNopResource", "test-resource", "default").
-			WithField("spec.forProvider.configData", "new-value").
-			And())
-}
-
-func TestAssertStructuredDiff_ModifiedResource(t *testing.T) {
-	jsonOutput := `{
-		"summary": {"added": 0, "modified": 1, "removed": 0},
-		"changes": [{
-			"type": "modified",
-			"apiVersion": "v1alpha1",
-			"kind": "XNopResource",
-			"name": "test-resource",
-			"namespace": "default",
-			"diff": {
-				"old": {"spec": {"forProvider": {"configData": "old-value"}}},
-				"new": {"spec": {"forProvider": {"configData": "new-value"}}}
-			}
-		}]
-	}`
-
-	AssertStructuredDiff(t, jsonOutput,
-		ExpectDiff().
-			WithSummary(0, 1, 0).
-			WithModifiedResource("XNopResource", "test-resource", "default").
-			WithFieldChange("spec.forProvider.configData", "old-value", "new-value").
-			And())
-}
-
-func TestAssertStructuredDiff_RemovedResource(t *testing.T) {
-	jsonOutput := `{
-		"summary": {"added": 0, "modified": 0, "removed": 1},
-		"changes": [{
-			"type": "removed",
-			"apiVersion": "v1alpha1",
-			"kind": "XNopResource",
-			"name": "removed-resource",
-			"namespace": "default",
-			"diff": {
-				"spec": {
-					"spec": {
-						"forProvider": {
-							"configData": "deleted-value"
-						}
-					}
-				}
-			}
-		}]
-	}`
-
-	AssertStructuredDiff(t, jsonOutput,
-		ExpectDiff().
-			WithSummary(0, 0, 1).
-			WithRemovedResource("XNopResource", "removed-resource", "default").
-			WithField("spec.forProvider.configData", "deleted-value").
-			And())
-}
-
-func TestAssertStructuredDiff_NamePattern(t *testing.T) {
-	jsonOutput := `{
-		"summary": {"added": 1, "modified": 0, "removed": 0},
-		"changes": [{
-			"type": "added",
-			"apiVersion": "v1alpha1",
-			"kind": "XNopResource",
-			"name": "test-resource-abc123",
-			"namespace": "default",
-			"diff": {"spec": {}}
-		}]
-	}`
-
-	AssertStructuredDiff(t, jsonOutput,
-		ExpectDiff().
-			WithSummary(1, 0, 0).
-			WithAddedResource("XNopResource", "", "default").
-			WithNamePattern(`test-resource-[a-z0-9]+`).
-			And())
-}
-
-func TestGetNestedField(t *testing.T) {
-	obj := map[string]any{
-		"spec": map[string]any{
-			"forProvider": map[string]any{
-				"configData": "test-value",
-			},
+		"NamePattern":    {want: withoutConfigMap().WithAddedResource("ConfigMap", "", "default").WithNamePattern(`^cm-[a-z0-9]{5}$`)},
+		"BadNamePattern": {want: withoutConfigMap().WithAddedResource("ConfigMap", "", "default").WithNamePattern(`^other-`), wantFail: true},
+		// A field rendered identically on both sides has no leaf change: asserting it unchanged passes
+		// when nothing at or under it changed, and fails when something did.
+		"UnchangedField": {want: withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.tier", "premium", "premium")},
+		"ChangedNotSteady": {
+			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.region", "us-east-1", "us-east-1"),
+			wantFail: true,
 		},
-	}
-
-	tests := []struct {
-		path string
-		want any
-	}{
-		{"spec.forProvider.configData", "test-value"},
-		{"spec.forProvider", map[string]any{"configData": "test-value"}},
-		{"spec.nonexistent", nil},
-		{"", obj},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			got := getNestedField(obj, tt.path)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("getNestedField(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestGetNestedFieldWithArrayIndex(t *testing.T) {
-	// Simulate a composition structure with pipeline steps
-	obj := map[string]any{
-		"spec": map[string]any{
-			"pipeline": []any{
-				map[string]any{
-					"functionRef": map[string]any{
-						"name": "function-patch-and-transform",
-					},
-					"input": map[string]any{
-						"resources": []any{
-							map[string]any{
-								"name": "nop-resource",
-								"patches": []any{
-									map[string]any{
-										"fromFieldPath": "spec.coolField",
-										"transforms": []any{
-											map[string]any{
-												"string": map[string]any{
-													"fmt": "updated-%s",
-												},
-											},
-										},
-									},
-									map[string]any{
-										"fromFieldPath": "spec.otherField",
-										"transforms": []any{
-											map[string]any{
-												"string": map[string]any{
-													"fmt": "basic-%s",
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-					"step": "generate-resources",
-				},
-				map[string]any{
-					"functionRef": map[string]any{
-						"name": "function-auto-ready",
-					},
-					"step": "detect-ready-resources",
-				},
-			},
-		},
-	}
-
-	tests := []struct {
-		name string
-		path string
-		want any
-	}{
-		{
-			name: "first pipeline step function name",
-			path: "spec.pipeline[0].functionRef.name",
-			want: "function-patch-and-transform",
-		},
-		{
-			name: "second pipeline step function name",
-			path: "spec.pipeline[1].functionRef.name",
-			want: "function-auto-ready",
-		},
-		{
-			name: "first resource name",
-			path: "spec.pipeline[0].input.resources[0].name",
-			want: "nop-resource",
-		},
-		{
-			name: "first patch transform fmt",
-			path: "spec.pipeline[0].input.resources[0].patches[0].transforms[0].string.fmt",
-			want: "updated-%s",
-		},
-		{
-			name: "second patch transform fmt",
-			path: "spec.pipeline[0].input.resources[0].patches[1].transforms[0].string.fmt",
-			want: "basic-%s",
-		},
-		{
-			name: "out of bounds index",
-			path: "spec.pipeline[5].functionRef.name",
-			want: nil,
-		},
-		{
-			name: "negative index (last element)",
-			path: "spec.pipeline[-1].functionRef.name",
-			want: "function-auto-ready", // k8s jsonpath supports Python-style negative indices
-		},
-		{
-			name: "non-array with index",
-			path: "spec.pipeline[0].functionRef[0]",
-			want: nil,
-		},
-		{
-			name: "step field",
-			path: "spec.pipeline[0].step",
-			want: "generate-resources",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := getNestedField(obj, tt.path)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("getNestedField(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestGetNestedFieldWithBracketNotation(t *testing.T) {
-	// Test data with keys containing dots (like Kubernetes annotations)
-	obj := map[string]any{
-		"metadata": map[string]any{
-			"annotations": map[string]any{
-				"getcomposed.example.org/source-bucket":   "bucket-name-abc123",
-				"crossplane.io/composition-resource-name": "test-resource",
-				"simple-key": "simple-value",
-			},
-		},
-	}
-
-	tests := []struct {
-		name string
-		path string
-		want any
-	}{
-		{
-			name: "bracket notation with single quotes",
-			path: "metadata.annotations['getcomposed.example.org/source-bucket']",
-			want: "bucket-name-abc123",
-		},
-		{
-			name: "bracket notation with double quotes",
-			path: `metadata.annotations["crossplane.io/composition-resource-name"]`,
-			want: "test-resource",
-		},
-		{
-			name: "simple key without dots",
-			path: "metadata.annotations['simple-key']",
-			want: "simple-value",
-		},
-		{
-			name: "simple dot notation still works",
-			path: "metadata.annotations.simple-key",
-			want: "simple-value",
-		},
-		{
-			name: "nonexistent key with brackets",
-			path: "metadata.annotations['nonexistent.key']",
-			want: nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := getNestedField(obj, tt.path)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("getNestedField(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestAssertStructuredCompDiff_DownstreamFieldChanges(t *testing.T) {
-	jsonOutput := `{
-		"compositions": [{
-			"name": "test-composition",
-			"affectedResources": {
-				"total": 1,
-				"withChanges": 1,
-				"unchanged": 0,
-				"withErrors": 0
-			},
-			"impactAnalysis": [{
-				"apiVersion": "test.example.org/v1alpha1",
-				"kind": "XTestResource",
-				"name": "test-xr",
-				"status": "changed",
-				"downstreamChanges": {
-					"summary": {"added": 0, "modified": 1, "removed": 0},
-					"changes": [{
-						"type": "modified",
-						"apiVersion": "nop.crossplane.io/v1alpha1",
-						"kind": "ClusterNopResource",
-						"name": "test-xr-abc123",
-						"diff": {
-							"old": {
-								"metadata": {
-									"annotations": {
-										"config-data": "old-value",
-										"resource-tier": "basic"
-									}
-								}
-							},
-							"new": {
-								"metadata": {
-									"annotations": {
-										"config-data": "new-value",
-										"resource-tier": "premium"
-									}
-								}
-							}
-						}
-					}]
-				}
-			}]
-		}]
-	}`
-
-	AssertStructuredCompDiff(t, jsonOutput,
-		ExpectCompDiff().
-			WithComposition("test-composition").
-			WithAffectedResources(1, 1, 0, 0).
-			WithXRImpact("XTestResource", "test-xr", "", "changed").
-			WithDownstreamSummary(0, 1, 0).
-			WithDownstreamResource("modified", "ClusterNopResource", "", "").
-			WithAnyName().
-			WithFieldChange("metadata.annotations.config-data", "old-value", "new-value").
-			WithFieldChange("metadata.annotations.resource-tier", "basic", "premium").
-			AndXR().
-			AndComp().
-			And())
-}
-
-func TestFindMatchingDownstreamChange(t *testing.T) {
-	changes := []ChangeDetail{
-		{
-			Type:      "modified",
-			Kind:      "ClusterNopResource",
-			Name:      "test-resource-abc123",
-			Namespace: "",
-		},
-		{
-			Type:      "added",
-			Kind:      "ConfigMap",
-			Name:      "test-config",
-			Namespace: "default",
-		},
-	}
-
-	tests := []struct {
-		name   string
-		expect *DownstreamResourceExpectation
-		want   bool
-	}{
-		{
-			name: "exact name match",
-			expect: &DownstreamResourceExpectation{
-				changeType: "modified",
-				kind:       "ClusterNopResource",
-				name:       "test-resource-abc123",
-			},
-			want: true,
-		},
-		{
-			name: "any name match",
-			expect: &DownstreamResourceExpectation{
-				changeType:     "modified",
-				kind:           "ClusterNopResource",
-				anyNameAllowed: true,
-			},
-			want: true,
-		},
-		{
-			name: "name pattern match",
-			expect: func() *DownstreamResourceExpectation {
-				d := &DownstreamResourceExpectation{
-					changeType: "modified",
-					kind:       "ClusterNopResource",
-				}
-				d.WithNamePattern(`test-resource-[a-z0-9]+`)
-
-				return d
-			}(),
-			want: true,
-		},
-		{
-			name: "kind mismatch",
-			expect: &DownstreamResourceExpectation{
-				changeType: "modified",
-				kind:       "WrongKind",
-				name:       "test-resource-abc123",
-			},
-			want: false,
-		},
-		{
-			name: "change type mismatch",
-			expect: &DownstreamResourceExpectation{
-				changeType: "added",
-				kind:       "ClusterNopResource",
-				name:       "test-resource-abc123",
-			},
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			found := findMatchingDownstreamChange(changes, tt.expect)
-			if (found != nil) != tt.want {
-				t.Errorf("findMatchingDownstreamChange() found = %v, want found = %v", found != nil, tt.want)
-			}
-		})
-	}
-}
-
-func TestAssertStructuredCompDiff_FieldValuePattern(t *testing.T) {
-	jsonOutput := `{
-		"compositions": [{
-			"name": "test-composition",
-			"affectedResources": {
-				"total": 1,
-				"withChanges": 1,
-				"unchanged": 0,
-				"withErrors": 0
-			},
-			"impactAnalysis": [{
-				"apiVersion": "test.example.org/v1alpha1",
-				"kind": "XTestResource",
-				"name": "test-xr",
-				"status": "changed",
-				"downstreamChanges": {
-					"summary": {"added": 0, "modified": 1, "removed": 0},
-					"changes": [{
-						"type": "modified",
-						"apiVersion": "nop.crossplane.io/v1alpha1",
-						"kind": "ClusterNopResource",
-						"name": "test-xr-abc123",
-						"diff": {
-							"old": {
-								"metadata": {
-									"annotations": {
-										"existing-annotation": "value"
-									}
-								}
-							},
-							"new": {
-								"metadata": {
-									"annotations": {
-										"existing-annotation": "value",
-										"generated-ref": "test-xr-xyz789"
-									}
-								}
-							}
-						}
-					}]
-				}
-			}]
-		}]
-	}`
-
-	AssertStructuredCompDiff(t, jsonOutput,
-		ExpectCompDiff().
-			WithComposition("test-composition").
-			WithAffectedResources(1, 1, 0, 0).
-			WithXRImpact("XTestResource", "test-xr", "", "changed").
-			WithDownstreamSummary(0, 1, 0).
-			WithDownstreamResource("modified", "ClusterNopResource", "", "").
-			WithAnyName().
-			WithFieldValuePattern("metadata.annotations.generated-ref", `test-xr-[a-z0-9]+`).
-			AndXR().
-			AndComp().
-			And())
-}
-
-func TestAssertStructuredDiff_GroupedByXR(t *testing.T) {
-	// A multi-XR xr structured payload: one changed XR (with a modified
-	// composed resource), one unchanged XR, and one errored XR. The flat
-	// changes[]/summary reflect the merge; xrs[] carries the per-XR grouping.
-	jsonOutput := `{
-		"summary": {"added": 0, "modified": 1, "removed": 0},
-		"changes": [{
-			"type": "modified", "apiVersion": "example.org/v1", "kind": "Bucket",
-			"name": "bucket-a", "namespace": "default",
-			"diff": {"old": {"spec": {"region": "us-east-1"}}, "new": {"spec": {"region": "us-west-2"}}}
-		}],
-		"errors": [{"resourceID": "XBucket/broken-xr", "message": "cannot get composition"}],
-		"xrs": [
-			{
-				"xr": {"apiVersion": "example.org/v1", "kind": "XBucket", "name": "changed-xr", "namespace": "default"},
-				"status": "changed",
-				"summary": {"added": 0, "modified": 1, "removed": 0},
-				"changes": [{
-					"type": "modified", "apiVersion": "example.org/v1", "kind": "Bucket",
-					"name": "bucket-a", "namespace": "default",
-					"diff": {"old": {"spec": {"region": "us-east-1"}}, "new": {"spec": {"region": "us-west-2"}}}
-				}]
-			},
-			{
-				"xr": {"apiVersion": "example.org/v1", "kind": "XBucket", "name": "unchanged-xr", "namespace": "default"},
-				"status": "unchanged",
-				"summary": {"added": 0, "modified": 0, "removed": 0},
-				"changes": []
-			},
-			{
-				"xr": {"apiVersion": "example.org/v1", "kind": "XBucket", "name": "broken-xr", "namespace": "default"},
-				"status": "error",
-				"summary": {"added": 0, "modified": 0, "removed": 0},
-				"changes": [],
-				"errors": [{"resourceID": "XBucket/broken-xr", "message": "cannot get composition"}]
-			}
-		]
-	}`
-
-	matchT := &testing.T{}
-	AssertStructuredDiff(matchT, jsonOutput,
-		ExpectDiff().
-			WithSummary(0, 1, 0).
+		"FieldAbsent":       {want: withoutConfigMap().WithAddedResource("ConfigMap", "cm-x7k2p", "default").WithFieldAbsent("spec.other")},
+		"FieldNotAbsent":    {want: withoutConfigMap().WithAddedResource("ConfigMap", "cm-x7k2p", "default").WithFieldAbsent("data.key"), wantFail: true},
+		"Error":             {want: ExpectDiff().WithError("XBucket/broken-xr").WithMessageContaining("cannot get")},
+		"WrongErrorMessage": {want: ExpectDiff().WithError("XBucket/broken-xr").WithMessageContaining("timeout"), wantFail: true},
+		"MissingError":      {want: ExpectDiff().WithError("XBucket/changed-xr"), wantFail: true},
+		"Warning":           {want: ExpectDiff().WithWarning("advisory").WithWarningContext(map[string]string{"composition": "c"})},
+		"WrongContext":      {want: ExpectDiff().WithWarning("advisory").WithWarningContext(map[string]string{"composition": "d"}), wantFail: true},
+		"NoWarnings":        {want: ExpectDiff().WithNoWarnings(), wantFail: true},
+		"GroupedByXR": {want: ExpectDiff().
 			WithXRs(
 				XR("XBucket", "changed-xr", "default").
 					Status("changed").
-					Summary(0, 1, 0).
+					Summary(1, 1, 1).
 					Change("modified", "Bucket", "bucket-a", "default").
-					WithFieldChange("spec.region", "us-east-1", "us-west-2"),
-				XR("XBucket", "unchanged-xr", "default").
-					Status("unchanged"),
-				XR("XBucket", "broken-xr", "default").
-					Status("error").
-					Err("XBucket/broken-xr"),
+					WithFieldChange("spec.region", "us-east-1", "us-west-2").
+					Change("added", "ConfigMap", "cm-x7k2p", "default").
+					Change("removed", "Secret", "gone", "default"),
+				XR("XBucket", "unchanged-xr", "default").Status("unchanged"),
+				XR("XBucket", "broken-xr", "default").Status("error").Err("XBucket/broken-xr"),
 			).
-			Build())
-
-	if matchT.Failed() {
-		t.Errorf("grouped assertions unexpectedly failed on a matching payload")
-	}
-
-	// Negative path: a wrong status must be caught (guards against a no-op
-	// matcher). All three entries are listed so the only discrepancy is the
-	// status, not the entry count.
-	badT := &testing.T{}
-	AssertStructuredDiff(badT, jsonOutput,
-		ExpectDiff().
+			Build()},
+		"GroupedWrongStatus": {want: ExpectDiff().
 			WithXRs(
-				XR("XBucket", "changed-xr", "default").
-					Status("unchanged"), // actual is "changed"
+				XR("XBucket", "changed-xr", "default").Status("unchanged"),
 				XR("XBucket", "unchanged-xr", "default"),
 				XR("XBucket", "broken-xr", "default"),
 			).
-			Build())
-
-	if !badT.Failed() {
-		t.Errorf("grouped assertions should have failed on a mismatched status")
-	}
-
-	// Negative path: an xrs[] entry the test did not ask for must be caught.
-	extraT := &testing.T{}
-	AssertStructuredDiff(extraT, jsonOutput,
-		ExpectDiff().
-			WithXRs(XR("XBucket", "changed-xr", "default")).
-			Build())
-
-	if !extraT.Failed() {
-		t.Errorf("grouped assertions should have failed on unexpected extra xrs[] entries")
-	}
-
-	// Negative path (issue #488): two expectations must not both be satisfied by
-	// the same entry, leaving another entry unchecked. The counts match here
-	// (2 expectations, 2 entries), so only consuming an entry on match catches
-	// it. Before that, a duplicated XR identity — the symptom of issue #477 —
-	// passed unnoticed.
-	twoEntries := `{
-		"summary": {"added": 0, "modified": 0, "removed": 0},
-		"changes": [],
-		"xrs": [
-			{
-				"xr": {"apiVersion": "example.org/v1", "kind": "XBucket", "name": "first-xr", "namespace": "default"},
-				"status": "unchanged",
-				"summary": {"added": 0, "modified": 0, "removed": 0},
-				"changes": []
-			},
-			{
-				"xr": {"apiVersion": "example.org/v1", "kind": "XBucket", "name": "second-xr", "namespace": "default"},
-				"status": "unchanged",
-				"summary": {"added": 0, "modified": 0, "removed": 0},
-				"changes": []
-			}
-		]
-	}`
-
-	dupeT := &testing.T{}
-	AssertStructuredDiff(dupeT, twoEntries,
-		ExpectDiff().
+			Build(), wantFail: true},
+		// Two expectations cannot both consume the same entry.
+		"GroupedDuplicate": {want: ExpectDiff().
 			WithXRs(
-				XR("XBucket", "first-xr", "default").Status("unchanged"),
-				XR("XBucket", "first-xr", "default").Status("unchanged"),
+				XR("XBucket", "changed-xr", "default"),
+				XR("XBucket", "changed-xr", "default"),
+				XR("XBucket", "broken-xr", "default"),
 			).
-			Build())
+			Build(), wantFail: true},
+		"GroupedErrorOnWrongXR": {want: ExpectDiff().
+			WithXRs(
+				XR("XBucket", "changed-xr", "default").Err("XBucket/broken-xr"),
+				XR("XBucket", "unchanged-xr", "default"),
+				XR("XBucket", "broken-xr", "default"),
+			).
+			Build(), wantFail: true},
+	}
 
-	if !dupeT.Failed() {
-		t.Errorf("grouped assertions should have failed when two expectations matched one xrs[] entry")
+	for name, tc := range cases {
+		checkAssertion(t, name, tc.wantFail, func(t *testing.T) { t.Helper(); AssertStructuredDiff(t, out, tc.want) })
 	}
 }
 
-// TestAssertStructuredCompDiff_V2 asserts a v2 document through the same builders as v1, with the
-// real t so a mismatch fails the test.
-func TestAssertStructuredCompDiff_V2(t *testing.T) {
-	jsonOutput := `{
-		"outputVersion": "v2",
-		"compositions": [{
-			"name": "test-composition",
-			"affectedResources": {"total": 2, "withChanges": 1, "unchanged": 0, "withErrors": 1},
-			"impactAnalysis": [
-				{
-					"xr": {"apiVersion": "test.example.org/v1alpha1", "kind": "XTestResource", "name": "test-xr"},
-					"status": "changed",
-					"summary": {"added": 0, "modified": 1, "removed": 0},
-					"changes": [{
-						"type": "modified",
-						"apiVersion": "nop.crossplane.io/v1alpha1",
-						"kind": "ClusterNopResource",
-						"name": "test-xr-abc123",
-						"diff": {"old": {"spec": {"v": "old"}}, "new": {"spec": {"v": "new"}}}
-					}]
-				},
-				{
-					"xr": {"apiVersion": "test.example.org/v1alpha1", "kind": "XTestResource", "name": "broken-xr"},
-					"status": "error",
-					"summary": {"added": 0, "modified": 0, "removed": 0},
-					"changes": [],
-					"errors": [{"resourceID": "XTestResource/broken-xr", "message": "render failed"}]
-				}
-			]
-		}, {
-			"name": "broken-composition",
-			"errors": [{"resourceID": "Composition/broken-composition", "message": "cannot fetch"}],
-			"affectedResources": {"total": 0, "withChanges": 0, "unchanged": 0, "withErrors": 0},
-			"impactAnalysis": []
-		}],
-		"errors": [
-			{"resourceID": "XTestResource/broken-xr", "message": "render failed"},
-			{"resourceID": "Composition/broken-composition", "message": "cannot fetch"}
-		]
-	}`
+var (
+	compA = plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "comp-a"}
+	compB = plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "comp-b"}
+	xr1   = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNop", Name: "xr-1", Namespace: "default"}
+	xr2   = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNop", Name: "xr-2", Namespace: "default"}
+	xr3   = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNop", Name: "xr-3", Namespace: "default"}
+)
 
-	AssertStructuredCompDiff(t, jsonOutput,
-		ExpectCompDiff().
-			WithOutputVersion("v2").
-			WithError("XTestResource/broken-xr").
-			WithError("Composition/broken-composition").
-			WithComposition("test-composition").
-			WithAffectedResources(2, 1, 0, 1).
-			WithXRImpact("XTestResource", "test-xr", "", "changed").
+// compResult is a comp run over two compositions: comp-a reaches a changed, an unchanged and a deleting
+// composite; comp-b reaches only a composite whose analysis failed.
+func compResult() plan.Result {
+	return plan.Result{
+		Compositions: []plan.CompositionResult{
+			{Ref: compA, RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2, PredictedRevision: "comp-a-1a2b3c4"}},
+			{Ref: compB, ImpactAnalysisSkipped: true},
+		},
+		Composites: []plan.CompositeResult{
+			{Ref: xr1, Status: plan.CompositeChanged, Composition: &compA},
+			{Ref: xr2, Status: plan.CompositeUnchanged, Composition: &compA},
+			{Ref: xr3, Status: plan.CompositeSkipped, Reason: string(dt.FilterReasonDeleting), Composition: &compA},
+			{Ref: xr1, Status: plan.CompositeError, Composition: &compB},
+		},
+		Plans: []*plan.ResourcePlan{
+			{
+				APIVersion: compA.APIVersion, Kind: compA.Kind, Name: compA.Name, Action: plan.ActionUpdate,
+				Changes: []plan.FieldChange{{Path: "spec.mode", Actual: val("Resources"), Planned: val("Pipeline")}},
+			},
+			{APIVersion: compB.APIVersion, Kind: compB.Kind, Name: compB.Name, Error: "cannot convert composition"},
+			{
+				APIVersion: "example.org/v1", Kind: "XDownstream", Name: "xr-1-abc12", Namespace: "default", Action: plan.ActionUpdate, Composite: &xr1,
+				Changes: []plan.FieldChange{{Path: "spec.forProvider.configData", Actual: val("old"), Planned: val("new-value-42")}},
+				DryRun:  &plan.Verification{SkipReason: "not-found", Detail: "the server could not find it"},
+			},
+		},
+		Errors: []plan.Error{
+			{Resource: &compB, Message: "cannot convert composition"},
+			{Resource: &xr1, Message: "maximum nesting depth exceeded"},
+		},
+	}
+}
+
+func TestAssertStructuredCompDiff(t *testing.T) {
+	out := resultJSON(t, compResult())
+
+	downstream := func() *DownstreamResourceExpectation {
+		return ExpectCompDiff().WithComposition("comp-a").WithXRImpact("XNop", "xr-1", "default", "changed").
+			WithDownstreamResource("modified", "XDownstream", "xr-1-abc12", "default")
+	}
+
+	cases := map[string]struct {
+		want     CompDiffExpectation
+		wantFail bool
+	}{
+		"Composition": {want: ExpectCompDiff().
+			WithComposition("comp-a").
+			WithAffectedResources(3, 1, 1, 0).
+			WithFilteredByDeletion(1).
+			WithRevisionImpact("spec", true, 2).
+			WithPredictedRevisionNamePattern(`^comp-a-[0-9a-f]{7}$`).
+			WithCompositionModified().
+			WithCompositionFieldChange("spec.mode", "Resources", "Pipeline").
+			WithXRImpact("XNop", "xr-1", "default", "changed").
 			WithDownstreamSummary(0, 1, 0).
-			WithDownstreamResource("modified", "ClusterNopResource", "test-xr-abc123", "").
-			WithFieldChange("spec.v", "old", "new").
+			WithDownstreamResource("modified", "XDownstream", "", "default").
+			WithNamePattern(`^xr-1-`).
+			WithFieldChange("spec.forProvider.configData", "old", "new-value-42").
+			WithFieldValuePattern("spec.forProvider.configData", `^new-value-\d+$`).
+			WithDryRunSkipped("not-found", "could not find").
 			AndXR().
 			AndComp().
-			WithXRImpact("XTestResource", "broken-xr", "", "error").
-			WithErrorContaining("render failed").
-			WithErrorResourceID("XTestResource/broken-xr").
-			AndComposition("broken-composition").
-			WithCompositionErrorContaining("cannot fetch"))
+			WithXRImpact("XNop", "xr-3", "default", "filtered").
+			WithFilterReason(string(dt.FilterReasonDeleting))},
+		// Counts are per composition: comp-b's errored composite is not comp-a's.
+		"CountsArePerComposition": {want: ExpectCompDiff().WithComposition("comp-a").WithAffectedResources(4, 1, 1, 1), wantFail: true},
+		"OtherComposition": {want: ExpectCompDiff().
+			WithError("Composition/comp-b").
+			WithComposition("comp-b").
+			WithCompositionErrorContaining("cannot convert").
+			WithImpactAnalysisSkipped().
+			WithAffectedResources(1, 0, 0, 1).
+			WithXRImpact("XNop", "xr-1", "default", "error").
+			WithErrorContaining("maximum nesting depth").
+			WithErrorResourceID("XNop/xr-1")},
+		"MissingComposition":  {want: ExpectCompDiff().WithComposition("comp-c"), wantFail: true},
+		"WrongRevisionScope":  {want: ExpectCompDiff().WithComposition("comp-a").WithRevisionImpact("metadata", true, 2), wantFail: true},
+		"PredictedNameAbsent": {want: ExpectCompDiff().WithComposition("comp-a").WithoutPredictedRevisionName(), wantFail: true},
+		"NoRevisionImpact":    {want: ExpectCompDiff().WithComposition("comp-b").WithRevisionImpact("none", false, 0), wantFail: true},
+		"NotSkipped":          {want: ExpectCompDiff().WithComposition("comp-a").WithImpactAnalysisSkipped(), wantFail: true},
+		"WrongXRStatus":       {want: ExpectCompDiff().WithComposition("comp-a").WithXRImpact("XNop", "xr-2", "default", "changed"), wantFail: true},
+		"WrongFilterReason": {
+			want: ExpectCompDiff().WithComposition("comp-a").WithXRImpact("XNop", "xr-3", "default", "filtered").
+				WithFilterReason(string(dt.FilterReasonManualPolicy)),
+			wantFail: true,
+		},
+		"WrongDownstreamValue": {want: downstream().WithFieldChange("spec.forProvider.configData", "old", "other"), wantFail: true},
+		"BadValuePattern":      {want: downstream().WithFieldValuePattern("spec.forProvider.configData", `^old$`), wantFail: true},
+		"DryRunPerformed":      {want: downstream().WithDryRunPerformed(), wantFail: true},
+		"ErrorOnOtherXR": {
+			want:     ExpectCompDiff().WithComposition("comp-a").WithXRImpact("XNop", "xr-2", "default", "unchanged").WithErrorResourceID("XNop/xr-1"),
+			wantFail: true,
+		},
+		"MissingTopLevelError": {want: ExpectCompDiff().WithError("Composition/comp-a"), wantFail: true},
+	}
+
+	for name, tc := range cases {
+		checkAssertion(t, name, tc.wantFail, func(t *testing.T) { t.Helper(); AssertStructuredCompDiff(t, out, tc.want) })
+	}
 }
 
-// TestAssertStructuredDiff_V2 asserts a v2 xr document, which has no flat changes[], with the real t.
-func TestAssertStructuredDiff_V2(t *testing.T) {
-	jsonOutput := `{
-		"outputVersion": "v2",
-		"summary": {"added": 1, "modified": 0, "removed": 0},
-		"xrs": [{
-			"xr": {"apiVersion": "example.org/v1", "kind": "XBucket", "name": "b", "namespace": "default"},
-			"status": "changed",
-			"summary": {"added": 1, "modified": 0, "removed": 0},
-			"changes": [{"type": "added", "apiVersion": "v1", "kind": "ConfigMap", "name": "cm", "namespace": "default", "diff": {"spec": {"data": {"k": "v"}}}}]
-		}]
-	}`
+func TestParsePath(t *testing.T) {
+	cases := map[string]struct {
+		path    string
+		want    []pathToken
+		wantErr bool
+	}{
+		"Dotted":        {path: "spec.forProvider.region", want: []pathToken{{key: "spec"}, {key: "forProvider"}, {key: "region"}}},
+		"Index":         {path: "spec.items[2].name", want: []pathToken{{key: "spec"}, {key: "items"}, {index: 2, isIndex: true}, {key: "name"}}},
+		"DoubleQuoted":  {path: `metadata.annotations["a.b/c"]`, want: []pathToken{{key: "metadata"}, {key: "annotations"}, {key: "a.b/c"}}},
+		"SingleQuoted":  {path: "metadata.annotations['a.b/c']", want: []pathToken{{key: "metadata"}, {key: "annotations"}, {key: "a.b/c"}}},
+		"EscapedQuote":  {path: `data["say \"hi\""]`, want: []pathToken{{key: "data"}, {key: `say "hi"`}}},
+		"BadIndex":      {path: "spec.items[x]", wantErr: true},
+		"Unterminated":  {path: "spec.items[1", wantErr: true},
+		"UnterminatedQ": {path: "metadata['a.b", wantErr: true},
+	}
 
-	AssertStructuredDiff(t, jsonOutput,
-		ExpectDiff().
-			WithOutputVersion("v2").
-			WithSummary(1, 0, 0).
-			WithXRs(XR("XBucket", "b", "default").Status("changed").Summary(1, 0, 0).
-				Change("added", "ConfigMap", "cm", "default").WithField("data.k", "v")))
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := parsePath(tc.path)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("parsePath(%q): err = %v, wantErr %t", tc.path, err, tc.wantErr)
+			}
+
+			if !tc.wantErr && !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("parsePath(%q) = %+v, want %+v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValueAt(t *testing.T) {
+	changes := []plan.FieldChange{
+		{Path: "spec.a", Actual: val("old-a"), Planned: val("new-a")},
+		{Path: "spec.list[0].x", Planned: val("x0")},
+		{Path: "spec.list[1].x", Actual: val("gone")},
+		{Path: `metadata.labels["app.io/name"]`, Planned: val("app")},
+	}
+
+	cases := map[string]struct {
+		path    string
+		planned bool
+		want    any
+	}{
+		"Leaf":            {path: "spec.a", planned: true, want: "new-a"},
+		"LeafActual":      {path: "spec.a", want: "old-a"},
+		"Subtree":         {path: "spec", planned: true, want: map[string]any{"a": "new-a", "list": []any{map[string]any{"x": "x0"}}}},
+		"SubtreeActual":   {path: "spec.list", want: []any{nil, map[string]any{"x": "gone"}}},
+		"QuotedKey":       {path: "metadata.labels['app.io/name']", planned: true, want: "app"},
+		"Absent":          {path: "spec.b", planned: true, want: nil},
+		"PrefixIsNotPath": {path: "spec.list[0].xy", planned: true, want: nil},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := valueAt(t, changes, tc.planned, tc.path); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("valueAt(%q, planned=%t) = %#v, want %#v", tc.path, tc.planned, got, tc.want)
+			}
+		})
+	}
 }

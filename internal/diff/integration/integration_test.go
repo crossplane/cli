@@ -115,8 +115,6 @@ type IntegrationTestCase struct {
 	// For XR tests, populate expectedStructuredOutput. For CompositionDiffTest tests,
 	// populate expectedStructuredCompOutput. Only one should be set per test case.
 	outputFormat string // "json" or "" (default=visual diff)
-	// outputVersion, when set, is passed as --output-version (the structured output schema version).
-	outputVersion string
 	// Typed as the assertion interfaces rather than the concrete root builders. The assert functions
 	// have accepted any builder level since those interfaces were introduced, specifically so a chain
 	// need not climb back to the root — but concrete field types here made that unreachable, which is
@@ -354,10 +352,6 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 	// Add JSON output format if specified
 	if tt.outputFormat == "json" {
 		args = append(args, "--output=json")
-	}
-
-	if tt.outputVersion != "" {
-		args = append(args, fmt.Sprintf("--output-version=%s", tt.outputVersion))
 	}
 
 	// Add ignore-paths if specified
@@ -997,9 +991,8 @@ func TestDiffIntegration(t *testing.T) {
 			expectedExitCode: dp.ExitCodeDiffDetected,
 		},
 		"MultipleXRsGroupedByInputXRV2": {
-			reason:        "With --output-version=v2, the xrs[] entries carry each input's changes and the deprecated flat changes[] is gone",
-			outputFormat:  "json",
-			outputVersion: "v2",
+			reason:       "The composites[] entries group each input's changes",
+			outputFormat: "json",
 			inputFiles: []string{
 				"testdata/diff/new-xr.yaml",
 				"testdata/diff/new-xr-second.yaml",
@@ -1010,8 +1003,7 @@ func TestDiffIntegration(t *testing.T) {
 				"testdata/diff/resources/functions.yaml",
 			},
 			expectedStructuredOutput: tu.ExpectDiff().
-				WithOutputVersion("v2").
-				// The top-level summary stays in v2: it counts distinct resources.
+				// The top-level summary counts distinct resources.
 				WithSummary(4, 0, 0).
 				WithXRs(
 					tu.XR("XNopResource", "test-resource", "default").
@@ -5428,12 +5420,10 @@ Summary: 1 modified`,
 				WithXRImpact("XCycleA", "test-cycle", "default", "error").
 				WithErrorContaining("maximum nesting depth exceeded"),
 		},
-		// The same failure under --output-version=v2: the impact entry is the shared per-XR entry, and
-		// its errors[] holds the same OutputError as the top-level errors[].
+		// The same failure, asserting the composite's error is recorded against it in the top-level errors[].
 		"CyclicCompositionStopsAtMaxNestedDepthV2": {
-			reason:        "With --output-version=v2, a failing composite's impactAnalysis entry carries its error as a structured errors[] entry",
-			outputFormat:  "json",
-			outputVersion: "v2",
+			reason:       "A failing composite's error is a structured errors[] entry recorded against it",
+			outputFormat: "json",
 			setupFiles: []string{
 				"testdata/diff/resources/cycle/xrds.yaml",
 				"testdata/diff/resources/cycle/compositions.yaml",
@@ -5447,7 +5437,6 @@ Summary: 1 modified`,
 			expectedErrorContains: "impact analysis failed for 1 XR(s)",
 			expectedExitCode:      dp.ExitCodeToolError,
 			expectedStructuredCompOutput: tu.ExpectCompDiff().
-				WithOutputVersion("v2").
 				WithError("XCycleA/test-cycle").
 				WithComposition("xcycleas.cycle.example.org").
 				WithAffectedResources(1, 0, 0, 1).

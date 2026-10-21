@@ -611,8 +611,10 @@ func TestConflictingGeneratedFileErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a conflict error when both groups emit a different root file")
 	}
-	if !strings.Contains(err.Error(), "conflicting generated file") {
-		t.Errorf("error does not name the conflict: %v", err)
+	for _, want := range []string{"conflicting generated file", "remove one of the definitions"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not say %q: %v", want, err)
+		}
 	}
 }
 

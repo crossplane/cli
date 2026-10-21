@@ -20,6 +20,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-git/go-billy/v5"
@@ -935,5 +936,23 @@ func TestFSSourceDefinitionsOnly(t *testing.T) {
 	}
 	if renamed, _ := src.Version(ctx); renamed == before {
 		t.Error("moving an XRD to another file did not change the version")
+	}
+}
+
+// A YAML syntax error in the project's APIs must fail, naming the file, rather
+// than silently dropping the definitions in it from the generated schemas.
+func TestFSSourceBrokenYAMLFails(t *testing.T) {
+	fsys := afero.NewMemMapFs()
+	if err := afero.WriteFile(fsys, "xrd.yaml", []byte("kind: CompositeResourceDefinition\nspec: [unclosed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewFSSource("apis", fsys).Resources(context.Background())
+	if err == nil {
+		t.Fatal("Resources accepted a file that isn't valid YAML")
+	}
+	for _, want := range []string{"xrd.yaml", "fix its syntax"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
 	}
 }

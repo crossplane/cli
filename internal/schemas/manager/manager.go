@@ -547,12 +547,12 @@ func splitByType(sources []Source) (crd, openAPI []Source, err error) {
 }
 
 // assembleTree builds each language's tree from the group caches and swaps
-// it in by rename. The dependencies group is written first and apis last,
-// matching the copy order the two write passes had on main, so any path
-// present in both (e.g. shared apimachinery models) resolves to the apis
-// copy, just as it did before. Languages that neither group produced output
-// for get an empty directory, and languages recorded in the last lock but no
-// longer generated have their directories removed.
+// it in by rename. A path present in both groups (e.g. shared apimachinery
+// models) must have the same content in both; if it doesn't, the pass fails
+// rather than letting one group's copy silently win, as the last copy did on
+// main. Languages that neither group produced output for get an empty
+// directory, and languages recorded in the last lock but no longer generated
+// have their directories removed.
 func (m *Manager) assembleTree() error {
 	// The languages to remove a tree for: everything on disk's language set
 	// (the lock's Languages, plus the current set) other than what this
@@ -653,7 +653,7 @@ func (m *Manager) stageTree(lang string) (map[string]string, error) {
 		// on-disk layout, stripping the models/ prefix most generators put
 		// their output under.
 		if err := copyPartsStrippingModels([]afero.Fs{depCache, apiCache}, treeStage); err != nil {
-			return nil, errors.Wrapf(err, "cannot combine the %s schemas of the project's dependencies and its own APIs", lang)
+			return nil, errors.Wrapf(err, "cannot combine the %s schemas of the project's dependencies and its own APIs; if the project defines an API that a dependency also provides, remove one of the definitions", lang)
 		}
 	}
 
@@ -868,7 +868,7 @@ func copyTreeWithConflicts(src, dst afero.Fs) error {
 		switch {
 		case err == nil:
 			if !bytes.Equal(existing, content) {
-				return errors.Errorf("conflicting generated file %s: two generator runs produced different content for the same path; report this as a bug", p)
+				return errors.Errorf("conflicting generated file %s: two sources generate it with different content", p)
 			}
 			return nil
 		case errors.Is(err, fs.ErrNotExist):

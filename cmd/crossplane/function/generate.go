@@ -141,7 +141,7 @@ func (c *generateCmd) newDependencyManager(cfg *config.Config) (*dependency.Mana
 		clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs),
 	)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cannot set up the package client that fetches the project's dependencies")
 	}
 	return dependency.NewManager(c.proj, c.projFS,
 		dependency.WithProjectFile(filepath.Base(c.ProjectFile)),
@@ -211,7 +211,7 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 		// per-user package cache); later runs reuse the project's caches.
 		depSources, err := depMgr.CollectSources(ctx, nil)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "cannot fetch the project's dependencies, whose models the function needs; check network access and registry credentials")
 		}
 		return schemaMgr.GenerateFromMultipleSources(ctx, depSources, manager.NewProjectAPIsSource(c.projFS, c.proj.Spec.Paths))
 	}); err != nil {

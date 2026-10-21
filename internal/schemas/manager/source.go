@@ -233,7 +233,7 @@ func (f *fsSource) Resources(_ context.Context) (afero.Fs, error) {
 		}
 		defs, err := definitions(bs)
 		if err != nil {
-			return errors.Wrapf(err, "failed to read %s", p)
+			return errors.Wrapf(err, "cannot read the API definitions in %s", p)
 		}
 		if len(defs) == 0 {
 			return nil
@@ -249,8 +249,10 @@ func (f *fsSource) Resources(_ context.Context) (afero.Fs, error) {
 	return out, nil
 }
 
-// definitions returns the XRD and CRD documents of a YAML file, in order.
-// Documents that don't parse aren't definitions.
+// definitions returns the XRD and CRD documents of a YAML file, in order. A
+// document that doesn't parse is an error, as it was when the generators
+// parsed every file themselves: dropping it would silently drop any API
+// definition it holds from the generated schemas.
 func definitions(content []byte) ([][]byte, error) {
 	var defs [][]byte
 	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(content)))
@@ -265,7 +267,10 @@ func definitions(content []byte) ([][]byte, error) {
 		var res struct {
 			Kind string `json:"kind"`
 		}
-		if err := yaml.Unmarshal(doc, &res); err == nil && (res.Kind == "CompositeResourceDefinition" || res.Kind == "CustomResourceDefinition") {
+		if err := yaml.Unmarshal(doc, &res); err != nil {
+			return nil, errors.Wrap(err, "cannot parse it as YAML; fix its syntax so the API definitions in it are generated")
+		}
+		if res.Kind == "CompositeResourceDefinition" || res.Kind == "CustomResourceDefinition" {
 			defs = append(defs, doc)
 		}
 	}

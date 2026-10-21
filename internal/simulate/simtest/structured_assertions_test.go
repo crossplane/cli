@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
@@ -41,12 +43,22 @@ var (
 	xrC = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XBucket", Name: "broken-xr", Namespace: "default"}
 )
 
+// bucket is bucket-a's object in region, with an unchanged tier.
+func bucket(region string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "example.org/v1", "kind": "Bucket",
+		"metadata": map[string]any{"name": "bucket-a", "namespace": "default"},
+		"spec":     map[string]any{"region": region, "tier": "premium"},
+	}}
+}
+
 // xrResult is an xr run: one changed XR (a modified Bucket, a created ConfigMap and a deleted Secret),
 // one unchanged XR, and one errored XR.
 func xrResult() plan.Result {
 	plans := []*plan.ResourcePlan{
 		{
 			APIVersion: "example.org/v1", Kind: "Bucket", Name: "bucket-a", Namespace: "default", Action: plan.ActionUpdate, Composite: &xrA,
+			Before: bucket("us-east-1"), After: bucket("us-west-2"),
 			Changes: []plan.FieldChange{
 				{Path: "spec.region", Actual: val("us-east-1"), Planned: val("us-west-2")},
 				{Path: `metadata.annotations["example.org/source"]`, Actual: val("old"), Planned: val("new")},
@@ -141,8 +153,17 @@ func TestAssertStructuredDiff(t *testing.T) {
 		"NamePattern":    {want: withoutConfigMap().WithAddedResource("ConfigMap", "", "default").WithNamePattern(`^cm-[a-z0-9]{5}$`)},
 		"BadNamePattern": {want: withoutConfigMap().WithAddedResource("ConfigMap", "", "default").WithNamePattern(`^other-`), wantFail: true},
 		// A field rendered identically on both sides has no leaf change: asserting it unchanged passes
-		// when nothing at or under it changed, and fails when something did.
+		// when the plan's before and after objects both hold the value and nothing at or under it
+		// changed, and fails otherwise.
 		"UnchangedField": {want: withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.tier", "premium", "premium")},
+		"UnchangedWrongValue": {
+			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.tier", "basic", "basic"),
+			wantFail: true,
+		},
+		"UnchangedMissing": {
+			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.size", "large", "large"),
+			wantFail: true,
+		},
 		"ChangedNotSteady": {
 			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.region", "us-east-1", "us-east-1"),
 			wantFail: true,

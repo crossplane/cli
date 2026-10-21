@@ -108,10 +108,18 @@ type ResourcePlan struct {
 	// against the API server; nil means it was verified (or not applicable).
 	DryRun *Verification `json:"dryRun,omitempty"`
 
-	// Desired is the resource the plan is for. It is carried for rendering
-	// (the plan output shows the user's own manifest, annotated) and is not
-	// part of the serialized result.
-	Desired *unstructured.Unstructured `json:"-"`
+	// Before is the live object the plan compares, nil for a create. After
+	// is the desired object, nil for a delete. They let a consumer match the
+	// plan to its input and render its own diff. For project simulate both
+	// are the cleaned views the cluster layer diffs, with ignored paths,
+	// status and server-managed metadata removed, so they agree with Changes;
+	// both are nil when the cluster layer found the resource unchanged. For a
+	// provider-planned resource After is the manifest sent to the provider,
+	// not the provider's view of the result: computed values and provider
+	// defaults appear only in Changes. A Secret's data and stringData values
+	// are redacted (see RedactSecret).
+	Before *unstructured.Unstructured `json:"before,omitempty"`
+	After  *unstructured.Unstructured `json:"after,omitempty"`
 }
 
 // ResourceRef identifies a resource.
@@ -146,6 +154,38 @@ func (p *ResourcePlan) ResourceRef() ResourceRef {
 	return ResourceRef{APIVersion: p.APIVersion, Kind: p.Kind, Name: p.Name, Namespace: p.Namespace}
 }
 
+// RedactSecret returns u with each data and stringData value replaced by the
+// sensitive-value marker when u is a core Secret, as a copy; any other object
+// is returned as is. Keys are kept, so a consumer still sees which keys exist.
+func RedactSecret(u *unstructured.Unstructured) *unstructured.Unstructured {
+	if u == nil {
+		return nil
+	}
+	if gvk := u.GroupVersionKind(); gvk.Group != "" || gvk.Kind != "Secret" {
+		return u
+	}
+
+	sensitive := FormatValue(&Value{Sensitive: true})
+	out := u.DeepCopy()
+	for _, field := range []string{"data", "stringData"} {
+		v, ok := out.Object[field]
+		if !ok {
+			continue
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			// Malformed: redact the whole field rather than leak it.
+			out.Object[field] = sensitive
+			continue
+		}
+		for k := range m {
+			m[k] = sensitive
+		}
+	}
+
+	return out
+}
+
 // NewResourcePlan returns a ResourcePlan identifying the given desired
 // resource, with no action decided yet.
 func NewResourcePlan(desired *unstructured.Unstructured) *ResourcePlan {
@@ -154,6 +194,5 @@ func NewResourcePlan(desired *unstructured.Unstructured) *ResourcePlan {
 		Kind:       desired.GetKind(),
 		Name:       desired.GetName(),
 		Namespace:  desired.GetNamespace(),
-		Desired:    desired,
 	}
 }

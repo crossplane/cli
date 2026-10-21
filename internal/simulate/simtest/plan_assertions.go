@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
@@ -20,7 +22,8 @@ import (
 //
 //   - a change is a ResourcePlan, its type the plan's Action (create/update/delete);
 //   - a field value or old/new pair is read from the plan's leaf FieldChanges, a non-leaf path being
-//     re-assembled from the leaves under it;
+//     re-assembled from the leaves under it, or, for a pair whose sides are equal, from the plan's
+//     before and after objects;
 //   - an xrs[] or impactAnalysis[] entry is a Composites entry, its changes the plans grouped under it;
 //   - a composition is a Compositions entry plus its own (ungrouped) plan;
 //   - an error's resourceID ("Kind/name") is the Kind and Name of its Errors[].resource.
@@ -449,13 +452,17 @@ func assertFields(t *testing.T, id string, p *plan.ResourcePlan, changeType stri
 	}
 
 	for path, want := range changes {
-		// FieldChanges are leaf changes only, so a field rendered identically on both sides has no
-		// plan.Result home, and the plan's object (Desired) is not serialized: all that can be asserted
-		// is that nothing at or under it changed, not its value. ponytail: reduced coverage, see
-		// revisit.md R14; restore the value check once plan.Result carries the object.
+		// FieldChanges are leaf changes only, so a field rendered identically on both sides is read from
+		// the plan's objects instead, and must have no change at or under it.
 		if want[0] != nil && reflect.DeepEqual(want[0], want[1]) {
 			if c := changesUnder(t, p.Changes, path); len(c) > 0 {
 				t.Errorf("%s: field %s: expected unchanged (%v), got changes %+v", id, path, want[0], c)
+			}
+
+			for i, u := range []*unstructured.Unstructured{p.Before, p.After} {
+				if got, ok := objectValueAt(t, u, path); !ok || !reflect.DeepEqual(got, want[0]) {
+					t.Errorf("%s: field %s in %s: expected %v, got %v (present: %t)", id, path, []string{"before", "after"}[i], want[0], got, ok)
+				}
 			}
 
 			continue
@@ -894,6 +901,41 @@ func changesUnder(t *testing.T, changes []plan.FieldChange, path string) []plan.
 	}
 
 	return out
+}
+
+// objectValueAt returns the value at path in u, and whether it is there at all.
+func objectValueAt(t *testing.T, u *unstructured.Unstructured, path string) (any, bool) {
+	t.Helper()
+
+	if u == nil {
+		return nil, false
+	}
+
+	var node any = u.Object
+
+	for _, tok := range mustParsePath(t, path) {
+		if tok.isIndex {
+			l, ok := node.([]any)
+			if !ok || tok.index >= len(l) {
+				return nil, false
+			}
+
+			node = l[tok.index]
+
+			continue
+		}
+
+		m, ok := node.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+
+		if node, ok = m[tok.key]; !ok {
+			return nil, false
+		}
+	}
+
+	return node, true
 }
 
 // valueAt returns the value at path on one side of a plan's changes: the planned side, or else the

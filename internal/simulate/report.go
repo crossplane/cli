@@ -342,6 +342,11 @@ func resourcePlan(d *dt.ResourceDiff) *plan.ResourcePlan {
 		Name:      d.ResourceName,
 		Namespace: d.Namespace,
 		DryRun:    verification(d.DryRun),
+		// The views the changes are diffed from. Clean is nil for an equal
+		// diff, so a kept-equal diff a provider plan upgrades carries
+		// neither: its Raw views are uncleaned, unlike every other plan's.
+		Before: plan.RedactSecret(d.Current.Clean),
+		After:  plan.RedactSecret(d.Desired.Clean),
 	}
 
 	switch d.DiffType {

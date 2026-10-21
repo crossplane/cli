@@ -48,7 +48,11 @@ The `-o` flag picks the output format:
   the composite resource it belongs to. A changed Composition prints first,
   with whether applying it creates a new Composition revision.
 - `json` and `yaml` print the same plan as a structured result, for CI and
-  other tools.
+  other tools. Each plan carries the objects it compares, as `before` (the
+  live object, absent for a create) and `after` (the rendered object, absent
+  for a delete), with ignored paths, status and server-managed metadata
+  removed and Secret values redacted. A provider-planned resource's `after`
+  is the manifest sent to the provider, not the provider's view.
 - `diff` prints the line diff `crossplane-diff` prints.
 
 For example, a changed Composition prints a plan like this:

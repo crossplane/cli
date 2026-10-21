@@ -76,6 +76,9 @@ func TestPlan(t *testing.T) {
 		if c.got.GetActualResource() == nil {
 			t.Errorf("Plan(...): actual resource not carried in request")
 		}
+		if got.Before != actual || got.After != desired {
+			t.Errorf("Plan(...): want the plan to carry actual as before and desired as after")
+		}
 		if len(c.got.GetKubernetesObjectStore()) != 1 {
 			t.Errorf("Plan(...): want 1 object store entry, got %d", len(c.got.GetKubernetesObjectStore()))
 		}
@@ -93,6 +96,9 @@ func TestPlan(t *testing.T) {
 		}
 		if c.got.GetActualResource() != nil {
 			t.Errorf("Plan(...): actual resource should be unset for a create")
+		}
+		if got.Before != nil || got.After != desired {
+			t.Errorf("Plan(...): want a create to carry no before and desired as after")
 		}
 	})
 

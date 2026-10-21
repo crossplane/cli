@@ -624,8 +624,7 @@ type CompositionExpectation struct {
 	// of revisionImpact so a case can assert the name alone, and because the name is usually matched by
 	// pattern (its suffix is a content hash) while the rest are exact.
 	predictedRevisionName *expectedPredictedRevisionName
-	// errorContains, when set, is a substring the composition's error must contain: v1's error string,
-	// or a message in v2's errors[].
+	// errorContains, when set, is a substring the composition's error must contain: its plan's error.
 	errorContains string
 }
 
@@ -659,7 +658,7 @@ type XRImpactExpectation struct {
 	status              string   // "changed", "unchanged", "error", "filtered"
 	filterReason        string   // "manual_policy", "revision_selector_mismatch", "deleting"; only checked when set
 	errorContains       string   // substring of an "error" impact's Error; only checked when set
-	errorIDs            []string // resourceIDs the entry's v2 errors[] must contain
+	errorIDs            []string // resourceIDs the plan.Result errors[] attributed to the XR must contain
 	downstreamSummary   *expectedSummary
 	downstreamResources []*DownstreamResourceExpectation
 }
@@ -764,8 +763,8 @@ func (c *CompositionExpectation) WithCompositionFieldChange(path string, oldValu
 	return c
 }
 
-// WithCompositionErrorContaining asserts the composition failed with an error containing s: v1's
-// error string, or a message in v2's errors[].
+// WithCompositionErrorContaining asserts the composition failed with an error containing s, the
+// error on its plan in plan.Result.
 func (c *CompositionExpectation) WithCompositionErrorContaining(s string) *CompositionExpectation {
 	c.errorContains = s
 	return c

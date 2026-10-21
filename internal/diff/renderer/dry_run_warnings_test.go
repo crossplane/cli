@@ -2,11 +2,9 @@ package renderer
 
 import (
 	"bytes"
-	"encoding/json"
 	"strings"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -42,8 +40,7 @@ func diffMap(diffs ...*dt.ResourceDiff) map[string]*dt.ResourceDiff {
 }
 
 // TestRenderers_EmitDryRunWarnings covers every entry point a command renders through. Each derives the
-// summary from what it is handed, writes it to stderr in every output mode, and adds it to warnings[] in
-// structured modes after the warnings raised during the run. The summary spans inputs, so two XRs'
+// summary from what it is handed and writes it to stderr. The summary spans inputs, so two XRs'
 // additions are counted together; a failed XR shows no diffs and contributes nothing.
 func TestRenderers_EmitDryRunWarnings(t *testing.T) {
 	raised := dt.OutputWarning{Message: "raised during the run"}
@@ -80,8 +77,6 @@ func TestRenderers_EmitDryRunWarnings(t *testing.T) {
 	tests := map[string]struct {
 		format OutputFormat
 		render renderFn
-		// structured is false for the human renderers, which have no warnings[] to check.
-		structured bool
 	}{
 		"XRText": {
 			format: OutputFormatDiff,
@@ -89,25 +84,11 @@ func TestRenderers_EmitDryRunWarnings(t *testing.T) {
 				return NewDiffRenderer(tu.TestLogger(t, false), opts).RenderDiffs(xrGroups, nil, []dt.OutputWarning{raised})
 			},
 		},
-		"XRJSON": {
-			format:     OutputFormatJSON,
-			structured: true,
-			render: func(opts DiffOptions) error {
-				return NewStructuredDiffRenderer(tu.TestLogger(t, false), opts).RenderDiffs(xrGroups, nil, []dt.OutputWarning{raised})
-			},
-		},
 		"CompText": {
 			format: OutputFormatDiff,
 			render: func(opts DiffOptions) error {
 				logger := tu.TestLogger(t, false)
 				return NewDefaultCompDiffRenderer(logger, NewDiffRenderer(logger, opts), opts).RenderCompDiff(compOutput())
-			},
-		},
-		"CompJSON": {
-			format:     OutputFormatJSON,
-			structured: true,
-			render: func(opts DiffOptions) error {
-				return NewStructuredCompDiffRenderer(tu.TestLogger(t, false), opts).RenderCompDiff(compOutput())
 			},
 		},
 	}
@@ -136,22 +117,6 @@ func TestRenderers_EmitDryRunWarnings(t *testing.T) {
 			// re-emitted them would print them twice.
 			if strings.Contains(stderr.String(), raised.FormatWarning()) {
 				t.Errorf("stderr repeats a warning raised during the run:\n%s", stderr.String())
-			}
-
-			if !tc.structured {
-				return
-			}
-
-			var out struct {
-				Warnings []dt.OutputWarning `json:"warnings"`
-			}
-
-			if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
-				t.Fatalf("cannot parse structured output: %v\n%s", err, stdout.String())
-			}
-
-			if d := cmp.Diff([]dt.OutputWarning{raised, summary}, out.Warnings); d != "" {
-				t.Errorf("warnings[] mismatch (-want +got):\n%s", d)
 			}
 		})
 	}

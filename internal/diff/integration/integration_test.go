@@ -833,8 +833,8 @@ func TestDiffIntegration(t *testing.T) {
 				"cleanupForDiff (compare/compare.go) deletes metadata.status unconditionally from " +
 				"both sides of every diff, in the same block that deletes ownerReferences — the strip whose " +
 				"identical consequence for ownerReferences this feature's own spec documented (§1a) and then " +
-				"missed for status. ResourceViews.Clean is the only view any renderer reads " +
-				"(structured_renderer.go:462-472); ResourceViews.Desired.Raw, which does carry the " +
+				"missed for status. ResourceViews.Clean is the only view any renderer reads" +
+				"; ResourceViews.Desired.Raw, which does carry the " +
 				"re-attached status, has no reader at all. Verified empirically: the apiserver's dry-run " +
 				"create response for XStatusResource carries no status, the object handed to cleanupForDiff " +
 				"carries status.phase=authored-by-composition, and the object cleanupForDiff returns does " +

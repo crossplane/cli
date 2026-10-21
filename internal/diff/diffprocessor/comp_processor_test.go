@@ -2142,16 +2142,7 @@ func renderCompReport(t *testing.T, output *dt.CompDiffOutput, format renderer.O
 
 	logger := tu.TestLogger(t, false)
 
-	var compRenderer renderer.CompDiffRenderer
-
-	switch opts.Format {
-	case renderer.OutputFormatJSON, renderer.OutputFormatYAML:
-		compRenderer = renderer.NewStructuredCompDiffRenderer(logger, opts)
-	case renderer.OutputFormatDiff:
-		fallthrough
-	default:
-		compRenderer = renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts)
-	}
+	compRenderer := renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts)
 
 	if err := compRenderer.RenderCompDiff(output); err != nil {
 		t.Fatalf("RenderCompDiff(): %v", err)

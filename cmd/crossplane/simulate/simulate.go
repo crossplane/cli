@@ -21,7 +21,6 @@ package simulate
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,15 +29,11 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/crossplane/apis/v2/pkg"
-
-	"github.com/crossplane/cli/v2/internal/containerruntime"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/kube"
@@ -143,10 +138,6 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		}
 		inputs = diffserver.Images(images)
 	}
-	if len(inputs) == 0 {
-		_, _ = fmt.Fprintln(k.Stderr, "No providers found to run as diff servers; all results will be approximate.")
-	}
-
 	pkgClient, err := clixpkg.NewClient(
 		clixpkg.WithCacheDir(afero.NewOsFs(), c.CacheDir),
 		clixpkg.WithImageConfigs(imageConfigs),
@@ -155,16 +146,12 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		return errors.Wrap(err, "cannot create package client")
 	}
 
-	mgr := diffserver.NewManager(pkgClient, logger,
-		diffserver.WithSessionID(c.SessionID),
-		diffserver.WithLeaseDir(containerruntime.DefaultLeaseDir()),
-	)
-	// Stop before EnsureServers returns, so an interrupted startup still
-	// stops the servers it started. Stop is safe when none started.
-	defer isimulate.StopServers(ctx, k.Stderr, mgr)
-	if err := isimulate.EnsureServers(ctx, sp, k.Stderr, mgr, inputs); err != nil {
+	mgr, stop, err := isimulate.StartDiffServers(ctx, sp, logger, k.Stderr, pkgClient, inputs, c.SessionID,
+		"No providers found to run as diff servers; all results will be approximate.")
+	if err != nil {
 		return err
 	}
+	defer stop()
 
 	plans := make([]*plan.ResourcePlan, 0, len(resources))
 	planner := isimulate.NewPlanner(kubeClient, rmapper, defaultNamespace, mgr, c.Timeout)
@@ -200,15 +187,9 @@ func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMa
 
 	logger.Debug("Found kubeconfig")
 
-	cl, err := client.New(kubeconfig, client.Options{Scheme: scheme.Scheme})
+	cl, rmapper, err := isimulate.NewKubeClient(kubeconfig)
 	if err != nil {
-		return nil, nil, "", errors.Wrap(err, "cannot init kubeclient")
-	}
-	_ = pkg.AddToScheme(cl.Scheme())
-
-	rmapper, err := kube.NewCachedRESTMapper(kubeconfig)
-	if err != nil {
-		return nil, nil, "", errors.Wrap(err, "cannot get discovery client")
+		return nil, nil, "", err
 	}
 
 	namespace, _, err := clientconfig.Namespace()

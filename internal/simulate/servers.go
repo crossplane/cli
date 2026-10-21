@@ -26,16 +26,24 @@ import (
 	"strings"
 
 	"github.com/spf13/afero"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
+	"github.com/crossplane/crossplane/apis/v2/pkg"
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/containerruntime"
 	"github.com/crossplane/cli/v2/internal/diffserver"
+	"github.com/crossplane/cli/v2/internal/kube"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -81,30 +89,37 @@ const (
 	defaultDevelopmentTarget = "localhost:9099"
 )
 
-// EnsureServers starts a diff server for each input behind the spinner, and
-// prints the inputs it skipped.
-func EnsureServers(ctx context.Context, sp terminal.SpinnerPrinter, stderr io.Writer, mgr *diffserver.Manager, inputs []diffserver.Input) error {
+// StartDiffServers starts a diff server for each input and returns the
+// manager to plan through and a func that stops the servers. It prints
+// noProviders to stderr when there are no inputs, and the servers it skipped.
+func StartDiffServers(ctx context.Context, sp terminal.SpinnerPrinter, log logging.Logger, stderr io.Writer,
+	pkgs runtimexpkg.Client, inputs []diffserver.Input, session, noProviders string,
+) (*diffserver.Manager, func(), error) {
+	if len(inputs) == 0 {
+		_, _ = fmt.Fprintln(stderr, noProviders)
+	}
+
+	mgr := diffserver.NewManager(pkgs, log, diffserver.WithSessionID(session),
+		diffserver.WithLeaseDir(containerruntime.DefaultLeaseDir()))
 	var skipped []diffserver.Skipped
 	if err := sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
 		var err error
 		skipped, err = mgr.Start(ctx, inputs, ch)
 		return err
 	}); err != nil {
-		return errors.Wrap(err, "cannot start diff servers")
+		return nil, nil, errors.Wrap(err, "cannot start diff servers")
+	}
+	// Cleanup runs even when ctx was cancelled by a signal, so an interrupted
+	// run still tears its containers down.
+	stop := func() {
+		if err := mgr.Stop(context.WithoutCancel(ctx)); err != nil {
+			_, _ = fmt.Fprintf(stderr, "Warning: cannot clean up diff servers: %s\n", err)
+		}
 	}
 	for _, s := range skipped {
 		_, _ = fmt.Fprintf(stderr, "Not running a diff server for %s: %s\n", s.Image, s.Reason)
 	}
-	return nil
-}
-
-// StopServers stops every server mgr runs. It runs even when ctx was
-// cancelled by a signal, so an interrupted run still tears its containers
-// down.
-func StopServers(ctx context.Context, stderr io.Writer, mgr *diffserver.Manager) {
-	if err := mgr.Stop(context.WithoutCancel(ctx)); err != nil {
-		_, _ = fmt.Fprintf(stderr, "Warning: cannot clean up diff servers: %s\n", err)
-	}
+	return mgr, stop, nil
 }
 
 // ImageConfigs returns the ImageConfigs to rewrite provider image paths with:
@@ -282,4 +297,19 @@ func LoadImageConfigs(path string) ([]pkgv1beta1.ImageConfig, error) {
 		ics = append(ics, ic)
 	}
 	return ics, nil
+}
+
+// NewKubeClient returns a client and a discovery-backed REST mapper for cfg.
+func NewKubeClient(cfg *rest.Config) (client.Client, meta.RESTMapper, error) {
+	cl, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "cannot init kubeclient")
+	}
+	_ = pkg.AddToScheme(cl.Scheme())
+
+	rmapper, err := kube.NewCachedRESTMapper(cfg)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "cannot get discovery client")
+	}
+	return cl, rmapper, nil
 }

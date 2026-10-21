@@ -1,9 +1,13 @@
 package diffprocessor
 
 import (
+	"context"
+	"time"
+
 	corev1 "k8s.io/api/core/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
@@ -147,6 +151,17 @@ type ProcessorConfig struct {
 	// makes an unchanged composite's impact carry its diffs. Nil, the default, keeps none. Every
 	// HasChanges and renderer skips equal diffs, so this only adds diffs a caller can refine further.
 	KeepEqualDiffs func(*un.Unstructured) bool
+
+	// XRTimeout, when positive, bounds each composite resource's diff, one input of PerformDiff or one
+	// affected composite of DiffComposition: its render and AfterXRDiff. A composite that runs out
+	// fails alone, as a failed render does, and the next one still renders. Zero, the default, adds
+	// no deadline to the caller's.
+	XRTimeout time.Duration
+
+	// AfterXRDiff, when set, runs after each composite resource's diff succeeds, under its XRTimeout
+	// deadline, with the composite's diffs. An error fails the composite as a failed render does: none
+	// of its diffs are reported. Nil, the default, runs nothing.
+	AfterXRDiff func(ctx context.Context, diffs map[string]*dt.ResourceDiff) error
 
 	// FunctionCredentials holds Secret credentials to pass to Functions during rendering
 	FunctionCredentials []corev1.Secret
@@ -302,6 +317,20 @@ func WithIgnorePaths(ignorePaths []string) ProcessorOption {
 	}
 }
 
+// WithXRTimeout bounds each composite resource's diff (see ProcessorConfig.XRTimeout).
+func WithXRTimeout(d time.Duration) ProcessorOption {
+	return func(config *ProcessorConfig) {
+		config.XRTimeout = d
+	}
+}
+
+// WithAfterXRDiff runs fn after each composite resource's diff (see ProcessorConfig.AfterXRDiff).
+func WithAfterXRDiff(fn func(ctx context.Context, diffs map[string]*dt.ResourceDiff) error) ProcessorOption {
+	return func(config *ProcessorConfig) {
+		config.AfterXRDiff = fn
+	}
+}
+
 // WithKeepEqualDiffs keeps the equal diffs of the composed resources keep reports true for (see
 // ProcessorConfig.KeepEqualDiffs).
 func WithKeepEqualDiffs(keep func(*un.Unstructured) bool) ProcessorOption {
@@ -423,6 +452,46 @@ func WithFunctionProviderFactory(factory func(xp.FunctionClient, logging.Logger)
 	return func(config *ProcessorConfig) {
 		config.Factories.FunctionProvider = factory
 	}
+}
+
+// xrContext returns the context one composite resource's diff runs under: ctx bounded by XRTimeout
+// when it is set.
+func (c *ProcessorConfig) xrContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if c.XRTimeout <= 0 {
+		return ctx, func() {}
+	}
+
+	return context.WithTimeout(context.WithValue(ctx, runContextKey{}, ctx), c.XRTimeout)
+}
+
+// runContextKey keys the context a composite resource's XRTimeout deadline was added to.
+type runContextKey struct{}
+
+// WithoutXRDeadline returns the context ctx's composite resource deadline was added to, or ctx when
+// it has none. Starting function runtimes, which pulls their images, runs under it: that work is
+// shared by the whole run, so it must not count against, or fail, the composite that happens to
+// need it first. An AfterXRDiff hook uses it the same way for run-wide work of its own.
+func WithoutXRDeadline(ctx context.Context) context.Context {
+	if run, ok := ctx.Value(runContextKey{}).(context.Context); ok {
+		return run
+	}
+
+	return ctx
+}
+
+// afterXR finishes one composite resource's diff, which returned diffs and err under xrCtx, a child
+// of ctx: it runs AfterXRDiff on a success, and says so when the composite ran out of XRTimeout.
+func (c *ProcessorConfig) afterXR(ctx, xrCtx context.Context, diffs map[string]*dt.ResourceDiff, err error) error {
+	if err == nil && c.AfterXRDiff != nil {
+		err = c.AfterXRDiff(xrCtx, diffs)
+	}
+
+	// Only the composite's own deadline is named; the caller's ending reads as it always has.
+	if err != nil && ctx.Err() == nil && errors.Is(xrCtx.Err(), context.DeadlineExceeded) {
+		return errors.Wrapf(err, "timed out after %s", c.XRTimeout)
+	}
+
+	return err
 }
 
 // GetCompareOptions returns the compare.Options based on the ProcessorConfig.

@@ -286,7 +286,10 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 		}
 
 		if in.Err == nil {
-			diffs, rendered, err := p.diffSingleResourceInternal(ctx, res, compositionProvider, nil, nil, true, 0)
+			xrCtx, cancel := p.config.xrContext(ctx)
+			diffs, rendered, err := p.diffSingleResourceInternal(xrCtx, res, compositionProvider, nil, nil, true, 0)
+			err = p.config.afterXR(ctx, xrCtx, diffs, err)
+			cancel()
 			validator.RecordRender(i, rendered.Keys(), err)
 
 			if err == nil {

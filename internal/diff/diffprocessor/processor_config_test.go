@@ -1,7 +1,9 @@
 package diffprocessor
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	gcmp "github.com/google/go-cmp/cmp"
 
@@ -178,5 +180,20 @@ func TestWithMaxRecvMessageSize(t *testing.T) {
 
 	if config.MaxRecvMessageSize != 16 {
 		t.Errorf("Expected config.MaxRecvMessageSize to be 16, got: %d", config.MaxRecvMessageSize)
+	}
+}
+
+func TestWithoutXRDeadline(t *testing.T) {
+	cfg := &ProcessorConfig{XRTimeout: time.Nanosecond}
+	run := context.Background()
+	xrCtx, cancel := cfg.xrContext(run)
+	defer cancel()
+	<-xrCtx.Done()
+
+	if got := WithoutXRDeadline(xrCtx); got.Err() != nil {
+		t.Errorf("WithoutXRDeadline(expired XR context).Err() = %v, want the run context, which has not ended", got.Err())
+	}
+	if got := WithoutXRDeadline(run); got != run {
+		t.Errorf("WithoutXRDeadline(run) did not return run unchanged")
 	}
 }

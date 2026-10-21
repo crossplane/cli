@@ -636,7 +636,10 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 	for _, xr := range xrs {
 		resourceID := dt.MakeDiffKeyFromResource(xr)
 
-		diffs, err := p.xrProc.DiffSingleResource(ctx, xr, compositionProvider)
+		xrCtx, cancel := p.config.xrContext(ctx)
+		diffs, err := p.xrProc.DiffSingleResource(xrCtx, xr, compositionProvider)
+		err = p.config.afterXR(ctx, xrCtx, diffs, err)
+		cancel()
 		if err != nil {
 			p.config.Logger.Debug("Failed to process resource", "resource", resourceID, "error", err)
 

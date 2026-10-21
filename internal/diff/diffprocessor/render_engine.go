@@ -291,6 +291,9 @@ func (e *EngineRenderFn) startFunctions(ctx context.Context, log logging.Logger,
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Starting functions is shared by the run, so a composite's XRTimeout does not bound it.
+	ctx = WithoutXRDeadline(ctx)
+
 	if e.addrs == nil {
 		e.addrs = make(map[string]string)
 	}

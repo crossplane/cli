@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -41,7 +42,6 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/diff/types"
-	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
 func TestDefaultCompDiffProcessor_findResourcesUsingComposition(t *testing.T) {
@@ -208,23 +208,30 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 		// verifyOutput runs whether or not DiffComposition returns an error, since a failed composition
 		// is still reported, and so still rendered.
 		verifyOutput func(t *testing.T, output string)
+		// verifyReport checks the report itself, before rendering.
+		verifyReport func(t *testing.T, output *dt.CompDiffOutput)
 		wantErr      bool
 		// wantErrContains, when set, must appear in the returned error.
 		wantErrContains string
 	}{
-		// A composition that fails to process carries its error on its plan, and the top-level errors[]
-		// lists it too.
+		// A composition that fails to process carries its error on its own entry. (project simulate's
+		// mapper also lists it in the top-level errors; see simulate's report tests.)
 		"FailedCompositionReportsStructuredErrors": {
 			namespace:    "default",
 			compositions: []*un.Unstructured{malformedComp()},
-			outputFormat: renderer.OutputFormatJSON,
 			setupMocks:   singleXRMocks,
-			verifyOutput: func(t *testing.T, output string) {
+			verifyReport: func(t *testing.T, output *dt.CompDiffOutput) {
 				t.Helper()
-				tu.AssertStructuredCompDiff(t, output, tu.ExpectCompDiff().
-					WithError("Composition/test-composition").
-					WithComposition("test-composition").
-					WithCompositionErrorContaining("cannot convert composition"))
+
+				i := slices.IndexFunc(output.Compositions, func(c dt.CompositionDiff) bool { return c.Name == "test-composition" })
+				if i < 0 {
+					t.Fatalf("Compositions: got %+v, want test-composition", output.Compositions)
+				}
+
+				if e := output.Compositions[i].Error; e == nil || e.ResourceID != "Composition/test-composition" ||
+					!strings.Contains(e.Message, "cannot convert composition") {
+					t.Errorf("Compositions[test-composition].Error: got %+v, want Composition/test-composition containing %q", e, "cannot convert composition")
+				}
 			},
 			wantErr: true,
 			// The renderer prints no errors, so the returned one must name the composition.
@@ -481,6 +488,10 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 
 			if tt.wantErrContains != "" && !strings.Contains(err.Error(), tt.wantErrContains) {
 				t.Errorf("DiffComposition() error = %v, want it to contain %q", err, tt.wantErrContains)
+			}
+
+			if tt.verifyReport != nil {
+				tt.verifyReport(t, output)
 			}
 
 			if tt.verifyOutput != nil {
@@ -2129,22 +2140,12 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 }
 
 // renderCompReport renders a DiffComposition report in the given format (empty means the
-// human-readable diff) and returns what it wrote to stdout. JSON is project simulate's: the report
-// mapped onto plan.Result.
+// human-readable diff) and returns what it wrote to stdout.
 func renderCompReport(t *testing.T, output *dt.CompDiffOutput, format renderer.OutputFormat) string {
 	t.Helper()
 
 	if output == nil {
 		return ""
-	}
-
-	if format == renderer.OutputFormatJSON {
-		out, err := json.Marshal(simulate.FromCompReport(output, nil))
-		if err != nil {
-			t.Fatalf("json.Marshal(): %v", err)
-		}
-
-		return string(out)
 	}
 
 	var stdout bytes.Buffer

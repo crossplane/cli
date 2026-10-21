@@ -1,3 +1,4 @@
+// Package testutils provides test utilities for crossplane-diff.
 package testutils
 
 import (

@@ -49,6 +49,10 @@ type DiffOptions struct {
 	// per composition, omitting the full YAML diff body. Only consumed by the
 	// human-readable composition diff renderer; structured output is unaffected.
 	MinimizeComposition bool
+
+	// Replaced, when set, reports whether a diff's resource would be replaced;
+	// its header and the summary say so. Nil reports none.
+	Replaced func(*t.ResourceDiff) bool
 }
 
 // OutputFormat represents the desired output format for diffs.

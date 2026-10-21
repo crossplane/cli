@@ -81,6 +81,7 @@ type diffCounts struct {
 	modified int
 	removed  int
 	equal    int
+	replaced int
 	output   int
 }
 
@@ -126,6 +127,11 @@ func (r *DefaultDiffRenderer) renderDiffList(diffs map[string]*dt.ResourceDiff) 
 			continue
 		}
 
+		if r.diffOpts.Replaced != nil && r.diffOpts.Replaced(diff) {
+			counts.replaced++
+			header += " (requires replacement)"
+		}
+
 		content := FormatDiff(diff.LineDiffs, r.diffOpts)
 
 		if content != "" {
@@ -153,6 +159,7 @@ func (c diffCounts) plus(other diffCounts) diffCounts {
 		modified: c.modified + other.modified,
 		removed:  c.removed + other.removed,
 		equal:    c.equal + other.equal,
+		replaced: c.replaced + other.replaced,
 		output:   c.output + other.output,
 	}
 }
@@ -163,12 +170,13 @@ func (c diffCounts) plus(other diffCounts) diffCounts {
 // structured-logging pass could later swap this for a logr.Marshaler to regain
 // per-field queryability.)
 func (c diffCounts) String() string {
-	return fmt.Sprintf("added=%d modified=%d removed=%d equal=%d output=%d",
-		c.added, c.modified, c.removed, c.equal, c.output)
+	return fmt.Sprintf("added=%d modified=%d removed=%d equal=%d replaced=%d output=%d",
+		c.added, c.modified, c.removed, c.equal, c.replaced, c.output)
 }
 
 // summaryLine formats a "N added, N modified, N removed" fragment, omitting
-// zero categories. Returns "" when there is nothing to report.
+// zero categories, then " (N requires replacement)" when any diff would be
+// replaced. Returns "" when there is nothing to report.
 func (c diffCounts) summaryLine() string {
 	parts := make([]string, 0, 3)
 
@@ -184,7 +192,12 @@ func (c diffCounts) summaryLine() string {
 		parts = append(parts, fmt.Sprintf("%d removed", c.removed))
 	}
 
-	return strings.Join(parts, ", ")
+	line := strings.Join(parts, ", ")
+	if c.replaced > 0 && line != "" {
+		line += fmt.Sprintf(" (%d requires replacement)", c.replaced)
+	}
+
+	return line
 }
 
 // hasIdentity reports whether a group carries input-XR identity. The

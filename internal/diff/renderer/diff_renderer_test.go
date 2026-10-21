@@ -2,6 +2,7 @@ package renderer
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 
@@ -304,6 +305,49 @@ func TestDefaultDiffRenderer_RenderDiffs(t *testing.T) {
 				"=== /", "=== (unknown)", // no header for the identity-less group
 			},
 		},
+
+		// --- The Replaced hook ---
+
+		// A replaced diff's header says so, and the summary counts it.
+		"ReplacedHeaderAndSummary": {
+			groups: identitylessGroups(map[string]*dt.ResourceDiff{
+				addedDiff.GetDiffKey():    addedDiff,
+				modifiedDiff.GetDiffKey(): modifiedDiff,
+			}),
+			options: replacing(noColor, "modified-resource"),
+			expectedOutputs: []string{
+				"~~~ TestResource/modified-resource (requires replacement)\n",
+				"+++ TestResource/added-resource\n",
+				"Summary: 1 added, 1 modified (1 requires replacement)\n",
+			},
+		},
+		// The hook reaches every summary: each section's, and the footer's.
+		"ReplacedGroupedSummaries": {
+			groups: []dt.XRDiffGroup{
+				xrGroup("XNopResource", "first-xr", map[string]*dt.ResourceDiff{
+					changedBucket.GetDiffKey(): changedBucket,
+				}),
+				xrGroup("XNopResource", "second-xr", map[string]*dt.ResourceDiff{
+					"q": modifiedDiffFor("Queue", "real-queue"),
+				}),
+			},
+			options: replacing(noColor, "my-xr-bucket"),
+			expectedOutputs: []string{
+				"~~~ Bucket/my-xr-bucket (requires replacement)\n",
+				"~~~ Queue/real-queue\n",
+				"Summary: 1 modified (1 requires replacement)\n",
+				"Summary: 1 modified\n",
+				"Total: 2 modified (1 requires replacement) across 2 XRs\n",
+			},
+		},
+		// An equal diff renders nothing, so it is never reported replaced.
+		"ReplacedEqualIsSkipped": {
+			groups: identitylessGroups(map[string]*dt.ResourceDiff{
+				equalDiff.GetDiffKey(): equalDiff,
+			}),
+			options:     replacing(noColor, "equal-resource"),
+			notExpected: []string{"requires replacement", "Summary:"},
+		},
 	}
 
 	for name, tt := range tests {
@@ -395,6 +439,35 @@ func TestDefaultDiffRenderer_RenderDiffs_WithErrors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// replacing returns opts with a Replaced hook reporting the named resources.
+func replacing(opts DiffOptions, names ...string) DiffOptions {
+	opts.Replaced = func(d *dt.ResourceDiff) bool { return slices.Contains(names, d.ResourceName) }
+	return opts
+}
+
+// TestDefaultDiffRenderer_NilReplacedIsUnchanged pins that a hook reporting
+// nothing replaced renders exactly what no hook does.
+func TestDefaultDiffRenderer_NilReplacedIsUnchanged(t *testing.T) {
+	groups := []dt.XRDiffGroup{
+		xrGroup("XNopResource", "first-xr", map[string]*dt.ResourceDiff{"b": modifiedDiffFor("Bucket", "b")}),
+		xrGroup("XNopResource", "second-xr", map[string]*dt.ResourceDiff{"q": modifiedDiffFor("Queue", "q")}),
+	}
+
+	render := func(opts DiffOptions) string {
+		var stdout bytes.Buffer
+		opts.Stdout, opts.Stderr = &stdout, &bytes.Buffer{}
+		if err := NewDiffRenderer(tu.TestLogger(t, false), opts).RenderDiffs(groups, nil, nil); err != nil {
+			t.Fatalf("RenderDiffs(): %v", err)
+		}
+		return stdout.String()
+	}
+
+	want := render(DefaultDiffOptions())
+	if got := render(replacing(DefaultDiffOptions())); got != want {
+		t.Errorf("RenderDiffs() with a hook replacing nothing:\n%q\nwant:\n%q", got, want)
 	}
 }
 

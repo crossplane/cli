@@ -308,17 +308,57 @@ func TestFieldChanges(t *testing.T) {
 	}
 }
 
+// served returns spec as a resource carrying the status and server-managed
+// metadata a live object has, alongside the identity a plan keeps.
+func served(spec map[string]any) *unstructured.Unstructured {
+	u := mr(spec)
+	u.Object["metadata"] = map[string]any{
+		"name":              "my-vpc",
+		"namespace":         "default",
+		"labels":            map[string]any{"team": "net"},
+		"annotations":       map[string]any{"note": "kept"},
+		"uid":               "1234",
+		"resourceVersion":   "42",
+		"generation":        int64(3),
+		"creationTimestamp": "2026-01-01T00:00:00Z",
+		"managedFields":     []any{map[string]any{"manager": "kubectl"}},
+		"selfLink":          "/apis/x",
+		"ownerReferences":   []any{map[string]any{"name": "owner"}},
+	}
+	u.Object["status"] = map[string]any{"atProvider": map[string]any{"id": "vpc-1"}}
+	return u
+}
+
+// cleaned is what a plan should carry for a served object: spec and identity
+// metadata only.
+func cleaned(u *unstructured.Unstructured) *unstructured.Unstructured {
+	out := u.DeepCopy()
+	delete(out.Object, "status")
+	md, _ := out.Object["metadata"].(map[string]any)
+	for _, f := range []string{"uid", "resourceVersion", "generation", "creationTimestamp", "managedFields", "selfLink", "ownerReferences"} {
+		delete(md, f)
+	}
+	return out
+}
+
 func TestFallbackObjects(t *testing.T) {
-	desired := mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.1.0.0/16"}})
-	live := mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}})
+	desired := served(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.1.0.0/16"}})
+	live := served(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}})
+	desiredIn, liveIn := desired.DeepCopy(), live.DeepCopy()
 
 	t.Run("Update", func(t *testing.T) {
 		got := Fallback(desired, live, "test")
-		if diff := cmp.Diff(live, got.Before); diff != "" {
-			t.Errorf("Fallback(...).Before: -want live, +got:\n%s", diff)
+		if diff := cmp.Diff(cleaned(live), got.Before); diff != "" {
+			t.Errorf("Fallback(...).Before: -want cleaned live, +got:\n%s", diff)
 		}
-		if diff := cmp.Diff(desired, got.After); diff != "" {
-			t.Errorf("Fallback(...).After: -want desired, +got:\n%s", diff)
+		if diff := cmp.Diff(cleaned(desired), got.After); diff != "" {
+			t.Errorf("Fallback(...).After: -want cleaned desired, +got:\n%s", diff)
+		}
+		if diff := cmp.Diff(liveIn, live); diff != "" {
+			t.Errorf("Fallback(...) mutated live: -want, +got:\n%s", diff)
+		}
+		if diff := cmp.Diff(desiredIn, desired); diff != "" {
+			t.Errorf("Fallback(...) mutated desired: -want, +got:\n%s", diff)
 		}
 	})
 

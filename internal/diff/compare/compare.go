@@ -350,6 +350,13 @@ func removeNestedPath(obj map[string]any, path string) bool {
 	return false
 }
 
+// Clean returns a copy of obj with the fields a rendered diff omits removed: status, server-managed
+// metadata, a synthetic generated name, and the display-only and ignored paths in options. obj is not
+// modified.
+func Clean(obj *un.Unstructured, logger logging.Logger, options Options) *un.Unstructured {
+	return cleanupForDiff(obj.DeepCopy(), logger, options)
+}
+
 // cleanupForDiff removes fields that shouldn't be included in the diff. When options.ForVerdict is
 // set the display-only paths are left in the object, because the caller is asking whether the objects
 // differ rather than rendering them; see Options.ForVerdict.

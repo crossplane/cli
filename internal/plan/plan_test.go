@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -41,8 +42,8 @@ func (f *fakePlanClient) Plan(_ context.Context, in *diffv1alpha1.PlanRequest, _
 }
 
 func TestPlan(t *testing.T) {
-	desired := mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.1.0.0/16"}})
-	actual := mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}})
+	desired := served(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.1.0.0/16"}})
+	actual := served(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}})
 	secret, err := structpb.NewStruct(map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Secret",
@@ -76,8 +77,11 @@ func TestPlan(t *testing.T) {
 		if c.got.GetActualResource() == nil {
 			t.Errorf("Plan(...): actual resource not carried in request")
 		}
-		if got.Before != actual || got.After != desired {
-			t.Errorf("Plan(...): want the plan to carry actual as before and desired as after")
+		if diff := cmp.Diff(cleaned(actual), got.Before); diff != "" {
+			t.Errorf("Plan(...).Before: -want cleaned actual, +got:\n%s", diff)
+		}
+		if diff := cmp.Diff(cleaned(desired), got.After); diff != "" {
+			t.Errorf("Plan(...).After: -want cleaned desired, +got:\n%s", diff)
 		}
 		if len(c.got.GetKubernetesObjectStore()) != 1 {
 			t.Errorf("Plan(...): want 1 object store entry, got %d", len(c.got.GetKubernetesObjectStore()))
@@ -97,7 +101,7 @@ func TestPlan(t *testing.T) {
 		if c.got.GetActualResource() != nil {
 			t.Errorf("Plan(...): actual resource should be unset for a create")
 		}
-		if got.Before != nil || got.After != desired {
+		if got.Before != nil || cmp.Diff(cleaned(desired), got.After) != "" {
 			t.Errorf("Plan(...): want a create to carry no before and desired as after")
 		}
 	})

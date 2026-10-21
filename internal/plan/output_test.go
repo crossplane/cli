@@ -276,6 +276,65 @@ Plan: 0 to add, 1 to change, 1 to destroy.
 	}
 }
 
+func TestRenderPlanCompositions(t *testing.T) {
+	comp := ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "net"}
+	same := ResourceRef{APIVersion: comp.APIVersion, Kind: comp.Kind, Name: "same"}
+	unknown := ResourceRef{APIVersion: comp.APIVersion, Kind: comp.Kind, Name: "unknown"}
+	xr := ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
+	r := Result{
+		Summary:    Summary{Update: 2, NoOp: 2},
+		Composites: []CompositeResult{{Ref: xr, Status: CompositeChanged}},
+		Compositions: []CompositionResult{
+			{Ref: comp, RevisionImpact: &RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1}},
+			{Ref: same, RevisionImpact: &RevisionImpact{ChangeScope: "none"}, ImpactAnalysisSkipped: true},
+			// No determined impact prints no line.
+			{Ref: unknown},
+		},
+		Plans: []*ResourcePlan{
+			{
+				APIVersion: comp.APIVersion, Kind: comp.Kind, Name: comp.Name, Action: ActionUpdate,
+				Changes: []FieldChange{{Path: "spec.mode", Actual: &Value{Value: "Resources"}, Planned: &Value{Value: "Pipeline"}}},
+			},
+			{APIVersion: same.APIVersion, Kind: same.Kind, Name: same.Name, Action: ActionNoOp},
+			{APIVersion: unknown.APIVersion, Kind: unknown.Kind, Name: unknown.Name, Action: ActionNoOp},
+			{
+				APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "VPC", Name: "prod-network",
+				Action: ActionUpdate, Composite: &xr,
+				Changes: []FieldChange{{Path: "spec.forProvider.region", Actual: &Value{Value: "us-west-1"}, Planned: &Value{Value: "us-east-1"}}},
+			},
+		},
+		Notes: []string{"Cloud-layer plan not run."},
+	}
+	want := `[~] Composition.apiextensions.crossplane.io net (update)
+    Applying this creates a new CompositionRevision, which 1 composite would adopt.
+    spec:
+      ~ mode: "Resources" -> "Pipeline"
+
+[=] Composition.apiextensions.crossplane.io same (no-op)
+    Applying this creates no new CompositionRevision. Impact analysis skipped.
+
+[=] Composition.apiextensions.crossplane.io unknown (no-op)
+
+XR: XNetwork.example.org prod-network
+  [~] VPC.ec2.aws.upbound.io prod-network (update)
+      spec:
+        forProvider:
+          ~ region: "us-west-1" -> "us-east-1"
+
+Plan: 0 to add, 2 to change, 0 to destroy.
+
+Note: Cloud-layer plan not run.
+`
+	var buf bytes.Buffer
+	pr, _ := NewRenderer(FormatPlan)
+	if err := pr.Render(&buf, r); err != nil {
+		t.Fatalf("Render(plan): unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(want, buf.String()); diff != "" {
+		t.Errorf("Render(plan): -want, +got:\n%s", diff)
+	}
+}
+
 func TestRenderJSONProjectFields(t *testing.T) {
 	xr := ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
 	in := Result{

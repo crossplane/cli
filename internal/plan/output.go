@@ -247,29 +247,62 @@ func (yamlRenderer) Render(w io.Writer, r Result) error {
 }
 
 // planRenderer renders the human-readable plan format: a header and change
-// tree per resource, then a summary with warnings. When any plan or
-// composite names a composite, plans print grouped under an
-// "XR: Kind.group name" header. Run-level Errors and Warnings are not
-// printed; the command reports them on stderr.
+// tree per resource, then a summary with warnings, then any Notes. When any
+// plan or composite names a composite, plans print grouped under an
+// "XR: Kind.group name" header. A Composition's revision impact prints as
+// one line under its plan. Run-level Errors and Warnings are not printed;
+// the command reports them on stderr.
 type planRenderer struct{}
 
 // Render writes the result to w in the human-readable plan format.
 func (planRenderer) Render(w io.Writer, r Result) error {
+	impacts := revisionImpactLines(r.Compositions)
 	if len(r.Composites) == 0 && !slices.ContainsFunc(r.Plans, func(p *ResourcePlan) bool { return p.Composite != nil }) {
 		for _, p := range r.Plans {
-			renderPlan(w, p)
+			renderPlan(w, p, impacts[p.ResourceRef()])
 		}
 	} else {
-		renderGrouped(w, r)
+		renderGrouped(w, r, impacts)
 	}
 	renderSummary(w, r.Plans, r.Summary)
+	if len(r.Notes) > 0 {
+		_, _ = fmt.Fprintln(w)
+		for _, n := range r.Notes {
+			_, _ = fmt.Fprintf(w, "Note: %s\n", n)
+		}
+	}
 	return nil
+}
+
+// revisionImpactLines returns, per Composition, the line saying whether
+// applying it creates a CompositionRevision and how many composites would
+// adopt it, and whether their impact went unanalyzed. A Composition with
+// neither to say has no line.
+func revisionImpactLines(comps []CompositionResult) map[ResourceRef]string {
+	lines := map[ResourceRef]string{}
+	for _, c := range comps {
+		var parts []string
+		switch ri := c.RevisionImpact; {
+		case ri == nil:
+		case ri.CreatesRevision:
+			parts = append(parts, fmt.Sprintf("Applying this creates a new CompositionRevision, which %s would adopt.", pluralize(ri.RepointedComposites, "composite", "composites")))
+		default:
+			parts = append(parts, "Applying this creates no new CompositionRevision.")
+		}
+		if c.ImpactAnalysisSkipped {
+			parts = append(parts, "Impact analysis skipped.")
+		}
+		if len(parts) > 0 {
+			lines[c.Ref] = strings.Join(parts, " ")
+		}
+	}
+	return lines
 }
 
 // renderGrouped prints ungrouped plans first, then each composite (in
 // Composites order, then any only plans name) with its plans indented
 // beneath. A composite's own plan is omitted when it is a no-op.
-func renderGrouped(w io.Writer, r Result) {
+func renderGrouped(w io.Writer, r Result, impacts map[ResourceRef]string) {
 	var refs []ResourceRef
 	byRef := map[ResourceRef][]*ResourcePlan{}
 	status := map[ResourceRef]CompositeResult{}
@@ -281,7 +314,7 @@ func renderGrouped(w io.Writer, r Result) {
 	}
 	for _, p := range r.Plans {
 		if p.Composite == nil {
-			renderPlan(w, p)
+			renderPlan(w, p, impacts[p.ResourceRef()])
 			continue
 		}
 		ref := *p.Composite
@@ -321,7 +354,7 @@ func renderComposite(w io.Writer, c CompositeResult, ref ResourceRef, plans []*R
 		if p.Action == ActionNoOp && p.Error == "" && p.ResourceRef() == ref {
 			continue
 		}
-		renderPlan(&block, p)
+		renderPlan(&block, p, "")
 	}
 	for line := range strings.Lines(block.String()) {
 		if line != "\n" {
@@ -356,10 +389,14 @@ func compositeHeader(c CompositeResult, ref ResourceRef) string {
 	return h
 }
 
-// renderPlan prints one resource's header and change tree. A delete prints
-// only its header, Terraform-style, though it carries actual-only changes.
-func renderPlan(w io.Writer, p *ResourcePlan) {
+// renderPlan prints one resource's header, note when not empty, and change
+// tree. A delete prints only its header and note, Terraform-style, though it
+// carries actual-only changes.
+func renderPlan(w io.Writer, p *ResourcePlan, note string) {
 	_, _ = fmt.Fprintln(w, header(p))
+	if note != "" {
+		_, _ = fmt.Fprintf(w, "    %s\n", note)
+	}
 	if p.Error != "" {
 		_, _ = fmt.Fprintf(w, "    cannot plan: %s\n", p.Error)
 		_, _ = fmt.Fprintln(w)

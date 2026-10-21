@@ -17,6 +17,8 @@ limitations under the License.
 package manager
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -36,6 +38,8 @@ import (
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/spf13/afero"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
+	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
@@ -67,9 +71,34 @@ type Source interface {
 	Type() SourceType
 }
 
+// describer is implemented by sources that have a more readable name for
+// messages than their ID. IDs are lock keys and carry a scheme prefix
+// (http://https://example.com/crds.yaml), which reads badly in an error.
+type describer interface {
+	Description() string
+}
+
+// describeSource returns the name to use for a source in messages.
+func describeSource(src Source) string {
+	if d, ok := src.(describer); ok {
+		return d.Description()
+	}
+	return src.ID()
+}
+
 // calculateFilesystemHash calculates a SHA256 hash of the filesystem contents.
+// A filesystem whose root does not exist hashes as empty: a source whose
+// directory has not been created yet (e.g. a Configuration with no apis/)
+// contributes no resources, and must not fail the generation pass.
 func calculateFilesystemHash(filesystem afero.Fs, sourceType SourceType) (string, error) {
 	h := sha256.New()
+
+	if _, err := filesystem.Stat("."); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Sprintf("%x", h.Sum(nil)), nil
+		}
+		return "", err
+	}
 
 	var extensions []string
 	switch sourceType {
@@ -112,33 +141,221 @@ func calculateFilesystemHash(filesystem afero.Fs, sourceType SourceType) (string
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
-// fsSource is a resource source backed by a filesystem.
+// fsSource is a resource source backed by a filesystem. Only its XRD and CRD
+// documents count: they are what Resources returns and what Version covers,
+// so editing a Composition or any other YAML beside the APIs never reads as
+// an API change.
 type fsSource struct {
-	id string
-	fs afero.Fs
+	id      string
+	fs      afero.Fs
+	exclude []string
 }
 
 func (f *fsSource) ID() string {
 	return "fs://" + f.id
 }
 
-func (f *fsSource) Version(_ context.Context) (string, error) {
-	return calculateFilesystemHash(f.fs, SourceTypeCRD)
+func (f *fsSource) Description() string {
+	if p := cleanProjectPath(f.id); p != "" {
+		return p + "/"
+	}
+	return "the project root"
 }
 
+// Version hashes exactly the definitions Resources returns, each with its
+// path, so a change anywhere else under the source's root -- a Composition,
+// a function's node_modules, the generated schemas -- never reads as an API
+// change, while renaming a definition's file does.
+func (f *fsSource) Version(ctx context.Context) (string, error) {
+	res, err := f.Resources(ctx)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	// afero.Walk visits paths in lexical order, so the hash is stable.
+	err = afero.Walk(res, ".", func(p string, info fs.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		content, err := afero.ReadFile(res, p)
+		if err != nil {
+			return err
+		}
+		_, _ = h.Write([]byte(filepath.ToSlash(p)))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(content)
+		_, _ = h.Write([]byte{0})
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// Resources returns the source's XRD and CRD documents, each file holding the
+// definitions it had. Other documents, and files with none, are left out: the
+// generators only read definitions, and Version must change exactly when
+// their input does. Excluded paths and hidden directories are skipped: a
+// project whose APIs live at its root ("/") would otherwise hand the
+// generators every file it has, including function dependencies and the
+// schemas directory's own caches.
 func (f *fsSource) Resources(_ context.Context) (afero.Fs, error) {
-	return f.fs, nil
+	out := afero.NewMemMapFs()
+
+	// A source whose directory does not exist yet (a project that declares
+	// apis/ but has not created it) contributes no resources.
+	if _, err := f.fs.Stat("."); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return out, nil
+		}
+		return nil, err
+	}
+
+	err := afero.Walk(f.fs, ".", func(p string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel := strings.TrimPrefix(filepath.ToSlash(p), "/")
+		if info.IsDir() {
+			if rel != "." && rel != "" && (strings.HasPrefix(info.Name(), ".") || f.excluded(rel)) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(p))
+		if ext != ".yaml" && ext != ".yml" {
+			return nil
+		}
+		bs, err := afero.ReadFile(f.fs, p)
+		if err != nil {
+			return errors.Wrapf(err, "failed to read %s", p)
+		}
+		defs, err := definitions(bs)
+		if err != nil {
+			return errors.Wrapf(err, "cannot read the API definitions in %s", p)
+		}
+		if len(defs) == 0 {
+			return nil
+		}
+		if err := out.MkdirAll(path.Dir(rel), 0o755); err != nil {
+			return err
+		}
+		return afero.WriteFile(out, rel, bytes.Join(defs, []byte("---\n")), 0o644)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// definitions returns the XRD and CRD documents of a YAML file, in order. A
+// document that doesn't parse is an error, as it was when the generators
+// parsed every file themselves: dropping it would silently drop any API
+// definition it holds from the generated schemas.
+func definitions(content []byte) ([][]byte, error) {
+	var defs [][]byte
+	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(content)))
+	for {
+		doc, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			return defs, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		var res struct {
+			Kind string `json:"kind"`
+		}
+		if err := yaml.Unmarshal(doc, &res); err != nil {
+			return nil, errors.Wrap(err, "cannot parse it as YAML; fix its syntax so the API definitions in it are generated")
+		}
+		if res.Kind == "CompositeResourceDefinition" || res.Kind == "CustomResourceDefinition" {
+			defs = append(defs, doc)
+		}
+	}
+}
+
+// excluded reports whether a slash-separated path relative to the source's
+// root is, or is inside, one of the excluded paths.
+func (f *fsSource) excluded(rel string) bool {
+	for _, ex := range f.exclude {
+		if rel == ex || strings.HasPrefix(rel, ex+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fsSource) Type() SourceType {
 	return SourceTypeCRD
 }
 
+// FSSourceOption configures a filesystem source.
+type FSSourceOption func(*fsSource)
+
+// WithExcludedPaths skips the given paths, relative to the source's root, and
+// everything under them.
+func WithExcludedPaths(paths ...string) FSSourceOption {
+	return func(f *fsSource) {
+		for _, p := range paths {
+			p = strings.Trim(path.Clean(filepath.ToSlash(p)), "/")
+			if p != "" && p != "." {
+				f.exclude = append(f.exclude, p)
+			}
+		}
+	}
+}
+
 // NewFSSource returns a new filesystem-backed resource source. The id should
 // be a stable, location-independent identifier (e.g. a project-relative path)
 // since it is persisted in the schema manager's lockfile.
-func NewFSSource(id string, fs afero.Fs) Source {
-	return &fsSource{id: id, fs: fs}
+func NewFSSource(id string, fs afero.Fs, opts ...FSSourceOption) Source {
+	f := &fsSource{id: id, fs: fs}
+	for _, o := range opts {
+		o(f)
+	}
+	return f
+}
+
+// NewProjectAPIsSource returns the source for a project's own APIs, read from
+// paths.apis under projFS. The APIs path may contain the project's other
+// directories -- most often with `apis: .`, which makes it the project root.
+// Functions, examples, operations, tests and the generated schemas are then
+// excluded, so the source reads only the project's own API definitions.
+func NewProjectAPIsSource(projFS afero.Fs, paths *v1alpha1.ProjectPaths) Source {
+	p := paths
+	if p == nil {
+		p = &v1alpha1.ProjectPaths{}
+		p.Default()
+	}
+
+	apis := cleanProjectPath(p.APIs)
+	fsys := projFS
+	if apis != "" {
+		fsys = afero.NewBasePathFs(projFS, apis)
+	}
+
+	var exclude []string
+	for _, other := range []string{p.Functions, p.Examples, p.Operations, p.Tests, p.Schemas} {
+		o := cleanProjectPath(other)
+		switch {
+		case o == "" || o == apis:
+			// Unset, or the same directory as the APIs: nothing to exclude.
+		case apis == "":
+			exclude = append(exclude, o)
+		case strings.HasPrefix(o, apis+"/"):
+			exclude = append(exclude, strings.TrimPrefix(o, apis+"/"))
+		}
+	}
+
+	return NewFSSource(p.APIs, fsys, WithExcludedPaths(exclude...))
+}
+
+// cleanProjectPath normalizes a project-relative path to slash-separated form
+// with no leading or trailing slash. The project root is "".
+func cleanProjectPath(p string) string {
+	return strings.Trim(path.Clean("/"+filepath.ToSlash(p)), "/")
 }
 
 // xpkgSource is a source backed by extracted CRDs from an xpkg. Unlike the
@@ -151,6 +368,10 @@ type xpkgSource struct {
 
 func (s *xpkgSource) ID() string {
 	return "xpkg://" + s.id
+}
+
+func (s *xpkgSource) Description() string {
+	return s.id
 }
 
 func (s *xpkgSource) Version(_ context.Context) (string, error) {
@@ -193,6 +414,13 @@ func (g *gitSource) ID() string {
 		id = fmt.Sprintf("%s/%s", id, g.gitRef.Path)
 	}
 	return id
+}
+
+func (g *gitSource) Description() string {
+	if g.gitRef.Path != "" {
+		return g.gitRef.Repository + " at " + g.gitRef.Path
+	}
+	return g.gitRef.Repository
 }
 
 func (g *gitSource) Version(ctx context.Context) (string, error) {
@@ -330,6 +558,10 @@ func (h *httpSource) ID() string {
 	return fmt.Sprintf("http://%s", h.httpRef.URL)
 }
 
+func (h *httpSource) Description() string {
+	return h.httpRef.URL
+}
+
 func (h *httpSource) Version(ctx context.Context) (string, error) {
 	if h.fs != nil {
 		return h.calculateHash()
@@ -444,6 +676,10 @@ func (k *k8sOpenAPISource) ID() string {
 	return fmt.Sprintf("k8s://%s", k.k8sRef.Version)
 }
 
+func (k *k8sOpenAPISource) Description() string {
+	return "Kubernetes API " + k.k8sRef.Version
+}
+
 func (k *k8sOpenAPISource) Version(_ context.Context) (string, error) {
 	return k.k8sRef.Version, nil
 }
@@ -466,8 +702,11 @@ func (k *k8sOpenAPISource) Resources(ctx context.Context) (afero.Fs, error) {
 	}
 	defer resp.Body.Close() //nolint:errcheck // nothing to do
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errors.Errorf("no Kubernetes OpenAPI spec found for version %s (HTTP 404 from %s); check that this Kubernetes version exists", k.k8sRef.Version, specURL)
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, errors.Errorf("failed to download Kubernetes OpenAPI spec: HTTP %d", resp.StatusCode)
+		return nil, errors.Errorf("failed to download the Kubernetes OpenAPI spec for version %s: HTTP %d from %s", k.k8sRef.Version, resp.StatusCode, specURL)
 	}
 
 	content, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPSize))

@@ -3,6 +3,12 @@ language under the project's `functions/` directory. It optionally idempotently
 adds the new function to the end of a Composition's pipeline when given a
 Composition path.
 
+Before it writes the function, the command generates schemas for the
+project's own APIs and for every dependency in the project file, so the
+function can use their models. Dependencies that aren't in the per-user
+package cache are fetched, so the first run in a project may need network
+access and registry credentials.
+
 ## Supported languages
 
 The following are valid arguments to the `--language` / `-l` flag:

@@ -32,6 +32,13 @@ type Interface interface {
 	Language() string
 	GenerateFromCRD(ctx context.Context, fs afero.Fs, runner runner.SchemaRunner) (afero.Fs, error)
 	GenerateFromOpenAPI(ctx context.Context, fs afero.Fs, runner runner.SchemaRunner) (afero.Fs, error)
+
+	// Fingerprint returns a stable string describing everything this
+	// generator configures that determines its output: its pinned toolchain
+	// image, and any options that change what it emits. Two fingerprints that
+	// differ mean the same sources generate different files, so the schema
+	// manager treats cached output made under the old one as stale.
+	Fingerprint() string
 }
 
 // options holds configurable behavior shared across generators.

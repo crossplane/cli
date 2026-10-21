@@ -158,6 +158,9 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 		)
 		return buildErr
 	})
+	// Collection warnings are printed once the spinner has stopped, failed or
+	// not: a warning can explain the failure.
+	depMgr.PrintWarnings(os.Stderr)
 	if err != nil {
 		return err
 	}

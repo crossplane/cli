@@ -253,6 +253,9 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 
 		return eg.Wait()
 	})
+	// Collection warnings are printed once the spinner has stopped, failed or
+	// not: a warning can explain the failure.
+	depMgr.PrintWarnings(os.Stderr)
 	if err != nil {
 		return err
 	}

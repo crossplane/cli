@@ -17,7 +17,7 @@ limitations under the License.
 package manager
 
 import (
-	"context"
+	"fmt"
 	"regexp"
 	"testing"
 
@@ -26,108 +26,90 @@ import (
 
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
-	"github.com/crossplane/cli/v2/internal/schemas/runner"
 )
 
 var rustModDeclRE = regexp.MustCompile(`(?m)^(?:pub )?mod (\w+);`)
 
-// TestGenerateRustModuleTreeAcrossSources covers the reason the Rust generator
-// leaves its module declarations to the manager: every source's models are
-// copied into one crate, and a generator run only ever sees its own source. The
-// declarations have to describe the merged crate, or the second source to
-// generate leaves a crate that doesn't compile.
-func TestGenerateRustModuleTreeAcrossSources(t *testing.T) {
+// rustTestCRD returns a minimal CRD for the given group and kind.
+func rustTestCRD(group, kind, plural string) string {
+	return fmt.Sprintf(`apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: %[3]s.%[1]s
+spec:
+  group: %[1]s
+  names:
+    kind: %[2]s
+    listKind: %[2]sList
+    plural: %[3]s
+    singular: %[3]s
+  scope: Namespaced
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              size:
+                type: integer
+`, group, kind, plural)
+}
+
+// TestRustModuleTreeAcrossSources covers why the Rust generator is run-level:
+// each source's crate declares only its own modules in src/lib.rs, the mod.rs
+// files and Cargo.toml, so copying the sources' crates over each other would
+// either conflict or leave declarations that describe one source. The merged
+// crate has to declare every source's modules.
+func TestRustModuleTreeAcrossSources(t *testing.T) {
 	t.Parallel()
 
-	cases := map[string]struct {
-		reason string
-		args   struct {
-			// sources is the files the generator writes for each source, in
-			// the order the sources are generated.
-			sources [][]string
-		}
-		want struct {
-			// modules is the modules each file declares.
-			modules map[string][]string
-		}
-	}{
-		"DependencyExtendsTheProjectsModules": {
-			reason: "The declarations describe the merged crate, not only the source generated last.",
-			args: struct{ sources [][]string }{sources: [][]string{
-				// The project's own XRDs.
-				{
-					"models/src/com/example/v1/widget.rs",
-					"models/src/io/k8s/apimachinery/pkg/apis/meta/v1/objectmeta.rs",
-				},
-				// A dependency that adds a kind to a module the project already
-				// generated, plus a module of its own.
-				{
-					"models/src/com/example/v1/gadget.rs",
-					"models/src/io/upbound/aws/s3/v1beta2/bucket.rs",
-					"models/src/io/k8s/apimachinery/pkg/apis/meta/v1/objectmeta.rs",
-				},
-			}},
-			want: struct{ modules map[string][]string }{modules: map[string][]string{
-				"rust/src/lib.rs":                                      {"com", "io"},
-				"rust/src/com/example/v1/mod.rs":                       {"gadget", "widget"},
-				"rust/src/io/mod.rs":                                   {"k8s", "upbound"},
-				"rust/src/io/k8s/apimachinery/pkg/apis/meta/v1/mod.rs": {"objectmeta"},
-				"rust/src/io/upbound/aws/s3/v1beta2/mod.rs":            {"bucket"},
-			}},
-		},
+	gens := generator.Filter(generator.AllLanguages(), []string{devv1alpha1.SchemaLanguageRust})
+	if len(gens) != 1 {
+		t.Fatalf("want the Rust generator, got %d generators", len(gens))
 	}
 
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+	// The project's own API, and two dependencies: one adds a kind to the
+	// project's module and a module of its own, the other shares that module.
+	api := &mockSource{id: "fs://apis", version: "v1", resources: map[string]string{
+		"widget.yaml": rustTestCRD("example.com", "Widget", "widgets"),
+	}}
+	depA := &mockSource{id: "xpkg://example/a", version: "v1", resources: map[string]string{
+		"gadget.yaml": rustTestCRD("example.com", "Gadget", "gadgets"),
+		"bucket.yaml": rustTestCRD("s3.aws.example.io", "Bucket", "buckets"),
+	}}
+	depB := &mockSource{id: "xpkg://example/b", version: "v1", resources: map[string]string{
+		"queue.yaml": rustTestCRD("s3.aws.example.io", "Queue", "queues"),
+	}}
 
-			testFS := afero.NewMemMapFs()
-			for i, files := range tc.args.sources {
-				m := New(testFS, []generator.Interface{&rustMockGenerator{files: files}}, nil)
-				if _, err := m.Generate(t.Context(), &mockSource{id: "source", version: "v1.0.0"}); err != nil {
-					t.Fatalf("\n%s\nGenerate(...) for source %d: %v", tc.reason, i, err)
-				}
-			}
-
-			for path, want := range tc.want.modules {
-				contents, err := afero.ReadFile(testFS, path)
-				if err != nil {
-					t.Errorf("\n%s\nreading %s: %v", tc.reason, path, err)
-					continue
-				}
-				decls := rustModDeclRE.FindAllStringSubmatch(string(contents), -1)
-				got := make([]string, 0, len(decls))
-				for _, m := range decls {
-					got = append(got, m[1])
-				}
-				if diff := cmp.Diff(want, got); diff != "" {
-					t.Errorf("\n%s\n%s: -want modules, +got modules:\n%s", tc.reason, path, diff)
-				}
-			}
-		})
+	testFS := afero.NewMemMapFs()
+	m := New(testFS, gens, nil)
+	if err := m.GenerateFromMultipleSources(t.Context(), []Source{depA, depB}, api); err != nil {
+		t.Fatalf("GenerateFromMultipleSources(...): %v", err)
 	}
-}
 
-// rustMockGenerator writes the given files, as the Rust generator does for the
-// schemas of one source.
-type rustMockGenerator struct {
-	files []string
-}
-
-func (g *rustMockGenerator) Language() string {
-	return devv1alpha1.SchemaLanguageRust
-}
-
-func (g *rustMockGenerator) GenerateFromCRD(_ context.Context, _ afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
-	fs := afero.NewMemMapFs()
-	for _, path := range g.files {
-		if err := afero.WriteFile(fs, path, []byte("// Code generated by github.com/crossplane/cli/v2 DO NOT EDIT.\n"), 0o600); err != nil {
-			return nil, err
+	want := map[string][]string{
+		"rust/src/lib.rs":                      {"com", "io"},
+		"rust/src/com/example/v1/mod.rs":       {"gadget", "gadgetlist", "widget", "widgetlist"},
+		"rust/src/io/example/aws/s3/v1/mod.rs": {"bucket", "bucketlist", "queue", "queuelist"},
+	}
+	for path, wantMods := range want {
+		contents, err := afero.ReadFile(testFS, path)
+		if err != nil {
+			t.Errorf("reading %s: %v", path, err)
+			continue
+		}
+		decls := rustModDeclRE.FindAllStringSubmatch(string(contents), -1)
+		got := make([]string, 0, len(decls))
+		for _, d := range decls {
+			got = append(got, d[1])
+		}
+		if diff := cmp.Diff(wantMods, got); diff != "" {
+			t.Errorf("%s: -want modules, +got modules:\n%s", path, diff)
 		}
 	}
-	return fs, nil
-}
-
-func (g *rustMockGenerator) GenerateFromOpenAPI(_ context.Context, _ afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
-	return nil, nil
 }

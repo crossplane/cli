@@ -486,11 +486,11 @@ func renderChangeTree(w io.Writer, changes []FieldChange) {
 		}
 		switch {
 		case c.Actual != nil && c.Planned != nil:
-			_, _ = fmt.Fprintf(w, "%s~ %s: %s -> %s%s\n", indent, leaf, formatValue(c.Actual), formatValue(c.Planned), note)
+			_, _ = fmt.Fprintf(w, "%s~ %s: %s -> %s%s\n", indent, leaf, FormatValue(c.Actual), FormatValue(c.Planned), note)
 		case c.Planned != nil:
-			_, _ = fmt.Fprintf(w, "%s+ %s: %s%s\n", indent, leaf, formatValue(c.Planned), note)
+			_, _ = fmt.Fprintf(w, "%s+ %s: %s%s\n", indent, leaf, FormatValue(c.Planned), note)
 		case c.Actual != nil:
-			_, _ = fmt.Fprintf(w, "%s- %s: %s%s\n", indent, leaf, formatValue(c.Actual), note)
+			_, _ = fmt.Fprintf(w, "%s- %s: %s%s\n", indent, leaf, FormatValue(c.Actual), note)
 		default:
 			_, _ = fmt.Fprintf(w, "%s! %s: (value not reported)%s\n", indent, leaf, note)
 		}
@@ -581,8 +581,8 @@ func sortedChanges(changes []FieldChange) []FieldChange {
 	return out
 }
 
-// formatValue renders one side of a change for humans.
-func formatValue(v *Value) string {
+// FormatValue renders one side of a change for humans.
+func FormatValue(v *Value) string {
 	switch {
 	case v == nil:
 		return "(none)"

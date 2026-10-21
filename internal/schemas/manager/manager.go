@@ -863,6 +863,11 @@ func jsonBuildIndexSchema(langFS afero.Fs) error {
 	}
 
 	metaFile := "index.schema.json"
+	if !slices.ContainsFunc(schemas, func(s string) bool { return s != metaFile }) {
+		// Nothing to index. The tree is assembled fresh, so there is no stale
+		// index to remove either.
+		return nil
+	}
 	var metaSchema jsonschema.Schema
 	for _, schema := range schemas {
 		if schema == metaFile {

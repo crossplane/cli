@@ -1096,3 +1096,64 @@ func TestHiddenDirectoriesStayOutOfGit(t *testing.T) {
 		t.Errorf("%s/.gitignore (-want +got):\n%s", cacheDirName, diff)
 	}
 }
+
+func TestJSONBuildIndexSchema(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		reason  string
+		files   []string
+		wantRef []string // nil: no index is written
+	}{
+		"NoSchemas": {
+			reason: "A tree with no JSON schemas must not get an empty index.",
+		},
+		"Schemas": {
+			reason:  "The index must reference every schema in the tree.",
+			files:   []string{"a.schema.json", "b.schema.json"},
+			wantRef: []string{"a.schema.json", "b.schema.json"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			langFS := afero.NewMemMapFs()
+			for _, f := range tc.files {
+				if err := afero.WriteFile(langFS, f, []byte("{}"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := jsonBuildIndexSchema(langFS); err != nil {
+				t.Fatalf("%s\njsonBuildIndexSchema(...): %v", tc.reason, err)
+			}
+
+			bs, err := afero.ReadFile(langFS, "index.schema.json")
+			if tc.wantRef == nil {
+				if err == nil {
+					t.Errorf("%s\nwrote an index for no schemas: %s", tc.reason, bs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s\nno index written: %v", tc.reason, err)
+			}
+			var index struct {
+				AnyOf []struct {
+					Ref string `json:"$ref"`
+				} `json:"anyOf"`
+			}
+			if err := json.Unmarshal(bs, &index); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, s := range index.AnyOf {
+				got = append(got, s.Ref)
+			}
+			if diff := cmp.Diff(tc.wantRef, got); diff != "" {
+				t.Errorf("%s\nindex refs: -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

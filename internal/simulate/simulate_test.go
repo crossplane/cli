@@ -405,6 +405,16 @@ func TestPlanner(t *testing.T) {
 		if len(got) != 1 || got[0] != want[0] {
 			t.Errorf("RelevantProviderImages(...): want %v, got %v", want, got)
 		}
+
+		// ProviderManaged follows the same chain: a VPC's CRD is controlled
+		// by a ProviderRevision; an unserved kind has no CRD.
+		managed := ProviderManaged(ctx, kube, rm)
+		if !managed(vpc("a", "10.0.0.0/16")) {
+			t.Errorf("ProviderManaged(...)(VPC): want true for a provider-installed kind")
+		}
+		if managed(unserved) {
+			t.Errorf("ProviderManaged(...)(Key): want false for a kind with no CRD")
+		}
 	})
 
 	t.Run("UnservedKindPlansCreate", func(t *testing.T) {

@@ -132,6 +132,12 @@ func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.
 	return rp
 }
 
+// CanPlan reports whether a diff server serves resources of kind gk.
+func (p *Planner) CanPlan(gk schema.GroupKind) bool {
+	_, ok := p.router.Route(gk)
+	return ok
+}
+
 // fetchLive returns the live counterpart of the desired resource, or nil when
 // it does not exist (including when its kind is not installed on the
 // cluster), in which case the resource plans as a create.
@@ -285,33 +291,12 @@ func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapp
 		}
 		seenGK[gk] = true
 
-		mapping, err := rmapper.RESTMapping(gk, gvk.Version)
+		revision, crdName, err := controllingRevision(ctx, kubeClient, rmapper, gvk)
 		if err != nil {
-			continue // The kind is not installed; nothing serves it.
-		}
-
-		crd := &unstructured.Unstructured{}
-		crd.SetGroupVersionKind(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"})
-		crdName := mapping.Resource.Resource + "." + gk.Group
-		if err := kubeClient.Get(ctx, client.ObjectKey{Name: crdName}, crd); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return nil, errors.Wrapf(err, "cannot get CRD %s", crdName)
-		}
-
-		// After an upgrade every revision of the provider still owns the CRD;
-		// only the active revision holds the controller reference, and that is
-		// the one serving the resources.
-		revision := ""
-		for _, ref := range crd.GetOwnerReferences() {
-			if ref.Kind == "ProviderRevision" && strings.HasPrefix(ref.APIVersion, "pkg.crossplane.io/") && ref.Controller != nil && *ref.Controller {
-				revision = ref.Name
-				break
-			}
+			return nil, err
 		}
 		if revision == "" {
-			continue // Not provider-installed (e.g. a hand-applied CRD).
+			continue
 		}
 
 		prv := &pkgv1.ProviderRevision{}
@@ -338,4 +323,56 @@ func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapp
 		}
 	}
 	return images, nil
+}
+
+// ProviderManaged returns a predicate reporting whether a resource's kind is
+// served by a provider: whether its CRD is controlled by a ProviderRevision,
+// as RelevantProviderImages discovers. Answers are cached per group and kind.
+// A lookup that fails answers false, so the resource keeps the engine's
+// verdict alone. XRs are never provider-managed: their CRDs are controlled by
+// their CompositeResourceDefinition.
+func ProviderManaged(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper) func(*unstructured.Unstructured) bool {
+	managed := map[schema.GroupKind]bool{}
+
+	// The engine diffs one resource at a time, so the cache needs no lock.
+	return func(u *unstructured.Unstructured) bool {
+		gvk := u.GroupVersionKind()
+		if m, ok := managed[gvk.GroupKind()]; ok {
+			return m
+		}
+		revision, _, err := controllingRevision(ctx, kubeClient, rmapper, gvk)
+		managed[gvk.GroupKind()] = err == nil && revision != ""
+		return managed[gvk.GroupKind()]
+	}
+}
+
+// controllingRevision returns the name of the ProviderRevision controlling the
+// CRD that serves gvk, and that CRD's name. The revision is empty when the
+// kind is not installed or its CRD is not provider-installed.
+func controllingRevision(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, gvk schema.GroupVersionKind) (string, string, error) {
+	gk := gvk.GroupKind()
+	mapping, err := rmapper.RESTMapping(gk, gvk.Version)
+	if err != nil {
+		return "", "", nil //nolint:nilerr // Intentional: the kind is not installed, so nothing serves it.
+	}
+
+	crd := &unstructured.Unstructured{}
+	crd.SetGroupVersionKind(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"})
+	crdName := mapping.Resource.Resource + "." + gk.Group
+	if err := kubeClient.Get(ctx, client.ObjectKey{Name: crdName}, crd); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", crdName, nil
+		}
+		return "", crdName, errors.Wrapf(err, "cannot get CRD %s", crdName)
+	}
+
+	// After an upgrade every revision of the provider still owns the CRD;
+	// only the active revision holds the controller reference, and that is
+	// the one serving the resources.
+	for _, ref := range crd.GetOwnerReferences() {
+		if ref.Kind == "ProviderRevision" && strings.HasPrefix(ref.APIVersion, "pkg.crossplane.io/") && ref.Controller != nil && *ref.Controller {
+			return ref.Name, crdName, nil
+		}
+	}
+	return "", crdName, nil // Not provider-installed (e.g. a hand-applied CRD).
 }

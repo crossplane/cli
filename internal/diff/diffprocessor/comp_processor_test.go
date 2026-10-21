@@ -2139,7 +2139,7 @@ func renderCompReport(t *testing.T, output *dt.CompDiffOutput, format renderer.O
 	}
 
 	if format == renderer.OutputFormatJSON {
-		out, err := json.Marshal(simulate.FromCompReport(output))
+		out, err := json.Marshal(simulate.FromCompReport(output, nil))
 		if err != nil {
 			t.Fatalf("json.Marshal(): %v", err)
 		}

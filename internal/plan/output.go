@@ -113,6 +113,9 @@ type CompositeResult struct {
 	Reason string `json:"reason,omitempty"`
 	// Detail elaborates on Reason, e.g. the pinned revision.
 	Detail string `json:"detail,omitempty"`
+	// Pinned marks a composite simulated although it is pinned to a
+	// composition revision, previewing the moment that revision advances.
+	Pinned bool `json:"pinned,omitempty"`
 }
 
 // Error is an error from a simulate run, optionally anchored to a resource.
@@ -152,6 +155,11 @@ type Warning struct {
 type CompositionResult struct {
 	Ref            ResourceRef     `json:"ref"`
 	RevisionImpact *RevisionImpact `json:"revisionImpact,omitempty"`
+	// ImpactAnalysisSkipped means the composites that would adopt the
+	// Composition's revision were deliberately not simulated, so no
+	// changed, unchanged or error verdict exists for them. Composites the
+	// revision would not reach are still listed in Result.Composites.
+	ImpactAnalysisSkipped bool `json:"impactAnalysisSkipped,omitempty"`
 }
 
 // RevisionImpact says whether applying a Composition creates a revision, and
@@ -178,6 +186,9 @@ type Result struct {
 	Plans         []*ResourcePlan     `json:"plans"`
 	Errors        []Error             `json:"errors,omitempty"`
 	Warnings      []Warning           `json:"warnings,omitempty"`
+	// Notes are statements about how the result was produced, e.g. that a
+	// planning layer did not run.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // NewResult assembles the serializable Result for the given plans.

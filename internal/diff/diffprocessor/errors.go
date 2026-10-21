@@ -23,7 +23,7 @@ import (
 
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	pkgvalidate "github.com/crossplane/cli/v2/pkg/validate"
 )
 
@@ -90,7 +90,7 @@ func withInterruption(ctx context.Context, errs []dt.OutputError) []dt.OutputErr
 // output field. They are carried separately rather than synthesised into a
 // pkgvalidate.ValidationResult because that would mean inventing a
 // FieldErrorType value upstream does not define; ResourceValidationFailure is
-// explicitly ours to populate (see its doc in renderer/types).
+// explicitly ours to populate (see its doc in result).
 type SchemaValidationError struct {
 	ResourceID string
 	Message    string

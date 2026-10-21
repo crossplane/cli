@@ -9,7 +9,7 @@ import (
 
 	"github.com/sergi/go-diff/diffmatchpatch"
 
-	t "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	t "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 // DiffOptions holds configuration options for the diff output.

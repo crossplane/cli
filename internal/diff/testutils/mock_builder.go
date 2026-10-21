@@ -26,7 +26,7 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
-	"github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	dtypes "github.com/crossplane/cli/v2/internal/diff/types"
 )
 
@@ -107,12 +107,12 @@ func (b *MockResourceClientBuilder) WithResourcesExist(resources ...*un.Unstruct
 
 	// Build a map for fast lookup using the same key format as diff keys
 	for _, res := range resources {
-		key := types.MakeDiffKeyFromResource(res)
+		key := dt.MakeDiffKeyFromResource(res)
 		resourceMap[key] = res
 	}
 
 	return b.WithGetResource(func(_ context.Context, gvk schema.GroupVersionKind, namespace, name string) (*un.Unstructured, error) {
-		key := types.MakeDiffKey(gvk.GroupVersion().String(), gvk.Kind, namespace, name)
+		key := dt.MakeDiffKey(gvk.GroupVersion().String(), gvk.Kind, namespace, name)
 		if res, found := resourceMap[key]; found {
 			return res, nil
 		}
@@ -1439,36 +1439,36 @@ func (b *DiffProcessorBuilder) WithFailedInitialize(errMsg string) *DiffProcesso
 }
 
 // WithPerformDiff adds an implementation for the PerformDiff method.
-func (b *DiffProcessorBuilder) WithPerformDiff(fn func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*types.XRReport, error)) *DiffProcessorBuilder {
+func (b *DiffProcessorBuilder) WithPerformDiff(fn func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error)) *DiffProcessorBuilder {
 	b.mock.PerformDiffFn = fn
 	return b
 }
 
 // WithSuccessfulPerformDiff sets a successful PerformDiff implementation with no diffs.
 func (b *DiffProcessorBuilder) WithSuccessfulPerformDiff() *DiffProcessorBuilder {
-	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*types.XRReport, error) {
-		return &types.XRReport{}, nil
+	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error) {
+		return &dt.XRReport{}, nil
 	})
 }
 
 // WithSuccessfulPerformDiffWithChanges sets a successful PerformDiff implementation whose report
 // has one added resource.
 func (b *DiffProcessorBuilder) WithSuccessfulPerformDiffWithChanges() *DiffProcessorBuilder {
-	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*types.XRReport, error) {
-		added := &types.ResourceDiff{
+	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error) {
+		added := &dt.ResourceDiff{
 			Gvk:          schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XDownstreamResource"},
 			ResourceName: "added-resource",
-			DiffType:     types.DiffTypeAdded,
+			DiffType:     dt.DiffTypeAdded,
 		}
 
-		return &types.XRReport{Groups: []types.XRDiffGroup{{Diffs: map[string]*types.ResourceDiff{added.GetDiffKey(): added}}}}, nil
+		return &dt.XRReport{Groups: []dt.XRDiffGroup{{Diffs: map[string]*dt.ResourceDiff{added.GetDiffKey(): added}}}}, nil
 	})
 }
 
 // WithFailedPerformDiff sets a failing PerformDiff implementation, whose report holds the error.
 func (b *DiffProcessorBuilder) WithFailedPerformDiff(errMsg string) *DiffProcessorBuilder {
-	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*types.XRReport, error) {
-		return &types.XRReport{Errors: []types.OutputError{{Message: errMsg}}}, errors.New(errMsg)
+	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error) {
+		return &dt.XRReport{Errors: []dt.OutputError{{Message: errMsg}}}, errors.New(errMsg)
 	})
 }
 

@@ -22,7 +22,7 @@ import (
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	"github.com/crossplane/cli/v2/internal/diff/compare"
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	dtypes "github.com/crossplane/cli/v2/internal/diff/types"
 )
@@ -2198,7 +2198,7 @@ func TestDefaultDiffCalculator_preserveExistingResourceIdentity(t *testing.T) {
 
 // TestDefaultDiffCalculator_DegradedDryRunDetail covers what a degraded dry run records on the diff,
 // which is everything the renderer's summary of unverified additions is built from: one warning per
-// GVK + namespace + distinct cause, counting its resources (see renderer.dryRunWarnings).
+// GVK + namespace + distinct cause, counting its resources (see result.DryRunWarnings).
 //
 // For that grouping to work, dryRun.detail must be the cause and nothing else. The mock wraps its error
 // exactly as DefaultApplyClient.DryRunCreate does, naming the resource, because that wrapper is what

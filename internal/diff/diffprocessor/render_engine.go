@@ -38,7 +38,7 @@ import (
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	"github.com/crossplane/cli/v2/internal/diff/dockerrun"
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 // RenderFn is the render abstraction injected into diff processors. Callers

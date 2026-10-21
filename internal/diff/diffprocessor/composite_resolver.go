@@ -17,7 +17,7 @@ import (
 
 	clixrgen "github.com/crossplane/cli/v2/cmd/crossplane/xr"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 // clusterWrittenFields are the Crossplane machinery fields of a composite that Crossplane, not the

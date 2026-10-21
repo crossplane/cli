@@ -18,7 +18,7 @@ import (
 	cmp "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 

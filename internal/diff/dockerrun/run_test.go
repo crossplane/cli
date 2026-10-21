@@ -33,7 +33,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 

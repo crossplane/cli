@@ -48,16 +48,23 @@ type NewXpkgClientFn func(opts ...clixpkg.ClientOption) (runtimexpkg.Client, *cl
 // embedded functions, loading their images into the docker daemon. It returns
 // a Function for each dependency and each embedded function.
 func LoadFunctions(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config, projFS afero.Fs, projFilePath, projFileName string, maxConcurrency uint, newClient NewXpkgClientFn) ([]pkgv1.Function, error) {
+	fns, _, err := LoadFunctionsWithDigests(ctx, log, sp, cfg, projFS, projFilePath, projFileName, maxConcurrency, newClient)
+	return fns, err
+}
+
+// LoadFunctionsWithDigests is LoadFunctions, and also returns the index
+// digest of each embedded function, as EmbeddedFunctionDigests does.
+func LoadFunctionsWithDigests(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config, projFS afero.Fs, projFilePath, projFileName string, maxConcurrency uint, newClient NewXpkgClientFn) ([]pkgv1.Function, map[string]EmbeddedDigest, error) {
 	log.Debug("Loading functions from project", "project-file", projFilePath)
 
 	proj, err := projectfile.Parse(projFS, projFileName)
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
+		return nil, nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
 	}
 
 	xpkgClient, resolver, err := newClient(clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	generators := generator.AllLanguages(
@@ -73,12 +80,13 @@ func LoadFunctions(ctx context.Context, log logging.Logger, sp terminal.SpinnerP
 	)
 
 	var fns []pkgv1.Function
+	var digests map[string]EmbeddedDigest
 	if err := sp.WrapWithSuccessSpinner("Resolving function dependencies", func() error {
 		var err error
 		fns, err = LoadFunctionDependencies(depMgr, proj)
 		return err
 	}); err != nil {
-		return nil, errors.Wrap(err, "cannot load project functions")
+		return nil, nil, errors.Wrap(err, "cannot load project functions")
 	}
 
 	if err := sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
@@ -109,12 +117,17 @@ func LoadFunctions(ctx context.Context, log logging.Logger, sp terminal.SpinnerP
 			return err
 		}
 
+		digests, err = EmbeddedFunctionDigests(imgMap, proj.Spec.Repository)
+		if err != nil {
+			return err
+		}
+
 		embeddedFns, err := EmbeddedFunctionsToDaemon(ctx, imgMap)
 		fns = append(fns, embeddedFns...)
 		return err
 	}); err != nil {
-		return nil, errors.Wrap(err, "cannot build embedded functions")
+		return nil, nil, errors.Wrap(err, "cannot build embedded functions")
 	}
 
-	return fns, nil
+	return fns, digests, nil
 }

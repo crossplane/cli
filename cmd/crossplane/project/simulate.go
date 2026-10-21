@@ -23,12 +23,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/charmbracelet/x/term"
+	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/afero"
 	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
@@ -47,6 +50,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/diff/client"
 	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
+	k8client "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
@@ -226,9 +230,10 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	}
 
 	var fns []pkgv1.Function
+	var digests map[string]project.EmbeddedDigest
 	comps := in.resources
 	if in.mode == projectMode {
-		comps, fns, err = c.buildProject(sigCtx, logger, sp, cliCfg, in.projectFile)
+		comps, fns, digests, err = c.buildProject(sigCtx, logger, sp, cliCfg, in.projectFile)
 		if err != nil {
 			return err
 		}
@@ -239,7 +244,12 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		return err
 	}
 
-	opts := c.processorOptions(k, logger, fns)
+	changed, err := changedFunctions(sigCtx, clients.K8sClients.Resource, digests)
+	if err != nil {
+		return err
+	}
+
+	opts := append(c.processorOptions(k, logger, fns), dp.WithChangedFunctions(changed...))
 	xrProc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
 
 	// ponytail: the timeout bounds the whole simulation because the diff
@@ -288,32 +298,58 @@ func (c *simulateCmd) restConfig() (*rest.Config, error) {
 
 // buildProject returns the project's compositions and its locally built
 // functions.
-func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config, projectFile string) ([]*un.Unstructured, []pkgv1.Function, error) {
+func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config, projectFile string) ([]*un.Unstructured, []pkgv1.Function, map[string]project.EmbeddedDigest, error) {
 	projFilePath, err := filepath.Abs(projectFile)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	projFS := afero.NewBasePathFs(afero.NewOsFs(), filepath.Dir(projFilePath))
 	projFileName := filepath.Base(projFilePath)
 
 	proj, err := projectfile.Parse(projFS, projFileName)
 	if err != nil {
-		return nil, nil, errors.Wrapf(err, "failed to parse project file %q", projectFile)
+		return nil, nil, nil, errors.Wrapf(err, "failed to parse project file %q", projectFile)
 	}
 
 	comps, err := project.LoadCompositions(proj, projFS)
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "cannot load compositions from project")
+		return nil, nil, nil, errors.Wrap(err, "cannot load compositions from project")
 	}
 	if len(comps) == 0 {
-		return nil, nil, errors.Errorf("no Compositions found under the project's APIs path %q", proj.Spec.Paths.APIs)
+		return nil, nil, nil, errors.Errorf("no Compositions found under the project's APIs path %q", proj.Spec.Paths.APIs)
 	}
 
-	fns, err := project.LoadFunctions(ctx, logger, sp, cliCfg, projFS, projFilePath, projFileName, c.MaxConcurrency, c.newClientAndResolver)
+	fns, digests, err := project.LoadFunctionsWithDigests(ctx, logger, sp, cliCfg, projFS, projFilePath, projFileName, c.MaxConcurrency, c.newClientAndResolver)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return comps, fns, nil
+	return comps, fns, digests, nil
+}
+
+// changedFunctions returns the cluster names of the embedded functions whose
+// local build differs from the cluster's Function of the same name. A
+// Function is unchanged only when it exists, its package is from the same
+// repository, and it pins the local index digest; anything else, including a
+// tag-only package, counts as changed.
+func changedFunctions(ctx context.Context, rc k8client.ResourceClient, digests map[string]project.EmbeddedDigest) ([]string, error) {
+	var changed []string
+	for fnName, d := range digests {
+		fn, err := rc.GetResource(ctx, pkgv1.FunctionGroupVersionKind, "", fnName)
+		if kerrors.IsNotFound(err) {
+			changed = append(changed, fnName)
+			continue
+		}
+		if err != nil {
+			return nil, errors.Wrapf(err, "cannot get Function %q to check whether embedded function changed", fnName)
+		}
+		pkg, _, _ := un.NestedString(fn.Object, "spec", "package")
+		ref, err := name.NewDigest(pkg)
+		if err != nil || ref.Context().Name() != d.Repository.Name() || ref.DigestStr() != d.Digest.String() {
+			changed = append(changed, fnName)
+		}
+	}
+	slices.Sort(changed)
+	return changed, nil
 }
 
 // diffCompositions returns the diff simulate runs for Compositions: their

@@ -98,6 +98,31 @@ Plan: 0 to add, 2 to change, 0 to destroy.
 Note: Cloud-layer plan not run (provider diff servers not yet wired).
 `,
 		},
+		"XRCreatePlanText": {
+			reason:   "-o plan prints a dotted annotation or label key, such as crossplane.io/composite, whole as one level.",
+			testType: XRDiffTest,
+			tt:       IntegrationTestCase{setupFiles: xrCase.setupFiles},
+			args:     []string{"-f", "testdata/diff/new-xr.yaml"},
+			wantText: `XR: XNopResource.ns.diff.example.org default/test-resource
+  [+] XDownstreamResource.ns.nop.example.org default/test-resource (create)
+      metadata:
+        annotations:
+          + crossplane.io/composition-resource-name: "nop-resource"
+        labels:
+          + crossplane.io/composite: "test-resource"
+      spec:
+        forProvider:
+          + configData: "new-value"
+
+  [+] XNopResource.ns.diff.example.org default/test-resource (create)
+      spec:
+        + coolField: "new-value"
+
+Plan: 2 to add, 0 to change, 0 to destroy.
+
+Note: Cloud-layer plan not run (provider diff servers not yet wired).
+`,
+		},
 		"XRPlanJSON": {
 			reason:   "-o json emits plan.Result: the XR as a changed composite, with both its plans grouped under it.",
 			testType: XRDiffTest,

@@ -134,6 +134,11 @@ type ProcessorConfig struct {
 	// or simulating eventual state. Higher values may be needed for complex pipelines.
 	MaxRenderIterations int
 
+	// ChangedFunctions names functions whose behaviour differs from the cluster's. A composition whose
+	// pipeline calls one is analysed as at least a metadata-scope change, even if it is otherwise
+	// identical. Empty by default, which changes nothing.
+	ChangedFunctions map[string]bool
+
 	// IgnorePaths is a list of paths to ignore when calculating diffs
 	IgnorePaths []string
 
@@ -238,6 +243,20 @@ func WithAnalyzeOn(analyzeOn AnalyzeOn) ProcessorOption {
 	return func(config *ProcessorConfig) {
 		if analyzeOn != "" {
 			config.AnalyzeOn = analyzeOn
+		}
+	}
+}
+
+// WithChangedFunctions names functions whose behaviour differs from the cluster's (see
+// ProcessorConfig.ChangedFunctions).
+func WithChangedFunctions(names ...string) ProcessorOption {
+	return func(config *ProcessorConfig) {
+		if config.ChangedFunctions == nil {
+			config.ChangedFunctions = make(map[string]bool, len(names))
+		}
+
+		for _, n := range names {
+			config.ChangedFunctions[n] = true
 		}
 	}
 }

@@ -472,10 +472,19 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// or a modeling artifact of this tool — which we cannot tell apart, so reporting it as this
 	// composition's "impact" would attribute cluster state to a change that does not exist.
 	// See issues #453 and #472.
-	if !comparison.scope.triggersAnalysis(p.config.AnalyzeOn) {
+	//
+	// A composition whose pipeline calls a changed function renders differently without creating a
+	// revision, so it is analysed as at least a metadata-scope change: any-change analyses it,
+	// spec-change still skips it. Only the decision is raised; RevisionImpact still reports the real scope.
+	analysisScope := comparison.scope
+	if analysisScope == ChangeScopeNone && callsChangedFunction(newComp, p.config.ChangedFunctions) {
+		analysisScope = ChangeScopeMetadata
+	}
+
+	if !analysisScope.triggersAnalysis(p.config.AnalyzeOn) {
 		p.config.Logger.Debug("Skipping impact analysis",
 			"composition", newComp.GetName(),
-			"changeScope", string(comparison.scope),
+			"changeScope", string(analysisScope),
 			"analyzeOn", string(p.config.AnalyzeOn),
 			"affectedXRCount", len(affectedXRs))
 
@@ -895,6 +904,27 @@ func withoutLastApplied(obj *un.Unstructured) *un.Unstructured {
 	}
 
 	return out
+}
+
+// callsChangedFunction reports whether comp's pipeline references any function in changed.
+func callsChangedFunction(comp *un.Unstructured, changed map[string]bool) bool {
+	if len(changed) == 0 {
+		return false
+	}
+
+	steps, _, _ := un.NestedSlice(comp.Object, "spec", "pipeline")
+	for _, s := range steps {
+		step, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if name, _, _ := un.NestedString(step, "functionRef", "name"); changed[name] {
+			return true
+		}
+	}
+
+	return false
 }
 
 // compositionChangeScope classifies how much of a composition differs from its in-cluster version,

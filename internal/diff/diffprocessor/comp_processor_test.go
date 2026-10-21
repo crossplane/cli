@@ -2156,3 +2156,69 @@ func renderCompReport(t *testing.T, output *dt.CompDiffOutput, format renderer.O
 
 	return stdout.String()
 }
+
+// A composition identical to the cluster's still renders differently when its pipeline calls a
+// changed function, so it is analysed at any-change but still skipped at spec-change.
+func TestDefaultCompDiffProcessor_processSingleComposition_ChangedFunctions(t *testing.T) {
+	builder := func() *tu.CompositionBuilder {
+		return tu.NewComposition("test-comp").
+			WithCompositeTypeRef("example.org/v1", "XR").
+			WithPipelineMode().
+			WithPipelineStep("step-a", "function-a", nil)
+	}
+
+	xr := tu.NewResource("example.org/v1", "XR", "xr-1").
+		InNamespace("ns").
+		WithSpecField("compositionRef", map[string]any{"name": "test-comp"}).
+		Build()
+
+	type want struct {
+		Skipped     bool
+		ChangeScope string
+	}
+
+	cases := map[string]struct {
+		changed   []string
+		analyzeOn AnalyzeOn
+		want      want
+	}{
+		"NoChangedFunctionsSkips": {
+			want: want{Skipped: true, ChangeScope: "none"},
+		},
+		"FunctionOnlyChangeTriggersAnalysis": {
+			changed: []string{"function-a"},
+			want:    want{ChangeScope: "none"},
+		},
+		"FunctionOnlyChangeUnreferencedFunctionStillSkips": {
+			changed: []string{"function-b"},
+			want:    want{Skipped: true, ChangeScope: "none"},
+		},
+		"FunctionOnlyChangeSpecChangeStillSkips": {
+			changed:   []string{"function-a"},
+			analyzeOn: AnalyzeOnSpecChange,
+			want:      want{Skipped: true, ChangeScope: "none"},
+		},
+	}
+
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			client := tu.NewMockCompositionClient().
+				WithSuccessfulCompositionFetch(builder().Build()).
+				Build()
+
+			proc := newCompProcessorForTest(t, client, false)
+			proc.config.AnalyzeOn = tt.analyzeOn
+			WithChangedFunctions(tt.changed...)(&proc.config)
+
+			got, err := proc.processSingleComposition(t.Context(), builder().BuildAsUnstructured(), []*un.Unstructured{xr}, false)
+			if err != nil {
+				t.Fatalf("processSingleComposition: %v", err)
+			}
+
+			gotWant := want{Skipped: got.ImpactAnalysisSkipped, ChangeScope: got.RevisionImpact.ChangeScope}
+			if diff := gcmp.Diff(tt.want, gotWant); diff != "" {
+				t.Errorf("processSingleComposition() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

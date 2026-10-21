@@ -1,5 +1,6 @@
-// Package testutils provides test utilities for crossplane-diff.
-package testutils
+// Package simtest asserts on project simulate's structured output, plan.Result, through
+// crossplane-diff's expectation builders.
+package simtest
 
 import (
 	"regexp"

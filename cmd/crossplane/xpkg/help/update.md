@@ -1,6 +1,6 @@
 The `xpkg update` command updates a package in a Crossplane control plane. It
 uses `~/.kube/config` to connect to the control plane; override the path with
-the `KUBECONFIG` environment variable.
+the `--kubeconfig` flag or the `KUBECONFIG` environment variable.
 
 Specify the package kind, a new fully qualified package OCI reference, and
 optionally the name of the package already installed in Crossplane:

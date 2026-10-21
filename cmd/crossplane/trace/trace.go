@@ -81,6 +81,7 @@ type Cmd struct {
 	Concurrency               int    `default:"5"                                   help:"load concurrency"                            name:"concurrency"`
 	Watch                     bool   `default:"false"                               help:"Watch for changes until resource deletion."  name:"watch"                                                               short:"w"`
 
+	Config        kube.ConfigFlags        `embed:""`
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
 
@@ -90,10 +91,7 @@ func (c *Cmd) Help() string {
 }
 
 func (c *Cmd) setupKubeClient(logger logging.Logger) (clientcmd.ClientConfig, client.WithWatch, meta.RESTMapper, error) {
-	clientconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(),
-		&clientcmd.ConfigOverrides{CurrentContext: c.Context},
-	)
+	clientconfig := c.Config.ClientConfig(&clientcmd.ConfigOverrides{CurrentContext: c.Context})
 
 	kubeconfig, err := clientconfig.ClientConfig()
 	if err != nil {

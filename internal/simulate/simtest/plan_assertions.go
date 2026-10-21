@@ -450,7 +450,9 @@ func assertFields(t *testing.T, id string, p *plan.ResourcePlan, changeType stri
 
 	for path, want := range changes {
 		// FieldChanges are leaf changes only, so a field rendered identically on both sides has no
-		// plan.Result home: all that can be asserted is that nothing at or under it changed.
+		// plan.Result home, and the plan's object (Desired) is not serialized: all that can be asserted
+		// is that nothing at or under it changed, not its value. ponytail: reduced coverage, see
+		// revisit.md R14; restore the value check once plan.Result carries the object.
 		if want[0] != nil && reflect.DeepEqual(want[0], want[1]) {
 			if c := changesUnder(t, p.Changes, path); len(c) > 0 {
 				t.Errorf("%s: field %s: expected unchanged (%v), got changes %+v", id, path, want[0], c)

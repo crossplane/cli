@@ -711,11 +711,14 @@ func TestFSSourceMissingDirectory(t *testing.T) {
 	// A missing directory hashes the same as an existing empty one, so
 	// creating the directory alone never triggers regeneration.
 	emptyFS := afero.NewMemMapFs()
+	if err := emptyFS.MkdirAll("apis", 0o755); err != nil {
+		t.Fatal(err)
+	}
 	hashMissing, err := src.Version(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	hashEmpty, err := calculateFilesystemHash(emptyFS, SourceTypeCRD)
+	hashEmpty, err := NewFSSource("apis", afero.NewBasePathFs(emptyFS, "apis")).Version(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -725,9 +728,9 @@ func TestFSSourceMissingDirectory(t *testing.T) {
 }
 
 // A project whose APIs live at its root (`apis: .`) must hand the generators
-// only its own YAML files: not the other project directories, the generated
-// schemas, or hidden directories such as .git. Changes there must not read as
-// an API change either.
+// only its own API definitions: not the other project directories, the
+// generated schemas, hidden directories such as .git, or non-definition YAML
+// such as Compositions. Changes there must not read as an API change either.
 func TestProjectAPIsSourceAtRoot(t *testing.T) {
 	for _, apis := range []string{".", "/", "./"} {
 		t.Run(apis, func(t *testing.T) {
@@ -751,7 +754,7 @@ func testProjectAPIsSourceAtRoot(t *testing.T, apis string) {
 		"schemas/.cache/apis/json/x.schema.yaml": "generated",
 		"schemas/python/models/pyproject.yaml":   "generated",
 		".github/workflows/ci.yaml":              "workflow",
-		"functions-and-more/kept.yaml":           "a sibling that only shares a prefix",
+		"functions-and-more/kept.yaml":           "kind: CustomResourceDefinition # a sibling that only shares a prefix",
 	}
 	for p, c := range files {
 		if err := afero.WriteFile(projFS, p, []byte(c), 0o644); err != nil {
@@ -779,7 +782,7 @@ func testProjectAPIsSourceAtRoot(t *testing.T, apis string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"functions-and-more/kept.yaml", "nested/composition.yml", "xrd.yaml"}
+	want := []string{"functions-and-more/kept.yaml", "xrd.yaml"}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("resources (-want +got):\n%s", diff)
 	}
@@ -878,5 +881,59 @@ func TestProjectAPIsSourceNestedDirs(t *testing.T) {
 		if got, _ := afero.Exists(res, p); got != want {
 			t.Errorf("%s present = %v, want %v", p, got, want)
 		}
+	}
+}
+
+// Only XRD and CRD documents are API definitions: editing a Composition,
+// even one in the same file as an XRD, must not read as an API change, and
+// the generators must only see the definitions.
+func TestFSSourceDefinitionsOnly(t *testing.T) {
+	ctx := context.Background()
+
+	const xrd = "apiVersion: apiextensions.crossplane.io/v2\nkind: CompositeResourceDefinition\nmetadata:\n  name: xthings.example.org\n"
+	const comp = "apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: thing\n"
+	write := func(t *testing.T, fsys afero.Fs, p, content string) {
+		t.Helper()
+		if err := afero.WriteFile(fsys, p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fsys := afero.NewMemMapFs()
+	write(t, fsys, "both.yaml", xrd+"---\n"+comp)
+	write(t, fsys, "composition.yaml", comp)
+	src := NewFSSource("apis", fsys)
+
+	res, err := src.Resources(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := afero.ReadFile(res, "both.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(xrd, string(got)); diff != "" {
+		t.Errorf("both.yaml: the generators must only see its XRD (-want +got):\n%s", diff)
+	}
+	if ok, _ := afero.Exists(res, "composition.yaml"); ok {
+		t.Error("a file with no definitions must be left out")
+	}
+
+	before, err := src.Version(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, fsys, "both.yaml", xrd+"---\n"+comp+"spec:\n  edited: true\n")
+	write(t, fsys, "composition.yaml", comp+"spec:\n  edited: true\n")
+	if after, _ := src.Version(ctx); after != before {
+		t.Error("editing Compositions changed the version")
+	}
+
+	write(t, fsys, "renamed.yaml", xrd)
+	if err := fsys.Remove("both.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	if renamed, _ := src.Version(ctx); renamed == before {
+		t.Error("moving an XRD to another file did not change the version")
 	}
 }

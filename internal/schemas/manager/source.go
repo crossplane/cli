@@ -17,6 +17,8 @@ limitations under the License.
 package manager
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -36,6 +38,8 @@ import (
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/spf13/afero"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
+	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
@@ -137,7 +141,10 @@ func calculateFilesystemHash(filesystem afero.Fs, sourceType SourceType) (string
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
-// fsSource is a resource source backed by a filesystem.
+// fsSource is a resource source backed by a filesystem. Only its XRD and CRD
+// documents count: they are what Resources returns and what Version covers,
+// so editing a Composition or any other YAML beside the APIs never reads as
+// an API change.
 type fsSource struct {
 	id      string
 	fs      afero.Fs
@@ -155,21 +162,44 @@ func (f *fsSource) Description() string {
 	return "the project root"
 }
 
-// Version hashes exactly the files Resources returns, so a change anywhere
-// else under the source's root -- a function's node_modules, the generated
-// schemas -- never reads as an API change.
+// Version hashes exactly the definitions Resources returns, each with its
+// path, so a change anywhere else under the source's root -- a Composition,
+// a function's node_modules, the generated schemas -- never reads as an API
+// change, while renaming a definition's file does.
 func (f *fsSource) Version(ctx context.Context) (string, error) {
 	res, err := f.Resources(ctx)
 	if err != nil {
 		return "", err
 	}
-	return calculateFilesystemHash(res, SourceTypeCRD)
+	h := sha256.New()
+	// afero.Walk visits paths in lexical order, so the hash is stable.
+	err = afero.Walk(res, ".", func(p string, info fs.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		content, err := afero.ReadFile(res, p)
+		if err != nil {
+			return err
+		}
+		_, _ = h.Write([]byte(filepath.ToSlash(p)))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(content)
+		_, _ = h.Write([]byte{0})
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
-// Resources returns the source's YAML files. Excluded paths and hidden
-// directories are skipped: a project whose APIs live at its root ("/") would
-// otherwise hand the generators every file it has, including function
-// dependencies and the schemas directory's own caches.
+// Resources returns the source's XRD and CRD documents, each file holding the
+// definitions it had. Other documents, and files with none, are left out: the
+// generators only read definitions, and Version must change exactly when
+// their input does. Excluded paths and hidden directories are skipped: a
+// project whose APIs live at its root ("/") would otherwise hand the
+// generators every file it has, including function dependencies and the
+// schemas directory's own caches.
 func (f *fsSource) Resources(_ context.Context) (afero.Fs, error) {
 	out := afero.NewMemMapFs()
 
@@ -201,15 +231,44 @@ func (f *fsSource) Resources(_ context.Context) (afero.Fs, error) {
 		if err != nil {
 			return errors.Wrapf(err, "failed to read %s", p)
 		}
+		defs, err := definitions(bs)
+		if err != nil {
+			return errors.Wrapf(err, "failed to read %s", p)
+		}
+		if len(defs) == 0 {
+			return nil
+		}
 		if err := out.MkdirAll(path.Dir(rel), 0o755); err != nil {
 			return err
 		}
-		return afero.WriteFile(out, rel, bs, 0o644)
+		return afero.WriteFile(out, rel, bytes.Join(defs, []byte("---\n")), 0o644)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// definitions returns the XRD and CRD documents of a YAML file, in order.
+// Documents that don't parse aren't definitions.
+func definitions(content []byte) ([][]byte, error) {
+	var defs [][]byte
+	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(content)))
+	for {
+		doc, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			return defs, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		var res struct {
+			Kind string `json:"kind"`
+		}
+		if err := yaml.Unmarshal(doc, &res); err == nil && (res.Kind == "CompositeResourceDefinition" || res.Kind == "CustomResourceDefinition") {
+			defs = append(defs, doc)
+		}
+	}
 }
 
 // excluded reports whether a slash-separated path relative to the source's

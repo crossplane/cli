@@ -1157,3 +1157,102 @@ func TestJSONBuildIndexSchema(t *testing.T) {
 		})
 	}
 }
+
+// A pass checks every generated file against the tree manifest. A generated
+// file that was edited or deleted is restored from the group caches without
+// regenerating anything; a file added to the tree is left alone, so tools
+// writing there (Python's __pycache__) don't cause an assembly every pass.
+func TestGeneratedFilesAreChecked(t *testing.T) {
+	t.Parallel()
+
+	dep := depSrc("prov-a:v1", "v1", "dep.yaml")
+	depFile := treeDepPath(0, "prov-a:v1", "dep.yaml")
+	const extra = "mock/__pycache__/dep.cpython-312.pyc"
+
+	cases := map[string]struct {
+		reason string
+		change func(t *testing.T, fsys afero.Fs)
+		// want is the content of depFile after the next pass, "" if absent.
+		want string
+		// extraKept is whether the extra file survives the next pass, if
+		// the change added one.
+		extraKept bool
+	}{
+		"EditedFileIsRestored": {
+			reason: "A hand-edited generated file must be restored from the caches.",
+			change: func(t *testing.T, fsys afero.Fs) {
+				t.Helper()
+				if err := afero.WriteFile(fsys, depFile, []byte("edited"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "dep.yaml",
+		},
+		"DeletedFileIsRestored": {
+			reason: "A generated file deleted from an otherwise intact tree must be restored.",
+			change: func(t *testing.T, fsys afero.Fs) {
+				t.Helper()
+				if err := fsys.Remove(depFile); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "dep.yaml",
+		},
+		"AddedFileIsLeftAlone": {
+			reason: "A file added to the tree is not drift, so the tree is not reassembled over it.",
+			change: func(t *testing.T, fsys afero.Fs) {
+				t.Helper()
+				if err := afero.WriteFile(fsys, extra, []byte("bytecode"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want:      "dep.yaml",
+			extraKept: true,
+		},
+		"MissingManifestReassembles": {
+			reason: "Without a manifest the tree cannot be checked, so it is reassembled, which also clears added files.",
+			change: func(t *testing.T, fsys afero.Fs) {
+				t.Helper()
+				if err := afero.WriteFile(fsys, extra, []byte("bytecode"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := fsys.Remove(path.Join(cacheDirName, treeManifestFileName)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "dep.yaml",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			testFS := afero.NewMemMapFs()
+			gen := &kindGenerator{lang: "mock"}
+			m := New(testFS, []generator.Interface{gen}, nil)
+			api := apiSrc("v1", "xrd.yaml")
+
+			if err := m.GenerateFromMultipleSources(ctx, []Source{dep}, api); err != nil {
+				t.Fatal(err)
+			}
+			runs := gen.runs
+
+			tc.change(t, testFS)
+			if err := m.GenerateFromMultipleSources(ctx, []Source{dep}, api); err != nil {
+				t.Fatal(err)
+			}
+
+			if got := readFile(t, testFS, depFile); got != tc.want {
+				t.Errorf("%s\n%s = %q, want %q", tc.reason, depFile, got, tc.want)
+			}
+			if gen.runs != runs {
+				t.Errorf("%s\nthe generator ran %d more times; restoring a file must reuse the caches", tc.reason, gen.runs-runs)
+			}
+			if ok, _ := afero.Exists(testFS, extra); ok != tc.extraKept {
+				t.Errorf("%s\n%s present = %v, want %v", tc.reason, extra, ok, tc.extraKept)
+			}
+		})
+	}
+}

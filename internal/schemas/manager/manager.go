@@ -20,6 +20,8 @@ package manager
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -47,6 +49,7 @@ import (
 //
 //	<lang>/                   the tree users (and function builds) consume
 //	.cache/<group>/<lang>/    per-group generator output, the assembly inputs
+//	.cache/tree.json          the hash of every file the last assembly wrote
 //	.staging/                 per-run scratch, removed when a pass ends
 //
 // The dot prefixes keep Go tooling out of the hidden directories, and both sit
@@ -65,6 +68,13 @@ const (
 	// caches and the lock stay in place. It is removed when a pass ends, and
 	// leftovers from a crashed run at the start of the next pass.
 	stagingDirName = ".staging"
+
+	// treeManifestFileName records, in the cache directory, the SHA-256 of
+	// every file the last assembly put in each language tree. It lets a pass
+	// notice a generated file that was deleted or edited by hand, and is kept
+	// out of the lock so a project that checks schemas/ in does not commit a
+	// line per generated file.
+	treeManifestFileName = "tree.json"
 
 	// ignoreAllGitignore is written into the cache and staging directories.
 	// It ignores everything, itself included.
@@ -204,10 +214,10 @@ func (m *Manager) generateSources(ctx context.Context, dependencySources, apiSou
 		return err
 	}
 
-	// Even with both groups fresh, the tree may not match the lock: it can be
-	// partly deleted by hand, or the pass may have crashed after the tree
-	// swap but before the lock write. If anything is off, assemble from the
-	// (now certainly valid) caches.
+	// Even with both groups fresh, the tree may not match the lock: a
+	// generated file can be deleted or edited by hand, or the pass may have
+	// crashed after the tree swap but before the lock or manifest write. If
+	// anything is off, assemble from the (now certainly valid) caches.
 	if changed || !m.treeMatchesLock(current, groupSources, languages, fingerprint) {
 		if err := m.assembleTree(); err != nil {
 			return err
@@ -286,10 +296,9 @@ func (m *Manager) groupStampMatches(group string, want groupStamp) bool {
 }
 
 // treeMatchesLock reports whether the on-disk language tree is the one the
-// lock describes for these groups, languages and fingerprint: every language
-// directory exists. (Its content is the assembly of the caches the lock
-// describes, so directory presence is the observable contract; a hand-edited
-// tree is out of scope, same as on main.)
+// lock describes for these groups, languages and fingerprint: the lock
+// records them, and every file the last assembly wrote is still there,
+// unchanged (see treeIntact).
 func (m *Manager) treeMatchesLock(current *lock, groupSources map[string]map[string]string, languages []string, fingerprint string) bool {
 	if !slices.Equal(current.Languages, languages) || current.Generator != fingerprint {
 		return false
@@ -299,13 +308,91 @@ func (m *Manager) treeMatchesLock(current *lock, groupSources map[string]map[str
 			return false
 		}
 	}
+	return m.treeIntact(languages)
+}
+
+// treeManifest is the content of the tree manifest: for each language, the
+// SHA-256 of every file the last assembly wrote, keyed by its slash-separated
+// path in the language tree.
+type treeManifest struct {
+	Files map[string]map[string]string `json:"files"`
+}
+
+// treeIntact reports whether every file the last assembly wrote for these
+// languages is still on disk with the content it was written with. Files
+// that were added to a tree are not checked: tools put things there, such as
+// Python's __pycache__ directories, and they don't change the generated
+// files. A missing or unreadable manifest -- a fresh clone, a crash before
+// the manifest write, a manifest from before it existed -- is not intact,
+// which costs one assembly from the caches.
+func (m *Manager) treeIntact(languages []string) bool {
+	bs, err := afero.ReadFile(m.fs, path.Join(cacheDirName, treeManifestFileName))
+	if err != nil {
+		return false
+	}
+	var tm treeManifest
+	if err := json.Unmarshal(bs, &tm); err != nil {
+		return false
+	}
 	for _, lang := range languages {
-		ok, err := afero.DirExists(m.fs, lang)
-		if err != nil || !ok {
+		files, ok := tm.Files[lang]
+		if !ok {
 			return false
+		}
+		if ok, err := afero.DirExists(m.fs, lang); err != nil || !ok {
+			return false
+		}
+		for p, want := range files {
+			content, err := afero.ReadFile(m.fs, path.Join(lang, p))
+			if err != nil || hashContent(content) != want {
+				return false
+			}
 		}
 	}
 	return true
+}
+
+// hashTree returns the SHA-256 of every file in fsys, keyed by its
+// slash-separated path.
+func hashTree(fsys afero.Fs) (map[string]string, error) {
+	files := map[string]string{}
+	err := afero.Walk(fsys, ".", func(p string, info fs.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		content, err := afero.ReadFile(fsys, p)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(p)] = hashContent(content)
+		return nil
+	})
+	return files, err
+}
+
+// hashContent returns the hex SHA-256 of content.
+func hashContent(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
+
+// writeTreeManifest persists the tree manifest atomically, like the lock.
+func (m *Manager) writeTreeManifest(tm treeManifest) error {
+	bs, err := json.Marshal(tm)
+	if err != nil {
+		return errors.Wrap(err, "failed to serialize the schema tree manifest")
+	}
+	if err := m.makeIgnoredDir(cacheDirName); err != nil {
+		return err
+	}
+	p := path.Join(cacheDirName, treeManifestFileName)
+	if err := afero.WriteFile(m.fs, p+".tmp", bs, 0o644); err != nil {
+		return errors.Wrap(err, "failed to write the schema tree manifest")
+	}
+	if err := m.fs.Rename(p+".tmp", p); err != nil {
+		return errors.Wrap(err, "failed to put the schema tree manifest in place; the next build will reassemble the schemas")
+	}
+	return nil
 }
 
 // generateGroup regenerates one group's output from its sources into the
@@ -483,44 +570,13 @@ func (m *Manager) assembleTree() error {
 		return err
 	}
 
+	manifest := treeManifest{Files: map[string]map[string]string{}}
 	for _, lang := range generated {
-		treeStage := afero.NewBasePathFs(m.fs, path.Join(stagingDirName, "tree", lang))
-		// Languages with no output from either group still get an empty
-		// staged tree: the swap below renames it into place, and a rename
-		// needs the directory to exist. copyTreeWithConflicts only creates
-		// directories when it writes a file, so an empty tree would not be
-		// created otherwise.
-		if err := treeStage.MkdirAll(".", 0o750); err != nil {
-			return errors.Wrapf(err, "failed to stage the %s tree", lang)
-		}
-
-		depCache := m.groupCacheFS(sourceGroupDependencies, lang)
-		apiCache := m.groupCacheFS(sourceGroupAPIs, lang)
-
-		// A run-level language (see schemaMerger) has its groups' parts
-		// merged into one coherent tree; a per-kind language is assembled by
-		// copying the groups in turn with conflict detection.
-		if _, ok := m.generatorFor(lang).(schemaMerger); ok {
-			parts, err := m.mergeParts(lang, []afero.Fs{depCache, apiCache})
-			if err != nil {
-				return errors.Wrapf(err, "cannot merge the %s schemas of the project's dependencies and its own APIs", lang)
-			}
-			if err := copyParts(parts, treeStage); err != nil {
-				return errors.Wrapf(err, "failed to assemble the %s tree", lang)
-			}
-		} else {
-			// Dependencies first, apis last, matching main's copy order.
-			// The cache holds generator output verbatim; this copy defines
-			// the on-disk layout, stripping the models/ prefix most
-			// generators put their output under.
-			if err := copyPartsStrippingModels([]afero.Fs{depCache, apiCache}, treeStage); err != nil {
-				return errors.Wrapf(err, "cannot combine the %s schemas of the project's dependencies and its own APIs", lang)
-			}
-		}
-
-		if err := postProcessForLanguage(lang, treeStage); err != nil {
+		files, err := m.stageTree(lang)
+		if err != nil {
 			return err
 		}
+		manifest.Files[lang] = files
 	}
 
 	// Swap every language directory in by rename. Rename over an existing
@@ -555,8 +611,54 @@ func (m *Manager) assembleTree() error {
 	}
 
 	// The staged trees are in place; the replaced old trees are scratch now
-	// and go when generateSources removes staging.
-	return nil
+	// and go when generateSources removes staging. The manifest is written
+	// last: until it is, the previous manifest no longer matches the tree,
+	// so a crash here costs the next pass one assembly from the caches.
+	return m.writeTreeManifest(manifest)
+}
+
+// stageTree assembles one language's tree in staging from the group caches,
+// and returns the hash of every file in it for the tree manifest.
+func (m *Manager) stageTree(lang string) (map[string]string, error) {
+	treeStage := afero.NewBasePathFs(m.fs, path.Join(stagingDirName, "tree", lang))
+	// Languages with no output from either group still get an empty staged
+	// tree: the swap renames it into place, and a rename needs the directory
+	// to exist. copyTreeWithConflicts only creates directories when it writes
+	// a file, so an empty tree would not be created otherwise.
+	if err := treeStage.MkdirAll(".", 0o750); err != nil {
+		return nil, errors.Wrapf(err, "failed to stage the %s tree", lang)
+	}
+
+	depCache := m.groupCacheFS(sourceGroupDependencies, lang)
+	apiCache := m.groupCacheFS(sourceGroupAPIs, lang)
+
+	// A run-level language (see schemaMerger) has its groups' parts merged
+	// into one coherent tree; a per-kind language is assembled by copying the
+	// groups in turn with conflict detection.
+	if _, ok := m.generatorFor(lang).(schemaMerger); ok {
+		parts, err := m.mergeParts(lang, []afero.Fs{depCache, apiCache})
+		if err != nil {
+			return nil, errors.Wrapf(err, "cannot merge the %s schemas of the project's dependencies and its own APIs", lang)
+		}
+		if err := copyParts(parts, treeStage); err != nil {
+			return nil, errors.Wrapf(err, "failed to assemble the %s tree", lang)
+		}
+	} else {
+		// Dependencies first, apis last, matching main's copy order. The
+		// cache holds generator output verbatim; this copy defines the
+		// on-disk layout, stripping the models/ prefix most generators put
+		// their output under.
+		if err := copyPartsStrippingModels([]afero.Fs{depCache, apiCache}, treeStage); err != nil {
+			return nil, errors.Wrapf(err, "cannot combine the %s schemas of the project's dependencies and its own APIs", lang)
+		}
+	}
+
+	if err := postProcessForLanguage(lang, treeStage); err != nil {
+		return nil, err
+	}
+
+	files, err := hashTree(treeStage)
+	return files, errors.Wrapf(err, "failed to hash the %s tree", lang)
 }
 
 // makeIgnoredDir creates one of the manager's hidden directories with a

@@ -51,7 +51,8 @@ type FunctionProvider interface {
 // inside a Docker container (e.g. a GitHub Actions container job).
 const EnvDockerNetwork = "CROSSPLANE_DIFF_DOCKER_NETWORK"
 
-// CachedFunctionProvider lazy-loads functions and caches them by composition name.
+// CachedFunctionProvider lazy-loads functions and caches them by composition name and pipeline
+// (see functionCacheKey).
 // This is appropriate for the comp command, where many XRs use the same composition:
 // the cluster is asked for a composition's functions once, however many XRs render it.
 // The function containers themselves are started, reused across renders and removed
@@ -79,13 +80,14 @@ func NewCachedFunctionProvider(fnClient xp.FunctionClient, logger logging.Logger
 // GetFunctionsForComposition fetches and caches functions on first call per composition.
 func (p *CachedFunctionProvider) GetFunctionsForComposition(comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
 	compName := comp.GetName()
+	key := functionCacheKey(comp)
 
 	// Held across the fetch, which only reads the function client's in-memory cache, so each
 	// composition is fetched once.
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if cached, ok := p.cache[compName]; ok {
+	if cached, ok := p.cache[key]; ok {
 		p.logger.Debug("Using cached functions", "composition", compName, "count", len(cached))
 		return deepCopyFunctions(cached), nil
 	}
@@ -100,9 +102,24 @@ func (p *CachedFunctionProvider) GetFunctionsForComposition(comp *apiextensionsv
 
 	p.logger.Debug("Fetched functions for caching", "composition", compName, "count", len(fns))
 
-	p.cache[compName] = fns
+	p.cache[key] = fns
 
 	return deepCopyFunctions(fns), nil
+}
+
+// functionCacheKey keys the cache by composition name plus the ordered pipeline function names, the
+// only inputs the fetch depends on. The name alone is not enough: a CompositionRevision is rendered
+// under its Composition's name but may run a different pipeline. Kubernetes names cannot contain
+// "/", so the join is unambiguous.
+func functionCacheKey(comp *apiextensionsv1.Composition) string {
+	parts := make([]string, 0, len(comp.Spec.Pipeline)+1)
+	parts = append(parts, comp.GetName())
+
+	for _, step := range comp.Spec.Pipeline {
+		parts = append(parts, step.FunctionRef.Name)
+	}
+
+	return strings.Join(parts, "/")
 }
 
 // deepCopyFunctions returns a copy of fns that shares no maps or slices with it.

@@ -256,6 +256,47 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_MultipleCompositions(
 	}
 }
 
+func TestCachedFunctionProvider_GetFunctionsForComposition_SameNameDifferentPipelinesNotShared(t *testing.T) {
+	// A CompositionRevision and its Composition share a name but may differ in pipeline.
+	fnClient := tu.NewMockFunctionClient().
+		WithGetFunctionsFromPipeline(func(comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
+			fns := make([]pkgv1.Function, 0, len(comp.Spec.Pipeline))
+			for _, step := range comp.Spec.Pipeline {
+				fns = append(fns, pkgv1.Function{ObjectMeta: metav1.ObjectMeta{Name: step.FunctionRef.Name}})
+			}
+
+			return fns, nil
+		}).
+		Build()
+
+	provider := NewCachedFunctionProvider(fnClient, tu.TestLogger(t, false))
+
+	withPipeline := func(fnNames ...string) *apiextensionsv1.Composition {
+		comp := &apiextensionsv1.Composition{ObjectMeta: metav1.ObjectMeta{Name: "shared-name"}}
+		for _, n := range fnNames {
+			comp.Spec.Pipeline = append(comp.Spec.Pipeline, apiextensionsv1.PipelineStep{
+				Step:        n,
+				FunctionRef: apiextensionsv1.FunctionReference{Name: n},
+			})
+		}
+
+		return comp
+	}
+
+	if _, err := provider.GetFunctionsForComposition(withPipeline("function-a")); err != nil {
+		t.Fatalf("GetFunctionsForComposition(function-a) error = %v", err)
+	}
+
+	got, err := provider.GetFunctionsForComposition(withPipeline("function-b"))
+	if err != nil {
+		t.Fatalf("GetFunctionsForComposition(function-b) error = %v", err)
+	}
+
+	if len(got) != 1 || got[0].Name != "function-b" {
+		t.Errorf("GetFunctionsForComposition(function-b) = %v, want the function-b pipeline's functions", got)
+	}
+}
+
 func TestReplaceRegistry(t *testing.T) {
 	tests := map[string]struct {
 		pkg         string

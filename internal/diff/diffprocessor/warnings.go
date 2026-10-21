@@ -24,7 +24,7 @@ import (
 	"strings"
 	"sync"
 
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 // AdvisoryCollector is the CLI's dt.Advisories: every advisory raised is written to

@@ -17,7 +17,7 @@ import (
 
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 // addUniqueResource adds a resource to the map if not already present.

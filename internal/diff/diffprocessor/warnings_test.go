@@ -9,7 +9,7 @@ import (
 
 	gcmp "github.com/google/go-cmp/cmp"
 
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 // TestAdvisoryCollector_Raise covers the dual emission and the collector's identity rule. Each raised

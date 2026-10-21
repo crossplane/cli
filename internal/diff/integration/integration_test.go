@@ -33,7 +33,7 @@ import (
 
 	dclient "github.com/crossplane/cli/v2/internal/diff/client"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 

@@ -8,7 +8,7 @@ import (
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	"github.com/crossplane/cli/v2/internal/diff/compare"
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 const (

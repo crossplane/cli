@@ -32,7 +32,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	t "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	t "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 // PathLastAppliedConfiguration is the ignore-path form of the annotation a client-side `kubectl

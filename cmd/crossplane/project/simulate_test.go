@@ -43,6 +43,7 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 
@@ -493,7 +494,7 @@ var _ dp.CompDiffProcessor = &fakeCompProc{}
 // fakeCompProc is a CompDiffProcessor that records its calls.
 type fakeCompProc struct {
 	initErr error
-	diffFn  func(ctx context.Context) (*renderer.CompDiffOutput, error)
+	diffFn  func(ctx context.Context) (*dt.CompDiffOutput, error)
 
 	gotNamespace string
 	gotRefs      []k8stypes.NamespacedName
@@ -503,10 +504,10 @@ type fakeCompProc struct {
 
 func (f *fakeCompProc) Initialize(context.Context) error { return f.initErr }
 
-func (f *fakeCompProc) DiffComposition(ctx context.Context, comps []*un.Unstructured, ns string, refs []k8stypes.NamespacedName) (*renderer.CompDiffOutput, error) {
+func (f *fakeCompProc) DiffComposition(ctx context.Context, comps []*un.Unstructured, ns string, refs []k8stypes.NamespacedName) (*dt.CompDiffOutput, error) {
 	f.gotNamespace, f.gotRefs, f.gotComps = ns, refs, len(comps)
 	if f.diffFn == nil {
-		return &renderer.CompDiffOutput{}, nil
+		return &dt.CompDiffOutput{}, nil
 	}
 	return f.diffFn(ctx)
 }
@@ -533,10 +534,10 @@ func TestSimulateRun(t *testing.T) {
 	noInit := func(context.Context, logging.Logger) error { return nil }
 	// changed is a report of one Composition with an affected composite
 	// resource.
-	changed := func() *renderer.CompDiffOutput {
-		return &renderer.CompDiffOutput{Compositions: []renderer.CompositionDiff{{
+	changed := func() *dt.CompDiffOutput {
+		return &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
 			Name:           "comp",
-			ImpactAnalysis: []renderer.XRImpact{{Status: renderer.XRStatusChanged}},
+			ImpactAnalysis: []dt.XRImpact{{Status: dt.XRStatusChanged}},
 		}}}
 	}
 
@@ -566,21 +567,21 @@ func TestSimulateRun(t *testing.T) {
 		},
 		"Changes": {
 			reason: "Changes should exit 3, as a result rather than an error.",
-			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*renderer.CompDiffOutput, error) {
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
 				return changed(), nil
 			}}},
 			want: want{code: dp.ExitCodeDiffDetected, diffed: true},
 		},
 		"ErrorWithChanges": {
 			reason: "A tool error should exit 1, not 3, even when there are changes.",
-			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*renderer.CompDiffOutput, error) {
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
 				return changed(), errBoom
 			}}},
 			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
 		},
 		"SchemaValidationErrorWithChanges": {
 			reason: "A schema validation failure should exit 2, not 3, even when there are changes.",
-			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*renderer.CompDiffOutput, error) {
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
 				return changed(), dp.NewSchemaValidationError("XR/db", "invalid", errBoom)
 			}}},
 			want: want{code: dp.ExitCodeSchemaValidation, err: errBoom, diffed: true},
@@ -610,21 +611,21 @@ func TestSimulateRun(t *testing.T) {
 		},
 		"DiffError": {
 			reason: "A failed simulation is a tool error.",
-			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*renderer.CompDiffOutput, error) {
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
 				return changed(), errBoom
 			}}},
 			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
 		},
 		"SchemaValidationError": {
 			reason: "A simulation that failed only schema validation should exit 2.",
-			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*renderer.CompDiffOutput, error) {
-				return &renderer.CompDiffOutput{}, dp.NewSchemaValidationError("XR/db", "invalid", errBoom)
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return &dt.CompDiffOutput{}, dp.NewSchemaValidationError("XR/db", "invalid", errBoom)
 			}}},
 			want: want{code: dp.ExitCodeSchemaValidation, err: errBoom, diffed: true},
 		},
 		"Interrupted": {
 			reason: "An interrupted run should return the interruption, whatever it returned, which main exits 130 for.",
-			args: args{cancel: true, initClients: noInit, proc: &fakeCompProc{diffFn: func(ctx context.Context) (*renderer.CompDiffOutput, error) {
+			args: args{cancel: true, initClients: noInit, proc: &fakeCompProc{diffFn: func(ctx context.Context) (*dt.CompDiffOutput, error) {
 				return changed(), ctx.Err()
 			}}},
 			want: want{code: dp.ExitCodeToolError, err: dp.ErrInterrupted, diffed: true},

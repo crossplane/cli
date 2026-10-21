@@ -13,8 +13,8 @@ Zone.Identifier
 build/
 
 # Nix build output symlinks
-result
-result-*
+/result
+/result-*
 
 # Exclude the ko data dir
 kodata/

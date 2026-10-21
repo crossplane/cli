@@ -10,7 +10,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 // flattenGroups merges every group's diffs into a single map, for the human
@@ -43,7 +43,7 @@ type DiffRenderer interface {
 	// order with the work that produced them. The human renderer therefore ignores this parameter.
 	//
 	// One kind of warning is instead derived here, from the groups: the summary of added resources
-	// that could not be verified against the apiserver (see dryRunWarnings). Deciding what to summarise
+	// that could not be verified against the apiserver (see dt.DryRunWarnings). Deciding what to summarise
 	// is a presentation decision, and the DryRunInfo it is built from only exists once the diffs do.
 	// Every renderer writes that summary to stderr; a structured one also appends it to warnings[],
 	// after the warnings passed in.
@@ -249,7 +249,7 @@ func (r *DefaultDiffRenderer) RenderDiffs(groups []dt.XRDiffGroup, errs []dt.Out
 		return err
 	}
 
-	return writeWarnings(r.diffOpts.Stderr, xrDryRunWarnings(xrGroups))
+	return writeWarnings(r.diffOpts.Stderr, dt.XRDryRunWarnings(xrGroups))
 }
 
 // renderFlat renders a single flat block of diffs plus a "Summary:" line. This

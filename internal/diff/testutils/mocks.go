@@ -27,7 +27,7 @@ import (
 
 	"github.com/crossplane/cli/v2/pkg/resource"
 	"github.com/crossplane/cli/v2/pkg/render"
-	dt "github.com/crossplane/cli/v2/internal/diff/renderer/types"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/types"
 )
 

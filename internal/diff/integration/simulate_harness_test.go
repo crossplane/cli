@@ -120,7 +120,10 @@ func simulateGap(_ DiffTestType, a *simArgs) string {
 // simulateArgv translates the parsed crossplane-diff args into project
 // simulate's: the input files as -f, a single --resource as --name (and
 // --namespace), --include-manual as --include-pinned, and
-// --analyze-unchanged as its replacement --analyze-on=always.
+// --analyze-unchanged as its replacement --analyze-on=always. The output
+// stays crossplane-diff's: its default diff is passed explicitly, since
+// simulate defaults to -o plan, and json or yaml always carry
+// --output-version, which selects its structured schema over plan.Result.
 func simulateArgv(t *testing.T, a *simArgs) []string {
 	t.Helper()
 
@@ -128,8 +131,10 @@ func simulateArgv(t *testing.T, a *simArgs) []string {
 		"project", "simulate",
 		"--timeout=" + a.Timeout.String(),
 		"--output=" + a.Output,
-		"--output-version=" + a.OutputVersion,
 		"--dry-run-on=" + a.DryRunOn,
+	}
+	if a.Output != "diff" {
+		argv = append(argv, "--output-version="+a.OutputVersion)
 	}
 	for _, f := range a.Files {
 		argv = append(argv, "-f", f)
@@ -186,6 +191,14 @@ func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []s
 
 	a := parseSimulateArgs(t, testType, args)
 
+	return runSimulateArgv(t, cfg, simulateArgv(t, a), a.CrossplaneRenderBinary, stdout, stderr)
+}
+
+// runSimulateArgv runs `crossplane project simulate` with argv against cfg,
+// rendering with renderBinary when it is set, as runSimulate does.
+func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, stdout, stderr io.Writer) (int, error) {
+	t.Helper()
+
 	var cli struct {
 		Project project.Cmd `cmd:""`
 	}
@@ -205,7 +218,6 @@ func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []s
 		t.Fatalf("failed to create kong parser: %v", err)
 	}
 
-	argv := simulateArgv(t, a)
 	kctx, err := parser.Parse(argv)
 	if err != nil {
 		t.Fatalf("failed to parse project simulate args %v: %v", argv, err)
@@ -216,7 +228,7 @@ func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []s
 	// when there is one, and colorized unless --no-color.
 	cli.Project.Simulate.Hooks = &project.SimulateHooks{
 		RESTConfig:   cfg,
-		RenderBinary: a.CrossplaneRenderBinary,
+		RenderBinary: renderBinary,
 		Terminal:     true,
 	}
 

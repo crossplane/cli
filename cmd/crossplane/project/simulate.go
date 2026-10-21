@@ -19,6 +19,7 @@ package project
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -48,10 +49,13 @@ import (
 	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/kube"
+	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
+	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
@@ -75,20 +79,23 @@ type simulateCmd struct {
 	IncludePinned bool          `help:"Also simulate composite resources with a Manual composition update policy, which don't adopt the new revision."`
 	MaxIterations int           `default:"20"                                                                                                          help:"Max render iterations per composite resource to resolve requirements."`
 	Timeout       time.Duration `default:"1m"                                                                                                          help:"Max time for the simulation, not counting function builds."`
-	Output        string        `default:"diff"                                                                                                        enum:"diff,json,yaml"                                                        help:"Output format. One of: diff, json, yaml."                                                 short:"o"`
-	OutputVersion string        `default:"v1"                                                                                                          enum:"v1,v2"                                                                 help:"Schema version of structured (-o json|yaml) output (v1 or v2). Has no effect on -o diff."`
+	Output        string        `default:"plan"                                                                                                        enum:"plan,diff,json,yaml"                                                   help:"Output format. One of: plan, diff, json, yaml." short:"o"`
+	// ponytail: OutputVersion keeps crossplane-diff's v1/v2 structured schema
+	// reachable while the integration tests still assert on it. It goes once
+	// they assert on plan.Result.
+	OutputVersion string `default:"" enum:",v1,v2" help:"Emit crossplane-diff's structured schema (v1 or v2) for -o json|yaml instead of the plan result." hidden:""`
 
 	NoColor                  bool                `help:"Disable colorized output."`
 	Compact                  bool                `help:"Show compact diffs with minimal context."`
-	MaxNestedDepth           int                 `default:"10"                                                                                                                                                                       help:"Maximum depth for nested XR recursion."`
+	MaxNestedDepth           int                 `default:"10"                                                                                                                                help:"Maximum depth for nested XR recursion."`
 	IgnorePaths              []string            `help:"Paths to ignore in diffs (e.g., 'metadata.annotations[argocd.argoproj.io/tracking-id]')."`
-	FunctionCredentials      FunctionCredentials `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."                                                                                  placeholder:"PATH"`
+	FunctionCredentials      FunctionCredentials `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."                                           placeholder:"PATH"`
 	FunctionRegistryOverride string              `help:"Override the registry for all function images (e.g., 'my-company.registry.io')."`
 	EventualState            bool                `help:"Show eventual state after all reconciliation cycles complete (useful with function-sequencer)."`
-	MaxRecvMessageSize       int                 `env:"MAX_RECV_MESSAGE_SIZE"                                                                                                                                                        help:"Max gRPC message size (MB) for render function containers (4MB if undefined)."`
-	MinimizeComposition      bool                `help:"Collapse each changed composition to a single marker line (human-readable output only; JSON/YAML keeps full detail; errors and no-change compositions still print in full)."`
-	AnalyzeOn                string              `default:""                                                                                                                                                                         enum:",spec-change,any-change,always"                                                help:"Smallest composition change that triggers per-composite impact analysis. \"spec-change\": only when the composition spec changes. \"any-change\": also when only its metadata changes, which still creates a new CompositionRevision that composites re-point to. \"always\": even when the composition is identical, for a pre-edit convergence baseline. Defaults to any-change."`
-	DryRunOn                 string              `default:"all"                                                                                                                                                                      enum:"existing,all"                                                                  help:"Which resources to verify against the apiserver with a dry run: 'all' also dry-run creates added resources so their diffs include server-side defaulting and admission (needs the 'create' verb; degrades per-resource without it), 'existing' only resources already in the cluster."`
+	MaxRecvMessageSize       int                 `env:"MAX_RECV_MESSAGE_SIZE"                                                                                                                 help:"Max gRPC message size (MB) for render function containers (4MB if undefined)."`
+	MinimizeComposition      bool                `help:"Collapse each changed composition to a single marker line in -o diff output (errors and no-change compositions still print in full)."`
+	AnalyzeOn                string              `default:""                                                                                                                                  enum:",spec-change,any-change,always"                                                help:"Smallest composition change that triggers per-composite impact analysis. \"spec-change\": only when the composition spec changes. \"any-change\": also when only its metadata changes, which still creates a new CompositionRevision that composites re-point to. \"always\": even when the composition is identical, for a pre-edit convergence baseline. Defaults to any-change."`
+	DryRunOn                 string              `default:"all"                                                                                                                               enum:"existing,all"                                                                  help:"Which resources to verify against the apiserver with a dry run: 'all' also dry-run creates added resources so their diffs include server-side defaulting and admission (needs the 'create' verb; degrades per-resource without it), 'existing' only resources already in the cluster."`
 
 	// CrossplaneVersion and CrossplaneImage select the crossplane render
 	// backend, as they do for crossplane-diff. When neither is set the render
@@ -186,6 +193,9 @@ func (c *simulateCmd) Validate() error {
 	if c.MaxIterations < 1 {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
 	}
+	if c.OutputVersion != "" && c.Output != plan.FormatJSON && c.Output != plan.FormatYAML {
+		return errors.Errorf("--output-version selects a structured schema, so it applies only with -o json or -o yaml, not -o %s", c.Output)
+	}
 
 	// The two flags are mutually exclusive (kong xor), so at most one of
 	// these has anything to check.
@@ -247,10 +257,9 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 
 	if in.mode == xrMode {
 		// Compositions and functions come from the cluster, as in
-		// crossplane-diff's xr command. A claim is simulated as its XR; the
-		// design's printing of the result under the claim's name
-		// (crossplane/cli#367) belongs in the renderer, keyed by the claim
-		// labels the engine copies onto the XR.
+		// crossplane-diff's xr command. A claim is simulated as its XR, but
+		// the report names the input, so its result is listed under the
+		// claim's name (crossplane/cli#367).
 		return c.simulate(ctx, logger, status, clients.Initialize, xrProc, func(ctx context.Context) (bool, error) {
 			if err := checkComposites(ctx, clients.XpClients.Definition, in.resources); err != nil {
 				return false, err
@@ -261,8 +270,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 			// are shown and structured output stays valid. The renderer
 			// includes the errors in structured output.
 			if report != nil {
-				diffRenderer := newDiffRenderer(logger, c.diffOptions(k))
-				if renderErr := diffRenderer.RenderDiffs(report.Groups, report.Errors, report.Warnings); renderErr != nil {
+				if renderErr := c.renderXRReport(k, logger, report); renderErr != nil {
 					logger.Debug("Failed to render diffs", "error", renderErr)
 					err = withRenderError(err, errors.Wrap(renderErr, "failed to render diffs"))
 				}
@@ -330,10 +338,7 @@ func (c *simulateCmd) diffCompositions(k *kong.Context, logger logging.Logger, p
 		// composition failed), so structured output stays valid. A render
 		// failure takes precedence over the processing error.
 		if output != nil {
-			opts := c.diffOptions(k)
-			opts.MinimizeComposition = c.MinimizeComposition
-
-			if renderErr := newCompDiffRenderer(logger, opts).RenderCompDiff(output); renderErr != nil {
+			if renderErr := c.renderCompReport(k, logger, output); renderErr != nil {
 				err = errors.Wrap(renderErr, "failed to render composition diff")
 			}
 		}
@@ -652,28 +657,52 @@ func (c *simulateCmd) diffOptions(k *kong.Context) renderer.DiffOptions {
 	return opts
 }
 
-// newDiffRenderer returns the renderer for an xr report in the format opts select.
-func newDiffRenderer(log logging.Logger, opts renderer.DiffOptions) renderer.DiffRenderer {
-	switch opts.Format {
-	case renderer.OutputFormatJSON, renderer.OutputFormatYAML:
-		return renderer.NewStructuredDiffRenderer(log, opts)
-	case renderer.OutputFormatDiff:
-		return renderer.NewDiffRenderer(log, opts)
-	default:
-		return renderer.NewDiffRenderer(log, opts)
+// renderXRReport writes an xr or project run's report in the format -o
+// selects: the engine's human diff for diff, its v1/v2 structured schema for
+// json or yaml when --output-version is set, and plan.Result otherwise.
+func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport) error {
+	opts := c.diffOptions(k)
+	switch {
+	case c.Output == string(renderer.OutputFormatDiff):
+		return renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
+	case c.OutputVersion != "":
+		return renderer.NewStructuredDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
 	}
+	return c.renderPlan(k, simulate.FromXRReport(r), dt.XRDryRunWarnings(r.Groups))
 }
 
-// newCompDiffRenderer returns the renderer for a comp report in the format opts select.
-func newCompDiffRenderer(log logging.Logger, opts renderer.DiffOptions) renderer.CompDiffRenderer {
-	switch opts.Format {
-	case renderer.OutputFormatJSON, renderer.OutputFormatYAML:
-		return renderer.NewStructuredCompDiffRenderer(log, opts)
-	case renderer.OutputFormatDiff:
-		fallthrough
-	default:
-		return renderer.NewDefaultCompDiffRenderer(log, renderer.NewDiffRenderer(log, opts), opts)
+// renderCompReport writes a composition run's report in the format -o
+// selects, as renderXRReport does.
+func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput) error {
+	opts := c.diffOptions(k)
+	opts.MinimizeComposition = c.MinimizeComposition
+	switch {
+	case c.Output == string(renderer.OutputFormatDiff):
+		return renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts).RenderCompDiff(o)
+	case c.OutputVersion != "":
+		return renderer.NewStructuredCompDiffRenderer(logger, opts).RenderCompDiff(o)
 	}
+	return c.renderPlan(k, simulate.FromCompReport(o), dt.CompDryRunWarnings(o))
+}
+
+// renderPlan writes res to stdout in the plan, json or yaml format, then
+// writes derived, the warnings derived from the report, to stderr, as the
+// engine's renderers do. The run's other warnings went to stderr when they
+// were raised.
+func (c *simulateCmd) renderPlan(k *kong.Context, res plan.Result, derived []dt.OutputWarning) error {
+	r, err := plan.NewRenderer(c.Output)
+	if err != nil {
+		return err
+	}
+	if err := r.Render(k.Stdout, res); err != nil {
+		return err
+	}
+	for _, w := range derived {
+		if _, err := fmt.Fprintln(k.Stderr, w.FormatWarning()); err != nil {
+			return errors.Wrap(err, "cannot write warning to stderr")
+		}
+	}
+	return nil
 }
 
 // withRenderError adds a render failure to a run's error. A joined run error is flattened first, so

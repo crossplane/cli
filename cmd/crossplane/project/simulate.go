@@ -653,7 +653,7 @@ func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *
 	if c.Output == string(renderer.OutputFormatDiff) {
 		return renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
 	}
-	return c.renderPlan(k, simulate.FromXRReport(r), dt.XRDryRunWarnings(r.Groups))
+	return c.renderPlan(k, simulate.FromXRReport(r, nil), dt.XRDryRunWarnings(r.Groups))
 }
 
 // renderCompReport writes a composition run's report in the format -o
@@ -664,7 +664,7 @@ func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o
 	if c.Output == string(renderer.OutputFormatDiff) {
 		return renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts).RenderCompDiff(o)
 	}
-	return c.renderPlan(k, simulate.FromCompReport(o), dt.CompDryRunWarnings(o))
+	return c.renderPlan(k, simulate.FromCompReport(o, nil), dt.CompDryRunWarnings(o))
 }
 
 // renderPlan writes res to stdout in the plan, json or yaml format, then

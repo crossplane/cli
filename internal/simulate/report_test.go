@@ -18,6 +18,7 @@ package simulate
 
 import (
 	"maps"
+	"slices"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -290,7 +291,7 @@ func TestFromXRReport(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := FromXRReport(tc.in)
+			got := FromXRReport(tc.in, nil)
 			if diff := cmp.Diff(tc.want, got, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Desired"), cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("%s\nFromXRReport(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -474,9 +475,137 @@ func TestFromCompReport(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := FromCompReport(tc.in)
+			got := FromCompReport(tc.in, nil)
 			if diff := cmp.Diff(tc.want, got, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Desired"), cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("%s\nFromCompReport(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+// TestProviderPlanMerge covers each row of how a provider plan merges into the
+// engine's plan for the same diff key, and the composite status upgrade.
+func TestProviderPlanMerge(t *testing.T) {
+	added := rdiff(cmGVK, "cm", dt.DiffTypeAdded, nil, map[string]any{"data": map[string]any{"k": "v"}})
+	modified := rdiff(cmGVK, "cm", dt.DiffTypeModified,
+		map[string]any{"metadata": map[string]any{"labels": map[string]any{"a": "1"}}},
+		map[string]any{"metadata": map[string]any{"labels": map[string]any{"a": "2"}}})
+	modified.DryRun = &dt.DryRunInfo{SkipReason: dt.DryRunSkipForbidden, Detail: "no create"}
+	equal := rdiff(cmGVK, "cm", dt.DiffTypeEqual, nil, nil)
+	key := added.GetDiffKey()
+
+	labelChange := []plan.FieldChange{{Path: "metadata.labels.a", Actual: &plan.Value{Value: "1"}, Planned: &plan.Value{Value: "2"}}}
+	providerChange := []plan.FieldChange{{Path: "spec.forProvider.size", Actual: &plan.Value{Value: "1"}, Planned: &plan.Value{Value: "2"}}}
+	forbidden := &plan.Verification{SkipReason: "forbidden", Detail: "no create"}
+	cm := func(p plan.ResourcePlan) *plan.ResourcePlan {
+		p.APIVersion, p.Kind, p.Name, p.Composite = "v1", "ConfigMap", "cm", &xrPlan
+		return &p
+	}
+
+	cases := map[string]struct {
+		reason     string
+		diff       *dt.ResourceDiff
+		plans      map[string]*plan.ResourcePlan
+		wantPlans  []*plan.ResourcePlan
+		wantStatus plan.CompositeStatus
+	}{
+		"NoProviderEntry": {
+			reason:     "With no provider entry the engine plan stands, and an empty plans map drops the not-run note.",
+			diff:       modified,
+			plans:      map[string]*plan.ResourcePlan{},
+			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionUpdate, Changes: labelChange, DryRun: forbidden})},
+			wantStatus: plan.CompositeChanged,
+		},
+		"ProviderError": {
+			reason:     "A provider error is an error plan keeping the engine's identity, composite and DryRun.",
+			diff:       modified,
+			plans:      map[string]*plan.ResourcePlan{key: {Kind: "Other", Name: "x", Error: "diff server cannot plan: boom"}},
+			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Error: "diff server cannot plan: boom", DryRun: forbidden})},
+			wantStatus: plan.CompositeChanged,
+		},
+		"ProviderApproximate": {
+			reason: "A NotSupported fallback keeps the engine's diff, marked approximate with the provider's reason.",
+			diff:   modified,
+			plans: map[string]*plan.ResourcePlan{key: {
+				Action: plan.ActionUpdate, Changes: providerChange, Approximate: true, FallbackReason: "the provider cannot compute a diff",
+			}},
+			wantPlans: []*plan.ResourcePlan{cm(plan.ResourcePlan{
+				Action: plan.ActionUpdate, Changes: labelChange, DryRun: forbidden, Approximate: true, FallbackReason: "the provider cannot compute a diff",
+			})},
+			wantStatus: plan.CompositeChanged,
+		},
+		"AddedProviderCreate": {
+			reason:     "A provider create replaces the engine's changes.",
+			diff:       added,
+			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionCreate, Changes: providerChange}},
+			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionCreate, Changes: providerChange})},
+			wantStatus: plan.CompositeChanged,
+		},
+		"ModifiedProviderReplace": {
+			reason: "A provider replace takes the action, changes and replace paths, keeping the engine's DryRun.",
+			diff:   modified,
+			plans: map[string]*plan.ResourcePlan{key: {
+				Action: plan.ActionReplace, Changes: providerChange, ReplacePaths: []string{"spec.forProvider.size"},
+			}},
+			wantPlans: []*plan.ResourcePlan{cm(plan.ResourcePlan{
+				Action: plan.ActionReplace, Changes: providerChange, ReplacePaths: []string{"spec.forProvider.size"}, DryRun: forbidden,
+			})},
+			wantStatus: plan.CompositeChanged,
+		},
+		"ModifiedProviderNoOp": {
+			reason:     "The cluster object still changes when the provider finds nothing, so the engine's update stands.",
+			diff:       modified,
+			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionNoOp}},
+			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionUpdate, Changes: labelChange, DryRun: forbidden})},
+			wantStatus: plan.CompositeChanged,
+		},
+		"EqualProviderUpdateUpgradesComposite": {
+			reason:     "Cloud drift on an MR the cluster finds equal is an update, and makes its unchanged composite changed.",
+			diff:       equal,
+			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionUpdate, Changes: providerChange}},
+			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionUpdate, Changes: providerChange})},
+			wantStatus: plan.CompositeChanged,
+		},
+		"EqualProviderNoOpDropped": {
+			reason:     "A kept-equal MR the provider finds unchanged is dropped, and its composite stays unchanged.",
+			diff:       equal,
+			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionNoOp}},
+			wantStatus: plan.CompositeUnchanged,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			xr := rdiff(xnetGVK, "prod", dt.DiffTypeEqual, nil, nil)
+			// Plans sort by kind, so the XR's own no-op plan comes last.
+			wantPlans := append(slices.Clone(tc.wantPlans), &plan.ResourcePlan{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan})
+
+			gotXR := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(xr, tc.diff)}}}, tc.plans)
+			if diff := cmp.Diff(wantPlans, gotXR.Plans, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Desired"), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("%s\nFromXRReport(...).Plans: -want, +got:\n%s", tc.reason, diff)
+			}
+			if got := gotXR.Composites[0].Status; got != tc.wantStatus {
+				t.Errorf("%s\nFromXRReport(...): want composite %q, got %q", tc.reason, tc.wantStatus, got)
+			}
+			if len(gotXR.Notes) != 0 {
+				t.Errorf("%s\nFromXRReport(...): want no note with provider plans, got %v", tc.reason, gotXR.Notes)
+			}
+
+			// The composition path merges the same way. An Unchanged impact
+			// carries diffs only when the engine kept equal ones.
+			status := dt.XRStatusUnchanged
+			if tc.diff.DiffType != dt.DiffTypeEqual {
+				status = dt.XRStatusChanged
+			}
+			gotComp := FromCompReport(&dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
+				Name:           "net",
+				ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: status, Diffs: diffs(tc.diff)}},
+			}}}, tc.plans)
+			if diff := cmp.Diff(tc.wantPlans, gotComp.Plans[1:], cmpopts.IgnoreFields(plan.ResourcePlan{}, "Desired"), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("%s\nFromCompReport(...).Plans: -want, +got:\n%s", tc.reason, diff)
+			}
+			if got := gotComp.Composites[0].Status; got != tc.wantStatus {
+				t.Errorf("%s\nFromCompReport(...): want composite %q, got %q", tc.reason, tc.wantStatus, got)
 			}
 		})
 	}

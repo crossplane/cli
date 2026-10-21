@@ -37,15 +37,25 @@ import (
 // provider diff servers, so its plans say nothing about the cloud resources.
 const noteProviderPlanNotRun = "Cloud-layer plan not run (provider diff servers not yet wired)."
 
+// Notes a caller sets on Result.Notes when no provider plans refined the
+// cluster-layer result, saying why. A result built from provider plans
+// carries no note: each approximate plan already says why it is approximate.
+const (
+	NoteProviderPlanSkipped = "Cloud-layer plan skipped (--skip-plan)."
+	NoteNoDiffServers       = "Cloud-layer plan not run: no provider diff servers serve these resources."
+)
+
 // FromXRReport maps an xr or project diff run onto plan.Result: one plan per
 // resource diff (the XR's own included), each grouped under its input XR or
-// claim, and one Composites entry per input.
-func FromXRReport(r *dt.XRReport) plan.Result {
+// claim, and one Composites entry per input. plans are the provider plans
+// PlanDiffs returned, merged into the engine's by diff key; nil means none
+// ran.
+func FromXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan) plan.Result {
 	if r == nil {
 		r = &dt.XRReport{}
 	}
 
-	a := newAssembler()
+	a := newAssembler(plans)
 	owned := make([]dt.OutputError, 0, len(r.Groups))
 
 	for _, g := range r.Groups {
@@ -63,8 +73,10 @@ func FromXRReport(r *dt.XRReport) plan.Result {
 			c.Status = plan.CompositeChanged
 		}
 
+		if a.addDiffs(g.Diffs, &xr) && c.Status == plan.CompositeUnchanged {
+			c.Status = plan.CompositeChanged
+		}
 		a.composites = append(a.composites, c)
-		a.addDiffs(g.Diffs, &xr)
 	}
 
 	a.addRunErrors(r.Errors, owned)
@@ -74,13 +86,14 @@ func FromXRReport(r *dt.XRReport) plan.Result {
 
 // FromCompReport maps a composition diff run onto plan.Result: a plan and a
 // Compositions entry per Composition, and a Composites entry per affected
-// composite, with that composite's downstream plans grouped under it.
-func FromCompReport(o *dt.CompDiffOutput) plan.Result {
+// composite, with that composite's downstream plans grouped under it. plans
+// are merged as FromXRReport merges them.
+func FromCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan) plan.Result {
 	if o == nil {
 		o = &dt.CompDiffOutput{}
 	}
 
-	a := newAssembler()
+	a := newAssembler(plans)
 	owned := make([]dt.OutputError, 0, len(o.Errors))
 	compositions := make([]plan.CompositionResult, 0, len(o.Compositions))
 
@@ -130,8 +143,10 @@ func FromCompReport(o *dt.CompDiffOutput) plan.Result {
 				a.deferred++
 			}
 
+			if a.addDiffs(impact.Diffs, &xr) && c.Status == plan.CompositeUnchanged {
+				c.Status = plan.CompositeChanged
+			}
 			a.composites = append(a.composites, c)
-			a.addDiffs(impact.Diffs, &xr)
 		}
 	}
 
@@ -172,6 +187,9 @@ func compositeResult(impact dt.XRImpact) plan.CompositeResult {
 
 // assembler accumulates one run's plans, composites and errors.
 type assembler struct {
+	// provider holds the provider plans to merge, by diff key; nil when none
+	// ran.
+	provider   map[string]*plan.ResourcePlan
 	plans      []*plan.ResourcePlan
 	composites []plan.CompositeResult
 	errors     []plan.Error
@@ -187,29 +205,39 @@ type listedChange struct {
 	dryRun  *plan.Verification
 }
 
-func newAssembler() *assembler {
-	return &assembler{plans: []*plan.ResourcePlan{}, listed: map[string][]listedChange{}}
+func newAssembler(provider map[string]*plan.ResourcePlan) *assembler {
+	return &assembler{provider: provider, plans: []*plan.ResourcePlan{}, listed: map[string][]listedChange{}}
 }
 
 // addDiffs adds a plan per diff, in the structured renderer's canonical order.
-func (a *assembler) addDiffs(diffs map[string]*dt.ResourceDiff, composite *plan.ResourceRef) {
+// It reports whether a provider plan changed any of them, which the engine's
+// verdict alone does not show.
+func (a *assembler) addDiffs(diffs map[string]*dt.ResourceDiff, composite *plan.ResourceRef) bool {
+	changed := false
 	for _, d := range slices.SortedFunc(maps.Values(diffs), diffOrder) {
-		a.addDiff(d, composite)
+		changed = a.addDiff(d, composite) || changed
 	}
+
+	return changed
 }
 
-// addDiff adds the plan for d under composite, unless an identical change to
-// the same resource is already listed (under the first composite reaching
-// it). Differing renders of one resource are all listed, as the structured
-// renderer's flat view lists them.
-func (a *assembler) addDiff(d *dt.ResourceDiff, composite *plan.ResourceRef) {
-	p := resourcePlan(d)
-	p.Composite = composite
-
+// addDiff adds the plan for d under composite, merged with its provider plan,
+// unless an identical change to the same resource is already listed (under
+// the first composite reaching it). Differing renders of one resource are all
+// listed, as the structured renderer's flat view lists them. It reports
+// whether the merged plan is a change, listed or not.
+func (a *assembler) addDiff(d *dt.ResourceDiff, composite *plan.ResourceRef) bool {
 	key := d.GetDiffKey()
+	p := merge(d, resourcePlan(d), a.provider[key])
+	if p == nil {
+		return false
+	}
+	p.Composite = composite
+	changed := p.Error == "" && isChange(p.Action)
+
 	lc := listedChange{action: p.Action, changes: p.Changes, dryRun: p.DryRun}
 	if slices.ContainsFunc(a.listed[key], func(l listedChange) bool { return reflect.DeepEqual(l, lc) }) {
-		return
+		return changed
 	}
 	a.listed[key] = append(a.listed[key], lc)
 
@@ -217,6 +245,41 @@ func (a *assembler) addDiff(d *dt.ResourceDiff, composite *plan.ResourceRef) {
 	// their redacted values are not mistaken for one change.
 	p.Changes = redact(d.Gvk, p.Changes)
 	a.plans = append(a.plans, p)
+
+	return changed
+}
+
+// merge returns the plan for d given its engine plan p and its provider plan
+// pp, or nil to drop it. The cluster layer decides what changes in the
+// cluster; the provider refines what that does to the external resource.
+func merge(d *dt.ResourceDiff, p, pp *plan.ResourcePlan) *plan.ResourcePlan {
+	switch {
+	case pp == nil:
+		return p
+	case pp.Error != "":
+		// An error plan, as the engine's own are, keeping the engine's
+		// identity (its name carries the "(generated)" display name) and
+		// DryRun.
+		p.Action, p.Changes, p.Error = "", nil, pp.Error
+		return p
+	case pp.Approximate:
+		// The engine's diff of the dry-run result beats Fallback's
+		// spec-only one.
+		p.Approximate = true
+		p.FallbackReason = pp.FallbackReason
+	case pp.Action == plan.ActionCreate, pp.Action == plan.ActionUpdate, pp.Action == plan.ActionReplace:
+		p.Action = pp.Action
+		p.Changes = pp.Changes
+		p.ReplacePaths = pp.ReplacePaths
+	}
+
+	// An equal diff is kept only for its provider plan; when that finds no
+	// change either, the resource is no news.
+	if d.DiffType == dt.DiffTypeEqual && p.Action == plan.ActionNoOp {
+		return nil
+	}
+
+	return p
 }
 
 // addError records e, failing the plan for ref. composite is the composite
@@ -251,7 +314,9 @@ func (a *assembler) result(warnings []dt.OutputWarning) plan.Result {
 	res.Composites = a.composites
 	res.Errors = a.errors
 	res.Errored = res.Errored || len(a.errors) > 0
-	res.Notes = []string{noteProviderPlanNotRun}
+	if a.provider == nil {
+		res.Notes = []string{noteProviderPlanNotRun}
+	}
 
 	for _, w := range warnings {
 		res.Warnings = append(res.Warnings, plan.Warning{Message: w.Message, Context: w.Context})

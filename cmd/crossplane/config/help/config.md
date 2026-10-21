@@ -33,3 +33,12 @@ generated Go models (off by default), so you can register generated types with a
 ```shell
 crossplane config set features.generateGoRuntimeObjects true
 ```
+
+Generate a required object-typed property (for example, a managed resource's
+`spec.forProvider`) on generated Go models as a non-pointer value instead of a
+pointer (off by default; this is a breaking change for code that constructs
+such a field as a pointer or nil-checks it):
+
+```shell
+crossplane config set features.generateGoRequiredObjectFields true
+```

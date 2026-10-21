@@ -255,13 +255,24 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 			if err := checkComposites(ctx, clients.XpClients.Definition, in.resources); err != nil {
 				return false, err
 			}
-			hasDiffs, err := xrProc.PerformDiff(ctx, in.resources, clients.XpClients.Composition.FindMatchingComposition)
-			return hasDiffs, errors.Wrap(err, "cannot simulate composite resources")
+			report, err := xrProc.PerformDiff(ctx, in.resources, clients.XpClients.Composition.FindMatchingComposition)
+
+			// Render the report even when there are errors, so successful XRs
+			// are shown and structured output stays valid. The renderer
+			// includes the errors in structured output.
+			if report != nil {
+				diffRenderer := newDiffRenderer(logger, c.diffOptions(k))
+				if renderErr := diffRenderer.RenderDiffs(report.Groups, report.Errors, report.Warnings); renderErr != nil {
+					logger.Debug("Failed to render diffs", "error", renderErr)
+					err = withRenderError(err, errors.Wrap(renderErr, "failed to render diffs"))
+				}
+			}
+			return report != nil && report.HasChanges(), errors.Wrap(err, "cannot simulate composite resources")
 		})
 	}
 
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
-	return c.simulate(ctx, logger, status, clients.Initialize, proc, c.diffCompositions(proc, comps, in.mode))
+	return c.simulate(ctx, logger, status, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, in.mode))
 }
 
 // restConfig returns the cluster to simulate against: the hooks' when set,
@@ -305,16 +316,28 @@ func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, s
 }
 
 // diffCompositions returns the diff simulate runs for Compositions: their
-// impact on the composite resources in scope.
-func (c *simulateCmd) diffCompositions(proc dp.CompDiffProcessor, comps []*un.Unstructured, mode inputMode) func(context.Context) (bool, error) {
+// impact on the composite resources in scope, rendered to k's writers.
+func (c *simulateCmd) diffCompositions(k *kong.Context, logger logging.Logger, proc dp.CompDiffProcessor, comps []*un.Unstructured, mode inputMode) func(context.Context) (bool, error) {
 	msg := "cannot simulate Compositions"
 	if mode == projectMode {
 		msg = "cannot simulate project"
 	}
 	return func(ctx context.Context) (bool, error) {
 		ns, refs := c.scope()
-		hasDiffs, err := proc.DiffComposition(ctx, comps, ns, refs)
-		return hasDiffs, errors.Wrap(err, msg)
+		output, err := proc.DiffComposition(ctx, comps, ns, refs)
+
+		// Render the report even when there are errors (e.g. every
+		// composition failed), so structured output stays valid. A render
+		// failure takes precedence over the processing error.
+		if output != nil {
+			opts := c.diffOptions(k)
+			opts.MinimizeComposition = c.MinimizeComposition
+
+			if renderErr := newCompDiffRenderer(logger, opts).RenderCompDiff(output); renderErr != nil {
+				err = errors.Wrap(renderErr, "failed to render composition diff")
+			}
+		}
+		return output != nil && output.HasChanges(), errors.Wrap(err, msg)
 	}
 }
 
@@ -566,18 +589,11 @@ func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, f
 	opts := []dp.ProcessorOption{
 		dp.WithLogger(logger),
 		dp.WithAdvisories(dp.NewAdvisoryCollector(k.Stderr)),
-		dp.WithStdout(k.Stdout),
-		dp.WithStderr(k.Stderr),
-		dp.WithColorize(!c.NoColor && (c.Hooks != nil && c.Hooks.Terminal || isTerminal(k.Stdout))),
-		dp.WithCompact(c.Compact),
 		dp.WithMaxNestedDepth(c.MaxNestedDepth),
 		dp.WithEventualState(c.EventualState),
-		dp.WithMinimizeComposition(c.MinimizeComposition),
 		dp.WithAnalyzeOn(dp.AnalyzeOn(c.AnalyzeOn)),
 		dp.WithDryRunOn(dp.DryRunOn(c.DryRunOn)),
 		dp.WithIgnorePaths(c.IgnorePaths),
-		dp.WithOutputFormat(renderer.OutputFormat(c.Output)),
-		dp.WithOutputVersion(renderer.OutputVersion(c.OutputVersion)),
 		dp.WithIncludeManual(c.IncludePinned),
 		dp.WithMaxRenderIterations(c.MaxIterations),
 	}
@@ -608,6 +624,72 @@ func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, f
 	}
 
 	return opts
+}
+
+// diffOptions returns the renderer options the command's flags select,
+// writing to k's stdout and stderr. The processors return reports; the command
+// renders them with these options. Diffs are colorized only when a person
+// reads them: on a terminal, or as if on one under the test hooks.
+func (c *simulateCmd) diffOptions(k *kong.Context) renderer.DiffOptions {
+	opts := renderer.DefaultDiffOptions()
+	opts.UseColors = !c.NoColor && (c.Hooks != nil && c.Hooks.Terminal || isTerminal(k.Stdout))
+	opts.Compact = c.Compact
+	opts.Stdout = k.Stdout
+	opts.Stderr = k.Stderr
+
+	switch format := renderer.OutputFormat(c.Output); format {
+	case renderer.OutputFormatJSON, renderer.OutputFormatYAML, renderer.OutputFormatDiff:
+		opts.Format = format
+	default:
+		// Empty string or unrecognized values fall back to the human-readable diff.
+		opts.Format = renderer.OutputFormatDiff
+	}
+
+	if c.OutputVersion != "" {
+		opts.OutputVersion = renderer.OutputVersion(c.OutputVersion)
+	}
+
+	return opts
+}
+
+// newDiffRenderer returns the renderer for an xr report in the format opts select.
+func newDiffRenderer(log logging.Logger, opts renderer.DiffOptions) renderer.DiffRenderer {
+	switch opts.Format {
+	case renderer.OutputFormatJSON, renderer.OutputFormatYAML:
+		return renderer.NewStructuredDiffRenderer(log, opts)
+	case renderer.OutputFormatDiff:
+		return renderer.NewDiffRenderer(log, opts)
+	default:
+		return renderer.NewDiffRenderer(log, opts)
+	}
+}
+
+// newCompDiffRenderer returns the renderer for a comp report in the format opts select.
+func newCompDiffRenderer(log logging.Logger, opts renderer.DiffOptions) renderer.CompDiffRenderer {
+	switch opts.Format {
+	case renderer.OutputFormatJSON, renderer.OutputFormatYAML:
+		return renderer.NewStructuredCompDiffRenderer(log, opts)
+	case renderer.OutputFormatDiff:
+		fallthrough
+	default:
+		return renderer.NewDefaultCompDiffRenderer(log, renderer.NewDiffRenderer(log, opts), opts)
+	}
+}
+
+// withRenderError adds a render failure to a run's error. A joined run error is flattened first, so
+// the result reads as one list, the way it did when the processor rendered and joined it itself.
+func withRenderError(err, renderErr error) error {
+	var errs []error
+
+	switch e := err.(type) { //nolint:errorlint // Flattens only the top-level join, not wrapped errors.
+	case nil:
+	case interface{ Unwrap() []error }:
+		errs = e.Unwrap()
+	default:
+		errs = []error{err}
+	}
+
+	return errors.Join(append(errs, renderErr)...)
 }
 
 func (c *simulateCmd) newClientAndResolver(extraOpts ...clixpkg.ClientOption) (runtimexpkg.Client, *clixpkg.Resolver, error) {

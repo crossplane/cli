@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
+	xperrors "github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
@@ -307,20 +308,16 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: stderr}}
 	c := &simulateCmd{
-		Output:            "yaml",
-		OutputVersion:     "v2",
 		IncludePinned:     true,
 		MaxIterations:     7,
 		CrossplaneVersion: "v2.3.4",
 
-		Compact:                  true,
 		MaxNestedDepth:           4,
 		IgnorePaths:              []string{"a.b"},
 		FunctionCredentials:      FunctionCredentials{Secrets: []corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "creds"}}}},
 		FunctionRegistryOverride: "reg.example.com",
 		EventualState:            true,
 		MaxRecvMessageSize:       16,
-		MinimizeComposition:      true,
 		AnalyzeOn:                "spec-change",
 		DryRunOn:                 "existing",
 	}
@@ -331,71 +328,49 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	}
 
 	type got struct {
-		OutputFormat        renderer.OutputFormat
-		OutputVersion       renderer.OutputVersion
 		IncludeManual       bool
 		MaxRenderIterations int
 		CrossplaneVersion   string
 		CrossplaneImage     string
-		Colorize            bool
-		StdoutIsK           bool
-		StderrIsK           bool
 		HasAdvisories       bool
 		HasFunctionProvider bool
-		Compact             bool
 		MaxNestedDepth      int
 		IgnorePaths         []string
 		Credentials         []corev1.Secret
 		RegistryOverride    string
 		EventualState       bool
 		MaxRecvMessageSize  int
-		MinimizeComposition bool
 		AnalyzeOn           dp.AnalyzeOn
 		DryRunOn            dp.DryRunOn
 	}
 	want := got{
-		OutputFormat:        renderer.OutputFormatYAML,
-		OutputVersion:       renderer.OutputVersionV2,
 		IncludeManual:       true,
 		MaxRenderIterations: 7,
 		CrossplaneVersion:   "v2.3.4",
-		// A buffer is not a terminal.
-		Colorize:            false,
-		StdoutIsK:           true,
-		StderrIsK:           true,
 		HasAdvisories:       true,
 		HasFunctionProvider: true,
-		Compact:             true,
 		MaxNestedDepth:      4,
 		IgnorePaths:         []string{"a.b"},
 		Credentials:         c.FunctionCredentials.Secrets,
 		RegistryOverride:    "reg.example.com",
 		EventualState:       true,
 		MaxRecvMessageSize:  16,
-		MinimizeComposition: true,
 		AnalyzeOn:           dp.AnalyzeOnSpecChange,
 		DryRunOn:            dp.DryRunOnExisting,
 	}
 	g := got{
-		OutputFormat:        cfg.OutputFormat,
-		OutputVersion:       cfg.OutputVersion,
 		IncludeManual:       cfg.IncludeManual,
 		MaxRenderIterations: cfg.MaxRenderIterations,
 		CrossplaneVersion:   cfg.CrossplaneVersion,
 		CrossplaneImage:     cfg.CrossplaneImage,
-		Colorize:            cfg.Colorize,
-		StdoutIsK:           cfg.Stdout == stdout,
-		StderrIsK:           cfg.Stderr == stderr,
 		HasAdvisories:       cfg.Advisories != nil,
 		HasFunctionProvider: cfg.Factories.FunctionProvider != nil,
-		Compact:             cfg.Compact,
 		MaxNestedDepth:      cfg.MaxNestedDepth,
 		IgnorePaths:         cfg.IgnorePaths,
 		Credentials:         cfg.FunctionCredentials,
 		RegistryOverride:    cfg.FunctionRegistryOverride,
 		EventualState:       cfg.EventualState,
 		MaxRecvMessageSize:  cfg.MaxRecvMessageSize,
-		MinimizeComposition: cfg.MinimizeComposition,
 		AnalyzeOn:           cfg.AnalyzeOn,
 		DryRunOn:            cfg.DryRunOn,
 	}
@@ -413,16 +388,103 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		t.Errorf("processorOptions(..., nil): want no function provider overlay, got one")
 	}
 
-	// The test hooks render with a local binary and colorize as for a
-	// terminal.
-	c.Hooks = &SimulateHooks{RenderBinary: "/bin/crossplane", Terminal: true}
+	// The test hooks render with a local binary.
+	c.Hooks = &SimulateHooks{RenderBinary: "/bin/crossplane"}
 	c.CrossplaneVersion = ""
 	cfg = dp.ProcessorConfig{}
 	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil) {
 		o(&cfg)
 	}
-	if cfg.CrossplaneRenderBinary != "/bin/crossplane" || !cfg.Colorize {
-		t.Errorf("processorOptions(...) with hooks: want render binary %q and colorize, got %q and %t", "/bin/crossplane", cfg.CrossplaneRenderBinary, cfg.Colorize)
+	if cfg.CrossplaneRenderBinary != "/bin/crossplane" {
+		t.Errorf("processorOptions(...) with hooks: want render binary %q, got %q", "/bin/crossplane", cfg.CrossplaneRenderBinary)
+	}
+}
+
+func TestSimulateDiffOptions(t *testing.T) {
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: stderr}}
+
+	cases := map[string]struct {
+		reason string
+		cmd    simulateCmd
+		want   func(o *renderer.DiffOptions)
+	}{
+		"UnsetFlagsSelectHumanDiff": {
+			reason: "Unset flags should select the human-readable diff and the renderer's default output version, uncolorized off a terminal.",
+			want: func(o *renderer.DiffOptions) {
+				o.UseColors = false
+			},
+		},
+		"StructuredFlagsCarryThrough": {
+			reason: "The format, version and compact flags should reach the renderer.",
+			cmd:    simulateCmd{Output: "json", OutputVersion: "v2", NoColor: true, Compact: true},
+			want: func(o *renderer.DiffOptions) {
+				o.UseColors = false
+				o.Compact = true
+				o.Format = renderer.OutputFormatJSON
+				o.OutputVersion = renderer.OutputVersionV2
+			},
+		},
+		"UnknownFormatFallsBackToHumanDiff": {
+			reason: "An unrecognized format should fall back to the human-readable diff.",
+			cmd:    simulateCmd{Output: "xml"},
+			want: func(o *renderer.DiffOptions) {
+				o.UseColors = false
+			},
+		},
+		"HooksColorizeAsTerminal": {
+			reason: "The test hooks should colorize as for a terminal.",
+			cmd:    simulateCmd{Hooks: &SimulateHooks{Terminal: true}},
+			want:   func(*renderer.DiffOptions) {},
+		},
+		"NoColorWinsOverHooks": {
+			reason: "--no-color should disable colors even under the test hooks.",
+			cmd:    simulateCmd{NoColor: true, Hooks: &SimulateHooks{Terminal: true}},
+			want: func(o *renderer.DiffOptions) {
+				o.UseColors = false
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			want := renderer.DefaultDiffOptions()
+			tc.want(&want)
+
+			got := tc.cmd.diffOptions(k)
+			// Writers are interfaces holding the kong context's streams; compare them by identity.
+			if got.Stdout != stdout || got.Stderr != stderr {
+				t.Errorf("\n%s\ndiffOptions(...) writers: got (%v, %v), want the kong context's", tc.reason, got.Stdout, got.Stderr)
+			}
+
+			got.Stdout, got.Stderr, want.Stdout, want.Stderr = nil, nil, nil, nil
+			if diff := cmp.Diff(want, got); diff != "" {
+				t.Errorf("\n%s\ndiffOptions(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+// TestWithRenderError pins that a render failure reads exactly as it did when the processor joined it
+// with the run's own errors: one flat list, not a list nested in a list.
+func TestWithRenderError(t *testing.T) {
+	a, b, render := errors.New("a"), errors.New("b"), errors.New("failed to render diffs: boom")
+
+	tests := map[string]struct {
+		err  error
+		want string
+	}{
+		"NoRunError":     {err: nil, want: xperrors.Join(render).Error()},
+		"SingleRunError": {err: a, want: xperrors.Join(a, render).Error()},
+		"JoinedRunError": {err: xperrors.Join(a, b), want: xperrors.Join(a, b, render).Error()},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := withRenderError(tt.err, render).Error(); got != tt.want {
+				t.Errorf("withRenderError() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -431,7 +493,7 @@ var _ dp.CompDiffProcessor = &fakeCompProc{}
 // fakeCompProc is a CompDiffProcessor that records its calls.
 type fakeCompProc struct {
 	initErr error
-	diffFn  func(ctx context.Context) (bool, error)
+	diffFn  func(ctx context.Context) (*renderer.CompDiffOutput, error)
 
 	gotNamespace string
 	gotRefs      []k8stypes.NamespacedName
@@ -441,10 +503,10 @@ type fakeCompProc struct {
 
 func (f *fakeCompProc) Initialize(context.Context) error { return f.initErr }
 
-func (f *fakeCompProc) DiffComposition(ctx context.Context, comps []*un.Unstructured, ns string, refs []k8stypes.NamespacedName) (bool, error) {
+func (f *fakeCompProc) DiffComposition(ctx context.Context, comps []*un.Unstructured, ns string, refs []k8stypes.NamespacedName) (*renderer.CompDiffOutput, error) {
 	f.gotNamespace, f.gotRefs, f.gotComps = ns, refs, len(comps)
 	if f.diffFn == nil {
-		return false, nil
+		return &renderer.CompDiffOutput{}, nil
 	}
 	return f.diffFn(ctx)
 }
@@ -469,6 +531,14 @@ func exitCode(err error, status *common.ExitStatus) int {
 func TestSimulateRun(t *testing.T) {
 	errBoom := errors.New("boom")
 	noInit := func(context.Context, logging.Logger) error { return nil }
+	// changed is a report of one Composition with an affected composite
+	// resource.
+	changed := func() *renderer.CompDiffOutput {
+		return &renderer.CompDiffOutput{Compositions: []renderer.CompositionDiff{{
+			Name:           "comp",
+			ImpactAnalysis: []renderer.XRImpact{{Status: renderer.XRStatusChanged}},
+		}}}
+	}
 
 	type args struct {
 		cmd         simulateCmd
@@ -496,22 +566,22 @@ func TestSimulateRun(t *testing.T) {
 		},
 		"Changes": {
 			reason: "Changes should exit 3, as a result rather than an error.",
-			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
-				return true, nil
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*renderer.CompDiffOutput, error) {
+				return changed(), nil
 			}}},
 			want: want{code: dp.ExitCodeDiffDetected, diffed: true},
 		},
 		"ErrorWithChanges": {
 			reason: "A tool error should exit 1, not 3, even when there are changes.",
-			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
-				return true, errBoom
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*renderer.CompDiffOutput, error) {
+				return changed(), errBoom
 			}}},
 			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
 		},
 		"SchemaValidationErrorWithChanges": {
 			reason: "A schema validation failure should exit 2, not 3, even when there are changes.",
-			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
-				return true, dp.NewSchemaValidationError("XR/db", "invalid", errBoom)
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*renderer.CompDiffOutput, error) {
+				return changed(), dp.NewSchemaValidationError("XR/db", "invalid", errBoom)
 			}}},
 			want: want{code: dp.ExitCodeSchemaValidation, err: errBoom, diffed: true},
 		},
@@ -540,22 +610,22 @@ func TestSimulateRun(t *testing.T) {
 		},
 		"DiffError": {
 			reason: "A failed simulation is a tool error.",
-			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
-				return true, errBoom
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*renderer.CompDiffOutput, error) {
+				return changed(), errBoom
 			}}},
 			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
 		},
 		"SchemaValidationError": {
 			reason: "A simulation that failed only schema validation should exit 2.",
-			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (bool, error) {
-				return false, dp.NewSchemaValidationError("XR/db", "invalid", errBoom)
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*renderer.CompDiffOutput, error) {
+				return &renderer.CompDiffOutput{}, dp.NewSchemaValidationError("XR/db", "invalid", errBoom)
 			}}},
 			want: want{code: dp.ExitCodeSchemaValidation, err: errBoom, diffed: true},
 		},
 		"Interrupted": {
 			reason: "An interrupted run should return the interruption, whatever it returned, which main exits 130 for.",
-			args: args{cancel: true, initClients: noInit, proc: &fakeCompProc{diffFn: func(ctx context.Context) (bool, error) {
-				return true, ctx.Err()
+			args: args{cancel: true, initClients: noInit, proc: &fakeCompProc{diffFn: func(ctx context.Context) (*renderer.CompDiffOutput, error) {
+				return changed(), ctx.Err()
 			}}},
 			want: want{code: dp.ExitCodeToolError, err: dp.ErrInterrupted, diffed: true},
 		},
@@ -569,7 +639,8 @@ func TestSimulateRun(t *testing.T) {
 				cancel()
 			}
 
-			diff := tc.args.cmd.diffCompositions(tc.args.proc, []*un.Unstructured{{}}, compositionMode)
+			k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
+			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, compositionMode)
 			status := &common.ExitStatus{}
 			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), status, tc.args.initClients, tc.args.proc, diff)
 

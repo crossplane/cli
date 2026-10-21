@@ -6056,7 +6056,6 @@ func TestDiffSingleResourceConcurrent(t *testing.T) {
 		opts := []dp.ProcessorOption{
 			dp.WithLogger(log),
 			dp.WithAdvisories(advisories),
-			dp.WithColorize(false),
 			dp.WithMaxNestedDepth(10),
 			dp.WithMaxRenderIterations(20),
 			dp.WithDryRunOn(dp.DryRunOnAll),

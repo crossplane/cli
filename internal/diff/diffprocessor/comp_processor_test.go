@@ -206,7 +206,7 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 		outputVersion renderer.OutputVersion
 		setupMocks    func() xp.Clients
 		// verifyOutput runs whether or not DiffComposition returns an error, since a failed composition
-		// is still rendered.
+		// is still reported, and so still rendered.
 		verifyOutput func(t *testing.T, output string)
 		wantErr      bool
 		// wantErrContains, when set, must appear in the returned error.
@@ -448,27 +448,18 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 
 			// Create mock XR processor
 			mockXRProc := &tu.MockDiffProcessor{
-				PerformDiffFn: func(_ context.Context, _ []*un.Unstructured, _ types.CompositionProvider) (bool, error) {
-					return true, nil
+				PerformDiffFn: func(_ context.Context, _ []*un.Unstructured, _ types.CompositionProvider) (*dt.XRReport, error) {
+					return &dt.XRReport{}, nil
 				},
 			}
 
 			// Create processor using constructor to ensure all fields are initialized
 			logger := tu.TestLogger(t, false)
 
-			// Create stdout buffer first so it can be set in config
-			var stdout bytes.Buffer
-
 			config := ProcessorConfig{
-				Colorize:      false,
-				Compact:       false,
-				AnalyzeOn:     tt.analyzeOn,
-				OutputFormat:  tt.outputFormat,
-				OutputVersion: tt.outputVersion,
-				Logger:        logger,
-				Advisories:    NewAdvisoryCollector(nil),
-				Stdout:        &stdout,         // Set stdout in config so renderers can access it
-				Stderr:        &bytes.Buffer{}, // Discard stderr for tests
+				AnalyzeOn:  tt.analyzeOn,
+				Logger:     logger,
+				Advisories: NewAdvisoryCollector(nil),
 				RenderFunc: func(_ context.Context, _ logging.Logger, in RenderInputs) (render.CompositionOutputs, error) {
 					return render.CompositionOutputs{
 						CompositeResource: in.CompositeResource,
@@ -476,18 +467,14 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 				},
 			}
 			config.SetDefaultFactories()
-			diffOpts := config.GetDiffOptions()
-			diffRenderer := config.Factories.DiffRenderer(logger, diffOpts)
-			compDiffRenderer := config.Factories.CompDiffRenderer(logger, diffRenderer, diffOpts)
 
 			processor := &DefaultCompDiffProcessor{
 				compositionClient: xpClients.Composition,
 				xrProc:            mockXRProc,
 				config:            config,
-				compDiffRenderer:  compDiffRenderer,
 			}
 
-			_, err := processor.DiffComposition(ctx, tt.compositions, tt.namespace, nil)
+			output, err := processor.DiffComposition(ctx, tt.compositions, tt.namespace, nil)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("DiffComposition() error = %v, wantErr %v", err, tt.wantErr)
@@ -499,7 +486,7 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 			}
 
 			if tt.verifyOutput != nil {
-				tt.verifyOutput(t, stdout.String())
+				tt.verifyOutput(t, renderCompReport(t, output, tt.outputFormat, tt.outputVersion))
 			}
 		})
 	}
@@ -1595,10 +1582,10 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRCompositionLookup(t *te
 	}
 }
 
-// TestDefaultCompDiffProcessor_DiffComposition_ReturnsErrorNotStderr verifies that
-// when XR processing fails, the returned error names the failing XR and carries the
-// detail, and nothing is written to stderr: the command prints the error once.
-func TestDefaultCompDiffProcessor_DiffComposition_ReturnsErrorNotStderr(t *testing.T) {
+// TestDefaultCompDiffProcessor_DiffComposition_ReportErrorOutput verifies that when XR processing
+// fails, the report carries the detailed error, attributed to the failed XR, for structured output,
+// and the returned error names the failing XR and carries the detail: the command prints it once.
+func TestDefaultCompDiffProcessor_DiffComposition_ReportErrorOutput(t *testing.T) {
 	ctx := t.Context()
 
 	// Create test composition
@@ -1638,25 +1625,18 @@ func TestDefaultCompDiffProcessor_DiffComposition_ReturnsErrorNotStderr(t *testi
 		},
 	}
 
-	// Create stderr buffer to capture error output
-	var stderrBuf bytes.Buffer
-
-	// Create processor with custom stderr
 	logger := tu.TestLogger(t, false)
 	processor := NewCompDiffProcessor(
 		mockXRProc,
 		xpClients.Composition,
 		WithLogger(logger),
-		WithColorize(false),
-		WithCompact(false),
-		WithStderr(&stderrBuf), // Use WithStderr to inject test buffer
 	)
 
 	// Run the diff - should succeed but report XR errors.
 	//
 	// The input composition must differ from the cluster's (hence the label): impact analysis is
 	// skipped for an unchanged composition, which would make the XR failure under test unreachable.
-	_, err := processor.DiffComposition(ctx, []*un.Unstructured{
+	output, err := processor.DiffComposition(ctx, []*un.Unstructured{
 		tu.NewComposition("test-composition").
 			WithCompositeTypeRef("example.org/v1", "XResource").
 			WithPipelineMode().
@@ -1675,14 +1655,19 @@ func TestDefaultCompDiffProcessor_DiffComposition_ReturnsErrorNotStderr(t *testi
 		}
 	}
 
-	if stderrBuf.Len() != 0 {
-		t.Errorf("Expected nothing on stderr, got: %q", stderrBuf.String())
+	if output == nil || len(output.Errors) != 1 {
+		t.Fatalf("Expected one error in the report, got: %+v", output)
+	}
+
+	if got := output.Errors[0]; got.ResourceID != "XResource/fail-xr" || !strings.Contains(got.Message, "render pipeline failed") {
+		t.Errorf("Expected the report's error to name XResource/fail-xr and 'render pipeline failed', got: %+v", got)
 	}
 }
 
 // TestDefaultCompDiffProcessor_DiffComposition_LateWarningsReachStructuredOutput is the comp-side twin
 // of TestDefaultDiffProcessor_PerformDiff_LateWarningsReachStructuredOutput: an advisory that can only
-// be discovered while releasing resources must still be in warnings[], not just on stderr. comp reaches
+// be discovered while releasing resources must still be in the report's warnings (warnings[]), not
+// just on stderr. comp reaches
 // teardown via xrProc.Cleanup, so it needs its own guard — the xr-side test cannot fail for it.
 func TestDefaultCompDiffProcessor_DiffComposition_LateWarningsReachStructuredOutput(t *testing.T) {
 	ctx := t.Context()
@@ -1703,7 +1688,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_LateWarningsReachStructuredOut
 		WithResourcesForComposition("test-composition", "default", []*un.Unstructured{testXR}).
 		Build()
 
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	advisories := NewAdvisoryCollector(&stderr)
 
@@ -1722,11 +1707,6 @@ func TestDefaultCompDiffProcessor_DiffComposition_LateWarningsReachStructuredOut
 	processor := NewCompDiffProcessor(mockXRProc, compClient,
 		WithLogger(tu.TestLogger(t, false)),
 		WithAdvisories(advisories),
-		WithColorize(false),
-		WithCompact(false),
-		WithOutputFormat(renderer.OutputFormatJSON),
-		WithStdout(&stdout),
-		WithStderr(&stderr),
 	)
 
 	// The input composition carries a label the cluster copy lacks, so impact analysis actually runs.
@@ -1736,7 +1716,8 @@ func TestDefaultCompDiffProcessor_DiffComposition_LateWarningsReachStructuredOut
 		WithLabels(map[string]string{"version": "0.0.2"}).
 		BuildAsUnstructured()
 
-	if _, err := processor.DiffComposition(ctx, []*un.Unstructured{changed}, "default", nil); err != nil {
+	output, err := processor.DiffComposition(ctx, []*un.Unstructured{changed}, "default", nil)
+	if err != nil {
 		t.Fatalf("DiffComposition(): unexpected error: %v", err)
 	}
 
@@ -1744,45 +1725,29 @@ func TestDefaultCompDiffProcessor_DiffComposition_LateWarningsReachStructuredOut
 		t.Errorf("teardown advisory should reach stderr, got:\n%s", stderr.String())
 	}
 
-	var got struct {
-		Warnings []dt.OutputWarning `json:"warnings"`
-	}
-
-	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
-		t.Fatalf("cannot parse structured output %q: %v", stdout.String(), err)
-	}
-
+	// The report's warnings are what the structured renderer serializes as warnings[].
 	want := []dt.OutputWarning{{Message: advisory, Context: map[string]string{"errors": "1"}}}
-	if diff := gcmp.Diff(want, got.Warnings); diff != "" {
-		t.Errorf("structured warnings[] mismatch (-want +got):\n%s", diff)
+	if diff := gcmp.Diff(want, output.Warnings); diff != "" {
+		t.Errorf("report warnings mismatch (-want +got):\n%s", diff)
 	}
 }
 
 // newCompProcessorForTest builds a DefaultCompDiffProcessor wrapping the given composition client
 // for use by the --resource preflight tests below.
-func newCompProcessorForTest(t *testing.T, compClient xp.CompositionClient, includeManual bool) (*DefaultCompDiffProcessor, *bytes.Buffer) {
+func newCompProcessorForTest(t *testing.T, compClient xp.CompositionClient, includeManual bool) *DefaultCompDiffProcessor {
 	t.Helper()
 
 	logger := tu.TestLogger(t, false)
-
-	stdout := &bytes.Buffer{}
-	stderr := &bytes.Buffer{}
 
 	config := ProcessorConfig{
 		IncludeManual: includeManual,
 		Logger:        logger,
 		Advisories:    NewAdvisoryCollector(nil),
-		Stdout:        stdout,
-		Stderr:        stderr,
 		RenderFunc: func(_ context.Context, _ logging.Logger, in RenderInputs) (render.CompositionOutputs, error) {
 			return render.CompositionOutputs{CompositeResource: in.CompositeResource}, nil
 		},
 	}
 	config.SetDefaultFactories()
-
-	diffOpts := config.GetDiffOptions()
-	diffRenderer := config.Factories.DiffRenderer(logger, diffOpts)
-	compRenderer := config.Factories.CompDiffRenderer(logger, diffRenderer, diffOpts)
 
 	mockXR := &tu.MockDiffProcessor{
 		DiffSingleResourceFn: func(context.Context, *un.Unstructured, types.CompositionProvider) (map[string]*dt.ResourceDiff, error) {
@@ -1794,8 +1759,7 @@ func newCompProcessorForTest(t *testing.T, compClient xp.CompositionClient, incl
 		compositionClient: compClient,
 		config:            config,
 		xrProc:            mockXR,
-		compDiffRenderer:  compRenderer,
-	}, stdout
+	}
 }
 
 // TestDefaultCompDiffProcessor_DiffComposition_ResourceMode covers the --resource code path:
@@ -1855,7 +1819,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 
 		for name, tt := range dispatchTests {
 			t.Run(name, func(t *testing.T) {
-				proc, _ := newCompProcessorForTest(t, tt.compositionClient, false)
+				proc := newCompProcessorForTest(t, tt.compositionClient, false)
 				if _, err := proc.DiffComposition(t.Context(), []*un.Unstructured{comp}, tt.namespace, tt.resources); err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
@@ -1869,9 +1833,9 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 			WithNoMatchingComposites().
 			Build()
 
-		proc, stdout := newCompProcessorForTest(t, client, false)
+		proc := newCompProcessorForTest(t, client, false)
 
-		_, err := proc.DiffComposition(t.Context(), []*un.Unstructured{comp}, "",
+		output, err := proc.DiffComposition(t.Context(), []*un.Unstructured{comp}, "",
 			[]k8stypes.NamespacedName{{Namespace: "ns", Name: "ghost"}})
 		if err == nil {
 			t.Fatal("expected error from globally-unmatched preflight, got nil")
@@ -1881,8 +1845,8 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 			t.Errorf("error message should name the unmatched ref, got: %v", err)
 		}
 
-		if stdout.Len() != 0 {
-			t.Errorf("expected no output before fail-fast, got: %q", stdout.String())
+		if output != nil {
+			t.Errorf("expected no report to render before fail-fast, got: %+v", output)
 		}
 	})
 
@@ -1914,7 +1878,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 					WithSuccessfulCompositionFetch(&apiextensionsv1.Composition{}).
 					Build()
 
-				proc, _ := newCompProcessorForTest(t, client, false /* IncludeManual */)
+				proc := newCompProcessorForTest(t, client, false /* IncludeManual */)
 
 				got, err := proc.processSingleComposition(t.Context(), comp, []*un.Unstructured{manualXR}, tt.surfaceFiltered)
 				if err != nil {
@@ -2032,7 +1996,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 					WithSuccessfulCompositionFetch(clusterComp).
 					Build()
 
-				proc, _ := newCompProcessorForTest(t, client, tt.includeManual)
+				proc := newCompProcessorForTest(t, client, tt.includeManual)
 				proc.config.AnalyzeOn = tt.analyzeOn
 
 				got, err := proc.processSingleComposition(t.Context(), metaOnlyComp, []*un.Unstructured{xr1, manualXR}, tt.surfaceFiltered)
@@ -2091,7 +2055,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 			WithSuccessfulCompositionFetch(&apiextensionsv1.Composition{}).
 			Build()
 
-		proc, _ := newCompProcessorForTest(t, client, false /* IncludeManual */)
+		proc := newCompProcessorForTest(t, client, false /* IncludeManual */)
 
 		got, err := proc.processSingleComposition(t.Context(), labeledComp, []*un.Unstructured{selectorMismatchXR}, true /* surfaceFiltered */)
 		if err != nil {
@@ -2127,4 +2091,49 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 			t.Errorf("Total: got %d, want 1", got.AffectedResources.Total)
 		}
 	})
+}
+
+// renderCompReport renders a DiffComposition report the way the comp command does, in the given format
+// (empty means the human-readable diff) and structured output version (empty means the default), and
+// returns what it wrote to stdout.
+func renderCompReport(t *testing.T, output *renderer.CompDiffOutput, format renderer.OutputFormat, version renderer.OutputVersion) string {
+	t.Helper()
+
+	if output == nil {
+		return ""
+	}
+
+	var stdout bytes.Buffer
+
+	opts := renderer.DefaultDiffOptions()
+	opts.UseColors = false
+	opts.Stdout = &stdout
+	opts.Stderr = &bytes.Buffer{}
+
+	if format != "" {
+		opts.Format = format
+	}
+
+	if version != "" {
+		opts.OutputVersion = version
+	}
+
+	logger := tu.TestLogger(t, false)
+
+	var compRenderer renderer.CompDiffRenderer
+
+	switch opts.Format {
+	case renderer.OutputFormatJSON, renderer.OutputFormatYAML:
+		compRenderer = renderer.NewStructuredCompDiffRenderer(logger, opts)
+	case renderer.OutputFormatDiff:
+		fallthrough
+	default:
+		compRenderer = renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts)
+	}
+
+	if err := compRenderer.RenderCompDiff(output); err != nil {
+		t.Fatalf("RenderCompDiff(): %v", err)
+	}
+
+	return stdout.String()
 }

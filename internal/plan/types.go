@@ -22,6 +22,10 @@ package plan
 import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+
+	"github.com/crossplane/cli/v2/internal/diff/compare"
 )
 
 // Action is what applying a resource would do.
@@ -152,6 +156,16 @@ func (p *ResourcePlan) GroupVersionKind() schema.GroupVersionKind {
 // ResourceRef returns the plan's resource identity.
 func (p *ResourcePlan) ResourceRef() ResourceRef {
 	return ResourceRef{APIVersion: p.APIVersion, Kind: p.Kind, Name: p.Name, Namespace: p.Namespace}
+}
+
+// cleanView returns the redacted, cleaned copy of u that a plan carries as
+// before or after: the same view project simulate shows, via compare.Clean.
+// u is not modified; nil stays nil.
+func cleanView(u *unstructured.Unstructured) *unstructured.Unstructured {
+	if u == nil {
+		return nil
+	}
+	return RedactSecret(compare.Clean(u, logging.NewNopLogger(), compare.Options{}))
 }
 
 // RedactSecret returns u with each data and stringData value replaced by the

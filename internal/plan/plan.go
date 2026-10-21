@@ -58,6 +58,6 @@ func Plan(ctx context.Context, c diffv1alpha1.PlanServiceClient, desired, actual
 	if err != nil {
 		return nil, err
 	}
-	p.Before, p.After = RedactSecret(actual), RedactSecret(desired)
+	p.Before, p.After = cleanView(actual), cleanView(desired)
 	return p, nil
 }

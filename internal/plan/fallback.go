@@ -41,7 +41,7 @@ func Fallback(desired, live *unstructured.Unstructured, reason string) *Resource
 	p := NewResourcePlan(desired)
 	p.Approximate = true
 	p.FallbackReason = reason
-	p.Before, p.After = RedactSecret(live), RedactSecret(desired)
+	p.Before, p.After = cleanView(live), cleanView(desired)
 
 	desiredSpec, _, _ := unstructured.NestedMap(desired.Object, "spec")
 

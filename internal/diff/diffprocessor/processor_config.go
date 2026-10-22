@@ -455,8 +455,9 @@ func WithFunctionProviderFactory(factory func(xp.FunctionClient, logging.Logger)
 	}
 }
 
-// errXRTimedOut is the cause an XR context is cancelled with when its XRTimeout budget runs out.
-var errXRTimedOut = errors.New("composite resource timed out")
+// ErrXRTimedOut is the cause an XR context is cancelled with when its XRTimeout budget runs out.
+// OutsideXRDeadline also returns it, so callers can match it with errors.Is.
+var ErrXRTimedOut = errors.New("composite resource timed out")
 
 // xrContext returns the context one composite resource's diff runs under: ctx bounded by XRTimeout
 // when it is set. The budget can be paused with OutsideXRDeadline.
@@ -471,6 +472,7 @@ func (c *ProcessorConfig) xrContext(ctx context.Context) (context.Context, conte
 
 	return context.WithValue(xrCtx, budgetKey{}, b), func() {
 		b.mu.Lock()
+		b.expired = true // A pause still running must not re-arm the timer.
 		b.timer.Stop()
 		b.mu.Unlock()
 		cancel(context.Canceled)
@@ -500,9 +502,10 @@ type xrBudget struct {
 
 func (b *xrBudget) expire() {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	b.expired = true
-	b.mu.Unlock()
-	b.cancel(errXRTimedOut)
+	b.cancel(ErrXRTimedOut)
 }
 
 // pause stops the clock, reporting false when the budget already ran out.
@@ -554,7 +557,7 @@ func OutsideXRDeadline(ctx context.Context, fn func(run context.Context) error) 
 	}
 
 	if !b.pause() {
-		return errXRTimedOut
+		return ErrXRTimedOut
 	}
 	defer b.resume()
 
@@ -569,7 +572,7 @@ func (c *ProcessorConfig) afterXR(ctx, xrCtx context.Context, diffs map[string]*
 	}
 
 	// Only the composite's own deadline is named; the caller's ending reads as it always has.
-	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(xrCtx), errXRTimedOut) {
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(xrCtx), ErrXRTimedOut) {
 		return errors.Wrapf(err, "timed out after %s", c.XRTimeout)
 	}
 

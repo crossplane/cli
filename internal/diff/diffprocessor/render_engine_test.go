@@ -990,3 +990,31 @@ func TestEngineRenderFn_RunOwnsFunctionContainers(t *testing.T) {
 		})
 	}
 }
+
+func TestEngineRenderFn_StartFunctionsOutsideXRBudget(t *testing.T) {
+	mock := &render.MockEngine{
+		MockRender: func(_ context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
+			return &renderv1alpha1.RenderResponse{
+				Output: &renderv1alpha1.RenderResponse_Composite{
+					Composite: &renderv1alpha1.CompositeOutput{CompositeResource: req.GetComposite().GetCompositeResource()},
+				},
+			}, nil
+		},
+	}
+
+	var startCalls, stopCalls int32
+
+	e := newTestRenderFn(mock, &startCalls, &stopCalls)
+	// Starting the function outlasts the XR's budget and fails if it runs under it.
+	e.startRuntimes = func(ctx context.Context, _ logging.Logger, _ []pkgv1.Function) (*render.FunctionAddresses, error) {
+		time.Sleep(150 * time.Millisecond)
+		return &render.FunctionAddresses{}, ctx.Err()
+	}
+
+	xrCtx, cancel := NewXRContext(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	if _, err := e.Render(xrCtx, logging.NewNopLogger(), minimalRenderInputs()); err != nil {
+		t.Errorf("Render(...): function start counted against the XR budget: %v", err)
+	}
+}

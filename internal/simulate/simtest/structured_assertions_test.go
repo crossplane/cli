@@ -424,3 +424,43 @@ func TestAssertStructuredCombined(t *testing.T) {
 		checkAssertion(t, name, tc.wantFail, func(t *testing.T) { t.Helper(); AssertStructured(t, out, tc.want) })
 	}
 }
+
+func TestResourceExpectationParents(t *testing.T) {
+	root := Expect()
+	flat := root.WithAddedResource("K", "n", "ns")
+
+	if flat.And() != root {
+		t.Error("flat And() must return the root")
+	}
+
+	impact := root.WithComposition("c").WithXRImpact("XR", "x", "ns", "changed")
+	down := impact.WithDownstreamResource("modified", "K", "n", "ns")
+
+	if down.AndXR() != impact {
+		t.Error("downstream AndXR() must return the XR impact")
+	}
+
+	if down.And() != root {
+		t.Error("downstream And() must return the root")
+	}
+
+	var _ Expectation = down
+
+	if down.expectation() != root {
+		t.Error("downstream expectation() must resolve to the root")
+	}
+
+	for name, fn := range map[string]func(){
+		"AndXR on flat":    func() { flat.AndXR() },
+		"And on XR-scoped": func() { XR("X", "x", "ns").Change("added", "K", "n", "ns").And() },
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: expected panic, not a nil parent", name)
+				}
+			}()
+			fn()
+		}()
+	}
+}

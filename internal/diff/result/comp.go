@@ -237,6 +237,10 @@ type XRImpact struct {
 	// because its Manual compositionUpdatePolicy pins it to its compositionRevisionRef. Only
 	// --include-manual evaluates such a composite; without it, the composite is XRStatusFiltered.
 	Pinned bool
+	// RenderedRevision names the CompositionRevision a Pinned composite was rendered against, when that
+	// is its own pinned revision rather than the diffed composition: the revision calls a function that
+	// changed. Empty otherwise.
+	RenderedRevision string
 	// Error is the structured processing error for an XRStatusError impact (nil otherwise), the same
 	// OutputError the command lists in its top-level errors.
 	Error *OutputError

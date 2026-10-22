@@ -1253,7 +1253,7 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_RevisionName(t *testing.T) {
 			}
 
 			comp := tu.NewComposition("comp").WithCompositeTypeRef("example.org/v1", "XResource").WithPipelineMode().BuildAsUnstructured()
-			results := processor.collectXRDiffs(t.Context(), []*un.Unstructured{tt.xr}, comp, tt.revisionName, revisionLabels)
+			results := processor.collectXRDiffs(t.Context(), []*un.Unstructured{tt.xr}, comp, tt.revisionName, revisionLabels, nil)
 
 			if err := results[dt.MakeDiffKeyFromResource(tt.xr)].Error; err != nil {
 				t.Fatalf("%s\ncollectXRDiffs(): unexpected error: %v", tt.reason, err)
@@ -1310,7 +1310,7 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_PerXR(t *testing.T) {
 	}
 
 	comp := tu.NewComposition("comp").WithCompositeTypeRef("example.org/v1", "XResource").WithPipelineMode().BuildAsUnstructured()
-	results := processor.collectXRDiffs(t.Context(), []*un.Unstructured{slow, fast, failing}, comp, "", nil)
+	results := processor.collectXRDiffs(t.Context(), []*un.Unstructured{slow, fast, failing}, comp, "", nil, nil)
 
 	got := map[string]string{}
 	for _, xr := range []*un.Unstructured{slow, fast, failing} {
@@ -1648,7 +1648,7 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRCompositionLookup(t *te
 				},
 			}
 
-			_ = processor.collectXRDiffs(ctx, tt.xrs, tt.cliComposition, "", nil)
+			_ = processor.collectXRDiffs(ctx, tt.xrs, tt.cliComposition, "", nil, nil)
 
 			// Verify the composition requests
 			if len(*compositionRequests) < 2 {
@@ -2296,6 +2296,141 @@ func TestDefaultCompDiffProcessor_processSingleComposition_ChangedFunctions(t *t
 			gotWant := want{Skipped: got.ImpactAnalysisSkipped, ChangeScope: got.RevisionImpact.ChangeScope}
 			if diff := gcmp.Diff(tt.want, gotWant); diff != "" {
 				t.Errorf("processSingleComposition() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// A Manual XR pinned to a revision whose pipeline calls a changed function is rendered against that
+// revision rather than deferred, unless --include-pinned keeps it for the revision-advance preview, and
+// a revision calling no changed function stays deferred.
+func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFunction(t *testing.T) {
+	cliBuilder := func() *tu.CompositionBuilder {
+		return tu.NewComposition("test-comp").
+			WithCompositeTypeRef("example.org/v1", "XR").
+			WithPipelineMode().
+			WithPipelineStep("step-a", "function-a", nil)
+	}
+
+	pinnedXR := func(name string) *un.Unstructured {
+		return tu.NewResource("example.org/v1", "XR", name).
+			InNamespace("ns").
+			WithSpecField("compositionRef", map[string]any{"name": "test-comp"}).
+			WithSpecField("crossplane", map[string]any{
+				"compositionUpdatePolicy": "Manual",
+				"compositionRevisionRef":  map[string]any{"name": "test-comp-rev1"},
+			}).
+			Build()
+	}
+
+	// The pinned revision's pipeline has a step the CLI composition lacks, so a render that saw the
+	// CLI composition instead is detectable.
+	revisionWith := func(fn string) *apiextensionsv1.Composition {
+		return tu.NewComposition("test-comp").
+			WithCompositeTypeRef("example.org/v1", "XR").
+			WithPipelineMode().
+			WithPipelineStep("step-old", fn, nil).
+			Build()
+	}
+
+	type want struct {
+		Status           dt.XRStatus
+		FilterReason     dt.FilterReason
+		Pinned           bool
+		RenderedRevision string
+		// Pipeline is the function names of the composition the render was given; nil when no render.
+		Pipeline []string
+		Error    bool
+	}
+
+	cases := map[string]struct {
+		revision      *apiextensionsv1.Composition
+		lookupErr     error
+		includeManual bool
+		want          want
+	}{
+		"PinnedXRWithChangedFunctionRendersPinnedRevision": {
+			revision: revisionWith("function-a"),
+			want:     want{Status: dt.XRStatusUnchanged, Pinned: true, RenderedRevision: "test-comp-rev1", Pipeline: []string{"function-a"}},
+		},
+		"PinnedXRWithUnrelatedFunctionChangeStaysDeferred": {
+			revision: revisionWith("function-other"),
+			want:     want{Status: dt.XRStatusFiltered, FilterReason: dt.FilterReasonManualPolicy},
+		},
+		"IncludePinnedWithChangedFunctionPreviewsAdvance": {
+			revision:      revisionWith("function-a"),
+			includeManual: true,
+			want:          want{Status: dt.XRStatusUnchanged, Pinned: true, Pipeline: []string{"function-a"}},
+		},
+		"PinnedRevisionLookupErrorIsPerXRError": {
+			lookupErr: errors.New("revision gone"),
+			want:      want{Status: dt.XRStatusError, Pinned: true, Error: true},
+		},
+	}
+
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			client := tu.NewMockCompositionClient().
+				WithSuccessfulCompositionFetch(cliBuilder().Build()).
+				WithFindMatchingComposition(func(context.Context, *un.Unstructured) (types.ResolvedComposition, error) {
+					if tt.lookupErr != nil {
+						return types.ResolvedComposition{}, tt.lookupErr
+					}
+
+					return types.ResolvedComposition{Composition: tt.revision, RevisionName: "test-comp-rev1"}, nil
+				}).
+				Build()
+
+			proc := newCompProcessorForTest(t, client, tt.includeManual)
+			WithChangedFunctions("function-a")(&proc.config)
+
+			var (
+				gotPipeline []string
+				gotRevision string
+			)
+
+			proc.xrProc = &tu.MockDiffProcessor{
+				DiffSingleResourceFn: func(ctx context.Context, xr *un.Unstructured, provider types.CompositionProvider) (map[string]*dt.ResourceDiff, error) {
+					resolved, err := provider(ctx, xr)
+					if err != nil {
+						return nil, err
+					}
+
+					gotRevision = resolved.RevisionName
+					for _, step := range resolved.Composition.Spec.Pipeline {
+						gotPipeline = append(gotPipeline, step.FunctionRef.Name)
+					}
+
+					return map[string]*dt.ResourceDiff{}, nil
+				},
+			}
+
+			got, err := proc.processSingleComposition(t.Context(), cliBuilder().BuildAsUnstructured(), []*un.Unstructured{pinnedXR("pinned")}, false)
+			if err != nil {
+				t.Fatalf("processSingleComposition: %v", err)
+			}
+
+			if len(got.ImpactAnalysis) != 1 {
+				t.Fatalf("ImpactAnalysis: got %d entries, want 1 (%+v)", len(got.ImpactAnalysis), got.ImpactAnalysis)
+			}
+
+			impact := got.ImpactAnalysis[0]
+			gotWant := want{
+				Status:           impact.Status,
+				FilterReason:     impact.FilterReason,
+				Pinned:           impact.Pinned,
+				RenderedRevision: impact.RenderedRevision,
+				Pipeline:         gotPipeline,
+				Error:            impact.Error != nil,
+			}
+
+			// A lookup failure is reported on the XR, and no render is attempted for it.
+			if diff := gcmp.Diff(tt.want, gotWant); diff != "" {
+				t.Errorf("processSingleComposition() mismatch (-want +got):\n%s", diff)
+			}
+
+			if tt.want.RenderedRevision != "" && gotRevision != tt.want.RenderedRevision {
+				t.Errorf("render revision: got %q, want %q", gotRevision, tt.want.RenderedRevision)
 			}
 		})
 	}

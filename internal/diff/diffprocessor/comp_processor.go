@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -426,6 +427,21 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 		result.RevisionImpact.RepointedComposites = len(repointingXRs)
 	}
 
+	// A composition whose pipeline calls a changed function renders differently without creating a
+	// revision, so it is analysed as at least a metadata-scope change: any-change analyses it,
+	// spec-change still skips it. Only the decision is raised; RevisionImpact still reports the real scope.
+	analysisScope := comparison.scope
+	if analysisScope == ChangeScopeNone && callsChangedFunction(newComp, p.config.ChangedFunctions) {
+		analysisScope = ChangeScopeMetadata
+	}
+
+	// A Manual XR pinned to a revision that calls a changed function is not deferred when the analysis
+	// runs: it is rendered against that revision. See pinnedFunctionChangeXRs.
+	var pinnedXRs map[string]pinnedResolution
+	if analysisScope.triggersAnalysis(p.config.AnalyzeOn) {
+		pinnedXRs, keptXRs, droppedXRs = p.pinnedFunctionChangeXRs(ctx, keptXRs, droppedXRs)
+	}
+
 	counts := countFilterReasons(droppedXRs)
 
 	p.config.Logger.Debug("Filtered XRs by deletion state, update policy, and revision selector",
@@ -472,15 +488,6 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// or a modeling artifact of this tool — which we cannot tell apart, so reporting it as this
 	// composition's "impact" would attribute cluster state to a change that does not exist.
 	// See issues #453 and #472.
-	//
-	// A composition whose pipeline calls a changed function renders differently without creating a
-	// revision, so it is analysed as at least a metadata-scope change: any-change analyses it,
-	// spec-change still skips it. Only the decision is raised; RevisionImpact still reports the real scope.
-	analysisScope := comparison.scope
-	if analysisScope == ChangeScopeNone && callsChangedFunction(newComp, p.config.ChangedFunctions) {
-		analysisScope = ChangeScopeMetadata
-	}
-
 	if !analysisScope.triggersAnalysis(p.config.AnalyzeOn) {
 		p.config.Logger.Debug("Skipping impact analysis",
 			"composition", newComp.GetName(),
@@ -522,7 +529,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// Process kept XRs and collect diffs to determine which ones have changes
 	p.config.Logger.Debug("Processing XRs to collect diff information", "count", len(keptXRs))
 
-	xrResults := p.collectXRDiffs(ctx, keptXRs, newComp, revisionName, predictedRevisionLabels(newComp, pred))
+	xrResults := p.collectXRDiffs(ctx, keptXRs, newComp, revisionName, predictedRevisionLabels(newComp, pred), pinnedXRs)
 
 	// Build impact analysis and counts from results for the kept set, then merge in any
 	// already-appended filtered entries.
@@ -530,7 +537,12 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// buildImpactAnalysis keeps keptXRs' order. A kept composite that does not re-point is one
 	// --include-manual kept although its Manual policy pins it.
 	for i, xr := range keptXRs {
-		keptImpacts[i].Pinned = !repointingXRs[dt.MakeDiffKeyFromResource(xr)]
+		key := dt.MakeDiffKeyFromResource(xr)
+		keptImpacts[i].Pinned = !repointingXRs[key]
+
+		if pinned, ok := pinnedXRs[key]; ok && pinned.err == nil {
+			keptImpacts[i].RenderedRevision = pinned.resolved.RevisionName
+		}
 	}
 
 	result.ImpactAnalysis = append(result.ImpactAnalysis, keptImpacts...)
@@ -547,7 +559,10 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 // revisionName is the name of the CompositionRevision applying newComp would leave its composites on,
 // or empty when that is not predictable; revisionLabels is the label set that revision would carry. See
 // cliCompositionRevision for which composites are rendered with that name.
-func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un.Unstructured, newComp *un.Unstructured, revisionName string, revisionLabels map[string]string) map[string]*XRDiffResult {
+//
+// pinned, keyed by dt.MakeDiffKeyFromResource, holds the composites rendered against their own pinned
+// revision instead of newComp; see pinnedFunctionChangeXRs.
+func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un.Unstructured, newComp *un.Unstructured, revisionName string, revisionLabels map[string]string, pinned map[string]pinnedResolution) map[string]*XRDiffResult {
 	// Convert the CLI composition to typed once for reuse
 	cliComp := &apiextensionsv1.Composition{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(newComp.Object, cliComp); err != nil {
@@ -602,6 +617,14 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 		// Check 1: Is this a root-level resource (XR or Claim supplied as affectedXRs to this composition)?
 		// Root-level resources always use the CLI composition, even claims whose GVK differs from the XR type.
 		key := dt.MakeDiffKeyFromResource(res)
+		if pin, ok := pinned[key]; ok {
+			p.config.Logger.Debug("Resource is pinned to a revision calling a changed function, using that revision",
+				"resource", resourceID,
+				"revision", pin.resolved.RevisionName)
+
+			return pin.resolved, nil
+		}
+
 		if rootResourceKeys[key] {
 			p.config.Logger.Debug("Resource is root-level (uses this composition), using CLI composition",
 				"resource", resourceID,
@@ -636,6 +659,15 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 	for _, xr := range xrs {
 		resourceID := dt.MakeDiffKeyFromResource(xr)
 
+		if pin, ok := pinned[resourceID]; ok && pin.err != nil {
+			results[resourceID] = &XRDiffResult{
+				Diffs: make(map[string]*dt.ResourceDiff),
+				Error: errors.Wrapf(pin.err, "unable to process resource %s", resourceID),
+			}
+
+			continue
+		}
+
 		xrCtx, cancel := p.config.xrContext(ctx)
 		diffs, err := p.xrProc.DiffSingleResource(xrCtx, xr, compositionProvider)
 		err = p.config.afterXR(ctx, xrCtx, diffs, err)
@@ -658,6 +690,76 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 	}
 
 	return results
+}
+
+// pinnedResolution is the composition a Manual XR is pinned to, or why it could not be resolved.
+type pinnedResolution struct {
+	resolved dtypes.ResolvedComposition
+	err      error
+}
+
+// pinnedFunctionChangeXRs moves out of dropped the Manual XRs that stay pinned to a revision whose
+// pipeline calls a changed function. Such an XR is not unaffected by applying the project: the revision
+// it runs is unchanged, but the function it calls is not, so it is kept and rendered against that
+// revision instead of the diffed composition. It returns those XRs' resolutions (keyed by
+// dt.MakeDiffKeyFromResource), kept with the moved XRs appended, and dropped without them.
+//
+// It does nothing when no function changed or under IncludeManual, which keeps Manual XRs and renders
+// them against the diffed composition. A Manual XR whose revision calls no changed function stays dropped.
+// A failed lookup is that XR's own error (a kept XR whose result is the error), not the run's.
+func (p *DefaultCompDiffProcessor) pinnedFunctionChangeXRs(ctx context.Context, kept []*un.Unstructured, dropped []filteredXR) (map[string]pinnedResolution, []*un.Unstructured, []filteredXR) {
+	if len(p.config.ChangedFunctions) == 0 || p.config.IncludeManual {
+		return nil, kept, dropped
+	}
+
+	var (
+		pinned    map[string]pinnedResolution
+		remaining []filteredXR
+	)
+
+	for _, d := range dropped {
+		if d.reason != dt.FilterReasonManualPolicy {
+			remaining = append(remaining, d)
+			continue
+		}
+
+		resolved, err := p.compositionClient.FindMatchingComposition(ctx, d.xr)
+		if err == nil && !pinnedRevisionCallsChangedFunction(d.xr, resolved, p.config.ChangedFunctions) {
+			remaining = append(remaining, d)
+			continue
+		}
+
+		if pinned == nil {
+			pinned = make(map[string]pinnedResolution)
+		}
+
+		pinned[dt.MakeDiffKeyFromResource(d.xr)] = pinnedResolution{resolved: resolved, err: errors.Wrapf(err, "cannot resolve the revision %s is pinned to", d.xr.GetName())}
+		kept = append(kept, d.xr)
+	}
+
+	return pinned, kept, remaining
+}
+
+// pinnedRevisionCallsChangedFunction reports whether resolved is the pinned revision of xr and calls a
+// changed function. A resolution with no revision name (the composition itself) or for another type
+// (a claim, whose backing XR the render looks up under a different key) is not.
+// ponytail: a pinned claim stays deferred; route the backing XR's key to support it.
+func pinnedRevisionCallsChangedFunction(xr *un.Unstructured, resolved dtypes.ResolvedComposition, changed map[string]bool) bool {
+	if resolved.Composition == nil || resolved.RevisionName == "" {
+		return false
+	}
+
+	// Group and kind only: the XR may use a served version that is not the referenceable one.
+	ref := resolved.Composition.Spec.CompositeTypeRef
+
+	refGV, err := schema.ParseGroupVersion(ref.APIVersion)
+	if err != nil || refGV.Group != xr.GroupVersionKind().Group || ref.Kind != xr.GetKind() {
+		return false
+	}
+
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(resolved.Composition)
+
+	return err == nil && callsChangedFunction(&un.Unstructured{Object: obj}, changed)
 }
 
 // cliCompositionRevision resolves a composite that is rendered against cliComp, the diffed composition.

@@ -356,7 +356,7 @@ func (p *DefaultCompDiffProcessor) preflightResourceRefs(ctx context.Context, co
 			names = append(names, ref.Format(r))
 		}
 
-		return nil, errors.Errorf("--resource ref(s) not relevant to any supplied composition: %v (resource not found, or it doesn't reference one of the supplied compositions)", names)
+		return nil, errors.Errorf("resource ref(s) not relevant to any supplied composition: %v (resource not found, or it doesn't reference one of the supplied compositions)", names)
 	}
 
 	return perComp, nil

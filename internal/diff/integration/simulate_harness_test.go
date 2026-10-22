@@ -106,19 +106,12 @@ func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simA
 // current simulate surface, or "" when they can. The runner calls it
 // before starting envtest, so a skipped case costs nothing, and
 // runSimulate never executes args it could not express.
-func simulateGap(_ DiffTestType, a *simArgs) string {
-	// simulate scopes to one composite resource with --name (with
-	// --namespace for a namespaced one); it cannot express the repeated
-	// or comma-separated --resource scoping these cases need.
-	if len(a.Resource) > 1 {
-		return "gap: simulate has no repeated --resource scoping (single --name only)"
-	}
-
+func simulateGap(_ DiffTestType, _ *simArgs) string {
 	return ""
 }
 
 // simulateArgv translates the parsed crossplane-diff args into project
-// simulate's: the input files as -f, a single --resource as --name (and
+// simulate's: the input files as -f, each --resource as a --name (and
 // --namespace), --include-manual as --include-pinned, and
 // --analyze-unchanged as its replacement --analyze-on=always. The output
 // is passed explicitly: crossplane-diff's default diff, since simulate
@@ -136,15 +129,14 @@ func simulateArgv(t *testing.T, a *simArgs) []string {
 		argv = append(argv, "-f", f)
 	}
 
-	ns := a.Namespace
-	if len(a.Resource) == 1 {
-		r, err := ref.Parse(a.Resource[0])
+	for _, v := range a.Resource {
+		r, err := ref.Parse(v)
 		if err != nil {
-			t.Fatalf("cannot parse --resource %q: %v", a.Resource[0], err)
+			t.Fatalf("cannot parse --resource %q: %v", v, err)
 		}
-		ns = r.Namespace
-		argv = append(argv, "--name="+r.Name)
+		argv = append(argv, "--name="+ref.Format(r))
 	}
+	ns := a.Namespace
 	if ns != "" {
 		argv = append(argv, "--namespace="+ns)
 	}

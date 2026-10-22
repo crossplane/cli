@@ -113,7 +113,7 @@ func TestSimulateFlags(t *testing.T) {
 				Input:             []string{"p.yaml"},
 				Context:           "staging",
 				Namespace:         "team-a",
-				Name:              "db",
+				Name:              []string{"db"},
 				IncludePinned:     true,
 				MaxIterations:     3,
 				Timeout:           2 * time.Minute,
@@ -310,6 +310,7 @@ func TestSimulateScope(t *testing.T) {
 	type want struct {
 		namespace string
 		refs      []k8stypes.NamespacedName
+		err       string
 	}
 
 	cases := map[string]struct {
@@ -327,19 +328,53 @@ func TestSimulateScope(t *testing.T) {
 		},
 		"ClusterScopedName": {
 			reason: "--name alone should name a cluster-scoped composite resource.",
-			cmd:    simulateCmd{Name: "db"},
+			cmd:    simulateCmd{Name: []string{"db"}},
 			want:   want{refs: []k8stypes.NamespacedName{{Name: "db"}}},
 		},
 		"NamespacedName": {
 			reason: "--name with --namespace should name a namespaced composite resource, not scope discovery.",
-			cmd:    simulateCmd{Namespace: "team-a", Name: "db"},
+			cmd:    simulateCmd{Namespace: "team-a", Name: []string{"db"}},
 			want:   want{refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}}},
+		},
+		"ManyNames": {
+			reason: "Each --name should become a ref, bare names taking --namespace.",
+			cmd:    simulateCmd{Namespace: "team-a", Name: []string{"db", "cache"}},
+			want:   want{refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}, {Namespace: "team-a", Name: "cache"}}},
+		},
+		"QualifiedNames": {
+			reason: "namespace/name should carry its own namespace, mixed with a cluster-scoped bare name.",
+			cmd:    simulateCmd{Name: []string{"team-a/db", "team-b/db", "global"}},
+			want:   want{refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}, {Namespace: "team-b", Name: "db"}, {Name: "global"}}},
+		},
+		"QualifiedWithNamespaceFlag": {
+			reason: "namespace/name together with --namespace should be rejected.",
+			cmd:    simulateCmd{Namespace: "team-a", Name: []string{"team-a/db"}},
+			want:   want{err: "can't be combined with --namespace"},
+		},
+		"EmptyName": {
+			reason: "An empty --name value should be rejected.",
+			cmd:    simulateCmd{Name: []string{"db", " "}},
+			want:   want{err: "--name must not be empty"},
+		},
+		"MalformedName": {
+			reason: "A malformed namespace/name should be rejected naming --name.",
+			cmd:    simulateCmd{Name: []string{"a/b/c"}},
+			want:   want{err: "invalid --name value"},
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			ns, refs := tc.cmd.scope()
+			ns, refs, err := tc.cmd.scope()
+			if tc.want.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
+					t.Errorf("\n%s\nscope(): want error containing %q, got %v", tc.reason, tc.want.err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("\n%s\nscope(): unexpected error: %v", tc.reason, err)
+			}
 			if diff := cmp.Diff(tc.want.namespace, ns); diff != "" {
 				t.Errorf("\n%s\nscope(): -want namespace, +got:\n%s", tc.reason, diff)
 			}
@@ -738,7 +773,7 @@ func TestSimulateRun(t *testing.T) {
 		},
 		"Scoped": {
 			reason: "--name and --namespace should reach DiffComposition as a ref.",
-			args:   args{cmd: simulateCmd{Namespace: "team-a", Name: "db"}, initClients: noInit, proc: &fakeCompProc{}},
+			args:   args{cmd: simulateCmd{Namespace: "team-a", Name: []string{"db"}}, initClients: noInit, proc: &fakeCompProc{}},
 			want:   want{diffed: true, refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}}},
 		},
 		"ClientInitError": {
@@ -1182,5 +1217,26 @@ func TestSelectServers(t *testing.T) {
 	}
 	if _, _, err := selectServers("x", false, func(string) ([]diffserver.Input, error) { return nil, boom }, loadDeps(), onDemand); !errors.Is(err, boom) {
 		t.Errorf("provider load error: want %v, got %v", boom, err)
+	}
+}
+
+func TestSimulateNameFlagParse(t *testing.T) {
+	for name, args := range map[string][]string{
+		"Repeated":       {"--name=a/db", "--name=b/db"},
+		"CommaSeparated": {"--name=a/db,b/db"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var c simulateCmd
+			k, err := kong.New(&c, kong.Vars{"project_file": "crossplane-project.yaml"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := k.Parse(args); err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff([]string{"a/db", "b/db"}, c.Name); diff != "" {
+				t.Errorf("Name: -want, +got:\n%s", diff)
+			}
+		})
 	}
 }

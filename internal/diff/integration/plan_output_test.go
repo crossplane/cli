@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -190,6 +191,46 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 				},
 			},
 		},
+		"NameRepeatedScopesToEach": {
+			reason:   "repeated --name with --namespace scopes the run to each named composite, as the unscoped run covers both.",
+			testType: CompositionDiffTest,
+			tt:       compCase,
+			args:     []string{"-o", "json", "-f", "testdata/comp/updated-composition.yaml", "-n", "default", "--name=another-resource", "--name=test-resource"},
+			wantResult: &planShape{
+				Summary:    plan.Summary{Update: 3, NoOp: 2},
+				Composites: []plan.CompositeResult{{Ref: another, Status: plan.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: plan.CompositeChanged, Composition: &comp}},
+				Compositions: []plan.CompositionResult{{
+					Ref:            comp,
+					RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},
+				}},
+				Plans: []planEntry{
+					{Kind: "Composition", Name: comp.Name, Action: plan.ActionUpdate},
+					{Kind: "XDownstreamResource", Name: "another-resource", Action: plan.ActionUpdate, Composite: "another-resource"},
+					{Kind: "XNopResource", Name: "another-resource", Action: plan.ActionNoOp, Composite: "another-resource"},
+					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
+					{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionNoOp, Composite: "test-resource"},
+				},
+			},
+		},
+		"NameNamespaceQualifiedScopesOne": {
+			reason:   "a namespace/name --name without --namespace scopes the run to that one composite.",
+			testType: CompositionDiffTest,
+			tt:       compCase,
+			args:     []string{"-o", "json", "-f", "testdata/comp/updated-composition.yaml", "--name=default/test-resource"},
+			wantResult: &planShape{
+				Summary:    plan.Summary{Update: 2, NoOp: 1},
+				Composites: []plan.CompositeResult{{Ref: xnop, Status: plan.CompositeChanged, Composition: &comp}},
+				Compositions: []plan.CompositionResult{{
+					Ref:            comp,
+					RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1},
+				}},
+				Plans: []planEntry{
+					{Kind: "Composition", Name: comp.Name, Action: plan.ActionUpdate},
+					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
+					{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionNoOp, Composite: "test-resource"},
+				},
+			},
+		},
 	}
 
 	for name, tc := range cases {
@@ -282,4 +323,68 @@ func integrationEnvGap() string {
 		return "env: CROSSPLANE_CRDS_DIR unset (run via nix run .#test or set it to Crossplane's cluster/crds)"
 	}
 	return ""
+}
+
+// TestSimulateNameRejected runs the --name scopes simulate refuses: one
+// naming a composite no supplied Composition reaches, and a namespace/name
+// combined with --namespace.
+func TestSimulateNameRejected(t *testing.T) {
+	t.Parallel()
+
+	tu.SetupKubeTestLogger(t)
+
+	compCase := IntegrationTestCase{
+		setupFiles: []string{
+			"testdata/comp/resources/xrd.yaml",
+			"testdata/comp/resources/original-composition.yaml",
+			"testdata/comp/resources/functions.yaml",
+		},
+		crossplaneManagedResources: []HierarchicalOwnershipRelation{
+			composes("testdata/comp/resources/existing-xr-1.yaml", "testdata/comp/resources/existing-downstream-1.yaml"),
+			composes("testdata/comp/resources/existing-xr-2.yaml", "testdata/comp/resources/existing-downstream-2.yaml"),
+		},
+	}
+	base := []string{"-f", "testdata/comp/updated-composition.yaml"}
+
+	cases := map[string]struct {
+		reason  string
+		args    []string
+		wantErr string
+	}{
+		"NamePartiallyUnmatchedFailsBeforeRendering": {
+			reason:  "one --name no composite matches fails the run, and no plan is rendered.",
+			args:    append([]string{"--name=default/test-resource", "--name=default/missing"}, base...),
+			wantErr: "resource ref(s) not relevant to any supplied composition: [default/missing]",
+		},
+		"NameQualifiedWithNamespaceFlagRejected": {
+			reason:  "namespace/name with --namespace is ambiguous and is rejected.",
+			args:    append([]string{"--namespace=default", "--name=default/test-resource"}, base...),
+			wantErr: "can't be combined with --namespace",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if reason := integrationEnvGap(); reason != "" {
+				t.Skip(reason)
+			}
+
+			cfg := startIntegrationCluster(t, CompositionDiffTest, compCase, defaultTimeout).cfg
+
+			var stdout, stderr bytes.Buffer
+			argv := append([]string{"project", "simulate", "--timeout=" + defaultTimeout.String()}, tc.args...)
+			code, err := runSimulateArgv(t, cfg, argv, localCrossplaneBinary(t), &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("\n%s\nsimulate: want error containing %q, got %v (exit %d)", tc.reason, tc.wantErr, err, code)
+			}
+			if code != dp.ExitCodeToolError {
+				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, dp.ExitCodeToolError, code)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("\n%s\nsimulate: want no plan output, got:\n%s", tc.reason, stdout.String())
+			}
+		})
+	}
 }

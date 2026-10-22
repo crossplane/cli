@@ -249,6 +249,7 @@ func compResult() plan.Result {
 			{
 				APIVersion: "example.org/v1", Kind: "XDownstream", Name: "xr-1-abc12", Namespace: "default", Action: plan.ActionUpdate, Composite: &xr1,
 				Changes: []plan.FieldChange{{Path: "spec.forProvider.configData", Actual: val("old"), Planned: val("new-value-42")}},
+				After:   &unstructured.Unstructured{Object: map[string]any{"apiVersion": "example.org/v1", "kind": "XDownstream", "metadata": map[string]any{"name": "xr-1-abc12"}, "spec": map[string]any{"forProvider": map[string]any{"afterOnly": "x"}}}},
 				DryRun:  &plan.Verification{SkipReason: "not-found", Detail: "the server could not find it"},
 			},
 		},
@@ -315,6 +316,10 @@ func TestAssertStructuredCompDiff(t *testing.T) {
 		"WrongDownstreamValue": {want: downstream().WithFieldChange("spec.forProvider.configData", "old", "other"), wantFail: true},
 		"BadValuePattern":      {want: downstream().WithFieldValuePattern("spec.forProvider.configData", `^old$`), wantFail: true},
 		"DryRunPerformed":      {want: downstream().WithDryRunPerformed(), wantFail: true},
+		"SpecMatch":            {want: downstream().WithSpec(map[string]any{"forProvider": map[string]any{"configData": "new-value-42"}})},
+		"SpecMismatch":         {want: downstream().WithSpec(map[string]any{"forProvider": map[string]any{"configData": "other"}}), wantFail: true},
+		"AbsentInChanges":      {want: downstream().WithFieldAbsent("spec.forProvider.configData"), wantFail: true},
+		"AbsentInAfter":        {want: downstream().WithFieldAbsent("spec.forProvider.afterOnly"), wantFail: true},
 		"ErrorOnOtherXR": {
 			want:     ExpectCompDiff().WithComposition("comp-a").WithXRImpact("XNop", "xr-2", "default", "unchanged").WithErrorResourceID("XNop/xr-1"),
 			wantFail: true,

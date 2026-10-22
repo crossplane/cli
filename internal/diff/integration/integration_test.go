@@ -5549,7 +5549,7 @@ Summary: 1 modified`,
 			expectedErrorContains: "impact analysis failed for 1 XR(s)",
 			expectedExitCode:      dp.ExitCodeToolError,
 			expectedStructuredCompOutput: simtest.ExpectCompDiff().
-				WithError("XCycleA/test-cycle").
+				WithErrorID("XCycleA/test-cycle").
 				WithComposition("xcycleas.cycle.example.org").
 				WithAffectedResources(1, 0, 0, 1).
 				WithXRImpact("XCycleA", "test-cycle", "default", "error").

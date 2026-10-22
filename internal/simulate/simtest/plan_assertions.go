@@ -56,9 +56,9 @@ func ParseResult(jsonOutput string) (plan.Result, error) {
 	return res, nil
 }
 
-// AssertStructuredDiff checks an xr run's plan.Result against expected. Accepts any builder level, so
-// callers don't need to call And() to return to the root.
-func AssertStructuredDiff(t *testing.T, jsonOutput string, e DiffExpectation) {
+// AssertStructured checks a plan.Result against expected, running each section only if it was
+// expected. Accepts any builder level, so callers don't need And()/AndXR()/AndComp().
+func AssertStructured(t *testing.T, jsonOutput string, e Expectation) {
 	t.Helper()
 
 	expected := e.expectation()
@@ -99,21 +99,6 @@ func AssertStructuredDiff(t *testing.T, jsonOutput string, e DiffExpectation) {
 	assertWarnings(t, res.Warnings, warningMatches(expected.warnings, func(w *WarningExpectation) warningMatch { return w.warningMatch }), expected.noWarnings)
 
 	assertXRExpectations(t, res, expected.xrs)
-}
-
-// AssertStructuredCompDiff checks a comp run's plan.Result against expected. Accepts any builder level,
-// so callers don't need to call And()/AndXR()/AndComp().
-func AssertStructuredCompDiff(t *testing.T, jsonOutput string, e CompDiffExpectation) {
-	t.Helper()
-
-	expected := e.compExpectation()
-
-	res, err := ParseResult(jsonOutput)
-	if err != nil {
-		t.Fatalf("%v\nOutput was:\n%s", err, jsonOutput)
-	}
-
-	assertWarnings(t, res.Warnings, warningMatches(expected.warnings, func(w *CompWarningExpectation) warningMatch { return w.warningMatch }), expected.noWarnings)
 
 	for _, id := range expected.errorIDs {
 		if findMatchingError(res.Errors, id) == nil {
@@ -124,6 +109,18 @@ func AssertStructuredCompDiff(t *testing.T, jsonOutput string, e CompDiffExpecta
 	for _, want := range expected.compositions {
 		assertComposition(t, res, want)
 	}
+}
+
+// AssertStructuredDiff is the pre-unification name of AssertStructured.
+func AssertStructuredDiff(t *testing.T, jsonOutput string, e Expectation) {
+	t.Helper()
+	AssertStructured(t, jsonOutput, e)
+}
+
+// AssertStructuredCompDiff is the pre-unification name of AssertStructured.
+func AssertStructuredCompDiff(t *testing.T, jsonOutput string, e Expectation) {
+	t.Helper()
+	AssertStructured(t, jsonOutput, e)
 }
 
 func assertComposition(t *testing.T, res plan.Result, want *CompositionExpectation) {

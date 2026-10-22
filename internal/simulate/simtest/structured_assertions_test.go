@@ -293,7 +293,7 @@ func TestAssertStructuredCompDiff(t *testing.T) {
 		// Counts are per composition: comp-b's errored composite is not comp-a's.
 		"CountsArePerComposition": {want: ExpectCompDiff().WithComposition("comp-a").WithAffectedResources(4, 1, 1, 1), wantFail: true},
 		"OtherComposition": {want: ExpectCompDiff().
-			WithError("Composition/comp-b").
+			WithErrorID("Composition/comp-b").
 			WithComposition("comp-b").
 			WithCompositionErrorContaining("cannot convert").
 			WithImpactAnalysisSkipped().
@@ -319,7 +319,7 @@ func TestAssertStructuredCompDiff(t *testing.T) {
 			want:     ExpectCompDiff().WithComposition("comp-a").WithXRImpact("XNop", "xr-2", "default", "unchanged").WithErrorResourceID("XNop/xr-1"),
 			wantFail: true,
 		},
-		"MissingTopLevelError": {want: ExpectCompDiff().WithError("Composition/comp-a"), wantFail: true},
+		"MissingTopLevelError": {want: ExpectCompDiff().WithErrorID("Composition/comp-a"), wantFail: true},
 	}
 
 	for name, tc := range cases {
@@ -385,5 +385,42 @@ func TestValueAt(t *testing.T) {
 				t.Errorf("valueAt(%q, planned=%t) = %#v, want %#v", tc.path, tc.planned, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestAssertStructuredCombined checks that xr-style and composition-style sections of one Expect()
+// are asserted against a single plan.Result, and that each still fails where it did on its own.
+func TestAssertStructuredCombined(t *testing.T) {
+	res := xrResult()
+	res.Compositions = []plan.CompositionResult{{Ref: compA, RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1}}}
+	res.Composites = append(res.Composites, plan.CompositeResult{Ref: xr1, Status: plan.CompositeChanged, Composition: &compA})
+	out := resultJSON(t, res)
+
+	combined := func() *Expected {
+		e := Expect().WithSummary(1, 1, 1).WithError("XBucket/broken-xr").AndError().WithWarning("advisory").And().
+			WithXRs(
+				XR("XBucket", "changed-xr", "default").Status("changed"),
+				XR("XBucket", "unchanged-xr", "default").Status("unchanged"),
+				XR("XBucket", "broken-xr", "default").Status("error"),
+				XR("XNop", "xr-1", "default").Status("changed"))
+		e.WithComposition("comp-a").WithRevisionImpact("spec", true, 1).WithXRImpact("XNop", "xr-1", "default", "changed")
+
+		return e
+	}
+
+	cases := map[string]struct {
+		want     Expectation
+		wantFail bool
+	}{
+		"Combined":         {want: combined()},
+		"WrongSummary":     {want: combined().WithSummary(2, 1, 1), wantFail: true},
+		"WrongRevision":    {want: combined().WithComposition("comp-a").WithRevisionImpact("metadata", true, 1), wantFail: true},
+		"WrongXRImpact":    {want: combined().WithComposition("comp-a").WithXRImpact("XNop", "xr-1", "default", "unchanged"), wantFail: true},
+		"MissingErrorID":   {want: combined().WithErrorID("Composition/comp-a"), wantFail: true},
+		"AbsentFieldFails": {want: Expect().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldAbsent("spec.region"), wantFail: true},
+	}
+
+	for name, tc := range cases {
+		checkAssertion(t, name, tc.wantFail, func(t *testing.T) { t.Helper(); AssertStructured(t, out, tc.want) })
 	}
 }

@@ -8,14 +8,36 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
-// DiffExpectation is an interface that allows AssertStructuredDiff to accept
-// either *ExpectedDiff or *ResourceExpectation, eliminating the need for And().
-type DiffExpectation interface {
-	expectation() *ExpectedDiff
+// Expectation is implemented by every level of the builder hierarchy, so AssertStructured accepts
+// any node and callers never need And()/AndXR()/AndComp() to climb back to the root.
+type Expectation interface {
+	expectation() *Expected
 }
 
-// ExpectedDiff is a fluent builder for test expectations on structured diff output.
-type ExpectedDiff struct {
+// DiffExpectation is the pre-unification name of Expectation.
+type DiffExpectation = Expectation
+
+// CompDiffExpectation is the pre-unification name of Expectation.
+type CompDiffExpectation = Expectation
+
+// ExpectedDiff is the pre-unification name of Expected.
+type ExpectedDiff = Expected
+
+// ExpectedCompDiff is the pre-unification name of Expected.
+type ExpectedCompDiff = Expected
+
+// CompWarningExpectation is the pre-unification name of WarningExpectation.
+type CompWarningExpectation = WarningExpectation
+
+// Expected is a fluent builder for test expectations on a plan.Result, covering both xr-style sections
+// (summary, flat resources, errors, XR groups) and composition-style sections. Each section is asserted
+// only if it was expected.
+type Expected struct {
+	// compositions are asserted by composition ref, with no count pinned.
+	compositions []*CompositionExpectation
+	// errorIDs are resourceIDs the top-level errors[] must contain (no count pinned); see WithErrorID.
+	errorIDs []string
+
 	summary   *expectedSummary
 	resources []*ResourceExpectation
 	errors    []*ErrorExpectation
@@ -37,12 +59,12 @@ type warningMatch struct {
 type WarningExpectation struct {
 	warningMatch
 
-	parent *ExpectedDiff
+	parent *Expected
 }
 
-func (w *WarningExpectation) expectation() *ExpectedDiff { return w.parent }
+func (w *WarningExpectation) expectation() *Expected { return w.parent }
 
-func (e *ExpectedDiff) expectation() *ExpectedDiff { return e }
+func (e *Expected) expectation() *Expected { return e }
 
 type expectedSummary struct {
 	added    int
@@ -52,7 +74,7 @@ type expectedSummary struct {
 
 // ResourceExpectation defines expectations for a single resource change.
 type ResourceExpectation struct {
-	parent             *ExpectedDiff
+	parent             *Expected
 	xrParent           *XRExpectation // set when this change is scoped to an xrs[] entry
 	changeType         string         // "added", "modified", "removed"
 	kind               string
@@ -89,19 +111,26 @@ type dryRunExpectation struct {
 // change (r.parent set); an XR-scoped change (r.xrParent set) is built as a
 // standalone sub-expression passed to WithXRs and is never walked back to a
 // root, so r.parent is nil there and that is fine.
-func (r *ResourceExpectation) expectation() *ExpectedDiff {
+func (r *ResourceExpectation) expectation() *Expected {
 	return r.parent
 }
 
-// ExpectDiff creates a new ExpectedDiff builder.
-func ExpectDiff() *ExpectedDiff {
-	return &ExpectedDiff{
-		resources: make([]*ResourceExpectation, 0),
+// Expect creates a new Expected builder.
+func Expect() *Expected {
+	return &Expected{
+		resources:    make([]*ResourceExpectation, 0),
+		compositions: make([]*CompositionExpectation, 0),
 	}
 }
 
+// ExpectDiff is the pre-unification name of Expect.
+func ExpectDiff() *Expected { return Expect() }
+
+// ExpectCompDiff is the pre-unification name of Expect.
+func ExpectCompDiff() *Expected { return Expect() }
+
 // WithSummary sets the expected summary counts.
-func (e *ExpectedDiff) WithSummary(added, modified, removed int) *ExpectedDiff {
+func (e *Expected) WithSummary(added, modified, removed int) *Expected {
 	e.summary = &expectedSummary{
 		added:    added,
 		modified: modified,
@@ -112,7 +141,7 @@ func (e *ExpectedDiff) WithSummary(added, modified, removed int) *ExpectedDiff {
 }
 
 // WithAddedResource adds an expectation for an added resource.
-func (e *ExpectedDiff) WithAddedResource(kind, name, namespace string) *ResourceExpectation {
+func (e *Expected) WithAddedResource(kind, name, namespace string) *ResourceExpectation {
 	r := &ResourceExpectation{
 		parent:             e,
 		changeType:         dt.DiffTypeWordAdded,
@@ -129,7 +158,7 @@ func (e *ExpectedDiff) WithAddedResource(kind, name, namespace string) *Resource
 }
 
 // WithModifiedResource adds an expectation for a modified resource.
-func (e *ExpectedDiff) WithModifiedResource(kind, name, namespace string) *ResourceExpectation {
+func (e *Expected) WithModifiedResource(kind, name, namespace string) *ResourceExpectation {
 	r := &ResourceExpectation{
 		parent:             e,
 		changeType:         dt.DiffTypeWordModified,
@@ -149,13 +178,13 @@ func (e *ExpectedDiff) WithModifiedResource(kind, name, namespace string) *Resou
 // errors[] payload. Match is by ResourceID; ValidationFailures, when
 // non-nil, asserts the per-resource typed validation breakdown.
 type ErrorExpectation struct {
-	parent             *ExpectedDiff
+	parent             *Expected
 	resourceID         string
 	messageContains    string
 	validationFailures []*ValidationFailureExpectation
 }
 
-func (e *ErrorExpectation) expectation() *ExpectedDiff { return e.parent }
+func (e *ErrorExpectation) expectation() *Expected { return e.parent }
 
 // ValidationFailureExpectation describes one expected entry in
 // errors[].validationFailures[]. Match is by APIVersion/Kind/Name;
@@ -170,7 +199,7 @@ type ValidationFailureExpectation struct {
 	errors     []*FieldErrorExpectation // optional; nil = no assertion on per-field errors
 }
 
-func (v *ValidationFailureExpectation) expectation() *ExpectedDiff { return v.parent.parent }
+func (v *ValidationFailureExpectation) expectation() *Expected { return v.parent.parent }
 
 // FieldErrorExpectation describes one expected entry in
 // errors[].validationFailures[].errors[]. Match is by Type+Field
@@ -185,11 +214,11 @@ type FieldErrorExpectation struct {
 	value           any
 }
 
-func (f *FieldErrorExpectation) expectation() *ExpectedDiff { return f.parent.parent.parent }
+func (f *FieldErrorExpectation) expectation() *Expected { return f.parent.parent.parent }
 
 // WithWarning asserts that structured output carries a warning whose message contains the supplied
 // substring. Chain WithWarningContext to pin the machine-readable context pairs.
-func (e *ExpectedDiff) WithWarning(messageContains string) *WarningExpectation {
+func (e *Expected) WithWarning(messageContains string) *WarningExpectation {
 	w := &WarningExpectation{
 		parent:       e,
 		warningMatch: warningMatch{messageContains: messageContains},
@@ -202,7 +231,7 @@ func (e *ExpectedDiff) WithWarning(messageContains string) *WarningExpectation {
 // WithNoWarnings asserts that structured output carries no advisories at all. Distinct from simply
 // declaring no WithWarning expectations, which asserts nothing: this is how a test pins that a
 // condition the tool used to warn about is correctly silent.
-func (e *ExpectedDiff) WithNoWarnings() *ExpectedDiff {
+func (e *Expected) WithNoWarnings() *Expected {
 	e.noWarnings = true
 	return e
 }
@@ -214,12 +243,12 @@ func (w *WarningExpectation) WithWarningContext(context map[string]string) *Warn
 }
 
 // And returns to the parent builder.
-func (w *WarningExpectation) And() *ExpectedDiff { return w.parent }
+func (w *WarningExpectation) And() *Expected { return w.parent }
 
 // WithError attaches an expectation for an entry in the structured
 // errors[] payload, matched by resourceID. Use the returned
 // ErrorExpectation to add validationFailures expectations.
-func (e *ExpectedDiff) WithError(resourceID string) *ErrorExpectation {
+func (e *Expected) WithError(resourceID string) *ErrorExpectation {
 	er := &ErrorExpectation{
 		parent:     e,
 		resourceID: resourceID,
@@ -257,7 +286,7 @@ func (e *ErrorExpectation) WithValidationFailure(apiVersion, kind, name, namespa
 // AndError returns to the parent ExpectedDiff to chain another
 // WithError call, mirroring the AndXR / AndComp helpers elsewhere in
 // this file.
-func (e *ErrorExpectation) AndError() *ExpectedDiff {
+func (e *ErrorExpectation) AndError() *Expected {
 	return e.parent
 }
 
@@ -314,7 +343,7 @@ func (f *FieldErrorExpectation) AndFieldError() *ValidationFailureExpectation {
 }
 
 // WithRemovedResource adds an expectation for a removed resource.
-func (e *ExpectedDiff) WithRemovedResource(kind, name, namespace string) *ResourceExpectation {
+func (e *Expected) WithRemovedResource(kind, name, namespace string) *ResourceExpectation {
 	r := &ResourceExpectation{
 		parent:             e,
 		changeType:         dt.DiffTypeWordRemoved,
@@ -425,7 +454,7 @@ func (r *ResourceExpectation) WithAnyName() *ResourceExpectation {
 // And returns to the root ExpectedDiff to chain more expectations.
 // Not needed at the end of a chain - AssertStructuredDiff accepts a
 // ResourceExpectation directly.
-func (r *ResourceExpectation) And() *ExpectedDiff {
+func (r *ResourceExpectation) And() *Expected {
 	return r.expectation()
 }
 
@@ -478,7 +507,7 @@ func (r *ResourceExpectation) xrExpectation() *XRExpectation { return r.xrParent
 
 // WithXRs attaches per-input-XR expectations (built via XR(...)) to assert
 // against the xrs[] grouped view, in order.
-func (e *ExpectedDiff) WithXRs(xrs ...xrSpec) *ExpectedDiff {
+func (e *Expected) WithXRs(xrs ...xrSpec) *Expected {
 	for _, x := range xrs {
 		e.xrs = append(e.xrs, x.xrExpectation())
 	}
@@ -487,9 +516,9 @@ func (e *ExpectedDiff) WithXRs(xrs ...xrSpec) *ExpectedDiff {
 }
 
 // Build terminates the chain and returns the root expectation. Optional —
-// AssertStructuredDiff accepts an *ExpectedDiff directly — but it reads as an
+// AssertStructuredDiff accepts an *Expected directly — but it reads as an
 // explicit "done building" marker.
-func (e *ExpectedDiff) Build() *ExpectedDiff { return e }
+func (e *Expected) Build() *Expected { return e }
 
 // Status asserts the entry's status (changed/unchanged/error).
 func (x *XRExpectation) Status(status string) *XRExpectation {
@@ -542,71 +571,16 @@ func (x *XRExpectation) Change(changeType, kind, name, namespace string) *Resour
 	return r
 }
 
-// CompDiffExpectation is an interface that allows AssertStructuredCompDiff to accept
-// any level of the builder hierarchy, eliminating the need for And()/AndXR()/AndComp().
-type CompDiffExpectation interface {
-	compExpectation() *ExpectedCompDiff
-}
-
-// ExpectedCompDiff is a fluent builder for test expectations on composition diff output.
-type ExpectedCompDiff struct {
-	compositions []*CompositionExpectation
-	warnings     []*CompWarningExpectation
-	// noWarnings asserts warnings[] is empty. Separate from len(warnings)==0, which means "no opinion".
-	noWarnings bool
-	// errorIDs are resourceIDs the top-level errors[] must contain.
-	errorIDs []string
-}
-
-func (e *ExpectedCompDiff) compExpectation() *ExpectedCompDiff { return e }
-
-// CompWarningExpectation describes one expected entry in a comp diff's warnings[].
-type CompWarningExpectation struct {
-	warningMatch
-
-	parent *ExpectedCompDiff
-}
-
-func (w *CompWarningExpectation) compExpectation() *ExpectedCompDiff { return w.parent }
-
-// WithWarning asserts that structured output carries a warning whose message contains the supplied
-// substring. Chain WithWarningContext to pin the machine-readable context pairs.
-func (e *ExpectedCompDiff) WithWarning(messageContains string) *CompWarningExpectation {
-	w := &CompWarningExpectation{
-		parent:       e,
-		warningMatch: warningMatch{messageContains: messageContains},
-	}
-	e.warnings = append(e.warnings, w)
-
-	return w
-}
-
-// WithError asserts the top-level errors[] contains an error with the given resourceID.
-func (e *ExpectedCompDiff) WithError(resourceID string) *ExpectedCompDiff {
+// WithErrorID asserts the top-level errors[] contains an error with the given resourceID. Unlike
+// WithError it pins neither the error's details nor the error count.
+func (e *Expected) WithErrorID(resourceID string) *Expected {
 	e.errorIDs = append(e.errorIDs, resourceID)
 	return e
 }
 
-// WithNoWarnings asserts that structured output carries no advisories at all. Distinct from simply
-// declaring no WithWarning expectations, which asserts nothing: this is how a test pins that a
-// condition the tool warns about elsewhere is correctly silent here.
-func (e *ExpectedCompDiff) WithNoWarnings() *ExpectedCompDiff {
-	e.noWarnings = true
-	return e
-}
-
-// WithWarningContext pins the expected context key/value pairs on the warning under construction.
-func (w *CompWarningExpectation) WithWarningContext(context map[string]string) *CompWarningExpectation {
-	w.context = context
-	return w
-}
-
-// And returns to the parent builder.
-func (w *CompWarningExpectation) And() *ExpectedCompDiff { return w.parent }
-
 // CompositionExpectation defines expectations for a single composition in the diff.
 type CompositionExpectation struct {
-	parent                     *ExpectedCompDiff
+	parent                     *Expected
 	name                       string
 	affectedTotal              *int
 	affectedWithChanges        *int
@@ -647,7 +621,7 @@ type expectedPredictedRevisionName struct {
 	pattern string
 }
 
-func (c *CompositionExpectation) compExpectation() *ExpectedCompDiff { return c.parent }
+func (c *CompositionExpectation) expectation() *Expected { return c.parent }
 
 // XRImpactExpectation defines expectations for a single XR impact.
 type XRImpactExpectation struct {
@@ -664,17 +638,10 @@ type XRImpactExpectation struct {
 	downstreamResources []*DownstreamResourceExpectation
 }
 
-func (x *XRImpactExpectation) compExpectation() *ExpectedCompDiff { return x.parent.parent }
-
-// ExpectCompDiff creates a new ExpectedCompDiff builder.
-func ExpectCompDiff() *ExpectedCompDiff {
-	return &ExpectedCompDiff{
-		compositions: make([]*CompositionExpectation, 0),
-	}
-}
+func (x *XRImpactExpectation) expectation() *Expected { return x.parent.parent }
 
 // WithComposition adds an expectation for a composition.
-func (e *ExpectedCompDiff) WithComposition(name string) *CompositionExpectation {
+func (e *Expected) WithComposition(name string) *CompositionExpectation {
 	c := &CompositionExpectation{
 		parent:    e,
 		name:      name,
@@ -855,7 +822,7 @@ type DownstreamResourceExpectation struct {
 	dryRun             dryRunExpectation
 }
 
-func (d *DownstreamResourceExpectation) compExpectation() *ExpectedCompDiff {
+func (d *DownstreamResourceExpectation) expectation() *Expected {
 	return d.parent.parent.parent
 }
 
@@ -937,7 +904,7 @@ func (x *XRImpactExpectation) AndComp() *CompositionExpectation {
 
 // And returns to parent to chain more composition expectations.
 // Not needed at the end of a chain - AssertStructuredCompDiff accepts CompositionExpectation directly.
-func (c *CompositionExpectation) And() *ExpectedCompDiff {
+func (c *CompositionExpectation) And() *Expected {
 	return c.parent
 }
 
@@ -948,17 +915,17 @@ func (c *CompositionExpectation) And() *ExpectedCompDiff {
 // multi-composition expectation readable instead of ending each composition with a run of climbs
 // whose purpose is not obvious from reading them.
 func (d *DownstreamResourceExpectation) AndComposition(name string) *CompositionExpectation {
-	return d.compExpectation().WithComposition(name)
+	return d.expectation().WithComposition(name)
 }
 
 // AndComposition starts an expectation for another composition. See
 // DownstreamResourceExpectation.AndComposition.
 func (x *XRImpactExpectation) AndComposition(name string) *CompositionExpectation {
-	return x.compExpectation().WithComposition(name)
+	return x.expectation().WithComposition(name)
 }
 
 // AndComposition starts an expectation for another composition. See
 // DownstreamResourceExpectation.AndComposition.
 func (c *CompositionExpectation) AndComposition(name string) *CompositionExpectation {
-	return c.compExpectation().WithComposition(name)
+	return c.expectation().WithComposition(name)
 }

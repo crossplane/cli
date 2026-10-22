@@ -307,3 +307,134 @@ func TestGenerateFromOpenAPIGo(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateFromCRDGoRuntimeObjectsMeta(t *testing.T) {
+	type args struct {
+		runtimeObjects bool
+	}
+	type want struct {
+		localMetaExists bool
+		contains        []string
+	}
+	cases := []struct {
+		name   string
+		args   args
+		want   want
+		reason string
+	}{
+		{
+			name: "RuntimeObjectsOn",
+			args: args{runtimeObjects: true},
+			want: want{
+				localMetaExists: false,
+				contains: []string{
+					"Metadata *k8smetav1.ObjectMeta",
+					"Metadata *k8smetav1.ListMeta",
+					`k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"`,
+				},
+			},
+			reason: "with runtimeObjects on, the local meta/v1 mirror must not be generated and the resource and list Metadata fields must use the real apimachinery types",
+		},
+		{
+			name: "RuntimeObjectsOff",
+			args: args{runtimeObjects: false},
+			want: want{
+				localMetaExists: true,
+			},
+			reason: "with runtimeObjects off, the local meta/v1 mirror package must still be generated",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
+			schemaFS, err := goGenerator{runtimeObjects: tc.args.runtimeObjects}.GenerateFromCRD(t.Context(), inputFS, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			exists, err := afero.Exists(schemaFS, "models/io/k8s/meta/v1/meta.go")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(tc.want.localMetaExists, exists); diff != "" {
+				t.Errorf("%s\nlocal meta/v1 package exists (-want +got):\n%s", tc.reason, diff)
+			}
+
+			if len(tc.want.contains) == 0 {
+				return
+			}
+			contents, err := afero.ReadFile(schemaFS, "models/co/acme/platform/v1alpha1/accountscaffold.go")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var missing []string
+			for _, s := range tc.want.contains {
+				if !strings.Contains(string(contents), s) {
+					missing = append(missing, s)
+				}
+			}
+			if diff := cmp.Diff([]string(nil), missing); diff != "" {
+				t.Errorf("%s\nfragments missing from accountscaffold.go (-want +got):\n%s\n%s", tc.reason, diff, contents)
+			}
+		})
+	}
+}
+
+func TestFixMissingImports(t *testing.T) {
+	cases := []struct {
+		name   string
+		args   string
+		want   map[string]string
+		reason string
+	}{
+		{
+			name: "RealMetaMapValue",
+			args: `package v1alpha1
+
+type Foo struct {
+	Conditions *map[string]k8smetav1.Condition
+}
+`,
+			want: map[string]string{
+				"k8smetav1": `"k8s.io/apimachinery/pkg/apis/meta/v1"`,
+			},
+			reason: "oapi-codegen doesn't import types used only as map values, so the real apimachinery meta/v1 alias used when runtimeObjects is on must be added",
+		},
+		{
+			name: "MirrorMetaMapValue",
+			args: `package v1alpha1
+
+type Foo struct {
+	Conditions *map[string]metav1.Condition
+}
+`,
+			want: map[string]string{
+				"metav1": `"dev.crossplane.io/models/io/k8s/meta/v1"`,
+			},
+			reason: "the local meta/v1 mirror alias must still resolve to the generated mirror package",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, err := fixMissingImports(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := parser.ParseFile(token.NewFileSet(), "", code, parser.ImportsOnly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := map[string]string{}
+			for _, imp := range f.Imports {
+				if imp.Name != nil {
+					got[imp.Name.Name] = imp.Path.Value
+				}
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("%s\nimports (-want +got):\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

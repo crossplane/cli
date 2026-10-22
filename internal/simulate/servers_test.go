@@ -24,9 +24,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"k8s.io/client-go/rest"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
@@ -269,5 +271,21 @@ func TestServerSetEnsure(t *testing.T) {
 	}
 	if s.Ran() {
 		t.Error("Ran() = true, want false")
+	}
+}
+
+func TestNewKubeClientConcurrent(t *testing.T) {
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			// A bogus host makes client.New succeed lazily; we only care that
+			// no shared scheme is mutated.
+			_, _, _ = NewKubeClient(&rest.Config{Host: "http://127.0.0.1:1"})
+		})
+	}
+	wg.Wait()
+
+	if s, err := kubeScheme(); err != nil || s == nil {
+		t.Errorf("kubeScheme() = %v, %v", s, err)
 	}
 }

@@ -275,14 +275,23 @@ func TestServerSetEnsure(t *testing.T) {
 }
 
 func TestServerSetEnsureDevelopmentKeys(t *testing.T) {
-	s := NewServerSet(terminal.NewNopSpinnerPrinter(), logging.NewNopLogger(), &bytes.Buffer{}, &failingPkgs{}, "s")
+	var out bytes.Buffer
+	s := NewServerSet(terminal.NewNopSpinnerPrinter(), logging.NewNopLogger(), &out, &failingPkgs{}, "s")
 	// Development inputs have no image, so each is keyed by its own name.
-	_ = s.Ensure(context.Background(), []diffserver.Input{
+	inputs := []diffserver.Input{
 		{Runtime: diffserver.RuntimeDevelopment, Name: "a", DevelopmentTarget: "localhost:1", APIGroups: []string{"a.example.org"}},
 		{Runtime: diffserver.RuntimeDevelopment, Name: "b", DevelopmentTarget: "localhost:2", APIGroups: []string{"b.example.org"}},
-	})
-	if len(s.handled) != 2 {
-		t.Errorf("handled %d Development providers, want 2: %v", len(s.handled), s.handled)
+	}
+	_ = s.Ensure(context.Background(), inputs)
+	for _, n := range []string{"a", "b"} {
+		if got := strings.Count(out.String(), "Not running a diff server for "+n+":"); got != 1 {
+			t.Errorf("skip message for %q printed %d times, want 1: %q", n, got, out.String())
+		}
+	}
+	before := out.String()
+	_ = s.Ensure(context.Background(), inputs)
+	if out.String() != before {
+		t.Errorf("second Ensure printed more: %q", out.String())
 	}
 }
 

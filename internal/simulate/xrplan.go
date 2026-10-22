@@ -77,6 +77,9 @@ func (x *XRPlanner) AfterXRDiff(ctx context.Context, diffs map[string]*dt.Resour
 		}
 		// Server start and image pulls are run-wide work, not the XR's.
 		err := diffprocessor.OutsideXRDeadline(ctx, func(run context.Context) error { return x.ensure(run, resources) })
+		if errors.Is(err, diffprocessor.ErrXRTimedOut) {
+			return err
+		}
 		if err != nil {
 			return errors.Wrap(err, "cannot start provider diff servers")
 		}

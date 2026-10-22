@@ -438,3 +438,19 @@ func cloneDiffs(m map[string]*dt.ResourceDiff) map[string]*dt.ResourceDiff {
 	}
 	return out
 }
+
+// TestAnnotateDiffDriftReplaceNoFields pins that a kept-equal resource the
+// provider would replace, without reporting a field, still renders.
+func TestAnnotateDiffDriftReplaceNoFields(t *testing.T) {
+	eq := lineDiff(t, "db", dt.DiffTypeEqual, map[string]any{"region": "a"}, map[string]any{"region": "a"})
+	got := annotateDiff(eq, planFor(eq, plan.ActionReplace)[eq.GetDiffKey()])
+	if got.DiffType != dt.DiffTypeModified {
+		t.Fatalf("annotateDiff(...).DiffType = %q, want modified", got.DiffType)
+	}
+	if text := flatten(got.LineDiffs)[0].text; text != "# replaced by the provider; no field reported" {
+		t.Errorf("annotateDiff(...) line = %q, want the replace comment", text)
+	}
+	if same := annotateDiff(eq, planFor(eq, plan.ActionUpdate)[eq.GetDiffKey()]); same != eq {
+		t.Error("annotateDiff(...) with an update and no fields changed the diff, want it returned as is")
+	}
+}

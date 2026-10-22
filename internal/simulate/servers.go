@@ -182,6 +182,7 @@ func StartDiffServers(ctx context.Context, sp terminal.SpinnerPrinter, log loggi
 	}
 	set := NewServerSet(sp, log, stderr, pkgs, session)
 	if err := set.Ensure(ctx, inputs); err != nil {
+		set.Stop(ctx)
 		return nil, nil, err
 	}
 	return set, func() { set.Stop(ctx) }, nil

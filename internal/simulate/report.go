@@ -163,7 +163,7 @@ func FromCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan) p
 // its revision advances, unless it was rendered against its pinned revision
 // because that calls a changed function. Other filtered composites are skipped.
 func compositeResult(impact dt.XRImpact) plan.CompositeResult {
-	c := plan.CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned}
+	c := plan.CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned || impact.FilterReason == dt.FilterReasonManualPolicy}
 
 	if impact.Pinned && impact.RenderedRevision != "" {
 		c.Detail = "rendered against pinned revision " + impact.RenderedRevision + " with the project's functions"
@@ -491,7 +491,7 @@ func verification(d *dt.DryRunInfo) *plan.Verification {
 }
 
 func planError(e dt.OutputError, resource *plan.ResourceRef) plan.Error {
-	out := plan.Error{Resource: resource, Message: e.Message}
+	out := plan.Error{Ref: resource, Message: e.Message}
 
 	for _, f := range e.ValidationFailures {
 		vf := plan.ValidationFailure{

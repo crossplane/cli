@@ -88,7 +88,7 @@ func xrResult() plan.Result {
 			{Ref: xrC, Status: plan.CompositeError},
 		},
 		Plans:    plans,
-		Errors:   []plan.Error{{Resource: &xrC, Message: "cannot get composition"}},
+		Errors:   []plan.Error{{Ref: &xrC, Message: "cannot get composition"}},
 		Warnings: []plan.Warning{{Message: "something advisory", Context: map[string]string{"composition": "c"}}},
 	}
 }
@@ -253,8 +253,8 @@ func compResult() plan.Result {
 			},
 		},
 		Errors: []plan.Error{
-			{Resource: &compB, Message: "cannot convert composition"},
-			{Resource: &xr1, Message: "maximum nesting depth exceeded"},
+			{Ref: &compB, Message: "cannot convert composition"},
+			{Ref: &xr1, Message: "maximum nesting depth exceeded"},
 		},
 	}
 }

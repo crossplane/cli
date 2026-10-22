@@ -53,7 +53,7 @@ type Summary struct {
 	Errored     int `json:"errored"`
 	// Deferred counts composites pinned to a composition revision, which
 	// applying changes nothing for. It does not count as a change.
-	Deferred int `json:"deferred,omitempty"`
+	Deferred int `json:"deferred"`
 }
 
 // Summarize counts the given plans. It cannot know about deferred
@@ -123,7 +123,7 @@ type CompositeResult struct {
 
 // Error is an error from a simulate run, optionally anchored to a resource.
 type Error struct {
-	Resource           *ResourceRef        `json:"resource,omitempty"`
+	Ref                *ResourceRef        `json:"ref,omitempty"`
 	Message            string              `json:"message"`
 	ValidationFailures []ValidationFailure `json:"validationFailures,omitempty"`
 }

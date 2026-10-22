@@ -392,7 +392,7 @@ func TestRenderJSONProjectFields(t *testing.T) {
 			DryRun:  &Verification{SkipReason: "forbidden", Detail: "no create permission"},
 		}},
 		Errors: []Error{{
-			Resource: &xr, Message: "invalid",
+			Ref: &xr, Message: "invalid",
 			ValidationFailures: []ValidationFailure{{
 				APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Status: "invalid",
 				Errors: []FieldValidationError{{Type: "schema", Field: "data", Message: "bad"}},
@@ -420,9 +420,12 @@ func TestRenderJSONOmitsProjectFields(t *testing.T) {
 	if err := r.Render(&buf, NewResult(testPlans())); err != nil {
 		t.Fatalf("Render(json): unexpected error: %v", err)
 	}
-	for _, k := range []string{`"composites"`, `"compositions"`, `"errors"`, `"warnings"`, `"deferred"`, `"composite"`, `"dryRun"`} {
+	for _, k := range []string{`"composites"`, `"compositions"`, `"errors"`, `"warnings"`, `"composite"`, `"dryRun"`} {
 		if bytes.Contains(buf.Bytes(), []byte(k)) {
 			t.Errorf("Render(json): resource simulate output should omit %s", k)
 		}
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"deferred": 0`)) {
+		t.Errorf("Render(json): summary should always report deferred")
 	}
 }

@@ -290,7 +290,7 @@ func assertXRImpact(t *testing.T, res plan.Result, label string, composites []pl
 		t.Errorf("%s: expected filterReason %s, got %s", label, want.filterReason, got.Reason)
 	}
 
-	errs := slices.DeleteFunc(slices.Clone(res.Errors), func(e plan.Error) bool { return e.Resource == nil || *e.Resource != got.Ref })
+	errs := slices.DeleteFunc(slices.Clone(res.Errors), func(e plan.Error) bool { return e.Ref == nil || *e.Ref != got.Ref })
 
 	if want.errorContains != "" {
 		msgs := make([]string, 0, len(errs))
@@ -400,7 +400,7 @@ func assertXRExpectations(t *testing.T, res plan.Result, expected []*XRExpectati
 
 		for _, id := range want.errorIDs {
 			e := findMatchingError(res.Errors, id)
-			if e == nil || e.Resource == nil || *e.Resource != got.Ref {
+			if e == nil || e.Ref == nil || *e.Ref != got.Ref {
 				t.Errorf("xr %s: expected error with resourceID %q not found against it. Actual error IDs: %v", label, id, errorIDs(res.Errors))
 			}
 		}
@@ -752,11 +752,11 @@ func findMatchingError(errs []plan.Error, resourceID string) *plan.Error {
 // errorID is crossplane-diff's resourceID for an error: its resource's Kind/name, empty for a run
 // error no resource owns.
 func errorID(e plan.Error) string {
-	if e.Resource == nil {
+	if e.Ref == nil {
 		return ""
 	}
 
-	return e.Resource.Kind + "/" + e.Resource.Name
+	return e.Ref.Kind + "/" + e.Ref.Name
 }
 
 func errorIDs(errs []plan.Error) []string {

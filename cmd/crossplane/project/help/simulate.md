@@ -158,6 +158,13 @@ Simulate a single namespaced composite resource:
 crossplane project simulate -n team-a --name=my-database
 ```
 
+`--name` takes `[namespace/]name` and is repeatable or comma-separated. Simulate
+two composite resources in different namespaces:
+
+```shell
+crossplane project simulate --name=team-a/my-database --name=team-b/my-database
+```
+
 Print the plan as JSON:
 
 ```shell

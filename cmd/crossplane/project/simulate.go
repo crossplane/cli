@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -54,6 +55,7 @@ import (
 	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8client "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
+	"github.com/crossplane/cli/v2/internal/diff/ref"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diffserver"
@@ -86,13 +88,13 @@ type simulateCmd struct {
 	MaxConcurrency uint     `default:"8"                 help:"Max concurrent function builds."`
 	CacheDir       string   `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)."                                           name:"cache-dir"`
 
-	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                       predictor:"context"                                                                                                                                                                                            short:"c"`
-	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                               predictor:"namespace"                                                                                                                                                                                          short:"n"`
-	Name          string        `help:"Only simulate the composite resource with this name. Use with --namespace to name a namespaced resource."`
+	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                                                                             predictor:"context"                                                                                                                                                                                            short:"c"`
+	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                                                                                     predictor:"namespace"                                                                                                                                                                                          short:"n"`
+	Name          []string      `help:"Only simulate the composite resource with this [namespace/]name. Repeatable or comma-separated. A bare name pairs with --namespace, or is cluster scoped without it." sep:","`
 	IncludePinned bool          `help:"Also simulate composite resources with a Manual composition update policy, which don't adopt the new revision."`
-	MaxIterations int           `default:"20"                                                                                                          help:"Max render iterations per composite resource to resolve requirements."`
-	Timeout       time.Duration `default:"2m"                                                                                                          help:"Max time to simulate one composite resource: its render and its resources' provider plans. Function and provider image pulls don't count, but the render image pull counts against the first composite."`
-	Output        string        `default:"plan"                                                                                                        enum:"plan,diff,json,yaml"                                                                                                                                                                                     help:"Output format. One of: plan, diff, json, yaml." short:"o"`
+	MaxIterations int           `default:"20"                                                                                                                                                                help:"Max render iterations per composite resource to resolve requirements."`
+	Timeout       time.Duration `default:"2m"                                                                                                                                                                help:"Max time to simulate one composite resource: its render and its resources' provider plans. Function and provider image pulls don't count, but the render image pull counts against the first composite."`
+	Output        string        `default:"plan"                                                                                                                                                              enum:"plan,diff,json,yaml"                                                                                                                                                                                     help:"Output format. One of: plan, diff, json, yaml." short:"o"`
 
 	NoColor                  bool                `help:"Disable colorized output."`
 	Compact                  bool                `help:"Show compact diffs with minimal context."`
@@ -511,7 +513,10 @@ func (c *simulateCmd) diffCompositions(k *kong.Context, logger logging.Logger, p
 		msg = "cannot simulate project"
 	}
 	return func(ctx context.Context) (bool, error) {
-		ns, refs := c.scope()
+		ns, refs, err := c.scope()
+		if err != nil {
+			return false, errors.Wrap(err, msg)
+		}
 		output, err := proc.DiffComposition(ctx, comps, ns, refs)
 
 		// Render the report even when there are errors (e.g. every
@@ -763,14 +768,33 @@ func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, statu
 }
 
 // scope returns the namespace and composite resource refs DiffComposition
-// limits its impact analysis to. A --name selects one composite resource,
-// namespaced when --namespace is set and cluster scoped otherwise, so the
-// namespace moves into its ref.
-func (c *simulateCmd) scope() (string, []k8stypes.NamespacedName) {
-	if c.Name == "" {
-		return c.Namespace, nil
+// limits its impact analysis to. Each --name selects one composite resource: a
+// bare name is namespaced when --namespace is set and cluster scoped
+// otherwise, and namespace/name carries its own namespace. The namespace moves
+// into the refs, so it is not also returned.
+func (c *simulateCmd) scope() (string, []k8stypes.NamespacedName, error) {
+	if len(c.Name) == 0 {
+		return c.Namespace, nil, nil
 	}
-	return "", []k8stypes.NamespacedName{{Namespace: c.Namespace, Name: c.Name}}
+	refs := make([]k8stypes.NamespacedName, 0, len(c.Name))
+	for _, v := range c.Name {
+		if strings.TrimSpace(v) == "" {
+			return "", nil, errors.New("--name must not be empty; pass a name or namespace/name")
+		}
+		if !strings.Contains(v, "/") {
+			refs = append(refs, k8stypes.NamespacedName{Namespace: c.Namespace, Name: strings.TrimSpace(v)})
+			continue
+		}
+		if c.Namespace != "" {
+			return "", nil, errors.Errorf("--name %q includes a namespace, so it can't be combined with --namespace; drop --namespace or pass the bare name", v)
+		}
+		r, err := ref.Parse(v)
+		if err != nil {
+			return "", nil, errors.New(strings.ReplaceAll(err.Error(), "--resource", "--name"))
+		}
+		refs = append(refs, r)
+	}
+	return "", refs, nil
 }
 
 // processorOptions returns the diff processor options for this run. Both the

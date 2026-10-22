@@ -187,6 +187,17 @@ func TestXRPlanner(t *testing.T) {
 		}
 	})
 
+	t.Run("FailedPlanStillRouted", func(t *testing.T) {
+		x := NewXRPlanner(planner, nil, nil)
+		err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"bad-a": added(vpc("bad-a", "10.0.0.0/16"))})
+		if err == nil {
+			t.Fatal("AfterXRDiff(...) = nil, want the plan error")
+		}
+		if x.Routed() != 1 || len(x.Plans()) != 0 {
+			t.Errorf("Routed() = %d, Plans() = %v; want 1 routed and no merged plans", x.Routed(), x.Plans())
+		}
+	})
+
 	t.Run("EmptyPlansNonNil", func(t *testing.T) {
 		if NewXRPlanner(planner, nil, nil).Plans() == nil {
 			t.Errorf("Plans() = nil, want an empty non-nil map")

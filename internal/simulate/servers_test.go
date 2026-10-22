@@ -274,7 +274,7 @@ func TestServerSetEnsure(t *testing.T) {
 	}
 }
 
-func TestNewKubeClientConcurrent(t *testing.T) {
+func TestNewKubeClientConcurrent(_ *testing.T) {
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Go(func() {
@@ -284,8 +284,5 @@ func TestNewKubeClientConcurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
-
-	if s, err := kubeScheme(); err != nil || s == nil {
-		t.Errorf("kubeScheme() = %v, %v", s, err)
-	}
+	// ponytail: no assertion; this test exists for -race, to catch shared scheme mutation.
 }

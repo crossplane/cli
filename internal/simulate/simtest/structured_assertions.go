@@ -75,8 +75,9 @@ type expectedSummary struct {
 // ResourceExpectation defines expectations for a single resource change.
 type ResourceExpectation struct {
 	parent             *Expected
-	xrParent           *XRExpectation // set when this change is scoped to an xrs[] entry
-	changeType         string         // "added", "modified", "removed"
+	xrParent           *XRExpectation       // set when this change is scoped to an xrs[] entry
+	impactParent       *XRImpactExpectation // set when this is a downstream resource under an XR impact
+	changeType         string               // "added", "modified", "removed"
 	kind               string
 	name               string
 	namePattern        *regexp.Regexp
@@ -108,10 +109,14 @@ type dryRunExpectation struct {
 }
 
 // expectation returns the root builder. Only meaningful for a flat top-level
-// change (r.parent set); an XR-scoped change (r.xrParent set) is built as a
-// standalone sub-expression passed to WithXRs and is never walked back to a
-// root, so r.parent is nil there and that is fine.
+// change (r.parent set) or a downstream resource (r.impactParent set); an XR-scoped
+// change (r.xrParent set) is built as a standalone sub-expression passed to WithXRs
+// and is never walked back to a root, so it returns nil there and that is fine.
 func (r *ResourceExpectation) expectation() *Expected {
+	if r.impactParent != nil {
+		return r.impactParent.expectation()
+	}
+
 	return r.parent
 }
 
@@ -455,7 +460,12 @@ func (r *ResourceExpectation) WithAnyName() *ResourceExpectation {
 // Not needed at the end of a chain - AssertStructuredDiff accepts a
 // ResourceExpectation directly.
 func (r *ResourceExpectation) And() *Expected {
-	return r.expectation()
+	e := r.expectation()
+	if e == nil {
+		panic("And chained on an XR-scoped change; it has no root builder")
+	}
+
+	return e
 }
 
 // Change opens a sibling change on the same enclosing XR entry (only valid on a
@@ -635,7 +645,7 @@ type XRImpactExpectation struct {
 	errorContains       string   // substring of an "error" impact's Error; only checked when set
 	errorIDs            []string // resourceIDs the plan.Result errors[] attributed to the XR must contain
 	downstreamSummary   *expectedSummary
-	downstreamResources []*DownstreamResourceExpectation
+	downstreamResources []*ResourceExpectation
 }
 
 func (x *XRImpactExpectation) expectation() *Expected { return x.parent.parent }
@@ -791,9 +801,9 @@ func (x *XRImpactExpectation) WithDownstreamSummary(added, modified, removed int
 
 // WithDownstreamResource adds an expectation for a downstream resource change.
 // Use this to assert on specific field-level changes in downstream resources.
-func (x *XRImpactExpectation) WithDownstreamResource(changeType, kind, name, namespace string) *DownstreamResourceExpectation {
-	r := &DownstreamResourceExpectation{
-		parent:             x,
+func (x *XRImpactExpectation) WithDownstreamResource(changeType, kind, name, namespace string) *ResourceExpectation {
+	r := &ResourceExpectation{
+		impactParent:       x,
 		changeType:         changeType,
 		kind:               kind,
 		name:               name,
@@ -807,93 +817,19 @@ func (x *XRImpactExpectation) WithDownstreamResource(changeType, kind, name, nam
 	return r
 }
 
-// DownstreamResourceExpectation defines expectations for a downstream resource change.
-type DownstreamResourceExpectation struct {
-	parent             *XRImpactExpectation
-	changeType         string // "added", "modified", "removed"
-	kind               string
-	name               string
-	namePattern        *regexp.Regexp
-	namespace          string
-	anyNameAllowed     bool
-	fieldChanges       map[string][2]any         // For modified: field path -> [old, new]
-	fieldValues        map[string]any            // For added/removed: field path -> expected value
-	fieldValuePatterns map[string]*regexp.Regexp // For pattern matching field values
-	dryRun             dryRunExpectation
-}
+// DownstreamResourceExpectation is the same type as ResourceExpectation: one builder carries the
+// field, dry-run and name methods for a flat resource and for one under a composition's XR impact.
+type DownstreamResourceExpectation = ResourceExpectation
 
-func (d *DownstreamResourceExpectation) expectation() *Expected {
-	return d.parent.parent.parent
-}
+// AndXR returns to the enclosing XR impact to chain more downstream resource expectations.
+// Not needed at the end of a chain - AssertStructured accepts a ResourceExpectation directly.
+// Panics if called on a resource not opened via WithDownstreamResource.
+func (r *ResourceExpectation) AndXR() *XRImpactExpectation {
+	if r.impactParent == nil {
+		panic("AndXR chained on a resource not opened via WithDownstreamResource")
+	}
 
-// WithFieldChange asserts a field changed from old to new value (for modified resources).
-func (d *DownstreamResourceExpectation) WithFieldChange(path string, oldValue, newValue any) *DownstreamResourceExpectation {
-	d.fieldChanges[path] = [2]any{oldValue, newValue}
-	return d
-}
-
-// WithFieldAdded asserts a field was added (for modified resources).
-// Equivalent to WithFieldChange(path, nil, value).
-func (d *DownstreamResourceExpectation) WithFieldAdded(path string, value any) *DownstreamResourceExpectation {
-	return d.WithFieldChange(path, nil, value)
-}
-
-// WithFieldRemoved asserts a field was removed (for modified resources).
-// Equivalent to WithFieldChange(path, value, nil).
-func (d *DownstreamResourceExpectation) WithFieldRemoved(path string, value any) *DownstreamResourceExpectation {
-	return d.WithFieldChange(path, value, nil)
-}
-
-// WithField asserts a specific field exists with exact value (for added/removed resources).
-func (d *DownstreamResourceExpectation) WithField(path string, value any) *DownstreamResourceExpectation {
-	d.fieldValues[path] = value
-	return d
-}
-
-// WithFieldValuePattern asserts a field value matches a regex pattern.
-// Use this for fields with generated/dynamic values like resource names with random suffixes.
-func (d *DownstreamResourceExpectation) WithFieldValuePattern(path, pattern string) *DownstreamResourceExpectation {
-	d.fieldValuePatterns[path] = regexp.MustCompile(pattern)
-	return d
-}
-
-// WithDryRunSkipped asserts this downstream change reports that its desired state
-// was NOT verified against the apiserver, for the given reason (one of the
-// dt.DryRunSkipReason values: "disabled", "forbidden", "webhookUnavailable").
-//
-// Pass a detailSubstring to additionally require that the cluster's own
-// explanation was propagated rather than swallowed; pass "" to skip that check.
-func (d *DownstreamResourceExpectation) WithDryRunSkipped(reason, detailSubstring string) *DownstreamResourceExpectation {
-	d.dryRun.skipReason = reason
-	d.dryRun.detailSubstring = detailSubstring
-
-	return d
-}
-
-// WithDryRunPerformed asserts this downstream change carries NO dryRun object,
-// i.e. its desired state did go through the apiserver. See the ResourceExpectation
-// counterpart for why the happy path is worth asserting explicitly.
-func (d *DownstreamResourceExpectation) WithDryRunPerformed() *DownstreamResourceExpectation {
-	d.dryRun.mustBePerformed = true
-	return d
-}
-
-// WithAnyName allows any resource name (useful for generated names).
-func (d *DownstreamResourceExpectation) WithAnyName() *DownstreamResourceExpectation {
-	d.anyNameAllowed = true
-	return d
-}
-
-// WithNamePattern matches resource name against a regex pattern.
-func (d *DownstreamResourceExpectation) WithNamePattern(pattern string) *DownstreamResourceExpectation {
-	d.namePattern = regexp.MustCompile(pattern)
-	return d
-}
-
-// AndXR returns to parent to chain more downstream resource expectations.
-// Not needed at the end of a chain - AssertStructuredCompDiff accepts DownstreamResourceExpectation directly.
-func (d *DownstreamResourceExpectation) AndXR() *XRImpactExpectation {
-	return d.parent
+	return r.impactParent
 }
 
 // AndComp returns to parent to chain more XR impact expectations.
@@ -914,18 +850,18 @@ func (c *CompositionExpectation) And() *Expected {
 // functions accept any builder level. Spelling the sibling case as one intention-named call keeps a
 // multi-composition expectation readable instead of ending each composition with a run of climbs
 // whose purpose is not obvious from reading them.
-func (d *DownstreamResourceExpectation) AndComposition(name string) *CompositionExpectation {
-	return d.expectation().WithComposition(name)
+func (r *ResourceExpectation) AndComposition(name string) *CompositionExpectation {
+	return r.expectation().WithComposition(name)
 }
 
 // AndComposition starts an expectation for another composition. See
-// DownstreamResourceExpectation.AndComposition.
+// ResourceExpectation.AndComposition.
 func (x *XRImpactExpectation) AndComposition(name string) *CompositionExpectation {
 	return x.expectation().WithComposition(name)
 }
 
 // AndComposition starts an expectation for another composition. See
-// DownstreamResourceExpectation.AndComposition.
+// ResourceExpectation.AndComposition.
 func (c *CompositionExpectation) AndComposition(name string) *CompositionExpectation {
 	return c.expectation().WithComposition(name)
 }

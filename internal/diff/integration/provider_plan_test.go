@@ -150,7 +150,6 @@ func TestSimulateProviderPlan(t *testing.T) {
 		},
 		"ReplaceDiffHeader": {
 			reason: "-o diff says requires replacement in the resource header.",
-			skip:   "bug: -o diff prints a plain ~~~ header for a replace; no code under internal/simulate/annotate.go or internal/diff renders 'requires replacement'",
 			args:   []string{"-o", "diff"},
 			fn: func(*diffv1alpha1.PlanRequest) (*diffv1alpha1.PlanResponse, error) {
 				return &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_REPLACE, Changes: []*diffv1alpha1.FieldChange{
@@ -158,7 +157,7 @@ func TestSimulateProviderPlan(t *testing.T) {
 				}}, nil
 			},
 			wantCode: dp.ExitCodeDiffDetected,
-			wantOut:  []string{"requires replacement"},
+			wantOut:  []string{"~~~ XDownstreamResource/test-resource (requires replacement)", "(1 requires replacement)"},
 		},
 		"KnownAfterApply": {
 			reason:   "Computed paths show (known after apply) in -o diff.",
@@ -181,6 +180,13 @@ func TestSimulateProviderPlan(t *testing.T) {
 				}
 				if !strings.Contains(planJSON(t, res), "test-resource") || !strings.Contains(planJSON(t, res), "boom") {
 					t.Errorf("result does not name the resource and error: %s", planJSON(t, res))
+				}
+				// The failed XR is all-or-nothing: none of its composed
+				// resources keep a plan.
+				for _, p := range res.Plans {
+					if p.Kind == "XDownstreamResource" {
+						t.Errorf("failed XR still carries a plan for its composed resource: %+v", p)
+					}
 				}
 			},
 		},

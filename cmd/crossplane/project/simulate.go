@@ -837,6 +837,9 @@ func (c *simulateCmd) notes() []string {
 func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport) (bool, error) {
 	opts := c.diffOptions(k)
 	plans := c.providerPlans()
+	if plans != nil {
+		opts.Replaced = simulate.ReplacedBy(plans)
+	}
 	res := simulate.FromXRReport(r, plans)
 	if n := c.notes(); n != nil {
 		res.Notes = n
@@ -857,6 +860,9 @@ func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o
 	opts := c.diffOptions(k)
 	opts.MinimizeComposition = c.MinimizeComposition
 	plans := c.providerPlans()
+	if plans != nil {
+		opts.Replaced = simulate.ReplacedBy(plans)
+	}
 	res := simulate.FromCompReport(o, plans)
 	if n := c.notes(); n != nil {
 		res.Notes = n

@@ -82,7 +82,7 @@ type simulateCmd struct {
 	Name          string        `help:"Only simulate the composite resource with this name. Use with --namespace to name a namespaced resource."`
 	IncludePinned bool          `help:"Also simulate composite resources with a Manual composition update policy, which don't adopt the new revision."`
 	MaxIterations int           `default:"20"                                                                                                          help:"Max render iterations per composite resource to resolve requirements."`
-	Timeout       time.Duration `default:"1m"                                                                                                          help:"Max time for the simulation, not counting function builds."`
+	Timeout       time.Duration `default:"2m"                                                                                                          help:"Max time to simulate one composite resource: its render and its resources' provider plans. Function and provider image pulls don't count."`
 	Output        string        `default:"plan"                                                                                                        enum:"plan,diff,json,yaml"                                                   help:"Output format. One of: plan, diff, json, yaml." short:"o"`
 
 	NoColor                  bool                `help:"Disable colorized output."`
@@ -96,6 +96,11 @@ type simulateCmd struct {
 	MinimizeComposition      bool                `help:"Collapse each changed composition to a single marker line in -o diff output (errors and no-change compositions still print in full)."`
 	AnalyzeOn                string              `default:""                                                                                                                                  enum:",spec-change,any-change,always"                                                help:"Smallest composition change that triggers per-composite impact analysis. \"spec-change\": only when the composition spec changes. \"any-change\": also when only its metadata changes, which still creates a new CompositionRevision that composites re-point to. \"always\": even when the composition is identical, for a pre-edit convergence baseline. Defaults to any-change."`
 	DryRunOn                 string              `default:"all"                                                                                                                               enum:"existing,all"                                                                  help:"Which resources to verify against the apiserver with a dry run: 'all' also dry-run creates added resources so their diffs include server-side defaulting and admission (needs the 'create' verb; degrades per-resource without it), 'existing' only resources already in the cluster."`
+
+	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster-layer diff."`
+	Providers    string `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations." name:"providers" optional:"" predictor:"yaml_file_or_directory" type:"path"`
+	ImageConfigs string `help:"YAML file with ImageConfig manifests that rewrite provider image paths for local pulls. Defaults to the project's imageConfigs when -f names a project file." name:"image-configs" optional:"" predictor:"yaml_file" type:"existingfile"`
+	SessionID    string `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID." placeholder:"ID"`
 
 	// CrossplaneVersion and CrossplaneImage select the crossplane render
 	// backend, as they do for crossplane-diff. When neither is set the render
@@ -123,6 +128,10 @@ type SimulateHooks struct {
 	// Terminal colorizes diffs as if stdout were a terminal, unless
 	// --no-color is set.
 	Terminal bool
+
+	// Router, when set, routes provider plans through it instead of starting
+	// diff servers.
+	Router simulate.Router
 }
 
 // FunctionCredentials holds Secret credentials loaded from a file path. It
@@ -192,6 +201,14 @@ func (c *simulateCmd) Help() string {
 func (c *simulateCmd) Validate() error {
 	if c.MaxIterations < 1 {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
+	}
+
+	if c.SkipPlan {
+		for _, f := range []struct{ name, val string }{{"providers", c.Providers}, {"image-configs", c.ImageConfigs}, {"session-id", c.SessionID}} {
+			if f.val != "" {
+				return errors.Errorf("--%s cannot be used with --skip-plan", f.name)
+			}
+		}
 	}
 
 	// The two flags are mutually exclusive (kong xor), so at most one of

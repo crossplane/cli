@@ -40,6 +40,16 @@ type EnsureServers func(ctx context.Context, resources []*unstructured.Unstructu
 // XRPlanner plans each composite resource's composed resources with their
 // provider diff servers as the engine finishes rendering it, so an XR whose
 // plans fail is reported as an error, whole, like a failed render.
+//
+// It keeps one plan per diff key: when two XRs produce the same key, the
+// first XR's plan wins, so a composed resource rendered differently by two
+// inputs shows the first XR's plan in both reports. Plans merge in the
+// AfterXRDiff hook, before schema validation verdicts, so an XR that
+// validation later fails has already contributed its plans.
+//
+// The engine runs XRs sequentially, so the mutex only guards Plans and
+// Routed against readers; the Planner and the maps ensure and keep close over
+// are not safe for concurrent AfterXRDiff calls.
 type XRPlanner struct {
 	planner *Planner
 	keep    func(*unstructured.Unstructured) bool
@@ -87,7 +97,11 @@ func (x *XRPlanner) AfterXRDiff(ctx context.Context, diffs map[string]*dt.Resour
 
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	maps.Copy(x.plans, plans)
+	for key, p := range plans {
+		if _, ok := x.plans[key]; !ok {
+			x.plans[key] = p
+		}
+	}
 	for key, d := range diffs {
 		if _, ok := plans[key]; ok && x.planner.CanPlan(d.Gvk.GroupKind()) {
 			x.routed++
@@ -97,12 +111,12 @@ func (x *XRPlanner) AfterXRDiff(ctx context.Context, diffs map[string]*dt.Resour
 	return nil
 }
 
-// Plans returns the plans collected so far, never nil.
+// Plans returns a copy of the plans collected so far, never nil.
 func (x *XRPlanner) Plans() map[string]*plan.ResourcePlan {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 
-	return x.plans
+	return maps.Clone(x.plans)
 }
 
 // Routed returns how many collected plans went to a diff server. Plans that

@@ -193,3 +193,22 @@ func TestXRPlanner(t *testing.T) {
 		}
 	})
 }
+
+func TestXRPlannerFirstPlanWins(t *testing.T) {
+	s := runtime.NewScheme()
+	s.AddKnownTypeWithName(vpcGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(vpcGVK.GroupVersion().WithKind("VPCList"), &unstructured.UnstructuredList{})
+	rm := meta.NewDefaultRESTMapper([]schema.GroupVersion{vpcGVK.GroupVersion()})
+	rm.Add(vpcGVK, meta.RESTScopeRoot)
+	pc := &funcPlanClient{fakePlanClient: fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}}
+	x := NewXRPlanner(NewPlanner(fake.NewClientBuilder().WithScheme(s).Build(), rm, "default", &fakeRouter{client: pc}, time.Second), nil, nil)
+
+	for _, name := range []string{"first", "second"} {
+		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": added(vpc(name, "10.0.0.0/16"))}); err != nil {
+			t.Fatalf("AfterXRDiff(%s): %v", name, err)
+		}
+	}
+	if got := x.Plans()["k"]; got == nil || got.Name != "first" {
+		t.Errorf("Plans()[k]: want the first XR's plan, got %+v", got)
+	}
+}

@@ -130,6 +130,16 @@ jobs:
           name: crossplane
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
+      - name: Cache Go modules and build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-integration-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-integration-
+
       - name: Run Integration Tests
         run: nix run .#integration-test --option warn-dirty false
 

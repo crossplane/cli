@@ -122,16 +122,10 @@ type IntegrationTestCase struct {
 	skip                          bool
 	skipReason                    string
 	// JSON output support: set outputFormat to "json" to use structured assertions.
-	// For XR tests, populate expectedStructuredOutput. For CompositionDiffTest tests,
-	// populate expectedStructuredCompOutput. Only one should be set per test case.
 	outputFormat string // "json" or "" (default=visual diff)
-	// Typed as the assertion interfaces rather than the concrete root builders. The assert functions
-	// have accepted any builder level since those interfaces were introduced, specifically so a chain
-	// need not climb back to the root — but concrete field types here made that unreachable, which is
-	// why every case in this file used to end with a trailing And()/AndXR()/AndComp(). A chain can now
-	// simply end where it ends.
-	expectedStructuredOutput     simtest.Expectation // for XR JSON output assertions
-	expectedStructuredCompOutput simtest.Expectation // for comp JSON output assertions
+	// expectedStructured is asserted against the JSON output in either mode. It is typed as the
+	// Expectation interface, which every builder level implements, so a chain can end where it ends.
+	expectedStructured simtest.Expectation
 }
 
 type XrdAPIVersion int
@@ -313,20 +307,6 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 	t.Helper()
 
 	t.Parallel() // Enable parallel test execution
-
-	// Validate structured-output config up front so misconfiguration fails loudly
-	// instead of silently routing assertions to the wrong path.
-	if tt.expectedStructuredOutput != nil && tt.expectedStructuredCompOutput != nil {
-		t.Fatalf("test case sets both expectedStructuredOutput and expectedStructuredCompOutput; set only one")
-	}
-
-	if tt.expectedStructuredOutput != nil && testType != XRDiffTest {
-		t.Fatalf("expectedStructuredOutput is only valid for XRDiffTest (got %q)", testType)
-	}
-
-	if tt.expectedStructuredCompOutput != nil && testType != CompositionDiffTest {
-		t.Fatalf("expectedStructuredCompOutput is only valid for CompositionDiffTest (got %q)", testType)
-	}
 
 	// Resolve a local crossplane binary if one is present. When non-empty,
 	// it's threaded into the kong arg slice below as
@@ -538,7 +518,7 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 	//      the structured assertion below validates errors[].
 	//   3. unexpected error: already caught by the t.Fatalf above.
 	if err != nil && tt.expectedError {
-		hasStructuredAssertion := tt.expectedStructuredOutput != nil || tt.expectedStructuredCompOutput != nil
+		hasStructuredAssertion := tt.expectedStructured != nil
 
 		switch {
 		case tt.expectedErrorContains != "":
@@ -558,7 +538,7 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 	// substring assertion. Cases that pin a structured assertion fall
 	// through so the JSON path is exercised against errors[] / changes.
 	if tt.expectedError && tt.expectedErrorContains != "" &&
-		tt.expectedStructuredOutput == nil && tt.expectedStructuredCompOutput == nil {
+		tt.expectedStructured == nil {
 		return
 	}
 
@@ -566,13 +546,8 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 	outputStr := stdout.String()
 
 	// Handle JSON output format with structured assertions
-	if tt.outputFormat == "json" && tt.expectedStructuredOutput != nil {
-		simtest.AssertStructured(t, outputStr, tt.expectedStructuredOutput)
-		return
-	}
-
-	if tt.outputFormat == "json" && tt.expectedStructuredCompOutput != nil {
-		simtest.AssertStructured(t, outputStr, tt.expectedStructuredCompOutput)
+	if tt.outputFormat == "json" && tt.expectedStructured != nil {
+		simtest.AssertStructured(t, outputStr, tt.expectedStructured)
 		return
 	}
 
@@ -652,7 +627,7 @@ func TestDiffIntegration(t *testing.T) {
 				"testdata/diff/resources/composition-no-namespace-patch.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XDownstreamResource", "test-resource", "default").
 				WithField("spec.forProvider.configData", "new-value").
@@ -675,7 +650,7 @@ func TestDiffIntegration(t *testing.T) {
 				"testdata/diff/resources/composition-with-configmap.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(3, 0, 0).
 				WithAddedResource("ConfigMap", "test-resource-config", "default").
 				WithField("data.configData", "new-value").
@@ -737,7 +712,7 @@ func TestDiffIntegration(t *testing.T) {
 				"testdata/diff/resources/composition.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XNopResource", "test-resource", "nonexistent-namespace").
 				WithField("spec.coolField", "new-value").
@@ -811,7 +786,7 @@ func TestDiffIntegration(t *testing.T) {
 				"testdata/diff/resources/composition-with-builtin-defaults.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("Deployment", "test-resource-deploy", "default").
 				// Absence of dryRun is the machine-readable claim that this desired state was
@@ -846,7 +821,7 @@ func TestDiffIntegration(t *testing.T) {
 				"testdata/diff/resources/composition-with-builtin-defaults.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("Deployment", "test-resource-deploy", "default").
 				// No detail substring: "disabled" is the one skip reason the user asked for, so
@@ -896,7 +871,7 @@ func TestDiffIntegration(t *testing.T) {
 				"testdata/diff/resources/composition-with-status.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XStatusResource", "test-resource", "default").
 				WithDryRunPerformed().
@@ -923,7 +898,7 @@ func TestDiffIntegration(t *testing.T) {
 				"testdata/diff/resources/functions.yaml",
 			},
 			inputFiles: []string{"testdata/diff/generated-name-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				// Both the XR and its composed resource use generateName, so both exercise the
 				// identity restore. The pattern is the renderer's display form for a
@@ -957,7 +932,7 @@ func TestDiffIntegration(t *testing.T) {
 			awaitAdmissionDenialFor: "testdata/diff/resources/admission-policy-canary.yaml",
 			expectedError:           true,
 			expectedExitCode:        dp.ExitCodeSchemaValidation,
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				// errors[].resourceID names the input the user supplied, so the rejected composed
 				// resource has to be identifiable from the message and the validationFailures entry.
 				WithError("XNopResource/test-resource").
@@ -992,7 +967,7 @@ func TestDiffIntegration(t *testing.T) {
 			inputFiles:              []string{"testdata/diff/modified-xr.yaml"},
 			expectedError:           true,
 			expectedExitCode:        dp.ExitCodeSchemaValidation,
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithError("XNopResource/test-resource").
 				WithMessageContaining("the cluster rejected XDownstreamResource/test-resource").
 				WithValidationFailure("ns.nop.example.org/v1alpha1", "XDownstreamResource", "test-resource", "default").
@@ -1012,7 +987,7 @@ func TestDiffIntegration(t *testing.T) {
 				"testdata/diff/resources/composition.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				// Aggregate flat view still reports the merged total (2 adds per XR).
 				WithSummary(4, 0, 0).
 				// Grouped view: one XR(...) sub-expression per input XR, each with
@@ -1049,7 +1024,7 @@ func TestDiffIntegration(t *testing.T) {
 				"testdata/diff/resources/composition.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				// The top-level summary counts distinct resources.
 				WithSummary(4, 0, 0).
 				WithXRs(
@@ -1146,9 +1121,9 @@ Summary: 2 modified`,
 				"metadata.annotations[argocd.argoproj.io/tracking-id]",
 				"metadata.labels[argocd.argoproj.io/instance]",
 			},
-			outputFormat:             "json",
-			expectedStructuredOutput: simtest.Expect().WithSummary(0, 0, 0),
-			expectedError:            false,
+			outputFormat:       "json",
+			expectedStructured: simtest.Expect().WithSummary(0, 0, 0),
+			expectedError:      false,
 		},
 		"IgnorePathsMixedChanges": {
 			// Regression test: when a resource has BOTH ignored path changes
@@ -1177,7 +1152,7 @@ Summary: 2 modified`,
 				"metadata.labels[argocd.argoproj.io/instance]",
 			},
 			outputFormat: "json",
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-resource", "default").
 				WithFieldChange("spec.forProvider.configData", "new-value", "modified-value").
@@ -1200,7 +1175,7 @@ Summary: 2 modified`,
 				"testdata/diff/resources/existing-xr.yaml",
 			},
 			inputFiles: []string{"testdata/diff/modified-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(1, 1, 0).
 				WithAddedResource("XDownstreamResource", "test-resource", "default").
 				WithField("spec.forProvider.configData", "modified-value").
@@ -1228,7 +1203,7 @@ Summary: 2 modified`,
 			},
 			deleteAfterSetup: []string{"testdata/diff/resources/existing-xr-deleting.yaml"},
 			inputFiles:       []string{"testdata/diff/modified-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-resource", "default").
 				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
@@ -1268,7 +1243,7 @@ Summary: 2 modified`,
 			},
 			deleteAfterSetup: []string{"testdata/diff/resources/removal-test-ns-downstream-resource2.yaml"},
 			inputFiles:       []string{"testdata/diff/unmodified-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 0, 0).
 				WithWarning("was not found in the cluster").
 				WithWarningContext(map[string]string{
@@ -1300,7 +1275,7 @@ Summary: 2 modified`,
 			},
 			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
 			inputFiles:    []string{"testdata/diff/modified-env-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamEnvResource", "test-env-resource", "").
 				WithFieldChange("spec.forProvider.configData", "existing-config-value", "modified-config-value").
@@ -1329,7 +1304,7 @@ Summary: 2 modified`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-xr-with-external-dep.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-resource", "default").
 				WithFieldChange("spec.forProvider.configData", "existing-value", "testing-external-resource-data").
@@ -1364,7 +1339,7 @@ Summary: 2 modified`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-xr-with-external-dep.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-resource", "default").
 				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-with-external-dep").
@@ -1398,7 +1373,7 @@ Summary: 2 modified`,
 				"testdata/diff/resources/external-res-gotpl-composition.yaml",
 			},
 			inputFiles: []string{"testdata/diff/new-xr-with-cross-ns-external-dep.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XDownstreamResource", "test-resource", "default").
 				WithField("spec.forProvider.configData", "new-value").
@@ -1429,7 +1404,7 @@ Summary: 2 modified`,
 				"testdata/diff/resources/external-res-matchname-gotpl-composition.yaml",
 			},
 			inputFiles: []string{"testdata/diff/new-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XDownstreamResource", "test-resource", "default").
 				WithField("spec.forProvider.configData", "new-value").
@@ -1535,7 +1510,7 @@ Summary: 2 modified`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-cross-ns-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-cross-ns-resource", "default").
 				WithFieldChange("spec.forProvider.configData", "existing-cross-ns-data-existing-named-data-old-cross-ns-role", "cross-namespace-data-another-cross-namespace-data-external-named-clusterrole").
@@ -1673,9 +1648,9 @@ Summary: 2 modified, 2 removed`,
 			// Function-sequencer sees both resources exist and does NOT remove them from desired state.
 			// Since existing resources match rendered resources, there should be no changes.
 			// XR diff outputs nothing when there are no changes (unlike comp diff which says "No changes detected").
-			expectedStructuredOutput: simtest.Expect().WithSummary(0, 0, 0),
-			expectedError:            false,
-			expectedExitCode:         dp.ExitCodeSuccess,
+			expectedStructured: simtest.Expect().WithSummary(0, 0, 0),
+			expectedError:      false,
+			expectedExitCode:   dp.ExitCodeSuccess,
 		},
 		// Issue #259: Validates that removal detection works even when the XR has no changes.
 		// This is the core fix for the function-sequencer bug where existingXR was nil because
@@ -1707,7 +1682,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			inputFiles: []string{"testdata/diff/unmodified-xr.yaml"}, // XR has NO changes
 			// Expected: the nested XR resource2 and what it composes are removed, but XR and resource1 have no changes
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 0, 2).
 				WithRemovedResource("XChildResource", "resource-to-be-removed", "default").
 				// dryRun must be absent on a removal. A removal has no desired state to preview, so it can
@@ -1753,7 +1728,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/removal-test-ns-downstream-without-controller.yaml",
 			},
 			inputFiles: []string{"testdata/diff/unmodified-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 0, 1).
 				WithRemovedResource("XDownstreamResource", "resource-to-be-removed", "default").
 				WithField("spec.forProvider.configData", "existing-value"),
@@ -1784,7 +1759,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/functions.yaml",
 			},
 			inputFiles: []string{"testdata/diff/modified-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 2).
 				WithModifiedResource("XDownstreamResource", "resource-to-be-kept", "default").
 				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
@@ -1825,7 +1800,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/functions.yaml",
 			},
 			inputFiles: []string{"testdata/diff/modified-cluster-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 2).
 				WithModifiedResource("XDownstreamResource", "resource-to-be-kept", "").
 				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
@@ -1861,7 +1836,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			// Use a composition that uses generateName for composed resources
 			inputFiles: []string{"testdata/diff/new-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-resource-abc123", "default").
 				WithFieldChange("spec.forProvider.configData", "existing-value", "new-value").
@@ -1889,7 +1864,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/existing-downstream-with-generated-name.yaml",
 			},
 			inputFiles: []string{"testdata/diff/new-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(1, 1, 0).
 				WithAddedResource("XNopResource", "test-resource", "default").
 				And().
@@ -1910,7 +1885,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			inputFiles:       []string{"testdata/diff/new-xr.yaml", "testdata/diff/generated-name-xr.yaml"},
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(4, 0, 0).
 				WithXRs(
 					simtest.XR("XNopResource", "test-resource", "default").Status("changed").Summary(2, 0, 0),
@@ -1927,7 +1902,7 @@ Summary: 2 modified, 2 removed`,
 				// We don't add any existing XR, as we're testing creation of a new one
 			},
 			inputFiles: []string{"testdata/diff/generated-name-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XDownstreamResource", "", "default").
 				WithNamePattern(`generated-xr-\(generated\)`).
@@ -1966,7 +1941,7 @@ Summary: 2 modified, 2 removed`,
 			expectedExitCode:       dp.ExitCodeDiffDetected,
 			expectedStderrContains: []string{"Ignoring a duplicate input: it is identical to an earlier one"},
 			// The warning channel's contract is both halves: stderr above, and warnings[] here.
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithXRs(simtest.XR("XNopResource", "test-resource", "default").Status("changed").Summary(2, 0, 0)).
 				WithWarning("Ignoring a duplicate input: it is identical to an earlier one").
@@ -2050,7 +2025,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/existing-downstream-resource.yaml",
 			},
 			inputFiles: []string{"testdata/diff/new-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(1, 1, 0).
 				WithAddedResource("XNopResource", "test-resource", "default").
 				WithField("spec.coolField", "new-value").
@@ -2079,7 +2054,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/first-xr.yaml",
 				"testdata/diff/modified-xr.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 2, 0).
 				WithAddedResource("XDownstreamResource", "first-resource", "default").
 				WithField("spec.forProvider.configData", "first-value").
@@ -2113,7 +2088,7 @@ Summary: 2 modified, 2 removed`,
 			inputFiles:   []string{"testdata/diff/first-xr-with-composition-ref.yaml", "testdata/diff/modified-xr.yaml"},
 			rbacRules:    leastPrivilegeRules("get", "create", "patch"),
 			outputFormat: "json",
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 2, 0).
 				WithAddedResource("XDownstreamResource", "first-resource", "default").
 				WithField("spec.forProvider.configData", "first-value").
@@ -2139,7 +2114,7 @@ Summary: 2 modified, 2 removed`,
 			inputFiles:        []string{"testdata/diff/new-xr.yaml"},
 			outputFormat:      "json",
 			// The same diff NewResourceDiff shows, which has no such XRD.
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XDownstreamResource", "test-resource", "default").
 				WithField("spec.forProvider.configData", "new-value").
@@ -2174,7 +2149,7 @@ Summary: 2 modified, 2 removed`,
 			inputFiles: []string{
 				"testdata/diff/xr-with-composition-ref.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XDownstreamResource", "test-resource", "default").
 				WithField("spec.forProvider.configData", "test-value").
@@ -2199,7 +2174,7 @@ Summary: 2 modified, 2 removed`,
 			inputFiles: []string{
 				"testdata/diff/xr-with-composition-selector.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XDownstreamResource", "test-resource", "default").
 				WithField("spec.forProvider.configData", "test-value").
@@ -2247,7 +2222,7 @@ Summary: 2 modified, 2 removed`,
 			// ours to assert; the embedded k8s message wording is
 			// left unasserted (apimachinery upgrades can shift its
 			// phrasing without changing our output contract).
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithError("XNopResource/invalid-schema-xr").
 				WithValidationFailure("ns.diff.example.org/v1alpha1", "XNopResource", "invalid-schema-xr", "default").
 				WithStatus("invalid").
@@ -2275,7 +2250,7 @@ Summary: 2 modified, 2 removed`,
 			inputFiles: []string{"testdata/diff/new-claim.yaml"},
 			// The claim is defaulted with its own CRD (generated from claim-xrd.yaml), which shares the XRD's
 			// user default spec.tier with the XR's CRD but, unlike it, does not default compositionUpdatePolicy.
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("NopClaim", "test-claim", "existing-namespace").
 				WithField("spec.coolField", "new-value").
@@ -2297,7 +2272,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/functions.yaml",
 			},
 			inputFiles: []string{"testdata/diff/new-claim-with-claimref-composition.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("NopClaim", "test-claim", "existing-namespace").
 				WithField("spec.coolField", "new-value").
@@ -2327,7 +2302,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
 			inputFiles:    []string{"testdata/diff/modified-claim.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				// The composed resource is labelled with the backing XR the claim's resourceRef names, so it
 				// already belongs to this claim: no ownership advisory (#534).
 				WithNoWarnings().
@@ -2363,7 +2338,7 @@ Summary: 2 modified, 2 removed`,
 				{file: "testdata/diff/resources/existing-claim-defaulted-fields-other-manager.yaml", fieldManager: "platform-operator"},
 			},
 			inputFiles: []string{"testdata/diff/modified-claim-omitting-defaulted-fields.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				// As in ModifiedClaimShowsDiff: the composed resource belongs to the claim's backing XR (#534).
 				WithNoWarnings().
 				WithSummary(0, 2, 0).
@@ -2392,7 +2367,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/functions.yaml",
 			},
 			inputFiles: []string{"testdata/diff/new-parent-claim-omitting-defaulted-fields.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("ParentNopClaim", "new-parent-claim", "default").
 				WithDryRunPerformed().
@@ -2415,7 +2390,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/functions.yaml",
 			},
 			inputFiles: []string{"testdata/diff/new-parent-claim-omitting-defaulted-fields.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("ParentNopClaim", "new-parent-claim", "default").
 				WithDryRunSkipped("disabled", "").
@@ -2438,7 +2413,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/composition-with-defaults.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(1, 0, 0).
 				WithAddedResource("XTestDefaultResource", "test-resource-with-defaults", "default").
 				WithField("spec.region", "us-east-1").
@@ -2458,7 +2433,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/functions.yaml",
 			},
 			inputFiles: []string{"testdata/diff/new-rendered-defaults-xrs.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(4, 0, 0).
 				WithAddedResource("XRegionalDatabase", "modern-database", "default").
 				WithField("spec.region", "us-east-1").
@@ -2501,7 +2476,7 @@ Summary: 2 modified, 2 removed`,
 					fieldManager: "platform-operator",
 				},
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(1, 0, 0).
 				WithAddedResource("XNopResource", "test-resource", "default"),
 			expectedError:    false,
@@ -2526,9 +2501,9 @@ Summary: 2 modified, 2 removed`,
 				{file: "testdata/diff/resources/existing-xr-with-defaults-reconciled.yaml", fieldManager: CompositeReconcilerFieldManager},
 				{file: "testdata/diff/resources/existing-xr-with-defaults-other-manager.yaml", fieldManager: "platform-operator"},
 			},
-			expectedStructuredOutput: simtest.Expect().WithSummary(0, 0, 0),
-			expectedError:            false,
-			expectedExitCode:         dp.ExitCodeSuccess,
+			expectedStructured: simtest.Expect().WithSummary(0, 0, 0),
+			expectedError:      false,
+			expectedExitCode:   dp.ExitCodeSuccess,
 		},
 		// With no apiserver result for an addition, its defaults have to be predicted locally. These
 		// pin that keeping local defaults out of dry-run payloads did not also take them out of the
@@ -2544,7 +2519,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/composition-with-defaults.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(1, 0, 0).
 				WithAddedResource("XTestDefaultResource", "test-resource-with-defaults", "default").
 				WithDryRunSkipped("disabled", "").
@@ -2564,7 +2539,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/composition-with-crd-defaulted-downstream.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XDefaultedDownstreamResource", "test-resource-defaulted", "default").
 				WithDryRunSkipped("disabled", "").
@@ -2591,7 +2566,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/composition-with-non-storage-version-downstream.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XVersionedDownstreamResource", "test-resource-versioned", "default").
 				WithDryRunSkipped("disabled", "").
@@ -2639,7 +2614,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/composition-with-defaults.yaml",
 				"testdata/diff/resources/functions.yaml",
 			},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(1, 0, 0).
 				WithAddedResource("XTestDefaultResource", "test-resource-with-overrides", "default").
 				WithField("spec.region", "us-west-2").
@@ -2665,9 +2640,9 @@ Summary: 2 modified, 2 removed`,
 			// Each XR should produce 3 base resources + 2 additional resources = 5 resources per XR
 			// Plus the XR itself = 6 additions per XR
 			// Total: 5 XRs * 6 additions = 30 additions
-			expectedStructuredOutput: simtest.Expect().WithSummary(30, 0, 0),
-			expectedError:            false,
-			expectedExitCode:         dp.ExitCodeDiffDetected,
+			expectedStructured: simtest.Expect().WithSummary(30, 0, 0),
+			expectedError:      false,
+			expectedExitCode:   dp.ExitCodeDiffDetected,
 		},
 		"NewNestedXRCreatesChildren": {
 			reason:       "Validates that new nested XR creates child XR and downstream resources",
@@ -2684,7 +2659,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/functions.yaml",
 			},
 			inputFiles: []string{"testdata/diff/new-nested-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(3, 0, 0).
 				WithAddedResource("XChildResource", "test-parent-child", "default").
 				WithField("spec.childField", "parent-value").
@@ -2714,7 +2689,7 @@ Summary: 2 modified, 2 removed`,
 			expectedError:         true,
 			expectedErrorContains: "maximum nesting depth exceeded: XCycleB/test-cycle-c-c-c-c-c-c-c-c-c-c-c (nested depth 11) is nested 11 levels deep, but --max-nested-depth is 10",
 			expectedExitCode:      dp.ExitCodeToolError,
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithError("XCycleA/test-cycle").
 				WithMessageContaining("maximum nesting depth exceeded"),
 		},
@@ -2746,7 +2721,7 @@ Summary: 2 modified, 2 removed`,
 				},
 			},
 			inputFiles: []string{"testdata/diff/modified-nested-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 3, 0).
 				WithModifiedResource("XChildResource", "test-parent-child", "default").
 				WithFieldChange("spec.childField", "existing-value", "modified-value").
@@ -2789,7 +2764,7 @@ Summary: 2 modified, 2 removed`,
 				{file: "testdata/diff/resources/nested/existing-child-xr-tier-other-manager.yaml", fieldManager: "platform-operator"},
 			},
 			inputFiles: []string{"testdata/diff/modified-nested-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 3, 0).
 				WithModifiedResource("XChildResource", "test-parent-child", "default").
 				WithFieldChange("spec.childField", "existing-value", "modified-value").
@@ -2820,7 +2795,7 @@ Summary: 2 modified, 2 removed`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-xr-manual-v1.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-manual-v1", "default").
 				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v1-modified-value").
@@ -2847,7 +2822,7 @@ Summary: 2 modified, 2 removed`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-xr-automatic.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-automatic", "default").
 				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v2-modified-value").
@@ -2878,7 +2853,7 @@ Summary: 2 modified, 2 removed`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-xr-selector-stable.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-selector", "default").
 				// stable-* (not preview-*) proves the selector, not "latest overall", chose the revision.
@@ -2922,7 +2897,7 @@ Summary: 2 modified, 2 removed`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-xr-manual-upgrade-to-v2.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-manual-v1", "default").
 				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v2-modified-value").
@@ -2969,7 +2944,7 @@ Summary: 2 modified, 2 removed`,
 			// Key assertion: nothing is added or removed, proving API version migration works. The
 			// XApiMigrateResource is stored identically at either version, so it renders unchanged; an
 			// unmatched one would be a +++ addition plus a --- removal. Only the XR's revision ref changes.
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 1, 0).
 				WithModifiedResource("XNopResource", "test-api-version-xr", "default"),
 			expectedError:    false,
@@ -2997,7 +2972,7 @@ Summary: 2 modified, 2 removed`,
 				},
 			},
 			inputFiles: []string{"testdata/diff/modified-api-version-xr-rev2-changed-field.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XApiMigrateResource", "test-api-version-xr-api-resource", "default").
 				WithFieldChange("spec.forProvider.configData", "test-value", "changed-value").
@@ -3023,7 +2998,7 @@ Summary: 2 modified, 2 removed`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-xr-switch-to-automatic.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-manual-v1", "default").
 				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v2-modified-value").
@@ -3043,7 +3018,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/functions.yaml",
 			},
 			inputFiles: []string{"testdata/diff/new-xr-manual-no-ref.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XDownstreamResource", "test-manual-no-ref", "default").
 				WithField("spec.forProvider.configData", "v2-new-value").
@@ -3071,7 +3046,7 @@ Summary: 2 modified, 2 removed`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-legacy-xr-manual-upgrade-to-v2.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-legacy-manual-v1", "").
 				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v2-modified-value").
@@ -3101,9 +3076,9 @@ Summary: 2 modified, 2 removed`,
 					"testdata/comp/resources/existing-downstream-revision-ref.yaml",
 				),
 			},
-			inputFiles:               []string{"testdata/diff/existing-xr-revision-ref-omitted.yaml"},
-			expectedStructuredOutput: simtest.Expect().WithSummary(0, 0, 0),
-			expectedExitCode:         dp.ExitCodeSuccess,
+			inputFiles:         []string{"testdata/diff/existing-xr-revision-ref-omitted.yaml"},
+			expectedStructured: simtest.Expect().WithSummary(0, 0, 0),
+			expectedExitCode:   dp.ExitCodeSuccess,
 		},
 		// Issue #499, the consequence for which revision renders. The cluster's ref is inherited before the
 		// composition is resolved, so a Manual composite whose input omits the ref stays on the revision it
@@ -3126,7 +3101,7 @@ Summary: 2 modified, 2 removed`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-xr-manual-v1-omits-revision-ref.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-manual-v1", "default").
 				// v1-* (not v2-*) proves the pinned revision, not the latest, rendered.
@@ -3154,7 +3129,7 @@ Summary: 2 modified, 2 removed`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-legacy-xr-manual-v1-omits-revision-ref.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-legacy-manual-v1", "").
 				WithFieldChange("spec.forProvider.configData", "v1-existing-value", "v1-modified-value").
@@ -3192,7 +3167,7 @@ Summary: 2 modified, 2 removed`,
 				},
 			},
 			inputFiles: []string{"testdata/diff/modified-nested-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XChildResource", "test-parent-child", "default").
 				WithFieldChange("spec.childField", "existing-value", "modified-value").
@@ -3228,8 +3203,8 @@ Summary: 2 modified, 2 removed`,
 			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
 			inputFiles:    []string{"testdata/diff/unchanged-automatic-pinned-claim.yaml"},
 			// No warnings either: the composed resource belongs to the claim's backing XR (#534).
-			expectedStructuredOutput: simtest.Expect().WithNoWarnings().WithSummary(0, 0, 0),
-			expectedExitCode:         dp.ExitCodeSuccess,
+			expectedStructured: simtest.Expect().WithNoWarnings().WithSummary(0, 0, 0),
+			expectedExitCode:   dp.ExitCodeSuccess,
 		},
 		// A Manual claim's pin lives on its backing XR: the claim syncer copies the ref back to a claim only
 		// under Automatic. Composition resolution and render must both see that pin. Before, the composition
@@ -3253,7 +3228,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
 			inputFiles:    []string{"testdata/diff/modified-manual-pinned-claim.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				// The composed resource is labelled with the backing XR's name, which the claim's resourceRef
 				// names, so it already belongs to this claim: no ownership advisory (#534).
 				WithNoWarnings().
@@ -3287,7 +3262,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			xrdAPIVersion: V1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
 			inputFiles:    []string{"testdata/diff/unchanged-lagging-automatic-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 1, 0).
 				WithModifiedResource("XDownstreamResource", "lagging-xr", "").
 				WithFieldChange("spec.forProvider.configData",
@@ -3307,7 +3282,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/functions.yaml",
 			},
 			inputFiles: []string{"testdata/diff/new-manual-default-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XManualDefault", "new-manual-default", "default").
 				And().
@@ -3334,7 +3309,7 @@ Summary: 2 modified, 2 removed`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/modified-xr-selector-bound.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "selector-bound", "default").
 				WithFieldChange("spec.forProvider.configData", "a-existing-value", "a-modified-value").
@@ -3359,7 +3334,7 @@ Summary: 2 modified, 2 removed`,
 				),
 			},
 			inputFiles: []string{"testdata/diff/resources/modified-v2xrd-v1paths-xr.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 2, 0).
 				WithModifiedResource("XDownstreamResource", "test-v2xrd-v1paths", "default").
 				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
@@ -3442,7 +3417,7 @@ Summary: 2 modified, 2 removed`,
 				},
 			},
 			inputFiles: []string{"testdata/diff/modified-claim-nested.yaml"},
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 3, 0).
 				WithModifiedResource("ClusterNopResource", "existing-parent-claim-82crv-nop", "").
 				And().
@@ -3470,7 +3445,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/functions.yaml",
 			},
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XDownstreamResource", "test-resource-with-creds", "default").
 				WithField("spec.forProvider.configData", "test-value-creds").
@@ -3497,7 +3472,7 @@ Summary: 2 modified, 2 removed`,
 			// instead, so the shortfall advisory must NOT fire. It used to, because the advisory was
 			// raised inside the credential client, which runs before the CLI-supplied secrets are merged
 			// in — telling a user who had just solved the problem to go and solve it.
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithNoWarnings().
 				WithAddedResource("XDownstreamResource", "test-resource-with-creds", "default").
@@ -3525,7 +3500,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			expectedExitCode: dp.ExitCodeDiffDetected,
 			// Expect: XR + stage0 added; stage1 NOT present (gated).
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XNopResource", "sequencer-test", "default").
 				WithField("spec.coolField", "test-value").
@@ -3547,7 +3522,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			expectedExitCode: dp.ExitCodeDiffDetected,
 			// Expect: XR + stage0 + stage1 all added (stage1 unlocked via eventual-state).
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(3, 0, 0).
 				WithAddedResource("XNopResource", "sequencer-test", "default").
 				WithField("spec.coolField", "test-value").
@@ -3579,7 +3554,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			expectedExitCode: dp.ExitCodeDiffDetected,
 			// Expect: XR and stage0 modified, stage1 added (unlocked by stage0's synthesized Ready).
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(1, 2, 0).
 				WithModifiedResource("XNopResource", "sequencer-test", "default").
 				WithFieldChange("spec.coolField", "existing-value", "test-value").
@@ -3610,7 +3585,7 @@ Summary: 2 modified, 2 removed`,
 					"testdata/diff/resources/existing-sequencer-gating-stage1-ready.yaml"),
 			},
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(0, 3, 0).
 				WithModifiedResource("XNopResource", "sequencer-test", "default").
 				WithFieldChange("spec.coolField", "existing-value", "test-value").
@@ -3639,7 +3614,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			expectedExitCode: dp.ExitCodeDiffDetected,
 			// Expect: XR + stage0 added; stage1 NOT present (gated by the template's Ready check).
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(2, 0, 0).
 				WithAddedResource("XNopResource", "conditional-gating-test", "default").
 				WithField("spec.coolField", "test-value").
@@ -3661,7 +3636,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			expectedExitCode: dp.ExitCodeDiffDetected,
 			// Expect: XR + stage0 + stage1 all added.
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(3, 0, 0).
 				WithAddedResource("XNopResource", "conditional-gating-test", "default").
 				WithField("spec.coolField", "test-value").
@@ -3693,7 +3668,7 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/environment-config-v1beta1.yaml",
 			},
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithSummary(3, 0, 0). // 2 downstream resources + 1 XR
 				WithAddedResource("XDownstreamResource", "0-stage0-resource", "default").
 				WithField("spec.forProvider.configData", "test-value").
@@ -3876,7 +3851,7 @@ Summary: 2 modified`,
 			// Total counts both discovered XRs; only the live one is evaluated (1 with changes), and
 			// the deleting one is reported via filteredByDeletion. In default-discovery mode filtered
 			// XRs are counted but not surfaced as impact entries, so only test-resource appears.
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithAffectedResources(2, 1, 0, 0).
@@ -3905,7 +3880,7 @@ Summary: 2 modified`,
 			resources:        []string{"default/deleting-resource"},
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected, // the composition itself changed
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithFilteredByDeletion(1).
@@ -3935,7 +3910,7 @@ Summary: 2 modified`,
 			namespace:        "default",
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithWarning("was not found in the cluster").
 				WithWarningContext(map[string]string{
 					"resource":  "XDownstreamResource/test-resource",
@@ -3980,7 +3955,7 @@ Summary: 2 modified`,
 			namespace:        "default",
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("removal-test-composition").
 				WithCompositionModified().
 				WithAffectedResources(1, 1, 0, 0).
@@ -4107,7 +4082,7 @@ Impact analysis skipped: this composition is identical to the cluster's, so appl
 				// composition's template read the revision name, the resulting change would go undetected.
 				"Could not predict the name of the CompositionRevision",
 			},
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				// The same advisory reaches warnings[] for machine consumers, keyed by composition so that two
 				// compositions declining to predict stay two warnings rather than being merged as duplicates.
 				WithWarning("Could not predict the name of the CompositionRevision").
@@ -4143,7 +4118,7 @@ Impact analysis skipped: this composition is identical to the cluster's, so appl
 			namespace:        "default",
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeSuccess,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithNoWarnings().
 				WithComposition("xnopresources.diff.example.org").
 				WithImpactAnalysisSkipped().
@@ -4183,7 +4158,7 @@ Impact analysis skipped: this composition is identical to the cluster's, so appl
 			namespace:        "default",
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				// The name was predictable, so the could-not-predict advisory must stay silent.
 				WithNoWarnings().
 				WithComposition("xrevisionrefs.diff.example.org").
@@ -4231,7 +4206,7 @@ Impact analysis skipped: this composition is identical to the cluster's, so appl
 			includeManual:    true,
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithNoWarnings().
 				WithComposition("xrevisionrefs.diff.example.org").
 				// One composite re-points; the Manual one is kept but adopts nothing.
@@ -4272,7 +4247,7 @@ Impact analysis skipped: this composition is identical to the cluster's, so appl
 			namespace:        "test-namespace",
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				// The claim's composed resource is labelled with its backing XR's name, which is the claim's
 				// owner, so no "already belongs to another composite" advisory is raised (#534).
 				WithNoWarnings().
@@ -4313,7 +4288,7 @@ Impact analysis skipped: this composition is identical to the cluster's, so appl
 			outputFormat:           "json",
 			expectedExitCode:       dp.ExitCodeSuccess,
 			expectedStderrContains: []string{"Could not predict the name of the CompositionRevision"},
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				// The could-not-predict advisory is the only warning: the claim's composed resource is labelled
 				// with its backing XR's name, so it raises no ownership advisory (#534).
 				WithWarning("Could not predict the name of the CompositionRevision").
@@ -4350,7 +4325,7 @@ Impact analysis skipped: this composition is identical to the cluster's, so appl
 			analyzeOn:        "spec-change",
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeSuccess,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithImpactAnalysisSkipped().
 				WithRevisionImpact("metadata", true, 1).
@@ -4384,7 +4359,7 @@ Impact analysis skipped: this composition is identical to the cluster's, so appl
 			analyzeUnchanged: true,
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithAffectedResources(1, 1, 0, 0).
 				WithXRImpact("XNopResource", "test-resource", "default", "changed").
@@ -4529,7 +4504,7 @@ Summary: 1 modified`,
 			namespace:        "default",
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithAffectedResources(1, 1, 0, 0).
@@ -5526,7 +5501,7 @@ Summary: 1 modified`,
 			expectedError:         true,
 			expectedErrorContains: "impact analysis failed for 1 XR(s)",
 			expectedExitCode:      dp.ExitCodeToolError,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xcycleas.cycle.example.org").
 				WithAffectedResources(1, 0, 0, 1).
 				WithXRImpact("XCycleA", "test-cycle", "default", "error").
@@ -5548,7 +5523,7 @@ Summary: 1 modified`,
 			expectedError:         true,
 			expectedErrorContains: "impact analysis failed for 1 XR(s)",
 			expectedExitCode:      dp.ExitCodeToolError,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithErrorID("XCycleA/test-cycle").
 				WithComposition("xcycleas.cycle.example.org").
 				WithAffectedResources(1, 0, 0, 1).
@@ -5736,7 +5711,7 @@ Summary: 2 modified`,
 			expectedExitCode: dp.ExitCodeDiffDetected,
 			// Expect: impact shows stage0 modified (its configData changed); stage1 is absent from
 			// downstream impact because sequencer gates it.
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("sequencer-gating-composition").
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "sequencer-gating-test", "default", "changed").
@@ -5764,7 +5739,7 @@ Summary: 2 modified`,
 			namespace:        "default",
 			expectedExitCode: dp.ExitCodeDiffDetected,
 			// Expect: impact shows stage0 modified and stage1 added (eventual-state unlocks stage1).
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("sequencer-gating-composition").
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "sequencer-gating-test", "default", "changed").
@@ -5799,7 +5774,7 @@ Summary: 2 modified`,
 			inputFiles:       []string{"testdata/comp/updated-conditional-gating-composition.yaml"},
 			namespace:        "default",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("conditional-gating-composition").
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "conditional-gating-test", "default", "changed").
@@ -5826,7 +5801,7 @@ Summary: 2 modified`,
 			inputFiles:       []string{"testdata/comp/updated-conditional-gating-composition.yaml"},
 			namespace:        "default",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("conditional-gating-composition").
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "conditional-gating-test", "default", "changed").
@@ -5859,7 +5834,7 @@ Summary: 2 modified`,
 			inputFiles:       []string{"testdata/comp/updated-composition.yaml"},
 			namespace:        "default",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "test-resource", "default", "changed").
@@ -5887,7 +5862,7 @@ Summary: 2 modified`,
 				`WARNING: skipped apiserver verification of added resources: their namespace does not exist yet, so their diffs omit server-side defaulting and admission ` +
 					`(cause=namespaces "nonexistent-namespace" not found, count=2, gvk=/v1, Kind=ConfigMap, namespace=nonexistent-namespace)`,
 			},
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithWarning("their namespace does not exist yet").
 				WithWarningContext(map[string]string{
 					"gvk":       "/v1, Kind=ConfigMap",
@@ -5929,7 +5904,7 @@ Summary: 2 modified`,
 			resources:        []string{"default/test-resource"},
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithAffectedResources(1, 1, 0, 0).
@@ -5958,7 +5933,7 @@ Summary: 2 modified`,
 			rbacRules:        leastPrivilegeRules("get", "list", "create", "patch"),
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithAffectedResources(2, 2, 0, 0).
@@ -5988,7 +5963,7 @@ Summary: 2 modified`,
 			rbacRules:        leastPrivilegeRules("get", "create", "patch"),
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithAffectedResources(1, 1, 0, 0).
@@ -6015,7 +5990,7 @@ Summary: 2 modified`,
 			resourcesCSV:     "default/test-resource,default/another-resource",
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithAffectedResources(2, 2, 0, 0).
@@ -6059,7 +6034,7 @@ Summary: 2 modified`,
 			resources:        []string{"default/manual-resource"},
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected, // composition itself changed
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "manual-resource", "default", "filtered").
@@ -6083,7 +6058,7 @@ Summary: 2 modified`,
 			includeManual:    true,
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "manual-resource", "default", "changed"),
@@ -6103,7 +6078,7 @@ Summary: 2 modified`,
 			resources:        []string{"default/selector-mismatch-resource"},
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected, // composition itself changed
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "selector-mismatch-resource", "default", "filtered").
@@ -6127,7 +6102,7 @@ Summary: 2 modified`,
 			resources:        []string{"default/selector-match-resource"},
 			outputFormat:     "json",
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructuredCompOutput: simtest.Expect().
+			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "selector-match-resource", "default", "changed"),

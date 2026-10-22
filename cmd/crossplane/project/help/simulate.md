@@ -136,6 +136,7 @@ the result:
 - 2: only schema validation failed.
 - 3: the simulation succeeded and found changes, including drift a provider
   plan found that the cluster diff didn't.
+- 80: the flags or arguments were invalid, so nothing was simulated.
 - 130: the simulation was interrupted.
 
 When more than one applies, the lowest of 1, 2 and 3 wins.

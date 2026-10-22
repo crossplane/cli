@@ -459,15 +459,32 @@ func TestSimulateNameRejected(t *testing.T) {
 	}
 	base := []string{"-f", "testdata/comp/updated-composition.yaml"}
 
+	// exitUsageError is kong's exit status for parse and Validate errors.
+	const exitUsageError = 80
+
 	cases := map[string]struct {
-		reason  string
-		args    []string
-		wantErr string
+		reason   string
+		args     []string
+		wantErr  string
+		wantCode int
 	}{
+		"NameQualifiedWithNamespaceFlagRejected": {
+			reason:   "namespace/name with --namespace is ambiguous and is rejected.",
+			args:     append([]string{"--namespace=default", "--name=default/test-resource"}, base...),
+			wantErr:  "can't be combined with --namespace",
+			wantCode: exitUsageError,
+		},
+		"MaxConcurrencyZeroRejected": {
+			reason:   "--max-concurrency=0 is rejected.",
+			args:     append([]string{"--max-concurrency=0"}, base...),
+			wantErr:  "--max-concurrency must be at least 1",
+			wantCode: exitUsageError,
+		},
 		"NamePartiallyUnmatchedFailsBeforeRendering": {
-			reason:  "one --name no composite matches fails the run, and no plan is rendered.",
-			args:    append([]string{"--name=default/test-resource", "--name=default/missing"}, base...),
-			wantErr: "resource ref(s) not relevant to any supplied composition: [default/missing]",
+			reason:   "one --name no composite matches fails the run, and no plan is rendered.",
+			args:     append([]string{"--name=default/test-resource", "--name=default/missing"}, base...),
+			wantErr:  "resource ref(s) not relevant to any supplied composition: [default/missing]",
+			wantCode: dp.ExitCodeToolError,
 		},
 	}
 
@@ -487,8 +504,8 @@ func TestSimulateNameRejected(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("\n%s\nsimulate: want error containing %q, got %v (exit %d)", tc.reason, tc.wantErr, err, code)
 			}
-			if code != dp.ExitCodeToolError {
-				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, dp.ExitCodeToolError, code)
+			if code != tc.wantCode {
+				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, tc.wantCode, code)
 			}
 			if stdout.Len() != 0 {
 				t.Errorf("\n%s\nsimulate: want no plan output, got:\n%s", tc.reason, stdout.String())

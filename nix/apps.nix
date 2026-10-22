@@ -44,6 +44,8 @@ in
   # render engine; envtest binaries and Crossplane CRDs come from the Nix
   # store. CI runs it on GitHub runners, where a host Docker daemon is
   # available (see the integration-tests job in .github/workflows/ci.yml).
+  # It keeps the host PATH (Nix inputs first) because Docker and its credential
+  # helpers (docker-credential-*) come from the host, not from Nix.
   integration-test = _: {
     type = "app";
     meta.description = "Run the diff integration tests (needs Docker)";
@@ -51,7 +53,7 @@ in
       pkgs.writeShellApplication {
         name = "crossplane-cli-integration-test";
         runtimeInputs = [ pkgs.unstable.go_1_26 ];
-        inheritPath = false;
+        inheritPath = true;
         text = ''
           export CGO_ENABLED=0
           export CROSSPLANE_CRDS_DIR="''${CROSSPLANE_CRDS_DIR:-${

@@ -142,11 +142,12 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				WithFieldChange("spec.forProvider.region", "us-east-1", "eu-west-1"),
 		},
 		"EmbeddedFunctionOverlay": {
-			reason: "A Composition step naming a function embedded in the project runs the project's function, whose output no cluster function produces.",
+			reason: "A Composition step naming a function embedded in the project runs the project's function, not a same-named cluster Function, which would fail without step input.",
 			setupFiles: []string{
 				"testdata/comp/resources/xrd.yaml",
 				"testdata/comp/resources/original-composition.yaml",
 				"testdata/comp/resources/functions.yaml",
+				"testdata/project/embedded/cluster-function.yaml",
 			},
 			crossplaneManagedResources: []HierarchicalOwnershipRelation{
 				composes(
@@ -172,7 +173,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			t.Parallel()
 
 			if tc.slow && testing.Short() {
-				t.Skip("slow: builds an embedded function image")
+				t.Skip("slow: pulls from a registry")
 			}
 
 			if reason := integrationEnvGap(); reason != "" {

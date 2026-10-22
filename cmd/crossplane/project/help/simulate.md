@@ -76,8 +76,21 @@ Plan: 0 to add, 2 to change, 0 to destroy.
 Note: Cloud-layer plan not run (provider diff servers not yet wired).
 ```
 
-The `--timeout` flag bounds the whole simulation, not each composite resource.
-It doesn't include the time spent building functions.
+The `--timeout` flag, 2m by default, bounds the time to simulate one composite
+resource: its render and its resources' provider plans. Function and provider
+image pulls don't count.
+
+Provider plans are controlled by these flags:
+
+- `--skip-plan` doesn't run provider diff servers and shows only the
+  cluster-layer diff. It can't be combined with the three flags below.
+- `--providers` takes a YAML file or directory of Provider manifests to run as
+  diff servers, instead of discovering providers from the cluster.
+- `--image-configs` takes a YAML file of ImageConfig manifests that rewrite
+  provider image paths for local pulls. It defaults to the project's
+  imageConfigs when `-f` names a project file.
+- `--session-id` sets the `simulate.crossplane.io/session` label on diff server
+  containers. It defaults to a random per-process ID.
 
 The command accepts the same diff-tuning flags as `crossplane-diff`:
 

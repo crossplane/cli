@@ -17,7 +17,11 @@ limitations under the License.
 package simulate
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +32,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -431,13 +436,35 @@ func TestPlanner(t *testing.T) {
 			"kind":       "Key",
 			"metadata":   map[string]any{"name": "k"},
 		}}
-		got, err := RelevantProviderImages(ctx, kube, rm, []*unstructured.Unstructured{vpc("a", "10.0.0.0/16"), vpc("b", "10.1.0.0/16"), unserved}, false)
-		if err != nil {
-			t.Fatalf("RelevantProviderImages(...): unexpected error: %v", err)
-		}
+		cache := NewImageCache()
+		got := RelevantProviderImages(ctx, kube, rm, []*unstructured.Unstructured{vpc("a", "10.0.0.0/16"), vpc("b", "10.1.0.0/16"), unserved}, false, cache, io.Discard)
 		want := []string{"xpkg.upbound.io/upbound/provider-aws-ec2:v2.9.0"}
 		if len(got) != 1 || got[0] != want[0] {
 			t.Errorf("RelevantProviderImages(...): want %v, got %v", want, got)
+		}
+
+		// A repeat call is served from the cache, not the cluster.
+		if err := kube.Delete(ctx, prv); err != nil {
+			t.Fatalf("cannot delete revision: %v", err)
+		}
+		if again := RelevantProviderImages(ctx, kube, rm, []*unstructured.Unstructured{vpc("c", "10.2.0.0/16")}, false, cache, io.Discard); len(again) != 1 || again[0] != want[0] {
+			t.Errorf("RelevantProviderImages(...) repeat: want %v from the cache, got %v", want, again)
+		}
+
+		// A forbidden lookup yields no image, a warning, and no failure.
+		forbidden := fake.NewClientBuilder().WithScheme(discScheme).
+			WithInterceptorFuncs(interceptor.Funcs{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				return apierrors.NewForbidden(schema.GroupResource{Resource: "customresourcedefinitions"}, "vpcs.ec2.aws.upbound.io", errors.New("denied"))
+			}}).Build()
+		var warned bytes.Buffer
+		fc := NewImageCache()
+		for range 2 {
+			if imgs := RelevantProviderImages(ctx, forbidden, rm, []*unstructured.Unstructured{vpc("a", "10.0.0.0/16")}, false, fc, &warned); len(imgs) != 0 {
+				t.Errorf("RelevantProviderImages(forbidden): want no images, got %v", imgs)
+			}
+		}
+		if n := strings.Count(warned.String(), "warning:"); n != 1 {
+			t.Errorf("RelevantProviderImages(forbidden): want 1 warning, got %d: %q", n, warned.String())
 		}
 
 		// ProviderManaged follows the same chain: a VPC's CRD is controlled

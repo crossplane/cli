@@ -69,7 +69,7 @@ func AssertStructuredDiff(t *testing.T, jsonOutput string, e DiffExpectation) {
 	}
 
 	if s := expected.summary; s != nil {
-		assertSummary(t, "Summary", s, res.Summary.Create, res.Summary.Update, res.Summary.Destroy)
+		assertSummary(t, "Summary", s, res.Summary.Create, res.Summary.Update, res.Summary.Destroy, res.Summary.Replace)
 	}
 
 	changes := changePlans(res.Plans, func(*plan.ResourcePlan) bool { return true })
@@ -312,8 +312,8 @@ func assertXRImpact(t *testing.T, res plan.Result, label string, composites []pl
 	downstream := changePlans(res.Plans, groupedUnder(got.Ref))
 
 	if s := want.downstreamSummary; s != nil {
-		create, update, destroy := countActions(downstream)
-		assertSummary(t, label+": downstream summary", s, create, update, destroy)
+		create, update, destroy, replace := countActions(downstream)
+		assertSummary(t, label+": downstream summary", s, create, update, destroy, replace)
 	}
 
 	for _, wantRes := range want.downstreamResources {
@@ -335,6 +335,7 @@ func assertXRImpact(t *testing.T, res plan.Result, label string, composites []pl
 // splits into deferred and skipped.
 func statusMatches(got plan.CompositeStatus, want string) bool {
 	if want == statusFiltered {
+		// Assert filterReason when it matters which of deferred or skipped applies.
 		return got == plan.CompositeDeferred || got == plan.CompositeSkipped
 	}
 
@@ -386,8 +387,8 @@ func assertXRExpectations(t *testing.T, res plan.Result, expected []*XRExpectati
 		changes := changePlans(res.Plans, groupedUnder(got.Ref))
 
 		if s := want.summary; s != nil {
-			create, update, destroy := countActions(changes)
-			assertSummary(t, "xr "+label+": summary", s, create, update, destroy)
+			create, update, destroy, replace := countActions(changes)
+			assertSummary(t, "xr "+label+": summary", s, create, update, destroy, replace)
 		}
 
 		assertResourceExpectations(t, label, changes, want.changes)
@@ -449,9 +450,17 @@ func assertFields(t *testing.T, id string, p *plan.ResourcePlan, changeType stri
 		if got := valueAt(t, p.Changes, planned, path); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: field %s: expected %v, got %v", id, path, want, got)
 		}
+
+		if want == nil && planned {
+			assertAbsentInAfter(t, id, p, path)
+		}
 	}
 
 	for path, want := range changes {
+		if want[0] == nil && want[1] == nil {
+			t.Fatalf("%s: field %s: WithFieldChange(path, nil, nil) asserts nothing; use WithFieldAbsent", id, path)
+		}
+
 		// FieldChanges are leaf changes only, so a field rendered identically on both sides is read from
 		// the plan's objects instead, and must have no change at or under it.
 		if want[0] != nil && reflect.DeepEqual(want[0], want[1]) {
@@ -477,11 +486,38 @@ func assertFields(t *testing.T, id string, p *plan.ResourcePlan, changeType stri
 		}
 	}
 
+	assertPatterns(t, id, p, planned, patterns)
+}
+
+// assertPatterns checks each field value against its pattern, failing on a missing field.
+func assertPatterns(t *testing.T, id string, p *plan.ResourcePlan, planned bool, patterns map[string]*regexp.Regexp) {
+	t.Helper()
+
 	for path, pattern := range patterns {
-		got := fmt.Sprintf("%v", valueAt(t, p.Changes, planned, path))
+		v := valueAt(t, p.Changes, planned, path)
+		if v == nil {
+			t.Errorf("%s: field %s: expected a value matching pattern %q, but the field is missing", id, path, pattern.String())
+			continue
+		}
+
+		got := fmt.Sprintf("%v", v)
 		if !pattern.MatchString(got) {
 			t.Errorf("%s: field %s value %q does not match pattern %q", id, path, got, pattern.String())
 		}
+	}
+}
+
+// assertAbsentInAfter requires path to be absent from the plan's After object, not only from its leaf
+// changes, when After is set.
+func assertAbsentInAfter(t *testing.T, id string, p *plan.ResourcePlan, path string) {
+	t.Helper()
+
+	if p.After == nil {
+		return
+	}
+
+	if got, ok := objectValueAt(t, p.After, path); ok {
+		t.Errorf("%s: field %s: expected absent, but after carries %v", id, path, got)
 	}
 }
 
@@ -650,8 +686,13 @@ func assertValidationFailureMatch(t *testing.T, got plan.ValidationFailure, want
 	}
 }
 
-func assertSummary(t *testing.T, label string, want *expectedSummary, create, update, destroy int) {
+func assertSummary(t *testing.T, label string, want *expectedSummary, create, update, destroy, replace int) {
 	t.Helper()
+
+	// expectedSummary has no replace bucket, so a replace would otherwise go uncounted.
+	if replace != 0 {
+		t.Errorf("%s: %d replace action(s) can't be pinned by a summary of added/modified/removed", label, replace)
+	}
 
 	if create != want.added || update != want.modified || destroy != want.removed {
 		t.Errorf("%s: expected {added:%d modified:%d removed:%d}, got {added:%d modified:%d removed:%d}",
@@ -676,7 +717,7 @@ func groupedUnder(ref plan.ResourceRef) func(*plan.ResourcePlan) bool {
 	return func(p *plan.ResourcePlan) bool { return p.Composite != nil && *p.Composite == ref }
 }
 
-func countActions(plans []*plan.ResourcePlan) (create, update, destroy int) {
+func countActions(plans []*plan.ResourcePlan) (create, update, destroy, replace int) {
 	for _, p := range plans {
 		switch p.Action {
 		case plan.ActionCreate:
@@ -685,11 +726,13 @@ func countActions(plans []*plan.ResourcePlan) (create, update, destroy int) {
 			update++
 		case plan.ActionDelete:
 			destroy++
-		case plan.ActionReplace, plan.ActionNoOp:
+		case plan.ActionReplace:
+			replace++
+		case plan.ActionNoOp:
 		}
 	}
 
-	return create, update, destroy
+	return create, update, destroy, replace
 }
 
 // findPlan returns the plan for ref grouped under composite.

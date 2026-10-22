@@ -1095,20 +1095,21 @@ func TestCheckComposites(t *testing.T) {
 
 func TestPlanNotes(t *testing.T) {
 	cases := map[string]struct {
-		skipPlan  bool
-		plans     map[string]*plan.ResourcePlan
-		noServers bool
-		want      []string
+		skipPlan bool
+		planned  bool
+		routed   int
+		want     []string
 	}{
-		"SkipPlan":           {skipPlan: true, want: []string{simulate.NoteProviderPlanSkipped}},
-		"NilPlans":           {},
-		"EmptyServersNotRun": {plans: map[string]*plan.ResourcePlan{}, noServers: true, want: []string{simulate.NoteNoDiffServers}},
-		"EmptyServersRan":    {plans: map[string]*plan.ResourcePlan{}},
-		"NonEmptyPlans":      {plans: map[string]*plan.ResourcePlan{"k": {}}, noServers: true},
+		"SkipPlan":       {skipPlan: true, want: []string{simulate.NoteProviderPlanSkipped}},
+		"NotPlanned":     {},
+		"NoneRouted":     {planned: true, want: []string{simulate.NoteNoDiffServers}},
+		"SomeRouted":     {planned: true, routed: 1},
+		"ManyRouted":     {planned: true, routed: 5},
+		"SkipPlanRouted": {skipPlan: true, planned: true, routed: 2, want: []string{simulate.NoteProviderPlanSkipped}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if diff := cmp.Diff(tc.want, planNotes(tc.skipPlan, tc.plans, tc.noServers)); diff != "" {
+			if diff := cmp.Diff(tc.want, planNotes(tc.skipPlan, tc.planned, tc.routed)); diff != "" {
 				t.Errorf("planNotes(...): -want, +got:\n%s", diff)
 			}
 		})

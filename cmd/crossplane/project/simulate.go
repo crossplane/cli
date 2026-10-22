@@ -816,19 +816,23 @@ func (c *simulateCmd) providerPlans() map[string]*plan.ResourcePlan {
 }
 
 // planNotes returns the notes that replace the result's own, or nil to keep
-// them. noServers is true when diff servers were wanted but none ran.
-func planNotes(skipPlan bool, plans map[string]*plan.ResourcePlan, noServers bool) []string {
+// them. planned is true when planning ran; routed counts the plans a diff
+// server served.
+func planNotes(skipPlan, planned bool, routed int) []string {
 	switch {
 	case skipPlan:
 		return []string{simulate.NoteProviderPlanSkipped}
-	case plans != nil && len(plans) == 0 && noServers:
+	case planned && routed == 0:
 		return []string{simulate.NoteNoDiffServers}
 	}
 	return nil
 }
 
 func (c *simulateCmd) notes() []string {
-	return planNotes(c.SkipPlan, c.providerPlans(), c.servers != nil && !c.servers.Ran())
+	if c.xrPlanner == nil {
+		return planNotes(c.SkipPlan, false, 0)
+	}
+	return planNotes(c.SkipPlan, true, c.xrPlanner.Routed())
 }
 
 // renderXRReport writes an xr or project run's report in the format -o

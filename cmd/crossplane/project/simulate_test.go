@@ -249,6 +249,31 @@ func TestSimulateFlags(t *testing.T) {
 			args:   []string{"-o", "xml"},
 			want:   want{err: true},
 		},
+		"ZeroConcurrency": {
+			reason: "Zero build slots would hang a project build forever.",
+			args:   []string{"--max-concurrency", "0"},
+			want:   want{err: true},
+		},
+		"EmptyName": {
+			reason: "An empty --name should fail at parse time.",
+			args:   []string{"--name=,"},
+			want:   want{err: true},
+		},
+		"NamespacedNameWithNamespace": {
+			reason: "ns/name with -n should fail at parse time.",
+			args:   []string{"-n", "a", "--name", "b/c"},
+			want:   want{err: true},
+		},
+		"TooManySlashes": {
+			reason: "a/b/c should fail at parse time.",
+			args:   []string{"--name", "a/b/c"},
+			want:   want{err: true},
+		},
+		"EmptyNamespaceInName": {
+			reason: "/name should fail at parse time.",
+			args:   []string{"--name", "/name"},
+			want:   want{err: true},
+		},
 		"ZeroIterations": {
 			reason: "A render needs at least one iteration.",
 			args:   []string{"--max-iterations", "0"},
@@ -865,6 +890,8 @@ func TestLoadInputs(t *testing.T) {
 		return path
 	}
 
+	commaXR := write("a,b.yaml", "apiVersion: example.org/v1\nkind: XThing\nmetadata:\n  name: comma\n")
+
 	proj := write("crossplane-project.yaml", "apiVersion: dev.crossplane.io/v1alpha1\nkind: Project\nmetadata:\n  name: p\n")
 	comp := write("comp.yaml", `apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
@@ -928,6 +955,11 @@ spec:
 			reason: "Composite resources and claims should select XR mode.",
 			paths:  []string{xr, claim},
 			want:   want{mode: xrMode, names: []string{"x", "t"}},
+		},
+		"CommaInPath": {
+			reason: "-f never splits on commas, so a,b.yaml is one path.",
+			paths:  []string{commaXR},
+			want:   want{mode: xrMode, names: []string{"comma"}},
 		},
 		"NonProjectSingleFile": {
 			reason: "A single file that isn't a project file should be loaded as resources; checkComposites rejects it once XRDs are known.",
@@ -1149,21 +1181,23 @@ func TestCheckComposites(t *testing.T) {
 
 func TestPlanNotes(t *testing.T) {
 	cases := map[string]struct {
-		skipPlan bool
-		planned  bool
-		routed   int
-		want     []string
+		skipPlan   bool
+		planned    bool
+		routed     int
+		considered int
+		want       []string
 	}{
 		"SkipPlan":       {skipPlan: true, want: []string{simulate.NoteProviderPlanSkipped}},
 		"NotPlanned":     {},
-		"NoneRouted":     {planned: true, want: []string{simulate.NoteNoDiffServers}},
+		"NoneRouted":     {planned: true, considered: 1, want: []string{simulate.NoteNoDiffServers}},
+		"NothingToPlan":  {planned: true},
 		"SomeRouted":     {planned: true, routed: 1},
 		"ManyRouted":     {planned: true, routed: 5},
 		"SkipPlanRouted": {skipPlan: true, planned: true, routed: 2, want: []string{simulate.NoteProviderPlanSkipped}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if diff := cmp.Diff(tc.want, planNotes(tc.skipPlan, tc.planned, tc.routed)); diff != "" {
+			if diff := cmp.Diff(tc.want, planNotes(tc.skipPlan, tc.planned, tc.routed, tc.considered)); diff != "" {
 				t.Errorf("planNotes(...): -want, +got:\n%s", diff)
 			}
 		})
@@ -1238,5 +1272,18 @@ func TestSimulateNameFlagParse(t *testing.T) {
 				t.Errorf("Name: -want, +got:\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestPipelineInputsMalformedStep(t *testing.T) {
+	c := &un.Unstructured{Object: map[string]any{
+		"apiVersion": "apiextensions.crossplane.io/v1",
+		"kind":       "Composition",
+		"metadata":   map[string]any{"name": "bad"},
+		"spec":       map[string]any{"pipeline": []any{"foo"}},
+	}}
+	got, err := pipelineInputs([]*un.Unstructured{c})
+	if err != nil || len(got) != 0 {
+		t.Errorf("pipelineInputs(...) = %v, %v; want no inputs and no error", got, err)
 	}
 }

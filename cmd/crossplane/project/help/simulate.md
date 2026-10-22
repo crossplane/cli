@@ -34,7 +34,10 @@ them. Use `--as`, `--as-group`, and `--as-uid` to simulate as another user.
 
 By default, `simulate` skips composite resources with a `Manual` composition
 update policy, because they don't adopt a new Composition revision on their
-own. Pass `--include-pinned` to simulate them too.
+own. A pinned composite whose revision calls a function the project changes is
+still simulated, rendered against the revision it's pinned to. Pass
+`--include-pinned` to render every pinned composite against the new Composition
+instead.
 
 Some flags apply only to some inputs. `--namespace`, `--name`,
 `--include-pinned`, `--analyze-on`, and `--minimize-composition` choose which

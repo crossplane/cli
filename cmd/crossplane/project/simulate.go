@@ -84,17 +84,17 @@ type simulateCmd struct {
 	// noServersNoted is set once the "no diff servers" line is printed.
 	noServersNoted bool
 
-	Input          []string `default:"${project_file}"   help:"Project file (default), or changed Composition or composite resource files. Repeatable; - reads standard input." placeholder:"PATH" sep:"none" short:"f"`
+	Input          []string `default:"${project_file}"   help:"Project file (default), or changed Composition or composite resource files. Takes one path per flag; repeat it for more. - reads standard input." placeholder:"PATH" sep:"none" short:"f"`
 	MaxConcurrency uint     `default:"8"                 help:"Max concurrent function builds."`
-	CacheDir       string   `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)."                                           name:"cache-dir"`
+	CacheDir       string   `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)."                                                                            name:"cache-dir"`
 
-	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                                                                             predictor:"context"                                                                                                                                                                                            short:"c"`
-	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                                                                                     predictor:"namespace"                                                                                                                                                                                          short:"n"`
-	Name          []string      `help:"Only simulate the composite resource with this [namespace/]name. Repeatable or comma-separated. A bare name pairs with --namespace, or is cluster scoped without it." sep:","`
-	IncludePinned bool          `help:"Also simulate composite resources with a Manual composition update policy, which don't adopt the new revision."`
-	MaxIterations int           `default:"20"                                                                                                                                                                help:"Max render iterations per composite resource to resolve requirements."`
-	Timeout       time.Duration `default:"2m"                                                                                                                                                                help:"Max time to simulate one composite resource: its render and its resources' provider plans. Function and provider image pulls don't count, but the render image pull counts against the first composite."`
-	Output        string        `default:"plan"                                                                                                                                                              enum:"plan,diff,json,yaml"                                                                                                                                                                                     help:"Output format. One of: plan, diff, json, yaml." short:"o"`
+	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                                                                                                         predictor:"context"                                                                                                                                                                                            short:"c"`
+	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                                                                                                                 predictor:"namespace"                                                                                                                                                                                          short:"n"`
+	Name          []string      `help:"Only simulate the composite resource with this [namespace/]name. Repeatable or comma-separated. A bare name pairs with --namespace, or is cluster scoped without it."                             sep:","`
+	IncludePinned bool          `help:"Render every composite resource with a Manual composition update policy against the new Composition, instead of only those pinned to a changed function, rendered against their pinned revision."`
+	MaxIterations int           `default:"20"                                                                                                                                                                                            help:"Max render iterations per composite resource to resolve requirements."`
+	Timeout       time.Duration `default:"2m"                                                                                                                                                                                            help:"Max time to simulate one composite resource: its render and its resources' provider plans. Function and provider image pulls don't count, but the render image pull counts against the first composite."`
+	Output        string        `default:"plan"                                                                                                                                                                                          enum:"plan,diff,json,yaml"                                                                                                                                                                                     help:"Output format. One of: plan, diff, json, yaml." short:"o"`
 
 	NoColor                  bool                `help:"Disable colorized output."`
 	Compact                  bool                `help:"Show compact diffs with minimal context."`
@@ -225,6 +225,15 @@ func (c *simulateCmd) Help() string {
 func (c *simulateCmd) Validate() error {
 	if c.MaxIterations < 1 {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
+	}
+
+	if c.MaxConcurrency == 0 {
+		return errors.Errorf("--max-concurrency must be at least 1, got %d", c.MaxConcurrency)
+	}
+
+	// Bad --name/--namespace values fail here, before any build.
+	if _, _, err := c.scope(); err != nil {
+		return err
 	}
 
 	if c.Timeout <= 0 {
@@ -445,7 +454,7 @@ func selectServers(providers string, projectMode bool, loadInputs func(string) (
 // noteNoServers prints once, when planning is on and no diff server ever
 // ran, that the diff shows only the cluster layer. -o diff has no notes.
 func (c *simulateCmd) noteNoServers(k *kong.Context) {
-	if c.servers == nil || c.servers.Ran() || c.noServersNoted {
+	if c.servers == nil || c.servers.Ran() || c.noServersNoted || c.xrPlanner == nil || c.xrPlanner.Considered() == 0 {
 		return
 	}
 	c.noServersNoted = true
@@ -534,7 +543,7 @@ func (c *simulateCmd) diffCompositions(k *kong.Context, logger logging.Logger, p
 
 		// Render the report even when there are errors (e.g. every
 		// composition failed), so structured output stays valid. A render
-		// failure takes precedence over the processing error.
+		// failure is joined with the processing error, so neither is lost.
 		changed := output != nil && output.HasChanges()
 		if output != nil {
 			rendered, renderErr := c.renderCompReport(k, logger, output)
@@ -593,7 +602,7 @@ func loadInputs(paths []string) (*inputs, error) {
 		}
 	}
 
-	loader, err := ld.NewCompositeLoader(paths)
+	loader, err := ld.NewExactCompositeLoader(paths)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot load -f inputs")
 	}
@@ -682,7 +691,12 @@ func pipelineInputs(resources []*un.Unstructured) (map[string]int, error) {
 		}
 		steps, _, _ := un.NestedSlice(r.Object, "spec", "pipeline")
 		for _, step := range steps {
-			in, ok := step.(map[string]any)["input"]
+			m, ok := step.(map[string]any)
+			if !ok {
+				// Let the engine report the malformed Composition.
+				continue
+			}
+			in, ok := m["input"]
 			if !ok || in == nil {
 				continue
 			}
@@ -887,12 +901,12 @@ func (c *simulateCmd) providerPlans() map[string]*plan.ResourcePlan {
 
 // planNotes returns the notes that replace the result's own, or nil to keep
 // them. planned is true when planning ran; routed counts the plans a diff
-// server served.
-func planNotes(skipPlan, planned bool, routed int) []string {
+// server served, and considered the resources the planner was asked to route.
+func planNotes(skipPlan, planned bool, routed, considered int) []string {
 	switch {
 	case skipPlan:
 		return []string{simulate.NoteProviderPlanSkipped}
-	case planned && routed == 0:
+	case planned && considered > 0 && routed == 0:
 		return []string{simulate.NoteNoDiffServers}
 	}
 	return nil
@@ -900,9 +914,9 @@ func planNotes(skipPlan, planned bool, routed int) []string {
 
 func (c *simulateCmd) notes() []string {
 	if c.xrPlanner == nil {
-		return planNotes(c.SkipPlan, false, 0)
+		return planNotes(c.SkipPlan, false, 0, 0)
 	}
-	return planNotes(c.SkipPlan, true, c.xrPlanner.Routed())
+	return planNotes(c.SkipPlan, true, c.xrPlanner.Routed(), c.xrPlanner.Considered())
 }
 
 // renderXRReport writes an xr or project run's report in the format -o

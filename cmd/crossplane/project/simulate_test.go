@@ -292,7 +292,7 @@ func TestSimulateFlags(t *testing.T) {
 			if tc.want.err {
 				return
 			}
-			if diff := cmp.Diff(tc.want.cmd, got, cmpopts.IgnoreFields(simulateCmd{}, "Impersonation")); diff != "" {
+			if diff := cmp.Diff(tc.want.cmd, got, cmpopts.IgnoreFields(simulateCmd{}, "Impersonation"), cmpopts.IgnoreUnexported(simulateCmd{})); diff != "" {
 				t.Errorf("\n%s\nParse(%v): -want, +got:\n%s", tc.reason, tc.args, diff)
 			}
 		})

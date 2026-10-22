@@ -124,10 +124,15 @@ func (s *ServerSet) Ensure(ctx context.Context, inputs []diffserver.Input) error
 
 	var fresh []diffserver.Input
 	for _, in := range inputs {
-		if s.handled[in.Image] {
+		// A Development provider has no image; its manifest name identifies it.
+		key := in.Image
+		if key == "" {
+			key = in.Name
+		}
+		if s.handled[key] {
 			continue
 		}
-		s.handled[in.Image] = true
+		s.handled[key] = true
 		fresh = append(fresh, in)
 	}
 	if len(fresh) == 0 {

@@ -325,6 +325,7 @@ func assertXRImpact(t *testing.T, res plan.Result, label string, composites []pl
 		id := fmt.Sprintf("%s: downstream %s %s/%s", label, wantRes.changeType, wantRes.kind, p.Name)
 		assertDryRun(t, id, p.DryRun, wantRes.dryRun)
 		assertFields(t, id, p, wantRes.changeType, wantRes.fieldValues, wantRes.fieldChanges, wantRes.fieldValuePatterns)
+		assertSpec(t, id, p, wantRes)
 	}
 }
 
@@ -428,11 +429,20 @@ func assertResourceExpectations(t *testing.T, scope string, changes []*plan.Reso
 		assertDryRun(t, id, p.DryRun, want.dryRun)
 		assertFields(t, id, p, want.changeType, want.fieldValues, want.fieldChanges, want.fieldValuePatterns)
 
-		if want.specMatch != nil {
-			if spec := valueAt(t, p.Changes, want.changeType != dt.DiffTypeWordRemoved, "spec"); !reflect.DeepEqual(spec, want.specMatch) {
-				t.Errorf("%s: spec mismatch: expected %v, got %v", id, want.specMatch, spec)
-			}
-		}
+		assertSpec(t, id, p, want)
+	}
+}
+
+// assertSpec checks a plan's whole spec against the expectation's WithSpec, when set.
+func assertSpec(t *testing.T, id string, p *plan.ResourcePlan, want *ResourceExpectation) {
+	t.Helper()
+
+	if want.specMatch == nil {
+		return
+	}
+
+	if spec := valueAt(t, p.Changes, want.changeType != dt.DiffTypeWordRemoved, "spec"); !reflect.DeepEqual(spec, want.specMatch) {
+		t.Errorf("%s: spec mismatch: expected %v, got %v", id, want.specMatch, spec)
 	}
 }
 

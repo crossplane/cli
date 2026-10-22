@@ -346,11 +346,11 @@ func renderComposite(w io.Writer, c CompositeResult, ref ResourceRef, plans []*R
 		}
 		_, _ = fmt.Fprintf(w, "    %s; apply changes nothing until the\n", pinned)
 		_, _ = fmt.Fprintln(w, "    revision advances. Rerun with --include-pinned to preview that moment.")
-	case CompositeSkipped:
+	case CompositeSkipped, CompositeChanged, CompositeUnchanged:
 		if c.Detail != "" {
 			_, _ = fmt.Fprintf(w, "    %s\n", c.Detail)
 		}
-	case CompositeChanged, CompositeUnchanged, CompositeError:
+	case CompositeError:
 	}
 	var block strings.Builder
 	for _, p := range plans {

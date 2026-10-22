@@ -195,6 +195,22 @@ func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary
 func runSimulateArgvRouted(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, router simulate.Router, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
+	return runSimulateArgvWith(t, cfg, argv, &project.SimulateHooks{RenderBinary: renderBinary, Router: router}, stdout, stderr)
+}
+
+// runSimulateArgvHooked is runSimulateArgv with changed marked as changed
+// functions, as project mode's digest detection would.
+func runSimulateArgvHooked(t *testing.T, cfg *rest.Config, argv, changed []string, stdout, stderr io.Writer) (int, error) {
+	t.Helper()
+
+	return runSimulateArgvWith(t, cfg, argv, &project.SimulateHooks{RenderBinary: localCrossplaneBinary(t), ChangedFunctions: changed}, stdout, stderr)
+}
+
+// runSimulateArgvWith runs `crossplane project simulate` with argv against
+// cfg and hooks, whose RESTConfig and Terminal it sets.
+func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *project.SimulateHooks, stdout, stderr io.Writer) (int, error) {
+	t.Helper()
+
 	var cli struct {
 		Project project.Cmd `cmd:""`
 	}
@@ -222,12 +238,9 @@ func runSimulateArgvRouted(t *testing.T, cfg *rest.Config, argv []string, render
 	// Inject the case's cluster in place of the kubeconfig, and render the
 	// way crossplane-diff's tests did: with the local crossplane binary
 	// when there is one, and colorized unless --no-color.
-	cli.Project.Simulate.Hooks = &project.SimulateHooks{
-		RESTConfig:   cfg,
-		RenderBinary: renderBinary,
-		Terminal:     true,
-		Router:       router,
-	}
+	hooks.RESTConfig = cfg
+	hooks.Terminal = true
+	cli.Project.Simulate.Hooks = hooks
 
 	err = kctx.Run()
 	// Exit as main does: print an error the way FatalIfErrorf does, the only

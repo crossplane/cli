@@ -143,6 +143,19 @@ type SimulateHooks struct {
 	// Router, when set, routes provider plans through it instead of starting
 	// diff servers.
 	Router simulate.Router
+
+	// ChangedFunctions marks these functions as changed in any mode, as
+	// project mode's digest detection would. Test-only.
+	ChangedFunctions []string
+}
+
+// hookChangedFunctions returns the functions a test marked as changed.
+func (c *simulateCmd) hookChangedFunctions() []string {
+	if c.Hooks == nil {
+		return nil
+	}
+
+	return c.Hooks.ChangedFunctions
 }
 
 // FunctionCredentials holds Secret credentials loaded from a file path. It
@@ -282,7 +295,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		return err
 	}
 
-	opts := append(c.processorOptions(k, logger, fns), dp.WithChangedFunctions(changed...), dp.WithXRTimeout(c.Timeout))
+	opts := append(c.processorOptions(k, logger, fns), dp.WithChangedFunctions(append(changed, c.hookChangedFunctions()...)...), dp.WithXRTimeout(c.Timeout))
 
 	// xrPlanner and servers are for rendering the plans; they stay nil with
 	// --skip-plan, and servers also when Hooks.Router supplies the router.

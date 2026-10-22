@@ -1,0 +1,14 @@
+# The composed resource of existing-xr-pinned-revision-ref.yaml with a configData that is neither its pinned
+# revision's name nor the predicted revision's, so a render of the pinned revision shows a visible change
+# to that revision's name. See existing-downstream-pinned-revision-ref.yaml for the annotation.
+apiVersion: ns.nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  name: pinned-revision-ref-resource
+  namespace: default
+  annotations:
+    crossplane.io/composition-resource-name: nop-resource
+spec:
+  forProvider:
+    configData: stale-value
+    resourceTier: basic

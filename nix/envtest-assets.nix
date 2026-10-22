@@ -46,7 +46,7 @@ else
       tar -xzf ${
         pkgs.fetchurl {
           url = "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v${version}/envtest-v${version}-${target.os}-${target.arch}.tar.gz";
-          hash = target.hash;
+          inherit (target) hash;
         }
       } --strip-components=2 -C $out controller-tools/envtest
     ''

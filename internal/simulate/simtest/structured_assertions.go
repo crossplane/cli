@@ -14,19 +14,19 @@ type Expectation interface {
 	expectation() *Expected
 }
 
-// DiffExpectation is the pre-unification name of Expectation.
+// Expectation is the pre-unification name of Expectation.
 type DiffExpectation = Expectation
 
-// CompDiffExpectation is the pre-unification name of Expectation.
+// Expectation is the pre-unification name of Expectation.
 type CompDiffExpectation = Expectation
 
-// ExpectedDiff is the pre-unification name of Expected.
+// Expected is the pre-unification name of Expected.
 type ExpectedDiff = Expected
 
-// ExpectedCompDiff is the pre-unification name of Expected.
+// Expected is the pre-unification name of Expected.
 type ExpectedCompDiff = Expected
 
-// CompWarningExpectation is the pre-unification name of WarningExpectation.
+// WarningExpectation is the pre-unification name of WarningExpectation.
 type CompWarningExpectation = WarningExpectation
 
 // Expected is a fluent builder for test expectations on a plan.Result, covering both xr-style sections
@@ -288,7 +288,7 @@ func (e *ErrorExpectation) WithValidationFailure(apiVersion, kind, name, namespa
 	return v
 }
 
-// AndError returns to the parent ExpectedDiff to chain another
+// AndError returns to the parent Expected to chain another
 // WithError call, mirroring the AndXR / AndComp helpers elsewhere in
 // this file.
 func (e *ErrorExpectation) AndError() *Expected {
@@ -456,8 +456,8 @@ func (r *ResourceExpectation) WithAnyName() *ResourceExpectation {
 	return r
 }
 
-// And returns to the root ExpectedDiff to chain more expectations.
-// Not needed at the end of a chain - AssertStructuredDiff accepts a
+// And returns to the root Expected to chain more expectations.
+// Not needed at the end of a chain - AssertStructured accepts a
 // ResourceExpectation directly.
 func (r *ResourceExpectation) And() *Expected {
 	e := r.expectation()
@@ -483,7 +483,7 @@ func (r *ResourceExpectation) Change(changeType, kind, name, namespace string) *
 // XRExpectation defines expectations for a single entry in the xrs[] grouped
 // view: the input XR's identity, its status, its per-XR summary, and its
 // per-XR changes. Build one with XR(...), configure it with the methods below,
-// then pass it (with any siblings) to ExpectedDiff.WithXRs.
+// then pass it (with any siblings) to Expected.WithXRs.
 type XRExpectation struct {
 	kind        string
 	name        string
@@ -497,7 +497,7 @@ type XRExpectation struct {
 }
 
 // XR begins a standalone expectation for one xrs[] entry, keyed by the input
-// XR's kind/name/namespace. Pass the result(s) to ExpectedDiff.WithXRs.
+// XR's kind/name/namespace. Pass the result(s) to Expected.WithXRs.
 func XR(kind, name, namespace string) *XRExpectation {
 	return &XRExpectation{kind: kind, name: name, namespace: namespace}
 }
@@ -526,7 +526,7 @@ func (e *Expected) WithXRs(xrs ...xrSpec) *Expected {
 }
 
 // Build terminates the chain and returns the root expectation. Optional —
-// AssertStructuredDiff accepts an *Expected directly — but it reads as an
+// AssertStructured accepts an *Expected directly — but it reads as an
 // explicit "done building" marker.
 func (e *Expected) Build() *Expected { return e }
 
@@ -817,7 +817,7 @@ func (x *XRImpactExpectation) WithDownstreamResource(changeType, kind, name, nam
 	return r
 }
 
-// DownstreamResourceExpectation is the same type as ResourceExpectation: one builder carries the
+// ResourceExpectation is the same type as ResourceExpectation: one builder carries the
 // field, dry-run and name methods for a flat resource and for one under a composition's XR impact.
 type DownstreamResourceExpectation = ResourceExpectation
 
@@ -833,13 +833,13 @@ func (r *ResourceExpectation) AndXR() *XRImpactExpectation {
 }
 
 // AndComp returns to parent to chain more XR impact expectations.
-// Not needed at the end of a chain - AssertStructuredCompDiff accepts XRImpactExpectation directly.
+// Not needed at the end of a chain - AssertStructured accepts XRImpactExpectation directly.
 func (x *XRImpactExpectation) AndComp() *CompositionExpectation {
 	return x.parent
 }
 
 // And returns to parent to chain more composition expectations.
-// Not needed at the end of a chain - AssertStructuredCompDiff accepts CompositionExpectation directly.
+// Not needed at the end of a chain - AssertStructured accepts CompositionExpectation directly.
 func (c *CompositionExpectation) And() *Expected {
 	return c.parent
 }

@@ -111,13 +111,13 @@ func AssertStructured(t *testing.T, jsonOutput string, e Expectation) {
 	}
 }
 
-// AssertStructuredDiff is the pre-unification name of AssertStructured.
+// AssertStructured is the pre-unification name of AssertStructured.
 func AssertStructuredDiff(t *testing.T, jsonOutput string, e Expectation) {
 	t.Helper()
 	AssertStructured(t, jsonOutput, e)
 }
 
-// AssertStructuredCompDiff is the pre-unification name of AssertStructured.
+// AssertStructured is the pre-unification name of AssertStructured.
 func AssertStructuredCompDiff(t *testing.T, jsonOutput string, e Expectation) {
 	t.Helper()
 	AssertStructured(t, jsonOutput, e)

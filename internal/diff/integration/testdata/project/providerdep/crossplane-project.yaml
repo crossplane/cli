@@ -1,0 +1,13 @@
+apiVersion: dev.crossplane.io/v1alpha1
+kind: Project
+metadata:
+  name: it-project
+spec:
+  repository: xpkg.crossplane.io/example/it-project
+  dependencies:
+    - type: xpkg
+      xpkg:
+        apiVersion: pkg.crossplane.io/v1
+        kind: Provider
+        package: xpkg.crossplane.io/crossplane-contrib/provider-nop
+        version: sha256:a52ba8a7a0548d8b709c53462a135affaf5b277c5738053c38d5d7ddfcfb1331

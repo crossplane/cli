@@ -25,9 +25,12 @@ import (
 	"strings"
 	"testing"
 
+	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
+
 	"github.com/crossplane/cli/v2/cmd/crossplane/project"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
+	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/simulate/simtest"
 )
 
@@ -50,12 +53,18 @@ type projectTestCase struct {
 	expectedStructured    simtest.Expectation
 	// slow cases are skipped under testing.Short (registry pulls, builds).
 	slow bool
+	// servers, when set, replaces the diff server set and the run does not
+	// pass --skip-plan.
+	servers simulate.Servers
 }
 
 func TestProjectSimulateIntegration(t *testing.T) {
 	t.Parallel()
 
 	tu.SetupKubeTestLogger(t)
+
+	providerDigest := "sha256:a52ba8a7a0548d8b709c53462a135affaf5b277c5738053c38d5d7ddfcfb1331"
+	region := &diffv1alpha1.FieldChange{Field: "spec.forProvider.region", Actual: strValue("us-east-1"), Planned: strValue("eu-west-1")}
 
 	cases := map[string]projectTestCase{
 		"MalformedProjectFile": {
@@ -104,6 +113,33 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				WithXRImpact("XNopResource", "test-resource", "default", "changed").
 				AndComp().
 				WithXRImpact("XNopResource", "another-resource", "default", "changed"),
+		},
+		"ProviderDependencyStartsServer": {
+			reason: "A provider dependency of the project is ensured as a diff server, so its plan joins the composed resource's changes.",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+			},
+			project:          "providerdep",
+			extraArgs:        []string{"-n", "default"},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			slow:             true,
+			servers: &recordingServers{wantImage: providerDigest, plans: fakeProviderRouter{fn: func(*diffv1alpha1.PlanRequest) (*diffv1alpha1.PlanResponse, error) {
+				return &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_UPDATE, Changes: []*diffv1alpha1.FieldChange{region}}, nil
+			}}},
+			expectedStructured: simtest.Expect().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "test-resource", "default", "changed").
+				WithDownstreamResource("modified", "XDownstreamResource", "test-resource", "default").
+				WithFieldChange("spec.forProvider.region", "us-east-1", "eu-west-1"),
 		},
 		"EmbeddedFunctionOverlay": {
 			reason: "A Composition step naming a function embedded in the project runs the project's function, whose output no cluster function produces.",
@@ -156,7 +192,10 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			argv := []string{
 				"project", "simulate", "--timeout=" + defaultTimeout.String(),
 				"-f", filepath.Join(dir, "crossplane-project.yaml"),
-				"--cache-dir=" + t.TempDir(), "--skip-plan",
+				"--cache-dir=" + t.TempDir(),
+			}
+			if tc.servers == nil {
+				argv = append(argv, "--skip-plan")
 			}
 			argv = append(argv, tc.extraArgs...)
 			if tc.expectedStructured != nil {
@@ -164,7 +203,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			}
 
 			var stdout, stderr bytes.Buffer
-			code, err := runSimulateArgvWith(t, cfg, argv, &project.SimulateHooks{RenderBinary: localCrossplaneBinary(t)}, &stdout, &stderr)
+			code, err := runSimulateArgvWith(t, cfg, argv, &project.SimulateHooks{RenderBinary: localCrossplaneBinary(t), Servers: tc.servers}, &stdout, &stderr)
 
 			if tc.expectedErrorContains != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.expectedErrorContains) {

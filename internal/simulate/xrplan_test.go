@@ -112,9 +112,9 @@ func TestXRPlanner(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			var ensured []string
-			var ensureCtx context.Context
+			var ensureCtxs []context.Context
 			ensure := func(ctx context.Context, rs []*unstructured.Unstructured) error {
-				ensureCtx := ctx
+				ensureCtxs = append(ensureCtxs, ctx)
 				for _, r := range rs {
 					ensured = append(ensured, r.GetName())
 				}
@@ -141,8 +141,8 @@ func TestXRPlanner(t *testing.T) {
 			if len(ensured) != len(tc.wantEnsured) {
 				t.Errorf("ensure got %v, want %v", ensured, tc.wantEnsured)
 			}
-			if len(tc.wantEnsured) > 0 && (ensureCtx == nil || ensureCtx.Err() != nil) {
-				t.Errorf("ensure ctx missing or ended: %v", ensureCtx)
+			if len(tc.wantEnsured) > 0 && (len(ensureCtxs) == 0 || ensureCtxs[0].Err() != nil) {
+				t.Errorf("ensure ctx missing or ended: %v", ensureCtxs)
 			}
 			got := x.Plans()
 			if len(got) != len(tc.wantPlans)+1 || got["earlier"] == nil {
@@ -157,9 +157,9 @@ func TestXRPlanner(t *testing.T) {
 	}
 
 	t.Run("EnsureRunsOutsideXRDeadline", func(t *testing.T) {
-		var ensureCtx context.Context
+		var ensureCtxs []context.Context
 		ensure := func(ctx context.Context, _ []*unstructured.Unstructured) error {
-			ensureCtx := ctx
+			ensureCtxs = append(ensureCtxs, ctx)
 			return errors.New("stop before planning")
 		}
 		xrCtx, cancel := diffprocessor.ContextWithXRDeadline(context.Background(), time.Nanosecond)
@@ -169,8 +169,8 @@ func TestXRPlanner(t *testing.T) {
 		x := NewXRPlanner(planner, nil, ensure)
 		_ = x.AfterXRDiff(xrCtx, map[string]*dt.ResourceDiff{"a": added(vpc("a", "10.0.0.0/16"))})
 
-		if ensureCtx == nil || ensureCtx.Err() != nil {
-			t.Errorf("ensure ctx missing or ended: %v", ensureCtx)
+		if len(ensureCtxs) == 0 || ensureCtxs[0].Err() != nil {
+			t.Errorf("ensure ctx missing or ended: %v", ensureCtxs)
 		}
 	})
 

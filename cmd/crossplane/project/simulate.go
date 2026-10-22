@@ -395,11 +395,9 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 			return nil, err
 		}
 	default:
+		cache := simulate.NewImageCache()
 		ensure = func(ctx context.Context, rs []*un.Unstructured) error {
-			imgs, err := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, rs, len(ics) > 0)
-			if err != nil {
-				return err
-			}
+			imgs := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, rs, len(ics) > 0, cache, k.Stderr)
 			return c.servers.Ensure(ctx, diffserver.Images(imgs))
 		}
 	}

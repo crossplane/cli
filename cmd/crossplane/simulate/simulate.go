@@ -132,10 +132,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		// With local ImageConfigs the rewrites apply to original package
 		// references, so discovery must hand those out; without them the
 		// cluster's resolved reference is the exact artifact it runs.
-		images, err := isimulate.RelevantProviderImages(ctx, kubeClient, rmapper, resources, len(imageConfigs) > 0)
-		if err != nil {
-			return errors.Wrap(err, "cannot discover the providers serving the given resources")
-		}
+		images := isimulate.RelevantProviderImages(ctx, kubeClient, rmapper, resources, len(imageConfigs) > 0, isimulate.NewImageCache(), k.Stderr)
 		inputs = diffserver.Images(images)
 	}
 	pkgClient, err := clixpkg.NewClient(clixpkg.NewRemoteFetcher(),

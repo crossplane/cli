@@ -22,6 +22,7 @@ package simulate
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -281,58 +282,78 @@ func providerConfigMapping(rmapper meta.RESTMapper, group, kind string) *meta.RE
 	}
 }
 
+// ImageCache remembers which provider image serves each kind, so a run
+// looks a kind up on the cluster once however many composites use it. The
+// zero value is not usable; use NewImageCache.
+type ImageCache struct {
+	images map[schema.GroupKind]string
+}
+
+// NewImageCache returns an empty ImageCache.
+func NewImageCache() *ImageCache {
+	return &ImageCache{images: map[schema.GroupKind]string{}}
+}
+
 // RelevantProviderImages returns the package images of exactly the providers
 // that serve the given resources, so simulate never starts a diff server it
 // will not route to. Discovery follows the ownership chain on the cluster:
 // each resource's kind maps to a CRD, the CRD is controlled by the active
 // ProviderRevision, and the revision carries the resolved package image.
 // Kinds that resolve to no provider are skipped; their resources degrade to
-// the approximate client-side diff.
-func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, resources []*unstructured.Unstructured, preferOriginal bool) ([]string, error) {
-	seenGK := map[schema.GroupKind]bool{}
+// the approximate client-side diff. So are kinds whose lookup fails (such as
+// forbidden): ProviderManaged treats them the same way, and a warning to warn
+// names each such kind once. cache carries answers across calls.
+func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, resources []*unstructured.Unstructured, preferOriginal bool, cache *ImageCache, warn io.Writer) []string {
 	seenImage := map[string]bool{}
 	var images []string
 
 	for _, r := range resources {
 		gvk := r.GroupVersionKind()
 		gk := gvk.GroupKind()
-		if seenGK[gk] {
-			continue
-		}
-		seenGK[gk] = true
-
-		revision, crdName, err := controllingRevision(ctx, kubeClient, rmapper, gvk)
-		if err != nil {
-			return nil, err
-		}
-		if revision == "" {
-			continue
-		}
-
-		prv := &pkgv1.ProviderRevision{}
-		if err := kubeClient.Get(ctx, client.ObjectKey{Name: revision}, prv); err != nil {
-			return nil, errors.Wrapf(err, "cannot get provider revision %s owning CRD %s", revision, crdName)
-		}
-		// Prefer the resolved package: after the cluster's ImageConfig
-		// rewriting, it is the identity of the artifact the cluster actually
-		// runs, which is what the preview promises to use. If that reference
-		// is not pullable from this machine (e.g. a cluster-only mirror), the
-		// manager reports the image as skipped, its resources degrade to the
-		// approximate diff, and --provider-images remains the override for
-		// picking a locally reachable image instead. With local ImageConfigs
-		// in play (preferOriginal) the original reference is handed out
-		// instead, because that is what local rewrite rules are written
-		// against.
-		img := prv.Status.ResolvedPackage
-		if preferOriginal || img == "" {
-			img = prv.Spec.Package
+		img, ok := cache.images[gk]
+		if !ok {
+			var err error
+			img, err = providerImage(ctx, kubeClient, rmapper, gvk, preferOriginal)
+			if err != nil {
+				_, _ = fmt.Fprintf(warn, "warning: cannot look up the provider for %s, so its diff stays client-side only: %s\n", gk, err)
+			}
+			cache.images[gk] = img
 		}
 		if img != "" && !seenImage[img] {
 			seenImage[img] = true
 			images = append(images, img)
 		}
 	}
-	return images, nil
+	return images
+}
+
+// providerImage returns the package image of the provider serving gvk, or
+// empty when none does.
+func providerImage(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, gvk schema.GroupVersionKind, preferOriginal bool) (string, error) {
+	revision, crdName, err := controllingRevision(ctx, kubeClient, rmapper, gvk)
+	if err != nil || revision == "" {
+		return "", err
+	}
+
+	prv := &pkgv1.ProviderRevision{}
+	if err := kubeClient.Get(ctx, client.ObjectKey{Name: revision}, prv); err != nil {
+		return "", errors.Wrapf(err, "cannot get provider revision %s owning CRD %s", revision, crdName)
+	}
+	// Prefer the resolved package: after the cluster's ImageConfig
+	// rewriting, it is the identity of the artifact the cluster actually
+	// runs, which is what the preview promises to use. If that reference
+	// is not pullable from this machine (e.g. a cluster-only mirror), the
+	// manager reports the image as skipped, its resources degrade to the
+	// approximate diff, and --provider-images remains the override for
+	// picking a locally reachable image instead. With local ImageConfigs
+	// in play (preferOriginal) the original reference is handed out
+	// instead, because that is what local rewrite rules are written
+	// against.
+	img := prv.Status.ResolvedPackage
+	if preferOriginal || img == "" {
+		img = prv.Spec.Package
+	}
+	return img, nil
 }
 
 // ProviderManaged returns a predicate reporting whether a resource's kind is

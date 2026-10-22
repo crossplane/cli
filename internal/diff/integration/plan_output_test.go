@@ -200,7 +200,7 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 				t.Skip(reason)
 			}
 
-			cfg, _, _, _ := startIntegrationCluster(t, tc.testType, tc.tt, defaultTimeout)
+			cfg := startIntegrationCluster(t, tc.testType, tc.tt, defaultTimeout).cfg
 
 			var stdout, stderr bytes.Buffer
 			argv := append([]string{"project", "simulate", "--timeout=" + defaultTimeout.String()}, tc.args...)

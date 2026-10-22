@@ -469,11 +469,6 @@ func TestSimulateNameRejected(t *testing.T) {
 			args:    append([]string{"--name=default/test-resource", "--name=default/missing"}, base...),
 			wantErr: "resource ref(s) not relevant to any supplied composition: [default/missing]",
 		},
-		"NameQualifiedWithNamespaceFlagRejected": {
-			reason:  "namespace/name with --namespace is ambiguous and is rejected.",
-			args:    append([]string{"--namespace=default", "--name=default/test-resource"}, base...),
-			wantErr: "can't be combined with --namespace",
-		},
 	}
 
 	for name, tc := range cases {

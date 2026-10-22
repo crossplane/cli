@@ -58,6 +58,8 @@ type XRPlanner struct {
 	mu     sync.Mutex
 	plans  map[string]*plan.ResourcePlan
 	routed int
+	// considered counts the resources AfterXRDiff was asked to route.
+	considered int
 }
 
 // NewXRPlanner returns an XRPlanner that plans with p. keep and ensure may be nil.
@@ -68,6 +70,16 @@ func NewXRPlanner(p *Planner, keep func(*unstructured.Unstructured) bool, ensure
 // AfterXRDiff is a diffprocessor.WithAfterXRDiff hook. It fails the XR if any
 // of its resources' plans errors, and merges none of them then.
 func (x *XRPlanner) AfterXRDiff(ctx context.Context, diffs map[string]*dt.ResourceDiff) error {
+	var considered int
+	for _, d := range diffs {
+		if d.DiffType != dt.DiffTypeRemoved && d.Desired.Raw != nil {
+			considered++
+		}
+	}
+	x.mu.Lock()
+	x.considered += considered
+	x.mu.Unlock()
+
 	if x.ensure != nil {
 		var resources []*unstructured.Unstructured
 		for _, d := range diffs {
@@ -133,4 +145,13 @@ func (x *XRPlanner) Routed() int {
 	defer x.mu.Unlock()
 
 	return x.routed
+}
+
+// Considered returns how many resources the planner was asked to route, so a
+// run can tell having no diff servers from having nothing to plan.
+func (x *XRPlanner) Considered() int {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+
+	return x.considered
 }

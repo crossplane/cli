@@ -235,7 +235,7 @@ func TestRenderPlanGrouped(t *testing.T) {
 		Summary: Summary{Update: 1, Destroy: 1, NoOp: 1, Deferred: 1},
 		Composites: []CompositeResult{
 			{Ref: xr, Status: CompositeChanged},
-			{Ref: pinned, Status: CompositeDeferred, Reason: "manual_policy", Detail: "compositionRevisionRef: net-6"},
+			{Ref: pinned, Status: CompositeDeferred, Reason: "manualPolicy", Detail: "compositionRevisionRef: net-6"},
 		},
 		Plans: []*ResourcePlan{
 			// The XR's own no-op plan is not printed.
@@ -381,7 +381,7 @@ func TestRenderJSONProjectFields(t *testing.T) {
 		FormatVersion: ResultFormatVersion,
 		Errored:       true,
 		Summary:       Summary{Destroy: 1, Deferred: 1},
-		Composites:    []CompositeResult{{Ref: xr, Status: CompositeDeferred, Reason: "manual_policy"}},
+		Composites:    []CompositeResult{{Ref: xr, Status: CompositeDeferred, Reason: "manualPolicy"}},
 		Compositions: []CompositionResult{{
 			Ref:            ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "net"},
 			RevisionImpact: &RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2, PredictedRevision: "net-abc1234"},

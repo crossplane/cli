@@ -214,7 +214,7 @@ func assertAffected(t *testing.T, label string, composites []plan.CompositeResul
 	check("Unchanged", want.affectedUnchanged, count(status(plan.CompositeUnchanged)))
 	check("WithErrors", want.affectedWithErrors, count(status(plan.CompositeError)))
 	check("FilteredByDeletion", want.affectedFilteredByDeletion, count(func(c plan.CompositeResult) bool {
-		return c.Status == plan.CompositeSkipped && c.Reason == string(dt.FilterReasonDeleting)
+		return c.Status == plan.CompositeSkipped && c.Reason == plan.CompositeReasonDeleting
 	}))
 }
 
@@ -286,7 +286,7 @@ func assertXRImpact(t *testing.T, res plan.Result, label string, composites []pl
 		t.Errorf("%s: expected status %s, got %s", label, want.status, got.Status)
 	}
 
-	if want.filterReason != "" && got.Reason != want.filterReason {
+	if want.filterReason != "" && string(got.Reason) != want.filterReason {
 		t.Errorf("%s: expected filterReason %s, got %s", label, want.filterReason, got.Reason)
 	}
 

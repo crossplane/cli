@@ -6063,7 +6063,7 @@ Summary: 2 modified`,
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "manual-resource", "default", "filtered").
-				WithFilterReason("manual_policy"),
+				WithFilterReason("manualPolicy"),
 		},
 		"ResourceFilterRespectsManualPolicy_WithIncludeManual": {
 			reason: "--include-manual evaluates the Manual-policy composite normally instead of marking it filtered",
@@ -6107,7 +6107,7 @@ Summary: 2 modified`,
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "selector-mismatch-resource", "default", "filtered").
-				WithFilterReason("revision_selector_mismatch"),
+				WithFilterReason("revisionSelectorMismatch"),
 			// Note: that --include-manual does NOT rescue a selector-mismatched Automatic XR is
 			// proven at the unit level (TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy /
 			// IncludeManualTrue_StillDropsSelectorMismatchedAutomaticXRs). A second slow

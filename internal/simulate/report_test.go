@@ -394,8 +394,8 @@ func TestFromCompReport(t *testing.T) {
 				FormatVersion: plan.ResultFormatVersion,
 				Summary:       plan.Summary{NoOp: 1, Deferred: 1},
 				Composites: []plan.CompositeResult{
-					{Ref: named("pinned"), Status: plan.CompositeDeferred, Composition: &compPlan, Reason: "manual_policy", Detail: "compositionRevisionRef: net-6", Pinned: true},
-					{Ref: named("selector"), Status: plan.CompositeSkipped, Composition: &compPlan, Reason: "revision_selector_mismatch", Detail: "channel=stable"},
+					{Ref: named("pinned"), Status: plan.CompositeDeferred, Composition: &compPlan, Reason: "manualPolicy", Detail: "compositionRevisionRef: net-6", Pinned: true},
+					{Ref: named("selector"), Status: plan.CompositeSkipped, Composition: &compPlan, Reason: "revisionSelectorMismatch", Detail: "channel=stable"},
 					{Ref: named("deleting"), Status: plan.CompositeSkipped, Composition: &compPlan, Reason: "deleting"},
 				},
 				Compositions: []plan.CompositionResult{{Ref: compPlan}},
@@ -751,6 +751,21 @@ func TestSecretDottedKeysRedactedInObjects(t *testing.T) {
 					t.Errorf("data[%q] = %q, want redacted", k, v)
 				}
 			}
+		}
+	}
+}
+
+func TestCompositeReason(t *testing.T) {
+	cases := map[dt.FilterReason]plan.CompositeReason{
+		dt.FilterReasonManualPolicy:             plan.CompositeReasonManualPolicy,
+		dt.FilterReasonRevisionSelectorMismatch: plan.CompositeReasonRevisionSelectorMismatch,
+		dt.FilterReasonDeleting:                 plan.CompositeReasonDeleting,
+		"":                                      "",
+		"something_new":                         plan.CompositeReasonUnknown,
+	}
+	for in, want := range cases {
+		if got := compositeReason(in); got != want {
+			t.Errorf("compositeReason(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

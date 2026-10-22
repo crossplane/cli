@@ -181,13 +181,33 @@ func compositeResult(impact dt.XRImpact) plan.CompositeResult {
 		if impact.FilterReason == dt.FilterReasonManualPolicy {
 			c.Status = plan.CompositeDeferred
 		}
-		c.Reason = string(impact.FilterReason)
+		c.Reason = compositeReason(impact.FilterReason)
 		c.Detail = impact.FilterDetail
 	default:
 		c.Status = plan.CompositeStatus(impact.Status)
 	}
 
 	return c
+}
+
+// compositeReason converts the engine's filter reason to the public enum. An
+// empty reason stays empty.
+func compositeReason(r dt.FilterReason) plan.CompositeReason {
+	if r == "" {
+		return ""
+	}
+
+	//exhaustive:enforce
+	switch r {
+	case dt.FilterReasonManualPolicy:
+		return plan.CompositeReasonManualPolicy
+	case dt.FilterReasonRevisionSelectorMismatch:
+		return plan.CompositeReasonRevisionSelectorMismatch
+	case dt.FilterReasonDeleting:
+		return plan.CompositeReasonDeleting
+	default:
+		return plan.CompositeReasonUnknown
+	}
 }
 
 // assembler accumulates one run's plans, composites and errors.

@@ -49,6 +49,7 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/plan"
+	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
 // parseSimulate parses args as `simulate` flags, running kong's validation.
@@ -584,8 +585,14 @@ func TestSimulateRenderReports(t *testing.T) {
 				render func(*kong.Context) error
 				want   func(*testing.T, string)
 			}{
-				"xr":   {func(k *kong.Context) error { return tc.cmd.renderXRReport(k, logging.NewNopLogger(), xrReport) }, tc.wantXR},
-				"comp": {func(k *kong.Context) error { return tc.cmd.renderCompReport(k, logging.NewNopLogger(), compReport) }, tc.wantComp},
+				"xr": {func(k *kong.Context) error {
+					_, err := tc.cmd.renderXRReport(k, logging.NewNopLogger(), xrReport)
+					return err
+				}, tc.wantXR},
+				"comp": {func(k *kong.Context) error {
+					_, err := tc.cmd.renderCompReport(k, logging.NewNopLogger(), compReport)
+					return err
+				}, tc.wantComp},
 			} {
 				stdout := &bytes.Buffer{}
 				k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: &bytes.Buffer{}}}
@@ -1081,6 +1088,28 @@ func TestCheckComposites(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
 				t.Fatalf("\n%s\ncheckComposites(...): want error containing %q, got %v", tc.reason, tc.err, err)
+			}
+		})
+	}
+}
+
+func TestPlanNotes(t *testing.T) {
+	cases := map[string]struct {
+		skipPlan  bool
+		plans     map[string]*plan.ResourcePlan
+		noServers bool
+		want      []string
+	}{
+		"SkipPlan":           {skipPlan: true, want: []string{simulate.NoteProviderPlanSkipped}},
+		"NilPlans":           {},
+		"EmptyServersNotRun": {plans: map[string]*plan.ResourcePlan{}, noServers: true, want: []string{simulate.NoteNoDiffServers}},
+		"EmptyServersRan":    {plans: map[string]*plan.ResourcePlan{}},
+		"NonEmptyPlans":      {plans: map[string]*plan.ResourcePlan{"k": {}}, noServers: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if diff := cmp.Diff(tc.want, planNotes(tc.skipPlan, tc.plans, tc.noServers)); diff != "" {
+				t.Errorf("planNotes(...): -want, +got:\n%s", diff)
 			}
 		})
 	}

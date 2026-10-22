@@ -95,7 +95,7 @@ func TestSimulatePlanOutput(t *testing.T) {
 
 Plan: 0 to add, 2 to change, 0 to destroy.
 
-Note: Cloud-layer plan not run (provider diff servers not yet wired).
+Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 `,
 		},
 		"XRCreatePlanText": {
@@ -120,7 +120,7 @@ Note: Cloud-layer plan not run (provider diff servers not yet wired).
 
 Plan: 2 to add, 0 to change, 0 to destroy.
 
-Note: Cloud-layer plan not run (provider diff servers not yet wired).
+Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 `,
 		},
 		"XRPlanJSON": {
@@ -166,7 +166,7 @@ XR: XNopResource.ns.diff.example.org default/test-resource
 
 Plan: 0 to add, 3 to change, 0 to destroy.
 
-Note: Cloud-layer plan not run (provider diff servers not yet wired).
+Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 `,
 		},
 		"CompPlanJSON": {

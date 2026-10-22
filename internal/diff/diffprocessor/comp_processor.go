@@ -437,9 +437,17 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 
 	// A Manual XR pinned to a revision that calls a changed function is not deferred when the analysis
 	// runs: it is rendered against that revision. See pinnedFunctionChangeXRs.
-	var pinnedXRs map[string]pinnedResolution
+	// This holds even when the diffed composition itself calls no changed function and matches the
+	// cluster: an XR pinned to an older revision that does is analysed as a metadata-scope change.
+	pinnedXRs, pinnedKept, pinnedDropped := p.pinnedFunctionChangeXRs(ctx, keptXRs, droppedXRs)
+	if len(pinnedXRs) > 0 && analysisScope == ChangeScopeNone {
+		analysisScope = ChangeScopeMetadata
+	}
+
 	if analysisScope.triggersAnalysis(p.config.AnalyzeOn) {
-		pinnedXRs, keptXRs, droppedXRs = p.pinnedFunctionChangeXRs(ctx, keptXRs, droppedXRs)
+		keptXRs, droppedXRs = pinnedKept, pinnedDropped
+	} else {
+		pinnedXRs = nil
 	}
 
 	counts := countFilterReasons(droppedXRs)
@@ -706,7 +714,9 @@ type pinnedResolution struct {
 //
 // It does nothing when no function changed or under IncludeManual, which keeps Manual XRs and renders
 // them against the diffed composition. A Manual XR whose revision calls no changed function stays dropped.
-// A failed lookup is that XR's own error (a kept XR whose result is the error), not the run's.
+// A failed lookup is that XR's own error (a kept XR whose result is the error), not the run's. So with
+// changed functions set, a failed revision lookup makes every Manual XR, claims included, a per-XR error
+// where upstream would filter it.
 func (p *DefaultCompDiffProcessor) pinnedFunctionChangeXRs(ctx context.Context, kept []*un.Unstructured, dropped []filteredXR) (map[string]pinnedResolution, []*un.Unstructured, []filteredXR) {
 	if len(p.config.ChangedFunctions) == 0 || p.config.IncludeManual {
 		return nil, kept, dropped

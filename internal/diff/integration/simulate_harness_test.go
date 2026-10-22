@@ -18,7 +18,7 @@ limitations under the License.
 
 // This file is the simulate harness: the one function every integration
 // case funnels through. The cases are crossplane-diff's (origin/main
-// 6a140b6), written as its comp and xr commands' CLI args plus an expected
+// 6a140b6, plus later upstream additions through d93eb87), written as its comp and xr commands' CLI args plus an expected
 // exit code and output. runSimulate translates those args into
 // `crossplane project simulate` args and runs the real command through
 // kong against the case's envtest cluster, so no case table changes.
@@ -232,7 +232,15 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *p
 
 	kctx, err := parser.Parse(argv)
 	if err != nil {
-		t.Fatalf("failed to parse project simulate args %v: %v", argv, err)
+		// Exit as main does: print the error and use its ExitCoder's code or 1.
+		parser.Errorf("%s", err)
+
+		var ec kong.ExitCoder
+		if errors.As(err, &ec) {
+			return ec.ExitCode(), err
+		}
+
+		return dp.ExitCodeToolError, err
 	}
 
 	// Inject the case's cluster in place of the kubeconfig, and render the

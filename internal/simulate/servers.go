@@ -34,7 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
-	"k8s.io/client-go/kubernetes/scheme"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -359,13 +359,31 @@ func LoadImageConfigs(path string) ([]pkgv1beta1.ImageConfig, error) {
 	return ics, nil
 }
 
+// kubeScheme is built once and never mutated, so concurrent NewKubeClient
+// calls don't race on shared scheme maps.
+//
+//nolint:gochecknoglobals // Built once, read-only afterwards.
+var kubeScheme = sync.OnceValues(func() (*runtime.Scheme, error) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		return nil, err
+	}
+	if err := pkg.AddToScheme(s); err != nil {
+		return nil, err
+	}
+	return s, nil
+})
+
 // NewKubeClient returns a client and a discovery-backed REST mapper for cfg.
 func NewKubeClient(cfg *rest.Config) (client.Client, meta.RESTMapper, error) {
-	cl, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	sch, err := kubeScheme()
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "cannot build scheme")
+	}
+	cl, err := client.New(cfg, client.Options{Scheme: sch})
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "cannot init kubeclient")
 	}
-	_ = pkg.AddToScheme(cl.Scheme())
 
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(cfg)
 	if err != nil {

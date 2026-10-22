@@ -94,6 +94,17 @@ const (
 	defaultDevelopmentTarget = "localhost:9099"
 )
 
+// Servers is what a simulation needs from its diff servers: start them,
+// route resources to them, and stop them. *ServerSet implements it.
+type Servers interface {
+	Router
+	Ensure(ctx context.Context, inputs []diffserver.Input) error
+	Ran() bool
+	Stop(ctx context.Context)
+}
+
+var _ Servers = (*ServerSet)(nil)
+
 // ServerSet runs provider diff servers for a simulation, starting each
 // provider's server the first time it is asked for. It routes resources to
 // the servers it runs.

@@ -80,7 +80,7 @@ var simulateHelp string
 type simulateCmd struct {
 	// Run sets these; nil with --skip-plan (servers also when Hooks.Router is set).
 	xrPlanner *simulate.XRPlanner
-	servers   *simulate.ServerSet
+	servers   simulate.Servers
 	// noServersNoted is set once the "no diff servers" line is printed.
 	noServersNoted bool
 
@@ -143,6 +143,11 @@ type SimulateHooks struct {
 	// Router, when set, routes provider plans through it instead of starting
 	// diff servers.
 	Router simulate.Router
+
+	// Servers, when set, replaces the diff server set that would otherwise
+	// start provider servers; everything else still runs. Test-only. It
+	// can't be combined with Router.
+	Servers simulate.Servers
 
 	// ChangedFunctions marks these functions as changed in any mode, as
 	// project mode's digest detection would. Test-only.
@@ -371,6 +376,9 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 	var ics []pkgv1beta1.ImageConfig
 	var router simulate.Router
 	var depMgr *dependency.Manager
+	if c.Hooks != nil && c.Hooks.Router != nil && c.Hooks.Servers != nil {
+		return nil, errors.New("hooks Router and Servers are mutually exclusive")
+	}
 	if c.Hooks != nil && c.Hooks.Router != nil {
 		router = c.Hooks.Router
 	} else {
@@ -397,7 +405,11 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 				dependency.WithResolver(resolver),
 			)
 		}
-		c.servers = simulate.NewServerSet(sp, logger, k.Stderr, pkgs, c.SessionID)
+		if c.Hooks != nil && c.Hooks.Servers != nil {
+			c.servers = c.Hooks.Servers
+		} else {
+			c.servers = simulate.NewServerSet(sp, logger, k.Stderr, pkgs, c.SessionID)
+		}
 		router = c.servers
 	}
 

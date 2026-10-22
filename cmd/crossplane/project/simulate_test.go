@@ -253,6 +253,11 @@ func TestSimulateFlags(t *testing.T) {
 			args:   []string{"--max-iterations", "0"},
 			want:   want{err: true},
 		},
+		"ZeroTimeout": {
+			reason: "A timeout of zero or less would fail every composite at once.",
+			args:   []string{"--timeout", "0s"},
+			want:   want{err: true},
+		},
 		"RenderVersionBelowFloor": {
 			reason: "A pinned render version below the floor should be rejected.",
 			args:   []string{"--crossplane-version", "v2.2.0"},

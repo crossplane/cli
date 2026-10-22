@@ -62,7 +62,7 @@ type Planner struct {
 
 // NewPlanner returns a Planner that reads live state with kubeClient and
 // rmapper, resolves unset namespaces to defaultNamespace, and bounds each
-// diff server plan by timeout.
+// diff server plan by timeout, when positive.
 func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, defaultNamespace string, r Router, timeout time.Duration) *Planner {
 	return &Planner{
 		kube:             kubeClient,
@@ -115,8 +115,12 @@ func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.
 		return plan.Fallback(p.crds.apply(ctx, p.kube, p.rmapper, desired), live, fmt.Sprintf("no diff server for %s", gk))
 	}
 
-	pctx, cancel := context.WithTimeout(ctx, p.timeout)
-	defer cancel()
+	pctx := ctx
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		pctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
 
 	store := p.stores.gather(ctx, p.kube, p.rmapper, p.defaultNamespace, desired, live)
 

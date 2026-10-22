@@ -210,6 +210,10 @@ func (c *simulateCmd) Validate() error {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
 	}
 
+	if c.Timeout <= 0 {
+		return errors.Errorf("--timeout must be greater than 0, got %s", c.Timeout)
+	}
+
 	if c.SkipPlan {
 		for _, f := range []struct{ name, val string }{{"providers", c.Providers}, {"image-configs", c.ImageConfigs}, {"session-id", c.SessionID}} {
 			if f.val != "" {

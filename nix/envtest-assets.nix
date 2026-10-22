@@ -17,7 +17,7 @@ let
     }
     .${pkgs.stdenv.hostPlatform.uname.processor} or null;
 in
-if arch == null then
+if !pkgs.stdenv.hostPlatform.isLinux || arch == null then
   null
 else
   pkgs.runCommand "envtest-assets-${version}"

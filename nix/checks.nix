@@ -17,9 +17,6 @@ let
   # See nix/go-builders.nix.
   inherit (import ./go-builders.nix { inherit pkgs self; }) buildRoot;
   crossplaneCRDs = import ./crossplane-crds.nix { inherit pkgs; };
-  # envtest binaries are Linux-only; on other systems the integration tests
-  # skip through their env: guards instead.
-  envtestAssets = import ./envtest-assets.nix { inherit pkgs; };
 in
 {
   # Run Go unit tests with coverage
@@ -30,13 +27,12 @@ in
       inherit version;
       src = self;
 
-      # The sandbox has no Docker daemon, so the integration tests' render
-      # engine cases still skip there (env: guards); the envtest cluster
-      # cases that do not need Docker can run.
+      # Runs untagged unit tests only; the integration tests (envtest, Docker)
+      # run through the integration-test app. CROSSPLANE_CRDS_DIR serves the
+      # untagged testutils CRD tests.
       env = {
         CGO_ENABLED = "0";
         CROSSPLANE_CRDS_DIR = crossplaneCRDs;
-        KUBEBUILDER_ASSETS = pkgs.lib.optionalString (envtestAssets != null) envtestAssets;
       };
 
       dontBuild = true;

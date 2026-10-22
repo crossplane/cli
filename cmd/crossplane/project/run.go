@@ -137,6 +137,10 @@ func (c *runCmd) AfterApply() error {
 		}
 	}
 
+	if c.proj.Spec.Runtime == nil {
+		c.proj.Spec.Runtime = &devv1alpha1.Runtime{}
+	}
+
 	if len(strings.TrimSpace(c.KindConfig)) == 0 {
 		c.KindConfig = c.proj.Spec.Runtime.Kind.Config.Path
 	}
@@ -160,10 +164,6 @@ func (c *runCmd) AfterApply() error {
 
 // resolveRunOptions applies command overrides and project runtime defaults.
 func (c *runCmd) resolveRunOptions() error {
-	if c.Internal == nil {
-		c.Internal = &c.proj.Spec.Runtime.Kind.Internal
-	}
-
 	if c.Repository != "" {
 		ref, err := name.NewRepository(c.Repository)
 		if err != nil {
@@ -174,6 +174,14 @@ func (c *runCmd) resolveRunOptions() error {
 
 	if c.ControlPlaneName == "" {
 		c.ControlPlaneName = "crossplane-" + c.proj.Name
+	}
+
+	if c.proj.Spec.Runtime == nil {
+		c.proj.Spec.Runtime = &devv1alpha1.Runtime{}
+	}
+
+	if c.Internal == nil {
+		c.Internal = &c.proj.Spec.Runtime.Kind.Internal
 	}
 
 	c.storageType = docker.StorageTypeBindMount

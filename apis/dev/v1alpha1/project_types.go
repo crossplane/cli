@@ -121,7 +121,7 @@ type ProjectSpec struct {
 	ImageConfigs []pkgv1beta1.ImageConfig `json:"imageConfigs,omitempty"`
 
 	// Runtime configures the local development cluster.
-	Runtime Runtime `json:"runtime,omitempty"`
+	Runtime *Runtime `json:"runtime,omitempty"`
 }
 
 // Runtime is the spec for project runtime configuration.

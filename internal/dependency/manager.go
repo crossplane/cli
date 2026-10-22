@@ -311,8 +311,18 @@ func runtimeGVKForPackage(pkg *runtimexpkg.Package) (*schema.GroupVersionKind, e
 }
 
 // AddDependency adds a dependency, generates schemas for it, and persists the
-// dependency to the project file.
+// dependency to the project file, or to spec.dependsOn when the file is
+// Configuration package metadata.
 func (m *Manager) AddDependency(ctx context.Context, dep *v1alpha1.Dependency) error {
+	isProject, err := projectfile.IsProjectFile(m.projFS, m.projFile)
+	if err != nil {
+		return err
+	}
+	// Package metadata can only express runtime xpkg dependencies.
+	if !isProject && (dep.Xpkg == nil || dep.Xpkg.APIOnly) {
+		return errors.New("package metadata files support only runtime xpkg dependencies; use a project file for k8s, CRD, or API-only dependencies")
+	}
+
 	gvk, err := m.addDependencyNoWrite(ctx, dep, false)
 	if err != nil {
 		return err
@@ -330,6 +340,9 @@ func (m *Manager) AddDependency(ctx context.Context, dep *v1alpha1.Dependency) e
 	defer m.updateMutex.Unlock()
 
 	upsertDependency(m.proj, *dep)
+	if !isProject {
+		return projectfile.UpsertConfigurationDependency(m.projFS, m.projFile, *dep.Xpkg)
+	}
 	return projectfile.Update(m.projFS, m.projFile, func(p *v1alpha1.Project) {
 		upsertDependency(p, *dep)
 	})

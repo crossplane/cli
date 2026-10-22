@@ -79,10 +79,12 @@ type simulateCmd struct {
 	// Run sets these; nil with --skip-plan (servers also when Hooks.Router is set).
 	xrPlanner *simulate.XRPlanner
 	servers   *simulate.ServerSet
+	// noServersNoted is set once the "no diff servers" line is printed.
+	noServersNoted bool
 
 	Input          []string `default:"${project_file}"   help:"Project file (default), or changed Composition or composite resource files. Repeatable; - reads standard input." placeholder:"PATH" sep:"none" short:"f"`
 	MaxConcurrency uint     `default:"8"                 help:"Max concurrent function builds."`
-	CacheDir       string   `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                                                     name:"cache-dir"`
+	CacheDir       string   `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)."                                           name:"cache-dir"`
 
 	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                       predictor:"context"                                                                                                                                                                                            short:"c"`
 	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                               predictor:"namespace"                                                                                                                                                                                          short:"n"`
@@ -105,9 +107,9 @@ type simulateCmd struct {
 	DryRunOn                 string              `default:"all"                                                                                                                               enum:"existing,all"                                                                  help:"Which resources to verify against the apiserver with a dry run: 'all' also dry-run creates added resources so their diffs include server-side defaulting and admission (needs the 'create' verb; degrades per-resource without it), 'existing' only resources already in the cluster."`
 
 	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster-layer diff."`
-	Providers    string `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."     name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
-	ImageConfigs string `help:"YAML file with ImageConfig manifests that rewrite provider image paths for local pulls. Defaults to the project's imageConfigs when -f names a project file." name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
-	SessionID    string `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID."                              placeholder:"ID"`
+	Providers    string `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                                                                           name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
+	ImageConfigs string `help:"YAML file with ImageConfig manifests that rewrite provider image paths for local pulls. Defaults to the project's imageConfigs when -f names a project file; in Composition and XR modes it falls back, best effort, to the project file in the current directory." name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
+	SessionID    string `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID."                                                                                                                                    placeholder:"ID"`
 
 	// CrossplaneVersion and CrossplaneImage select the crossplane render
 	// backend, as they do for crossplane-diff. When neither is set the render
@@ -242,7 +244,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	if err != nil {
 		return err
 	}
-	if err := validateModeFlags(in.mode, setFlags(k)); err != nil {
+	if err := validateModeFlags(in.mode, setFlags(k), c.SkipPlan); err != nil {
 		return err
 	}
 
@@ -376,35 +378,63 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 	}
 
 	var ensure simulate.EnsureServers
-	switch {
-	case c.servers == nil:
-	case c.Providers != "":
-		inputs, err := simulate.LoadProviderInputs(c.Providers)
+	if c.servers != nil {
+		var upfront []diffserver.Input
+		upfront, ensure, err = selectServers(c.Providers, in.mode == projectMode, simulate.LoadProviderInputs,
+			func() ([]string, error) { return project.LoadProviderDependencies(depMgr, proj) },
+			func() simulate.EnsureServers {
+				cache := simulate.NewImageCache()
+				return func(ctx context.Context, rs []*un.Unstructured) error {
+					imgs := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, rs, len(ics) > 0, cache, k.Stderr)
+					return c.servers.Ensure(ctx, diffserver.Images(imgs))
+				}
+			})
 		if err != nil {
-			return nil, errors.Wrapf(err, "cannot load provider manifests from %q", c.Providers)
-		}
-		if err := c.servers.Ensure(sigCtx, inputs); err != nil {
 			return nil, err
 		}
-	case in.mode == projectMode:
-		images, err := project.LoadProviderDependencies(depMgr, proj)
-		if err != nil {
-			return nil, errors.Wrap(err, "cannot load the project's provider dependencies")
-		}
-		if err := c.servers.Ensure(sigCtx, diffserver.Images(images)); err != nil {
-			return nil, err
-		}
-	default:
-		cache := simulate.NewImageCache()
-		ensure = func(ctx context.Context, rs []*un.Unstructured) error {
-			imgs := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, rs, len(ics) > 0, cache, k.Stderr)
-			return c.servers.Ensure(ctx, diffserver.Images(imgs))
+		if ensure == nil {
+			if err := c.servers.Ensure(sigCtx, upfront); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	keep := simulate.ProviderManaged(sigCtx, kubeClient, rmapper)
 	c.xrPlanner = simulate.NewXRPlanner(simulate.NewPlanner(kubeClient, rmapper, ns, router, c.Timeout), keep, ensure)
 	return []dp.ProcessorOption{dp.WithAfterXRDiff(c.xrPlanner.AfterXRDiff), dp.WithKeepEqualDiffs(keep)}, nil
+}
+
+// selectServers picks where the diff servers come from: --providers when
+// set, else the project's provider dependencies in project mode, both
+// returned as inputs to start up front with a nil ensure; otherwise the
+// ensure func from onDemand, which starts servers per composite resource.
+func selectServers(providers string, projectMode bool, loadInputs func(string) ([]diffserver.Input, error), loadDeps func() ([]string, error), onDemand func() simulate.EnsureServers) ([]diffserver.Input, simulate.EnsureServers, error) {
+	switch {
+	case providers != "":
+		inputs, err := loadInputs(providers)
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "cannot load provider manifests from %q", providers)
+		}
+		return inputs, nil, nil
+	case projectMode:
+		images, err := loadDeps()
+		if err != nil {
+			return nil, nil, errors.Wrap(err, "cannot load the project's provider dependencies")
+		}
+		return diffserver.Images(images), nil, nil
+	default:
+		return nil, onDemand(), nil
+	}
+}
+
+// noteNoServers prints once, when planning is on and no diff server ever
+// ran, that the diff shows only the cluster layer. -o diff has no notes.
+func (c *simulateCmd) noteNoServers(k *kong.Context) {
+	if c.servers == nil || c.servers.Ran() || c.noServersNoted {
+		return
+	}
+	c.noServersNoted = true
+	_, _ = fmt.Fprintln(k.Stderr, "No provider diff servers to run; showing the cluster-layer diff.")
 }
 
 // restConfig returns the cluster to simulate against: the hooks' when set,
@@ -653,15 +683,16 @@ func pipelineInputs(resources []*un.Unstructured) (map[string]int, error) {
 // simulate, so the flags that pick and tune which ones a Composition change
 // reaches don't apply to them, as in crossplane-diff, whose xr command lacks
 // its comp command's equivalents. Functions come from the cluster unless -f
-// names a project, so the build flags apply only to a project.
-func validateModeFlags(mode inputMode, set map[string]bool) error {
+// names a project, so --max-concurrency applies only to a project; --cache-dir also caches provider packages, so it applies whenever planning is on.
+func validateModeFlags(mode inputMode, set map[string]bool, skipPlan bool) error {
 	if mode == projectMode {
 		return nil
 	}
-	for _, f := range []string{"max-concurrency", "cache-dir"} {
-		if set[f] {
-			return errors.Errorf("--%s configures the project's function builds, so it applies only when -f names a project file; Composition and composite resource files use the cluster's functions", f)
-		}
+	if set["max-concurrency"] {
+		return errors.New("--max-concurrency configures the project's function builds, so it applies only when -f names a project file; Composition and composite resource files use the cluster's functions")
+	}
+	if set["cache-dir"] && skipPlan {
+		return errors.New("--cache-dir caches function builds in project mode and provider packages when planning; with --skip-plan and no project file there is nothing to cache, so drop it or drop --skip-plan")
 	}
 	if mode != xrMode {
 		return nil
@@ -841,6 +872,7 @@ func (c *simulateCmd) notes() []string {
 // selects: the engine's human diff for diff, and plan.Result otherwise. It
 // returns whether the run changed anything, provider plans included.
 func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport) (bool, error) {
+	c.noteNoServers(k)
 	opts := c.diffOptions(k)
 	plans := c.providerPlans()
 	if plans != nil {
@@ -863,6 +895,7 @@ func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *
 // renderCompReport writes a composition run's report in the format -o
 // selects, as renderXRReport does.
 func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput) (bool, error) {
+	c.noteNoServers(k)
 	opts := c.diffOptions(k)
 	opts.MinimizeComposition = c.MinimizeComposition
 	plans := c.providerPlans()

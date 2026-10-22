@@ -460,7 +460,8 @@ func WithFunctionProviderFactory(factory func(xp.FunctionClient, logging.Logger)
 var ErrXRTimedOut = errors.New("composite resource timed out")
 
 // xrContext returns the context one composite resource's diff runs under: ctx bounded by XRTimeout
-// when it is set. The budget can be paused with OutsideXRDeadline.
+// when it is set. The budget can be paused with OutsideXRDeadline. It is a cancellation, not a context
+// deadline, so ctx.Deadline() on the returned context does not report it.
 func (c *ProcessorConfig) xrContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if c.XRTimeout <= 0 {
 		return ctx, func() {}
@@ -571,7 +572,8 @@ func (c *ProcessorConfig) afterXR(ctx, xrCtx context.Context, diffs map[string]*
 		err = c.AfterXRDiff(xrCtx, diffs)
 	}
 
-	// Only the composite's own deadline is named; the caller's ending reads as it always has.
+	// Only the composite's own deadline is named; the caller's ending reads as it always has. An
+	// unrelated error returned just after the budget expired is also labelled a timeout.
 	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(xrCtx), ErrXRTimedOut) {
 		return errors.Wrapf(err, "timed out after %s", c.XRTimeout)
 	}

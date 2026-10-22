@@ -2347,6 +2347,7 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 		revision      *apiextensionsv1.Composition
 		lookupErr     error
 		includeManual bool
+		unrelated     bool
 		want          want
 	}{
 		"PinnedXRWithChangedFunctionRendersPinnedRevision": {
@@ -2356,6 +2357,11 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 		"PinnedXRWithUnrelatedFunctionChangeStaysDeferred": {
 			revision: revisionWith("function-other"),
 			want:     want{Status: dt.XRStatusFiltered, FilterReason: dt.FilterReasonManualPolicy},
+		},
+		"PinnedXRWithChangedFunctionRendersWhenCompositionCallsNone": {
+			revision:  revisionWith("function-a"),
+			unrelated: true,
+			want:      want{Status: dt.XRStatusUnchanged, Pinned: true, RenderedRevision: "test-comp-rev1", Pipeline: []string{"function-a"}},
 		},
 		"IncludePinnedWithChangedFunctionPreviewsAdvance": {
 			revision:      revisionWith("function-a"),
@@ -2370,8 +2376,17 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 
 	for name, tt := range cases {
 		t.Run(name, func(t *testing.T) {
+			// unrelated: the diffed composition matches the cluster and calls no changed function.
+			cliComp := cliBuilder()
+			if tt.unrelated {
+				cliComp = tu.NewComposition("test-comp").
+					WithCompositeTypeRef("example.org/v1", "XR").
+					WithPipelineMode().
+					WithPipelineStep("step-a", "function-other", nil)
+			}
+
 			client := tu.NewMockCompositionClient().
-				WithSuccessfulCompositionFetch(cliBuilder().Build()).
+				WithSuccessfulCompositionFetch(cliComp.Build()).
 				WithFindMatchingComposition(func(context.Context, *un.Unstructured) (types.ResolvedComposition, error) {
 					if tt.lookupErr != nil {
 						return types.ResolvedComposition{}, tt.lookupErr
@@ -2405,7 +2420,7 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 				},
 			}
 
-			got, err := proc.processSingleComposition(t.Context(), cliBuilder().BuildAsUnstructured(), []*un.Unstructured{pinnedXR("pinned")}, false)
+			got, err := proc.processSingleComposition(t.Context(), cliComp.BuildAsUnstructured(), []*un.Unstructured{pinnedXR("pinned")}, false)
 			if err != nil {
 				t.Fatalf("processSingleComposition: %v", err)
 			}

@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
@@ -131,14 +132,17 @@ func TestXRPlanner(t *testing.T) {
 			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
 				t.Fatalf("AfterXRDiff(...): want error containing %q, got %v", tc.wantErr, err)
 			}
-			if name == "ErrorsAreSorted" && !strings.Contains(err.Error(), "VPC/bad-a: ") {
-				t.Errorf("AfterXRDiff(...): want bad-a before bad-b, got %v", err)
+			if name == "ErrorsAreSorted" {
+				a, b := strings.Index(err.Error(), "VPC/bad-a: "), strings.Index(err.Error(), "VPC/bad-b: ")
+				if a < 0 || b < 0 || a >= b {
+					t.Errorf("AfterXRDiff(...): want bad-a before bad-b, got %v", err)
+				}
 			}
 			if len(ensured) != len(tc.wantEnsured) {
 				t.Errorf("ensure got %v, want %v", ensured, tc.wantEnsured)
 			}
-			if ensureCtx.Err() != nil {
-				t.Errorf("ensure ctx has ended: %v", ensureCtx.Err())
+			if len(tc.wantEnsured) > 0 && (ensureCtx == nil || ensureCtx.Err() != nil) {
+				t.Errorf("ensure ctx missing or ended: %v", ensureCtx)
 			}
 			got := x.Plans()
 			if len(got) != len(tc.wantPlans)+1 || got["earlier"] == nil {
@@ -151,6 +155,24 @@ func TestXRPlanner(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("EnsureRunsOutsideXRDeadline", func(t *testing.T) {
+		var ensureCtx context.Context
+		ensure := func(ctx context.Context, _ []*unstructured.Unstructured) error {
+			ensureCtx := ctx
+			return errors.New("stop before planning")
+		}
+		xrCtx, cancel := diffprocessor.ContextWithXRDeadline(context.Background(), time.Nanosecond)
+		defer cancel()
+		<-xrCtx.Done()
+
+		x := NewXRPlanner(planner, nil, ensure)
+		_ = x.AfterXRDiff(xrCtx, map[string]*dt.ResourceDiff{"a": added(vpc("a", "10.0.0.0/16"))})
+
+		if ensureCtx == nil || ensureCtx.Err() != nil {
+			t.Errorf("ensure ctx missing or ended: %v", ensureCtx)
+		}
+	})
 
 	t.Run("EmptyPlansNonNil", func(t *testing.T) {
 		if NewXRPlanner(planner, nil, nil).Plans() == nil {

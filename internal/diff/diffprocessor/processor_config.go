@@ -461,7 +461,13 @@ func (c *ProcessorConfig) xrContext(ctx context.Context) (context.Context, conte
 		return ctx, func() {}
 	}
 
-	return context.WithTimeout(context.WithValue(ctx, runContextKey{}, ctx), c.XRTimeout)
+	return ContextWithXRDeadline(ctx, c.XRTimeout)
+}
+
+// ContextWithXRDeadline returns the context a composite resource's diff runs under: ctx bounded by
+// d, remembering ctx as the run context WithoutXRDeadline returns.
+func ContextWithXRDeadline(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithValue(ctx, runContextKey{}, ctx), d)
 }
 
 // runContextKey keys the context a composite resource's XRTimeout deadline was added to.

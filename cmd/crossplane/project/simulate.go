@@ -43,7 +43,9 @@ import (
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
+	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	ld "github.com/crossplane/cli/v2/cmd/crossplane/common/load"
 	"github.com/crossplane/cli/v2/internal/config"
@@ -54,6 +56,7 @@ import (
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/kube"
 	"github.com/crossplane/cli/v2/internal/plan"
@@ -73,6 +76,10 @@ var simulateHelp string
 // or composite resource files, would change the composite resources in a
 // cluster.
 type simulateCmd struct {
+	// Run sets these; nil with --skip-plan (servers also when Hooks.Router is set).
+	xrPlanner *simulate.XRPlanner
+	servers   *simulate.ServerSet
+
 	Input          []string `default:"${project_file}"   help:"Project file (default), or changed Composition or composite resource files. Repeatable; - reads standard input." placeholder:"PATH" sep:"none" short:"f"`
 	MaxConcurrency uint     `default:"8"                 help:"Max concurrent function builds."`
 	CacheDir       string   `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                                                     name:"cache-dir"`
@@ -248,9 +255,10 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 
 	var fns []pkgv1.Function
 	var digests map[string]project.EmbeddedDigest
+	var proj *v1alpha1.Project
 	comps := in.resources
 	if in.mode == projectMode {
-		comps, fns, digests, err = c.buildProject(sigCtx, logger, sp, cliCfg, in.projectFile)
+		comps, fns, digests, proj, err = c.buildProject(sigCtx, logger, sp, cliCfg, in.projectFile)
 		if err != nil {
 			return err
 		}
@@ -266,14 +274,24 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		return err
 	}
 
-	opts := append(c.processorOptions(k, logger, fns), dp.WithChangedFunctions(changed...))
+	opts := append(c.processorOptions(k, logger, fns), dp.WithChangedFunctions(changed...), dp.WithXRTimeout(c.Timeout))
+
+	// xrPlanner and servers are for rendering the plans; they stay nil with
+	// --skip-plan, and servers also when Hooks.Router supplies the router.
+	if !c.SkipPlan {
+		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, in, proj)
+		// Stop even on error: upfront Ensure may have started servers.
+		if c.servers != nil {
+			defer c.servers.Stop(context.WithoutCancel(sigCtx))
+		}
+		if err != nil {
+			return err
+		}
+		opts = append(opts, planOpts...)
+	}
 	xrProc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
 
-	// ponytail: the timeout bounds the whole simulation because the diff
-	// engine has no per-XR deadline. Make it per composite resource once the
-	// engine supports one.
-	ctx, cancel := context.WithTimeout(sigCtx, c.Timeout)
-	defer cancel()
+	ctx := sigCtx
 
 	if in.mode == xrMode {
 		// Compositions and functions come from the cluster, as in
@@ -303,6 +321,85 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	return c.simulate(ctx, logger, status, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, in.mode))
 }
 
+// planOptions sets up provider diff servers and the XRPlanner, and returns
+// the processor options that plan each composite resource's composed
+// resources. Run stops c.servers when it is set.
+func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, in *inputs, proj *v1alpha1.Project) ([]dp.ProcessorOption, error) {
+	kubeClient, rmapper, err := simulate.NewKubeClient(restCfg)
+	if err != nil {
+		return nil, err
+	}
+	// ponytail: the kubeconfig's namespace isn't plumbed through
+	// restConfig, so namespaced resources without one plan in "default".
+	const ns = "default"
+
+	var ics []pkgv1beta1.ImageConfig
+	var router simulate.Router
+	var depMgr *dependency.Manager
+	if c.Hooks != nil && c.Hooks.Router != nil {
+		router = c.Hooks.Router
+	} else {
+		projectFile := ""
+		if in.mode == projectMode {
+			projectFile = in.projectFile
+		}
+		if ics, err = simulate.ImageConfigs(c.ImageConfigs, projectFile); err != nil {
+			return nil, err
+		}
+		var pkgs runtimexpkg.Client
+		var resolver *clixpkg.Resolver
+		if pkgs, resolver, err = c.newClientAndResolver(clixpkg.WithImageConfigs(ics)); err != nil {
+			return nil, errors.Wrap(err, "cannot create package client")
+		}
+		if in.mode == projectMode {
+			projFilePath, err := filepath.Abs(in.projectFile)
+			if err != nil {
+				return nil, err
+			}
+			depMgr = dependency.NewManager(proj, afero.NewBasePathFs(afero.NewOsFs(), filepath.Dir(projFilePath)),
+				dependency.WithProjectFile(filepath.Base(projFilePath)),
+				dependency.WithXpkgClient(pkgs),
+				dependency.WithResolver(resolver),
+			)
+		}
+		c.servers = simulate.NewServerSet(sp, logger, k.Stderr, pkgs, c.SessionID)
+		router = c.servers
+	}
+
+	var ensure simulate.EnsureServers
+	switch {
+	case c.servers == nil:
+	case c.Providers != "":
+		inputs, err := simulate.LoadProviderInputs(c.Providers)
+		if err != nil {
+			return nil, errors.Wrapf(err, "cannot load provider manifests from %q", c.Providers)
+		}
+		if err := c.servers.Ensure(sigCtx, inputs); err != nil {
+			return nil, err
+		}
+	case in.mode == projectMode:
+		images, err := project.LoadProviderDependencies(depMgr, proj)
+		if err != nil {
+			return nil, errors.Wrap(err, "cannot load the project's provider dependencies")
+		}
+		if err := c.servers.Ensure(sigCtx, diffserver.Images(images)); err != nil {
+			return nil, err
+		}
+	default:
+		ensure = func(ctx context.Context, rs []*un.Unstructured) error {
+			imgs, err := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, rs, len(ics) > 0)
+			if err != nil {
+				return err
+			}
+			return c.servers.Ensure(ctx, diffserver.Images(imgs))
+		}
+	}
+
+	keep := simulate.ProviderManaged(sigCtx, kubeClient, rmapper)
+	c.xrPlanner = simulate.NewXRPlanner(simulate.NewPlanner(kubeClient, rmapper, ns, router, c.Timeout), keep, ensure)
+	return []dp.ProcessorOption{dp.WithAfterXRDiff(c.xrPlanner.AfterXRDiff), dp.WithKeepEqualDiffs(keep)}, nil
+}
+
 // restConfig returns the cluster to simulate against: the hooks' when set,
 // otherwise the kubeconfig's.
 func (c *simulateCmd) restConfig() (*rest.Config, error) {
@@ -315,32 +412,32 @@ func (c *simulateCmd) restConfig() (*rest.Config, error) {
 
 // buildProject returns the project's compositions and its locally built
 // functions.
-func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config, projectFile string) ([]*un.Unstructured, []pkgv1.Function, map[string]project.EmbeddedDigest, error) {
+func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config, projectFile string) ([]*un.Unstructured, []pkgv1.Function, map[string]project.EmbeddedDigest, *v1alpha1.Project, error) {
 	projFilePath, err := filepath.Abs(projectFile)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	projFS := afero.NewBasePathFs(afero.NewOsFs(), filepath.Dir(projFilePath))
 	projFileName := filepath.Base(projFilePath)
 
 	proj, err := projectfile.Parse(projFS, projFileName)
 	if err != nil {
-		return nil, nil, nil, errors.Wrapf(err, "failed to parse project file %q", projectFile)
+		return nil, nil, nil, nil, errors.Wrapf(err, "failed to parse project file %q", projectFile)
 	}
 
 	comps, err := project.LoadCompositions(proj, projFS)
 	if err != nil {
-		return nil, nil, nil, errors.Wrap(err, "cannot load compositions from project")
+		return nil, nil, nil, nil, errors.Wrap(err, "cannot load compositions from project")
 	}
 	if len(comps) == 0 {
-		return nil, nil, nil, errors.Errorf("no Compositions found under the project's APIs path %q", proj.Spec.Paths.APIs)
+		return nil, nil, nil, nil, errors.Errorf("no Compositions found under the project's APIs path %q", proj.Spec.Paths.APIs)
 	}
 
 	fns, digests, err := project.LoadFunctionsWithDigests(ctx, logger, sp, cliCfg, projFS, projFilePath, projFileName, c.MaxConcurrency, c.newClientAndResolver)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return comps, fns, digests, nil
+	return comps, fns, digests, proj, nil
 }
 
 // changedFunctions returns the cluster names of the embedded functions whose

@@ -280,7 +280,7 @@ func merge(d *dt.ResourceDiff, p, pp *plan.ResourcePlan) *plan.ResourcePlan {
 		p.FallbackReason = pp.FallbackReason
 	case pp.Action == plan.ActionCreate, pp.Action == plan.ActionUpdate, pp.Action == plan.ActionReplace:
 		p.Action = pp.Action
-		p.Changes = pp.Changes
+		p.Changes = unionChanges(pp.Changes, p.Changes)
 		p.ReplacePaths = pp.ReplacePaths
 	}
 
@@ -291,6 +291,26 @@ func merge(d *dt.ResourceDiff, p, pp *plan.ResourcePlan) *plan.ResourcePlan {
 	}
 
 	return p
+}
+
+// unionChanges returns the provider's changes plus each engine change the
+// provider did not report. The provider only diffs the external resource's
+// parameters, so cluster-only changes (deletionPolicy, labels) come from the
+// engine. A provider change at or under an engine change's path, or the
+// reverse, reports it.
+func unionChanges(provider, engine []plan.FieldChange) []plan.FieldChange {
+	out := slices.Clone(provider)
+	for _, e := range engine {
+		if !slices.ContainsFunc(provider, func(c plan.FieldChange) bool { return pathCovers(c.Path, e.Path) || pathCovers(e.Path, c.Path) }) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// pathCovers reports whether child is parent or lies under it.
+func pathCovers(parent, child string) bool {
+	return child == parent || strings.HasPrefix(child, parent+".") || strings.HasPrefix(child, parent+"[")
 }
 
 // addError records e, failing the plan for ref. composite is the composite

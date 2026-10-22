@@ -14,8 +14,8 @@
 # set to false. This ensures apps only use explicitly declared tools.
 { pkgs }:
 let
-  # envtest binaries for the integration tests; null on non-Linux systems,
-  # where the tests skip through their env: guards instead.
+  # envtest binaries for the integration tests; null only on systems
+  # without an envtest build, where the tests skip through their env: guards.
   envtestAssets = import ./envtest-assets.nix { inherit pkgs; };
 in
 {

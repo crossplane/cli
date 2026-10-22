@@ -19,6 +19,7 @@ package plan
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -291,6 +292,27 @@ Plan: 0 to add, 0 to change, 0 to destroy.
 	}
 	if diff := cmp.Diff(want, buf.String()); diff != "" {
 		t.Errorf("Render(plan): -want, +got:\n%s", diff)
+	}
+}
+
+func TestRenderPlanPinnedHeader(t *testing.T) {
+	xr := ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
+	var buf bytes.Buffer
+	r, _ := NewRenderer(FormatPlan)
+	if err := r.Render(&buf, Result{Composites: []CompositeResult{{Ref: xr, Status: CompositeUnchanged, Pinned: true}}}); err != nil {
+		t.Fatalf("Render(plan): unexpected error: %v", err)
+	}
+	if want := "XR: XNetwork.example.org prod-network (pinned)\n"; !strings.HasPrefix(buf.String(), want) {
+		t.Errorf("Render(plan): want prefix %q, got %q", want, buf.String())
+	}
+}
+
+func TestRenderPlanEmptyReplacePath(t *testing.T) {
+	plans := []*ResourcePlan{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: ActionReplace, ReplacePaths: []string{"", "..", "spec.x"}}}
+	var buf bytes.Buffer
+	r, _ := NewRenderer(FormatPlan)
+	if err := r.Render(&buf, Result{Plans: plans}); err != nil {
+		t.Fatalf("Render(plan): unexpected error: %v", err)
 	}
 }
 

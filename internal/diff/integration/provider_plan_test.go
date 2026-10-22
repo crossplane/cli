@@ -239,7 +239,8 @@ func TestSimulateProviderPlan(t *testing.T) {
 				t.Skip(reason)
 			}
 
-			cfg, kube, ctx, _ := startIntegrationCluster(t, XRDiffTest, xrCase, defaultTimeout)
+			cluster := startIntegrationCluster(t, XRDiffTest, xrCase, defaultTimeout)
+			cfg, kube, ctx := cluster.cfg, cluster.client, cluster.ctx
 			if tc.ownCRD {
 				ownByProviderRevision(ctx, t, kube, "xdownstreamresources.ns.nop.example.org")
 			}

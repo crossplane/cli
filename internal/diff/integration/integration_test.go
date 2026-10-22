@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/sergi/go-diff/diffmatchpatch"
+	rbacv1 "k8s.io/api/rbac/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -72,7 +73,15 @@ type IntegrationTestCase struct {
 	// crossplaneManagedResources, each under its own
 	// field manager. Use it when a test depends on which manager owns a field: a plain Create
 	// records only the test client as owner, and the apiserver drops managedFields supplied on Create.
-	fieldManagerApplies    []fieldManagerApply
+	fieldManagerApplies []fieldManagerApply
+	// unestablishedXRDs are XRD manifests applied after setupFiles but, unlike an XRD in setupFiles, given
+	// no generated CRDs: an XRD Crossplane has not established yet, so its XR and claim types are not served.
+	unestablishedXRDs []string
+	// rbacRules, when set, makes the case run the command twice: as the cluster admin, then as a user
+	// bound to a ClusterRole granting only these rules (plus the discovery and self-review access the
+	// apiserver's bootstrap RBAC grants every authenticated user). The two runs must print identical
+	// output, and the usual assertions apply to the second.
+	rbacRules              []rbacv1.PolicyRule
 	inputFiles             []string // Input files to diff (XR YAML files or Composition YAML files)
 	expectedOutput         string
 	expectedError          bool
@@ -158,11 +167,19 @@ func createTestScheme() *runtime.Scheme {
 	return scheme
 }
 
+// integrationCluster is a running test case's envtest cluster.
+type integrationCluster struct {
+	cfg     *rest.Config  // the cluster admin's
+	userCfg *rest.Config  // a user granted only the case's rbacRules; nil when the case sets none
+	client  client.Client // the admin's
+	ctx     context.Context
+}
+
 // startIntegrationCluster starts a test case's envtest cluster and puts its setup state in place:
-// tt's setupFiles, crossplaneManagedResources, fieldManagerApplies and deleteAfterSetup. It returns the
-// cluster's config, a client for it, and a context bounded by the case's timeout, which it also returns.
-// The cluster is stopped and the context cancelled when the test ends.
-func startIntegrationCluster(t *testing.T, testType DiffTestType, tt IntegrationTestCase, testTimeout time.Duration) (*rest.Config, client.Client, context.Context, time.Duration) {
+// tt's setupFiles, unestablishedXRDs, crossplaneManagedResources, fieldManagerApplies, deleteAfterSetup
+// and rbacRules. The context is bounded by the case's timeout. The cluster is stopped and the context
+// cancelled when the test ends.
+func startIntegrationCluster(t *testing.T, testType DiffTestType, tt IntegrationTestCase, testTimeout time.Duration) integrationCluster {
 	t.Helper()
 
 	// Create a fresh scheme for each test to avoid concurrent map access.
@@ -230,7 +247,15 @@ func startIntegrationCluster(t *testing.T, testType DiffTestType, tt Integration
 		t.Fatalf("failed to setup resources: %v", err)
 	}
 
-	// No composition revision controller runs either: do what it would.
+	if err := applyResourcesFromFiles(ctx, k8sClient, defaults, tt.unestablishedXRDs); err != nil {
+		t.Fatalf("failed to setup unestablished XRDs: %v", err)
+	}
+
+	// No definition or composition revision controller runs either: do what they would.
+	if err := reconcileXRDCRDOwnership(ctx, k8sClient); err != nil {
+		t.Fatalf("failed to make XRDs the controllers of their CRDs: %v", err)
+	}
+
 	if err := reconcileCompositionRevisions(ctx, k8sClient); err != nil {
 		t.Fatalf("failed to reconcile CompositionRevisions: %v", err)
 	}
@@ -271,7 +296,16 @@ func startIntegrationCluster(t *testing.T, testType DiffTestType, tt Integration
 		t.Fatalf("failed to delete resources: %v", err)
 	}
 
-	return cfg, k8sClient, ctx, testTimeout
+	cluster := integrationCluster{cfg: cfg, client: k8sClient, ctx: ctx}
+
+	if tt.rbacRules != nil {
+		cluster.userCfg, err = addUserWithRules(ctx, testEnv, k8sClient, cfg, tt.rbacRules)
+		if err != nil {
+			t.Fatalf("failed to set up a user with the case's RBAC rules: %v", err)
+		}
+	}
+
+	return cluster
 }
 
 // runIntegrationTest runs a single integration test case for both XR and composition diff commands.
@@ -433,33 +467,45 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 		return
 	}
 
-	cfg, k8sClient, ctx, _ := startIntegrationCluster(t, testType, tt, testTimeout)
+	cluster := startIntegrationCluster(t, testType, tt, testTimeout)
+	ctx := cluster.ctx
 
 	// Block until any ValidatingAdmissionPolicy in the setup is actually enforcing, so the diff
 	// cannot race the apiserver's policy informer. See the field's doc comment.
-	if err := awaitAdmissionDenial(ctx, k8sClient, tt.awaitAdmissionDenialFor); err != nil {
+	if err := awaitAdmissionDenial(ctx, cluster.client, tt.awaitAdmissionDenialFor); err != nil {
 		t.Fatalf("admission policy never took effect: %v", err)
 	}
 
 	// runOnce executes the command against the running cluster, leaving its output in stdout /
 	// stderr. Everything the command layer touches is rebuilt per call, so a second run starts
 	// with cold client caches just as a second invocation of the CLI would.
-	runOnce := func() (int, error) {
+	runOnce := func(runCfg *rest.Config) (int, error) {
 		stdout.Reset()
 		stderr.Reset()
 
-		return runSimulate(t, cfg, testType, args, &stdout, &stderr)
+		return runSimulate(t, runCfg, testType, args, &stdout, &stderr)
 	}
 
-	exitCode, err := runOnce()
+	exitCode, err := runOnce(cluster.cfg)
 
 	if tt.assertDeterministicAcrossRuns {
 		first := stdout.String()
 
-		exitCode, err = runOnce()
+		exitCode, err = runOnce(cluster.cfg)
 
 		if second := stdout.String(); second != first {
 			t.Errorf("output differs between two runs against the same cluster; a value the apiserver generated has leaked into the diff.\nfirst run:\n%s\nsecond run:\n%s", first, second)
+		}
+	}
+
+	if cluster.userCfg != nil {
+		admin, adminErr := stdout.String(), err
+
+		exitCode, err = runOnce(cluster.userCfg)
+
+		if restricted := stdout.String(); restricted != admin {
+			t.Errorf("output with only the case's RBAC rules differs from the admin's; the run needs access the rules don't grant.\nadmin (error: %v):\n%s\nrestricted (error: %v, stderr below):\n%s\n%s",
+				adminErr, admin, err, restricted, stderr.String())
 		}
 	}
 
@@ -2048,6 +2094,71 @@ Summary: 2 modified, 2 removed`,
 				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
 			expectedError:    false,
 			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"LeastPrivilegeCredentialsDiffSucceeds": {
+			reason: "A user who can only get Crossplane's types, not list them, gets the admin's diff of a new and a modified XR",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/diff/resources/existing-xr.yaml",
+					"testdata/diff/resources/existing-downstream-resource.yaml",
+				),
+			},
+			// The new XR names its composition: one that names none is matched against every Composition,
+			// which takes a list of them.
+			inputFiles:   []string{"testdata/diff/first-xr-with-composition-ref.yaml", "testdata/diff/modified-xr.yaml"},
+			rbacRules:    leastPrivilegeRules("get", "create", "patch"),
+			outputFormat: "json",
+			expectedStructuredOutput: simtest.ExpectDiff().
+				WithSummary(2, 2, 0).
+				WithAddedResource("XDownstreamResource", "first-resource", "default").
+				WithField("spec.forProvider.configData", "first-value").
+				And().
+				WithModifiedResource("XDownstreamResource", "test-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value").
+				And().
+				WithAddedResource("XNopResource", "first-resource", "default").
+				WithField("spec.coolField", "first-value").
+				And().
+				WithModifiedResource("XNopResource", "test-resource", "default").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"UnrelatedXRDWithoutCRDDoesNotFailRun": {
+			reason: "An XRD unrelated to the input whose CRD does not exist yet does not affect the diff",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			unestablishedXRDs: []string{"testdata/diff/resources/unestablished-xrd.yaml"},
+			inputFiles:        []string{"testdata/diff/new-xr.yaml"},
+			outputFormat:      "json",
+			// The same diff NewResourceDiff shows, which has no such XRD.
+			expectedStructuredOutput: simtest.ExpectDiff().
+				WithSummary(2, 0, 0).
+				WithAddedResource("XDownstreamResource", "test-resource", "default").
+				WithField("spec.forProvider.configData", "new-value").
+				And().
+				WithAddedResource("XNopResource", "test-resource", "default").
+				WithField("spec.coolField", "new-value"),
+			expectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		"MissingFunctionFailsWithSameError": {
+			reason: "A pipeline naming a Function the cluster does not have fails, naming the function and its step",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/composition-with-missing-function.yaml",
+				"testdata/diff/resources/functions.yaml",
+			},
+			inputFiles:            []string{"testdata/diff/new-xr.yaml"},
+			expectedError:         true,
+			expectedErrorContains: `cannot get functions from pipeline: function "function-not-installed" referenced in pipeline step "generate-resources" not found`,
+			expectedExitCode:      dp.ExitCodeToolError,
 		},
 		"SelectCompositionByDirectReference": {
 			reason:       "Validates composition selection by direct reference",
@@ -5824,6 +5935,65 @@ Summary: 2 modified`,
 				WithAffectedResources(1, 1, 0, 0).
 				WithXRImpact("XNopResource", "test-resource", "default", "changed"),
 		},
+		"LeastPrivilegeCredentialsDiffSucceeds": {
+			reason: "A user who can list only the composition's XR type, not Crossplane's own types, gets the admin's impact analysis",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+				composes(
+					"testdata/comp/resources/existing-xr-2.yaml",
+					"testdata/comp/resources/existing-downstream-2.yaml",
+				),
+			},
+			inputFiles: []string{"testdata/comp/updated-composition.yaml"},
+			namespace:  "default",
+			// list on the XR type: without --resource, comp finds the composition's XRs by listing them.
+			rbacRules:        leastPrivilegeRules("get", "list", "create", "patch"),
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: simtest.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithAffectedResources(2, 2, 0, 0).
+				WithXRImpact("XNopResource", "test-resource", "default", "changed").
+				AndComp().
+				WithXRImpact("XNopResource", "another-resource", "default", "changed"),
+		},
+		"NameScopedRunSucceedsWithoutCompositeList": {
+			reason: "--resource looks its composites up by name, so a user who cannot list the XR type gets the admin's impact analysis",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+				composes(
+					"testdata/comp/resources/existing-xr-2.yaml",
+					"testdata/comp/resources/existing-downstream-2.yaml",
+				),
+			},
+			inputFiles:       []string{"testdata/comp/updated-composition.yaml"},
+			resources:        []string{"default/test-resource"},
+			rbacRules:        leastPrivilegeRules("get", "create", "patch"),
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructuredCompOutput: simtest.ExpectCompDiff().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithAffectedResources(1, 1, 0, 0).
+				WithXRImpact("XNopResource", "test-resource", "default", "changed"),
+		},
 		"ResourceFilterCommaSeparated": {
 			reason: "--resource accepts comma-separated values via kong's auto-parsing",
 			setupFiles: []string{
@@ -5997,7 +6167,7 @@ func TestDiffSingleResourceConcurrent(t *testing.T) {
 		return
 	}
 
-	cfg, _, ctx, _ := startIntegrationCluster(t, XRDiffTest, IntegrationTestCase{
+	cluster := startIntegrationCluster(t, XRDiffTest, IntegrationTestCase{
 		setupFiles: []string{
 			"testdata/diff/resources/xrd.yaml",
 			"testdata/diff/resources/composition.yaml",
@@ -6010,6 +6180,7 @@ func TestDiffSingleResourceConcurrent(t *testing.T) {
 			),
 		},
 	}, defaultTimeout)
+	cfg, ctx := cluster.cfg, cluster.ctx
 
 	// One modified and one new XR, each diffed several times at once.
 	var inputs []*un.Unstructured

@@ -59,6 +59,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/ref"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/docker"
+	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
@@ -194,6 +195,14 @@ func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []s
 func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
+	return runSimulateArgvRouted(t, cfg, argv, renderBinary, nil, stdout, stderr)
+}
+
+// runSimulateArgvRouted is runSimulateArgv with provider plans routed through
+// router, when it is non-nil, instead of started diff servers.
+func runSimulateArgvRouted(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, router simulate.Router, stdout, stderr io.Writer) (int, error) {
+	t.Helper()
+
 	var cli struct {
 		Project project.Cmd `cmd:""`
 	}
@@ -225,6 +234,7 @@ func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary
 		RESTConfig:   cfg,
 		RenderBinary: renderBinary,
 		Terminal:     true,
+		Router:       router,
 	}
 
 	err = kctx.Run()

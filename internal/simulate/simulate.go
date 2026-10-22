@@ -50,7 +50,9 @@ type Router interface {
 
 // A Planner plans desired resources one at a time against the diff servers
 // its Router routes to. It caches the object stores it gathers, so reuse one
-// Planner across a run.
+// Planner across a run. A Planner is not safe for concurrent use: the engine
+// runs XRs sequentially, and the object store cache (like ProviderManaged's
+// kind map and ImageCache) is unlocked.
 type Planner struct {
 	kube             client.Client
 	rmapper          meta.RESTMapper

@@ -45,8 +45,9 @@ type XRPlanner struct {
 	keep    func(*unstructured.Unstructured) bool
 	ensure  EnsureServers
 
-	mu    sync.Mutex
-	plans map[string]*plan.ResourcePlan
+	mu     sync.Mutex
+	plans  map[string]*plan.ResourcePlan
+	routed int
 }
 
 // NewXRPlanner returns an XRPlanner that plans with p. keep and ensure may be nil.
@@ -87,6 +88,11 @@ func (x *XRPlanner) AfterXRDiff(ctx context.Context, diffs map[string]*dt.Resour
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	maps.Copy(x.plans, plans)
+	for key, d := range diffs {
+		if _, ok := plans[key]; ok && x.planner.CanPlan(d.Gvk.GroupKind()) {
+			x.routed++
+		}
+	}
 
 	return nil
 }
@@ -97,4 +103,13 @@ func (x *XRPlanner) Plans() map[string]*plan.ResourcePlan {
 	defer x.mu.Unlock()
 
 	return x.plans
+}
+
+// Routed returns how many collected plans went to a diff server. Plans that
+// stand in for a kind no server serves are not counted.
+func (x *XRPlanner) Routed() int {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+
+	return x.routed
 }

@@ -77,10 +77,10 @@ func NewProjectFunctionProviderFactory(fns []pkgv1.Function) func(xp.FunctionCli
 // GetFunctionsForComposition returns one function per pipeline step, in
 // pipeline order: the project function when the step names one, otherwise the
 // function the wrapped provider returns for that step.
-func (p *ProjectFunctionProvider) GetFunctionsForComposition(comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
+func (p *ProjectFunctionProvider) GetFunctionsForComposition(ctx context.Context, comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
 	// The wrapped provider owns rejecting non-pipeline compositions.
 	if comp.Spec.Mode != apiextensionsv1.CompositionModePipeline {
-		return p.inner.GetFunctionsForComposition(comp)
+		return p.inner.GetFunctionsForComposition(ctx, comp)
 	}
 
 	clusterSteps := make([]apiextensionsv1.PipelineStep, 0, len(comp.Spec.Pipeline))
@@ -91,7 +91,7 @@ func (p *ProjectFunctionProvider) GetFunctionsForComposition(comp *apiextensions
 	}
 
 	if len(clusterSteps) == len(comp.Spec.Pipeline) {
-		return p.inner.GetFunctionsForComposition(comp)
+		return p.inner.GetFunctionsForComposition(ctx, comp)
 	}
 
 	clusterFns := map[string]pkgv1.Function{}
@@ -103,7 +103,7 @@ func (p *ProjectFunctionProvider) GetFunctionsForComposition(comp *apiextensions
 		narrowed := comp.DeepCopy()
 		narrowed.Spec.Pipeline = clusterSteps
 
-		fns, err := p.inner.GetFunctionsForComposition(narrowed)
+		fns, err := p.inner.GetFunctionsForComposition(ctx, narrowed)
 		if err != nil {
 			return nil, err
 		}

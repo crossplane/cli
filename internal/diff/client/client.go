@@ -55,7 +55,7 @@ func New(config *rest.Config, logger logging.Logger) (*Clients, error) {
 		Schema:   k8.NewSchemaClient(coreClients, tc, logger),
 	}
 
-	defClient := xp.NewDefinitionClient(k8c.Resource, logger)
+	defClient := xp.NewDefinitionClient(k8c.Resource, tc, logger)
 
 	xpc := xp.Clients{
 		Composition:  xp.NewCompositionClient(k8c.Resource, defClient, logger),

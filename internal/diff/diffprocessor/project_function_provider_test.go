@@ -17,6 +17,7 @@ limitations under the License.
 package diffprocessor
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,7 +62,7 @@ func pipelineComp(name string, fnNames ...string) *apiextensionsv1.Composition {
 // function client does, and records the steps it was asked for.
 func clusterFnClient(installed map[string]pkgv1.Function, asked *[][]string, mu *sync.Mutex) xp.FunctionClient {
 	return tu.NewMockFunctionClient().
-		WithGetFunctionsFromPipeline(func(comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
+		WithGetFunctionsFromPipeline(func(_ context.Context, comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
 			if comp.Spec.Mode != apiextensionsv1.CompositionModePipeline {
 				return nil, errors.Errorf("unsupported composition Mode '%s'", comp.Spec.Mode)
 			}
@@ -198,7 +199,7 @@ func TestProjectFunctionProvider_GetFunctionsForComposition(t *testing.T) {
 
 			p := NewProjectFunctionProviderFactory(tc.project)(clusterFnClient(installed, &asked, &mu), tu.TestLogger(t, false))
 
-			got, err := p.GetFunctionsForComposition(tc.comp)
+			got, err := p.GetFunctionsForComposition(t.Context(), tc.comp)
 			if tc.want.errSub != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.want.errSub) {
 					t.Fatalf("\n%s\nGetFunctionsForComposition(): want error containing %q, got %v", tc.reason, tc.want.errSub, err)
@@ -230,12 +231,12 @@ func TestProjectFunctionProvider_CopyIsolation(t *testing.T) {
 	p := NewProjectFunctionProvider(NewCachedFunctionProvider(clusterFnClient(installed, nil, nil), tu.TestLogger(t, false)), project, tu.TestLogger(t, false))
 	comp := pipelineComp("comp", "function-a", "function-b", "function-a")
 
-	first, err := p.GetFunctionsForComposition(comp)
+	first, err := p.GetFunctionsForComposition(t.Context(), comp)
 	if err != nil {
 		t.Fatalf("GetFunctionsForComposition(): %v", err)
 	}
 
-	want, err := p.GetFunctionsForComposition(comp)
+	want, err := p.GetFunctionsForComposition(t.Context(), comp)
 	if err != nil {
 		t.Fatalf("GetFunctionsForComposition(): %v", err)
 	}
@@ -260,7 +261,7 @@ func TestProjectFunctionProvider_CopyIsolation(t *testing.T) {
 	project[0].Spec.Package = "mutated-input"
 	project[0].Annotations["k"] = "mutated-input"
 
-	got, err := p.GetFunctionsForComposition(comp)
+	got, err := p.GetFunctionsForComposition(t.Context(), comp)
 	if err != nil {
 		t.Fatalf("GetFunctionsForComposition(): %v", err)
 	}
@@ -277,7 +278,7 @@ func TestProjectFunctionProvider_PullPolicy(t *testing.T) {
 	p := NewProjectFunctionProvider(NewCachedFunctionProvider(clusterFnClient(nil, nil, nil), tu.TestLogger(t, false)),
 		[]pkgv1.Function{testFn("function-a", "xpkg.io/project/function-a:local")}, tu.TestLogger(t, false))
 
-	fns, err := p.GetFunctionsForComposition(pipelineComp("comp", "function-a"))
+	fns, err := p.GetFunctionsForComposition(t.Context(), pipelineComp("comp", "function-a"))
 	if err != nil {
 		t.Fatalf("GetFunctionsForComposition(): %v", err)
 	}
@@ -298,9 +299,9 @@ func TestProjectFunctionProvider_Concurrent(t *testing.T) {
 	var fetches atomic.Int32
 
 	inner := tu.NewMockFunctionClient().
-		WithGetFunctionsFromPipeline(func(comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
+		WithGetFunctionsFromPipeline(func(ctx context.Context, comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
 			fetches.Add(1)
-			return clusterFnClient(installed, nil, nil).GetFunctionsFromPipeline(comp)
+			return clusterFnClient(installed, nil, nil).GetFunctionsFromPipeline(ctx, comp)
 		}).
 		Build()
 
@@ -314,7 +315,7 @@ func TestProjectFunctionProvider_Concurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Go(func() {
-			got, err := p.GetFunctionsForComposition(comp)
+			got, err := p.GetFunctionsForComposition(t.Context(), comp)
 			if err != nil {
 				t.Errorf("GetFunctionsForComposition(): %v", err)
 				return

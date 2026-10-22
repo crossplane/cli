@@ -90,21 +90,25 @@ func (x *XRPlanner) AfterXRDiff(ctx context.Context, diffs map[string]*dt.Resour
 			failed = append(failed, fmt.Sprintf("%s/%s: %s", p.Kind, p.Name, p.Error))
 		}
 	}
+	// Count what reached a server even when its plan failed, so the run still knows servers served it.
+	var routed int
+	for key, d := range diffs {
+		if _, ok := plans[key]; ok && x.planner.CanPlan(d.Gvk.GroupKind()) {
+			routed++
+		}
+	}
+
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.routed += routed
 	if len(failed) > 0 {
 		sort.Strings(failed)
 		return errors.Errorf("cannot plan %d resources with their diff servers: %s", len(failed), strings.Join(failed, "; "))
 	}
 
-	x.mu.Lock()
-	defer x.mu.Unlock()
 	for key, p := range plans {
 		if _, ok := x.plans[key]; !ok {
 			x.plans[key] = p
-		}
-	}
-	for key, d := range diffs {
-		if _, ok := plans[key]; ok && x.planner.CanPlan(d.Gvk.GroupKind()) {
-			x.routed++
 		}
 	}
 

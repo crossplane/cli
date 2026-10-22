@@ -463,7 +463,7 @@ func TestPlanner(t *testing.T) {
 				t.Errorf("RelevantProviderImages(forbidden): want no images, got %v", imgs)
 			}
 		}
-		if n := strings.Count(warned.String(), "warning:"); n != 1 {
+		if n := strings.Count(warned.String(), "Warning:"); n != 1 {
 			t.Errorf("RelevantProviderImages(forbidden): want 1 warning, got %d: %q", n, warned.String())
 		}
 

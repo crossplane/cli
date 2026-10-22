@@ -317,7 +317,7 @@ func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapp
 			var err error
 			img, err = providerImage(ctx, kubeClient, rmapper, gvk, preferOriginal)
 			if err != nil {
-				_, _ = fmt.Fprintf(warn, "warning: cannot look up the provider for %s, so its diff stays client-side only: %s\n", gk, err)
+				_, _ = fmt.Fprintf(warn, "Warning: cannot look up the provider for %s, so its diff stays client-side only: %s\n", gk, err)
 			}
 			cache.images[gk] = img
 		}

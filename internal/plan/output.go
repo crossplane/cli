@@ -389,6 +389,9 @@ func compositeHeader(c CompositeResult, ref ResourceRef) string {
 		h += ")"
 	case CompositeChanged, CompositeUnchanged, CompositeError:
 	}
+	if c.Pinned && c.Detail == "" && c.Status != CompositeDeferred {
+		h += " (pinned)"
+	}
 	return h
 }
 
@@ -569,6 +572,9 @@ func lastSegments(paths []string) []string {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
 		segs := PathSegments(p)
+		if len(segs) == 0 {
+			continue
+		}
 		out = append(out, segs[len(segs)-1])
 	}
 	return out

@@ -867,9 +867,9 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 			xrTimeout:  50 * time.Millisecond,
 			want: got{
 				XRs:        []corev1.ObjectReference{ref("my-xr-1"), ref("my-xr-2")},
-				GroupErrs:  map[string]string{"my-xr-1": "timed out after 50ms: cannot calculate diffs for composed resources: context deadline exceeded"},
-				GlobalErrs: []string{"timed out after 50ms: cannot calculate diffs for composed resources: context deadline exceeded"},
-				Err:        "unable to process resource XR1/my-xr-1: timed out after 50ms: cannot calculate diffs for composed resources: context deadline exceeded",
+				GroupErrs:  map[string]string{"my-xr-1": "timed out after 50ms: cannot calculate diffs for composed resources: context canceled"},
+				GlobalErrs: []string{"timed out after 50ms: cannot calculate diffs for composed resources: context canceled"},
+				Err:        "unable to process resource XR1/my-xr-1: timed out after 50ms: cannot calculate diffs for composed resources: context canceled",
 			},
 		},
 		// An AfterXRDiff error fails its XR with none of its diffs, as a failed render does.

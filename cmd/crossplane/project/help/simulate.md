@@ -78,7 +78,8 @@ Note: Cloud-layer plan not run (provider diff servers not yet wired).
 
 The `--timeout` flag, 2m by default, bounds the time to simulate one composite
 resource: its render and its resources' provider plans. Function and provider
-image pulls don't count.
+image pulls don't count, but the render image pull counts against the first
+composite resource's budget.
 
 By default `simulate` also runs provider plans: it asks each provider's diff
 server to plan the managed resources, so the plan shows changes the cluster

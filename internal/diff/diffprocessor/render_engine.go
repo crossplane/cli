@@ -288,11 +288,24 @@ func (e *EngineRenderFn) Render(ctx context.Context, log logging.Logger, in Rend
 // writes it, and only without CROSSPLANE_DIFF_DOCKER_NETWORK. Upgrade (e.g. a
 // once-guarded first Setup) if empty pipelines get diffed concurrently.
 func (e *EngineRenderFn) startFunctions(ctx context.Context, log logging.Logger, fns []pkgv1.Function) (map[string]string, error) {
+	// Starting functions is shared by the run, so a composite's XRTimeout neither bounds nor
+	// counts it, including the wait for another composite's start.
+	var addrs map[string]string
+
+	err := OutsideXRDeadline(ctx, func(run context.Context) error {
+		var err error
+
+		addrs, err = e.startFunctionsLocked(run, log, fns)
+
+		return err
+	})
+
+	return addrs, err
+}
+
+func (e *EngineRenderFn) startFunctionsLocked(ctx context.Context, log logging.Logger, fns []pkgv1.Function) (map[string]string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	// Starting functions is shared by the run, so a composite's XRTimeout does not bound it.
-	ctx = WithoutXRDeadline(ctx)
 
 	if e.addrs == nil {
 		e.addrs = make(map[string]string)

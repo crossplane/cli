@@ -237,6 +237,32 @@ func TestFromXRReport(t *testing.T) {
 				Notes: notes(),
 			},
 		},
+		"SecretRedactionDottedKeys": {
+			reason: "Keys containing dots are written data[\"k\"] and are redacted too, in changes, before and after.",
+			in: &dt.XRReport{Groups: []dt.XRDiffGroup{{
+				XR: xrRef,
+				Diffs: diffs(func() *dt.ResourceDiff {
+					d := rdiff(secGVK, "creds", dt.DiffTypeModified,
+						map[string]any{"data": map[string]any{"tls.crt": "b2xk", ".dockerconfigjson": "b2xk"}},
+						map[string]any{"data": map[string]any{"tls.crt": "bmV3", ".dockerconfigjson": "bmV3"}})
+					d.Current.Raw, d.Desired.Raw = d.Current.Clean, d.Desired.Clean
+					return d
+				}()),
+			}}},
+			want: plan.Result{
+				FormatVersion: plan.ResultFormatVersion,
+				Summary:       plan.Summary{Update: 1},
+				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeChanged}},
+				Plans: []*plan.ResourcePlan{{
+					APIVersion: "v1", Kind: "Secret", Name: "creds", Action: plan.ActionUpdate, Composite: &xrPlan,
+					Changes: []plan.FieldChange{
+						{Path: `data[".dockerconfigjson"]`, Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
+						{Path: `data["tls.crt"]`, Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
+					},
+				}},
+				Notes: notes(),
+			},
+		},
 		"Dedupe": {
 			reason: "A change two inputs reach identically is listed once, under the first; a differing render of it is still listed.",
 			in: &dt.XRReport{Groups: []dt.XRDiffGroup{
@@ -706,4 +732,25 @@ func TestPlanObjects(t *testing.T) {
 			t.Errorf("FromXRReport(...): redaction must not modify the engine's view: -want, +got:\n%s", diff)
 		}
 	})
+}
+
+// TestSecretDottedKeysRedactedInObjects pins that before and after redact
+// Secret keys containing dots.
+func TestSecretDottedKeysRedactedInObjects(t *testing.T) {
+	d := rdiff(secGVK, "creds", dt.DiffTypeModified,
+		map[string]any{"data": map[string]any{"tls.crt": "b2xk", ".dockerconfigjson": "b2xk"}},
+		map[string]any{"data": map[string]any{"tls.crt": "bmV3", ".dockerconfigjson": "bmV3"}})
+	got := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(d)}}}, nil)
+	for _, p := range got.Plans {
+		if p.Kind != "Secret" {
+			continue
+		}
+		for _, o := range []*unstructured.Unstructured{p.Before, p.After} {
+			for _, k := range []string{"tls.crt", ".dockerconfigjson"} {
+				if v, _, _ := unstructured.NestedString(o.Object, "data", k); v != "(sensitive value)" {
+					t.Errorf("data[%q] = %q, want redacted", k, v)
+				}
+			}
+		}
+	}
 }

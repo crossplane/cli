@@ -127,7 +127,10 @@ func annotateDiffs(diffs map[string]*dt.ResourceDiff, plans map[string]*plan.Res
 // "  # forces replacement". Other provider changes, such as defaults, show
 // only in -o plan.
 func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
-	if pp == nil || pp.Error != "" || pp.Approximate || len(pp.Changes) == 0 {
+	if pp == nil || pp.Error != "" || pp.Approximate {
+		return d
+	}
+	if len(pp.Changes) == 0 && (d.DiffType != dt.DiffTypeEqual || !isChange(pp.Action)) {
 		return d
 	}
 
@@ -197,6 +200,9 @@ func driftDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 		if c.Planned != nil {
 			lines = append(lines, line{op: opInsert, text: c.Path + ": " + plan.FormatValue(c.Planned) + note})
 		}
+	}
+	if len(lines) == 0 && pp.Action == plan.ActionReplace {
+		lines = append(lines, line{op: opInsert, text: "# replaced by the provider; no field reported"})
 	}
 	if len(lines) == 0 {
 		return d

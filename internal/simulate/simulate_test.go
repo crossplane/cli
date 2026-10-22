@@ -349,6 +349,40 @@ func TestPlanner(t *testing.T) {
 		}
 	})
 
+	t.Run("GatherDoesNotCacheContextErrors", func(t *testing.T) {
+		pcGVK := schema.GroupVersionKind{Group: "aws.upbound.io", Version: "v1beta1", Kind: "ProviderConfig"}
+		sc := runtime.NewScheme()
+		sc.AddKnownTypeWithName(pcGVK, &unstructured.Unstructured{})
+		sc.AddKnownTypeWithName(pcGVK.GroupVersion().WithKind("ProviderConfigList"), &unstructured.UnstructuredList{})
+		mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{vpcGVK.GroupVersion(), pcGVK.GroupVersion()})
+		mapper.Add(vpcGVK, meta.RESTScopeRoot)
+		mapper.Add(pcGVK, meta.RESTScopeRoot)
+
+		pc := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "aws.upbound.io/v1beta1",
+			"kind":       "ProviderConfig",
+			"metadata":   map[string]any{"name": "default"},
+		}}
+		kube := fake.NewClientBuilder().WithScheme(sc).WithObjects(pc).
+			WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				return c.Get(ctx, key, obj, opts...)
+			}}).Build()
+
+		expired, cancel := context.WithCancel(ctx)
+		cancel()
+
+		stores := newObjectStoreCache()
+		if got := stores.gather(expired, kube, mapper, "default", vpc("a", "10.0.0.0/16"), nil); len(got) != 0 {
+			t.Fatalf("gather(expired ctx): want no objects, got %v", got)
+		}
+		if got := stores.gather(ctx, kube, mapper, "default", vpc("a", "10.0.0.0/16"), nil); len(got) != 1 {
+			t.Errorf("gather(live ctx): want the ProviderConfig after an expired gather, got %v", got)
+		}
+	})
+
 	t.Run("DiscoversOnlyRelevantProviders", func(t *testing.T) {
 		crdGVK := schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"}
 

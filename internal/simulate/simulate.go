@@ -241,10 +241,16 @@ func (c *objectStoreCache) gather(ctx context.Context, kubeClient client.Client,
 	var store []*structpb.Struct
 	pc := &unstructured.Unstructured{}
 	pc.SetGroupVersionKind(mapping.GroupVersionKind)
-	if err := kubeClient.Get(ctx, key, pc); err == nil {
+	switch err := kubeClient.Get(ctx, key, pc); {
+	case err == nil:
 		if s, err := structpb.NewStruct(pc.Object); err == nil {
 			store = []*structpb.Struct{s}
 		}
+	case apierrors.IsNotFound(err):
+	default:
+		// Any other failure, notably a timed-out XR's expired context, must
+		// not poison the cache for the XRs after it.
+		return nil
 	}
 	c.cache[ck] = store
 	return store

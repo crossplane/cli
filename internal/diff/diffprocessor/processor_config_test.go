@@ -262,8 +262,8 @@ func TestOutsideXRDeadline(t *testing.T) {
 
 		ran := false
 		err := OutsideXRDeadline(xrCtx, func(context.Context) error { ran = true; return nil })
-		if ran || !errors.Is(err, errXRTimedOut) {
-			t.Errorf("ran = %v, err = %v; want fn skipped and errXRTimedOut", ran, err)
+		if ran || !errors.Is(err, ErrXRTimedOut) {
+			t.Errorf("ran = %v, err = %v; want fn skipped and ErrXRTimedOut", ran, err)
 		}
 	})
 }

@@ -508,6 +508,10 @@ func TestProviderPlanMerge(t *testing.T) {
 	equal := rdiff(cmGVK, "cm", dt.DiffTypeEqual, nil, nil)
 	key := added.GetDiffKey()
 
+	policy := rdiff(cmGVK, "cm", dt.DiffTypeModified,
+		map[string]any{"spec": map[string]any{"deletionPolicy": "Orphan", "forProvider": map[string]any{"size": "1"}}},
+		map[string]any{"spec": map[string]any{"deletionPolicy": "Delete", "forProvider": map[string]any{"size": "2"}}})
+	policyChange := plan.FieldChange{Path: "spec.deletionPolicy", Actual: &plan.Value{Value: "Orphan"}, Planned: &plan.Value{Value: "Delete"}}
 	labelChange := []plan.FieldChange{{Path: "metadata.labels.a", Actual: &plan.Value{Value: "1"}, Planned: &plan.Value{Value: "2"}}}
 	providerChange := []plan.FieldChange{{Path: "spec.forProvider.size", Actual: &plan.Value{Value: "1"}, Planned: &plan.Value{Value: "2"}}}
 	forbidden := &plan.Verification{SkipReason: "forbidden", Detail: "no create"}
@@ -549,21 +553,28 @@ func TestProviderPlanMerge(t *testing.T) {
 			wantStatus: plan.CompositeChanged,
 		},
 		"AddedProviderCreate": {
-			reason:     "A provider create replaces the engine's changes.",
+			reason:     "A provider create keeps the engine's changes it does not report.",
 			diff:       added,
 			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionCreate, Changes: providerChange}},
-			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionCreate, Changes: providerChange})},
+			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionCreate, Changes: append(slices.Clone(providerChange), plan.FieldChange{Path: "data.k", Planned: &plan.Value{Value: "v"}})})},
 			wantStatus: plan.CompositeChanged,
 		},
 		"ModifiedProviderReplace": {
-			reason: "A provider replace takes the action, changes and replace paths, keeping the engine's DryRun.",
+			reason: "A provider replace takes the action and replace paths, adds the engine's other changes, keeping the engine's DryRun.",
 			diff:   modified,
 			plans: map[string]*plan.ResourcePlan{key: {
 				Action: plan.ActionReplace, Changes: providerChange, ReplacePaths: []string{"spec.forProvider.size"},
 			}},
 			wantPlans: []*plan.ResourcePlan{cm(plan.ResourcePlan{
-				Action: plan.ActionReplace, Changes: providerChange, ReplacePaths: []string{"spec.forProvider.size"}, DryRun: forbidden,
+				Action: plan.ActionReplace, Changes: append(slices.Clone(providerChange), labelChange...), ReplacePaths: []string{"spec.forProvider.size"}, DryRun: forbidden,
 			})},
+			wantStatus: plan.CompositeChanged,
+		},
+		"ModifiedProviderUpdateKeepsClusterChange": {
+			reason:     "A deletionPolicy change the provider does not report stays beside its update; the forProvider change it does report is listed once.",
+			diff:       policy,
+			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionUpdate, Changes: providerChange}},
+			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionUpdate, Changes: append(slices.Clone(providerChange), policyChange)})},
 			wantStatus: plan.CompositeChanged,
 		},
 		"ModifiedProviderNoOp": {

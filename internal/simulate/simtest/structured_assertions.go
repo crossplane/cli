@@ -14,21 +14,6 @@ type Expectation interface {
 	expectation() *Expected
 }
 
-// Expectation is the pre-unification name of Expectation.
-type DiffExpectation = Expectation
-
-// Expectation is the pre-unification name of Expectation.
-type CompDiffExpectation = Expectation
-
-// Expected is the pre-unification name of Expected.
-type ExpectedDiff = Expected
-
-// Expected is the pre-unification name of Expected.
-type ExpectedCompDiff = Expected
-
-// WarningExpectation is the pre-unification name of WarningExpectation.
-type CompWarningExpectation = WarningExpectation
-
 // Expected is a fluent builder for test expectations on a plan.Result, covering both xr-style sections
 // (summary, flat resources, errors, XR groups) and composition-style sections. Each section is asserted
 // only if it was expected.
@@ -127,12 +112,6 @@ func Expect() *Expected {
 		compositions: make([]*CompositionExpectation, 0),
 	}
 }
-
-// ExpectDiff is the pre-unification name of Expect.
-func ExpectDiff() *Expected { return Expect() }
-
-// ExpectCompDiff is the pre-unification name of Expect.
-func ExpectCompDiff() *Expected { return Expect() }
 
 // WithSummary sets the expected summary counts.
 func (e *Expected) WithSummary(added, modified, removed int) *Expected {
@@ -816,10 +795,6 @@ func (x *XRImpactExpectation) WithDownstreamResource(changeType, kind, name, nam
 
 	return r
 }
-
-// ResourceExpectation is the same type as ResourceExpectation: one builder carries the
-// field, dry-run and name methods for a flat resource and for one under a composition's XR impact.
-type DownstreamResourceExpectation = ResourceExpectation
 
 // AndXR returns to the enclosing XR impact to chain more downstream resource expectations.
 // Not needed at the end of a chain - AssertStructured accepts a ResourceExpectation directly.

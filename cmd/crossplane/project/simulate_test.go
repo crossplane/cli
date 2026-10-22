@@ -48,6 +48,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
+	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
 )
@@ -955,10 +956,11 @@ spec:
 
 func TestValidateModeFlags(t *testing.T) {
 	cases := map[string]struct {
-		reason string
-		mode   inputMode
-		args   []string
-		err    string
+		reason   string
+		mode     inputMode
+		args     []string
+		skipPlan bool
+		err      string
 	}{
 		"ProjectAcceptsAll": {
 			reason: "A project accepts every flag.",
@@ -976,11 +978,23 @@ func TestValidateModeFlags(t *testing.T) {
 			args:   []string{"--max-concurrency", "2"},
 			err:    "--max-concurrency configures the project's function builds",
 		},
-		"XRRejectsCacheDir": {
-			reason: "Composite resources use the cluster's functions, so the build flags don't apply.",
+		"XRAcceptsCacheDir": {
+			reason: "--cache-dir also caches provider packages, so it applies whenever planning is on.",
 			mode:   xrMode,
 			args:   []string{"--cache-dir", "/c"},
-			err:    "--cache-dir configures the project's function builds",
+		},
+		"XRRejectsCacheDirSkipPlan": {
+			reason:   "With --skip-plan and no project there is nothing to cache.",
+			mode:     xrMode,
+			args:     []string{"--cache-dir", "/c"},
+			skipPlan: true,
+			err:      "--cache-dir caches function builds in project mode",
+		},
+		"ProjectAcceptsCacheDirSkipPlan": {
+			reason:   "A project caches function builds even without planning.",
+			mode:     projectMode,
+			args:     []string{"--cache-dir", "/c"},
+			skipPlan: true,
 		},
 		"XRRejectsNamespace": {
 			reason: "Composite resource files name what to simulate, so -n doesn't apply.",
@@ -1021,7 +1035,7 @@ func TestValidateModeFlags(t *testing.T) {
 				t.Fatalf("Parse(%v): %v", tc.args, err)
 			}
 
-			err = validateModeFlags(tc.mode, setFlags(k))
+			err = validateModeFlags(tc.mode, setFlags(k), tc.skipPlan)
 			if tc.err == "" {
 				if err != nil {
 					t.Errorf("\n%s\nvalidateModeFlags(...): %v", tc.reason, err)
@@ -1118,5 +1132,55 @@ func TestPlanNotes(t *testing.T) {
 				t.Errorf("planNotes(...): -want, +got:\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestSelectServers(t *testing.T) {
+	loadInputs := func(string) ([]diffserver.Input, error) { return diffserver.Images([]string{"p:1"}), nil }
+	loadDeps := func(images ...string) func() ([]string, error) {
+		return func() ([]string, error) { return images, nil }
+	}
+	onDemand := func() simulate.EnsureServers {
+		return func(context.Context, []*un.Unstructured) error { return nil }
+	}
+
+	cases := map[string]struct {
+		providers   string
+		project     bool
+		deps        []string
+		wantInputs  int
+		wantEnsure  bool
+		wantInputIm string
+	}{
+		"Providers":           {providers: "dir", project: true, deps: []string{"d:1"}, wantInputs: 1, wantInputIm: "p:1"},
+		"ProjectDeps":         {project: true, deps: []string{"d:1", "d:2"}, wantInputs: 2, wantInputIm: "d:1"},
+		"ProjectNoDeps":       {project: true},
+		"OnDemandNoInputs":    {wantEnsure: true},
+		"OnDemandIgnoresDeps": {deps: []string{"d:1"}, wantEnsure: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			inputs, ensure, err := selectServers(tc.providers, tc.project, loadInputs, loadDeps(tc.deps...), onDemand)
+			if err != nil {
+				t.Fatalf("selectServers(...): %v", err)
+			}
+			if len(inputs) != tc.wantInputs {
+				t.Errorf("inputs: want %d, got %d", tc.wantInputs, len(inputs))
+			}
+			if (ensure != nil) != tc.wantEnsure {
+				t.Errorf("ensure set: want %v, got %v", tc.wantEnsure, ensure != nil)
+			}
+			if tc.wantInputIm != "" && inputs[0].Image != tc.wantInputIm {
+				t.Errorf("first input image: want %q, got %q", tc.wantInputIm, inputs[0].Image)
+			}
+		})
+	}
+
+	boom := errors.New("boom")
+	if _, _, err := selectServers("", true, loadInputs, func() ([]string, error) { return nil, boom }, onDemand); !errors.Is(err, boom) {
+		t.Errorf("project dependency load error: want %v, got %v", boom, err)
+	}
+	if _, _, err := selectServers("x", false, func(string) ([]diffserver.Input, error) { return nil, boom }, loadDeps(), onDemand); !errors.Is(err, boom) {
+		t.Errorf("provider load error: want %v, got %v", boom, err)
 	}
 }

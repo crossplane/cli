@@ -39,8 +39,10 @@ own. Pass `--include-pinned` to simulate them too.
 Some flags apply only to some inputs. `--namespace`, `--name`,
 `--include-pinned`, `--analyze-on`, and `--minimize-composition` choose which
 composite resources a Composition change reaches, so composite resource files
-don't take them. `--max-concurrency` and `--cache-dir` configure the project's
-function builds, so only a project file takes them.
+don't take them. `--max-concurrency` configures the project's function builds,
+so only a project file takes it. `--cache-dir` caches function builds and
+provider packages, so Composition and composite resource files take it unless
+`--skip-plan` is set.
 
 The `-o` flag picks the output format:
 
@@ -55,7 +57,7 @@ The `-o` flag picks the output format:
   is the manifest sent to the provider, not the provider's view.
 - `diff` prints the line diff `crossplane-diff` prints.
 
-For example, a changed Composition prints a plan like this:
+For example, a changed Composition run with `--skip-plan` prints a plan like this:
 
 ```
 [~] Composition.apiextensions.crossplane.io xnetworks.example.org (update)
@@ -73,7 +75,7 @@ XR: XNetwork.example.org team-a/prod-network
 
 Plan: 0 to add, 2 to change, 0 to destroy.
 
-Note: Cloud-layer plan not run (provider diff servers not yet wired).
+Note: Cloud-layer plan skipped (--skip-plan).
 ```
 
 The `--timeout` flag, 2m by default, bounds the time to simulate one composite
@@ -100,7 +102,8 @@ Provider plans are controlled by these flags:
   diff servers, instead of discovering providers from the cluster.
 - `--image-configs` takes a YAML file of ImageConfig manifests that rewrite
   provider image paths for local pulls. It defaults to the project's
-  imageConfigs when `-f` names a project file.
+  imageConfigs when `-f` names a project file; in Composition and XR modes it
+  falls back, best effort, to the project file in the current directory.
 - `--session-id` sets the `simulate.crossplane.io/session` label on diff server
   containers. It defaults to a random per-process ID.
 
@@ -125,7 +128,8 @@ the result:
 
 - 0: the simulation succeeded and found no changes.
 - 1: the simulation failed. A provider plan that fails fails its whole
-  composite resource, which then reports no plans.
+  composite resource, which then reports an error entry and none of its
+  resources' plans.
 - 2: only schema validation failed.
 - 3: the simulation succeeded and found changes, including drift a provider
   plan found that the cluster diff didn't.

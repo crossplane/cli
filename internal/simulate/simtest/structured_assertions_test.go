@@ -237,7 +237,7 @@ func compResult() plan.Result {
 		Composites: []plan.CompositeResult{
 			{Ref: xr1, Status: plan.CompositeChanged, Composition: &compA},
 			{Ref: xr2, Status: plan.CompositeUnchanged, Composition: &compA},
-			{Ref: xr3, Status: plan.CompositeSkipped, Reason: string(dt.FilterReasonDeleting), Composition: &compA},
+			{Ref: xr3, Status: plan.CompositeSkipped, Reason: plan.CompositeReasonDeleting, Composition: &compA},
 			{Ref: xr1, Status: plan.CompositeError, Composition: &compB},
 		},
 		Plans: []*plan.ResourcePlan{

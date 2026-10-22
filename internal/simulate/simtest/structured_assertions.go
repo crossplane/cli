@@ -657,7 +657,7 @@ type XRImpactExpectation struct {
 	namespace           string
 	anyNameAllowed      bool
 	status              string   // "changed", "unchanged", "error", "filtered"
-	filterReason        string   // "manual_policy", "revision_selector_mismatch", "deleting"; only checked when set
+	filterReason        string   // "manualPolicy", "revisionSelectorMismatch", "deleting"; only checked when set
 	errorContains       string   // substring of an "error" impact's Error; only checked when set
 	errorIDs            []string // resourceIDs the plan.Result errors[] attributed to the XR must contain
 	downstreamSummary   *expectedSummary
@@ -791,8 +791,8 @@ func (x *XRImpactExpectation) WithAnyName() *XRImpactExpectation {
 	return x
 }
 
-// WithFilterReason pins the expected FilterReason on a filtered XR impact (e.g. "manual_policy",
-// "revision_selector_mismatch", or "deleting"). Only asserted when set.
+// WithFilterReason pins the expected FilterReason on a filtered XR impact (e.g. "manualPolicy",
+// "revisionSelectorMismatch", or "deleting"). Only asserted when set.
 func (x *XRImpactExpectation) WithFilterReason(reason string) *XRImpactExpectation {
 	x.filterReason = reason
 	return x

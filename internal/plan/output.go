@@ -104,13 +104,30 @@ const (
 	CompositeSkipped CompositeStatus = "skipped"
 )
 
+// CompositeReason is why a composite was deferred or skipped.
+type CompositeReason string
+
+const (
+	// CompositeReasonManualPolicy means the composite has a Manual
+	// compositionUpdatePolicy, so it is pinned to its current revision.
+	CompositeReasonManualPolicy CompositeReason = "manualPolicy"
+	// CompositeReasonRevisionSelectorMismatch means the composite's
+	// compositionRevisionSelector does not match the changed revision.
+	CompositeReasonRevisionSelectorMismatch CompositeReason = "revisionSelectorMismatch"
+	// CompositeReasonDeleting means the composite is being deleted.
+	CompositeReasonDeleting CompositeReason = "deleting"
+	// CompositeReasonUnknown means the engine filtered the composite for a
+	// reason this version does not recognize.
+	CompositeReasonUnknown CompositeReason = "unknown"
+)
+
 // CompositeResult is the per-composite outcome of a project simulate run.
 type CompositeResult struct {
 	Ref    ResourceRef     `json:"ref"`
 	Status CompositeStatus `json:"status"`
 	// Reason is the machine-readable reason a composite was deferred or
-	// skipped.
-	Reason string `json:"reason,omitempty"`
+	// skipped: manualPolicy, revisionSelectorMismatch, deleting or unknown.
+	Reason CompositeReason `json:"reason,omitempty"`
 	// Detail elaborates on Reason, e.g. the pinned revision.
 	Detail string `json:"detail,omitempty"`
 	// Pinned marks a composite simulated although it is pinned to a
@@ -384,7 +401,7 @@ func compositeHeader(c CompositeResult, ref ResourceRef) string {
 	case CompositeSkipped:
 		h += " (skipped"
 		if c.Reason != "" {
-			h += ": " + c.Reason
+			h += ": " + string(c.Reason)
 		}
 		h += ")"
 	case CompositeChanged, CompositeUnchanged, CompositeError:

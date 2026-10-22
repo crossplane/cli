@@ -19,6 +19,8 @@ package simulate
 import (
 	"context"
 	"errors"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -42,9 +44,12 @@ import (
 type funcPlanClient struct {
 	fakePlanClient
 	fail map[string]bool
+	// ctxErr is the error of the context the last Plan call ran under.
+	ctxErr error
 }
 
-func (f *funcPlanClient) Plan(_ context.Context, in *diffv1alpha1.PlanRequest, _ ...grpc.CallOption) (*diffv1alpha1.PlanResponse, error) {
+func (f *funcPlanClient) Plan(ctx context.Context, in *diffv1alpha1.PlanRequest, _ ...grpc.CallOption) (*diffv1alpha1.PlanResponse, error) {
+	f.ctxErr = ctx.Err()
 	if f.fail[in.GetDesiredResource().GetFields()["metadata"].GetStructValue().GetFields()["name"].GetStringValue()] {
 		return nil, status.Error(codes.Internal, "boom")
 	}
@@ -138,7 +143,8 @@ func TestXRPlanner(t *testing.T) {
 					t.Errorf("AfterXRDiff(...): want bad-a before bad-b, got %v", err)
 				}
 			}
-			if len(ensured) != len(tc.wantEnsured) {
+			sort.Strings(ensured)
+			if !slices.Equal(ensured, tc.wantEnsured) && len(ensured)+len(tc.wantEnsured) > 0 {
 				t.Errorf("ensure got %v, want %v", ensured, tc.wantEnsured)
 			}
 			if len(tc.wantEnsured) > 0 && (len(ensureCtxs) == 0 || ensureCtxs[0].Err() != nil) {
@@ -157,20 +163,27 @@ func TestXRPlanner(t *testing.T) {
 	}
 
 	t.Run("EnsureRunsOutsideXRDeadline", func(t *testing.T) {
-		var ensureCtxs []context.Context
+		// ensure outlasts the XR's budget; the budget is paused meanwhile, so the plans still run.
 		ensure := func(ctx context.Context, _ []*unstructured.Unstructured) error {
-			ensureCtxs = append(ensureCtxs, ctx)
-			return errors.New("stop before planning")
+			time.Sleep(150 * time.Millisecond)
+			return ctx.Err()
 		}
-		xrCtx, cancel := diffprocessor.ContextWithXRDeadline(context.Background(), time.Nanosecond)
+		xrCtx, cancel := diffprocessor.NewXRContext(context.Background(), 50*time.Millisecond)
 		defer cancel()
-		<-xrCtx.Done()
 
 		x := NewXRPlanner(planner, nil, ensure)
-		_ = x.AfterXRDiff(xrCtx, map[string]*dt.ResourceDiff{"a": added(vpc("a", "10.0.0.0/16"))})
-
-		if len(ensureCtxs) == 0 || ensureCtxs[0].Err() != nil {
-			t.Errorf("ensure ctx missing or ended: %v", ensureCtxs)
+		err := x.AfterXRDiff(xrCtx, map[string]*dt.ResourceDiff{"a": added(vpc("a", "10.0.0.0/16"))})
+		if err != nil {
+			t.Errorf("AfterXRDiff(...) = %v, want nil", err)
+		}
+		if xrCtx.Err() != nil {
+			t.Errorf("XR ctx ended during ensure: %v", xrCtx.Err())
+		}
+		if pc.ctxErr != nil {
+			t.Errorf("plan client saw ctx error %v, want a live context", pc.ctxErr)
+		}
+		if len(x.Plans()) != 1 {
+			t.Errorf("Plans() = %v, want the one plan", x.Plans())
 		}
 	})
 

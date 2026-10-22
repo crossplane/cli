@@ -1326,7 +1326,7 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_PerXR(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"slow":    "unable to process resource example.org/v1/XResource//slow: timed out after 50ms: context deadline exceeded",
+		"slow":    "unable to process resource example.org/v1/XResource//slow: timed out after 50ms: context canceled",
 		"fast":    "1 diffs",
 		"failing": "unable to process resource example.org/v1/XResource//failing: plan failed",
 	}

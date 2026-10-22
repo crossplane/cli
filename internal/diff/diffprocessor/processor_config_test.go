@@ -2,6 +2,8 @@ package diffprocessor
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,17 +185,85 @@ func TestWithMaxRecvMessageSize(t *testing.T) {
 	}
 }
 
-func TestWithoutXRDeadline(t *testing.T) {
-	cfg := &ProcessorConfig{XRTimeout: time.Nanosecond}
-	run := context.Background()
-	xrCtx, cancel := cfg.xrContext(run)
-	defer cancel()
-	<-xrCtx.Done()
+func TestOutsideXRDeadline(t *testing.T) {
+	cfg := &ProcessorConfig{XRTimeout: 50 * time.Millisecond}
 
-	if got := WithoutXRDeadline(xrCtx); got.Err() != nil {
-		t.Errorf("WithoutXRDeadline(expired XR context).Err() = %v, want the run context, which has not ended", got.Err())
-	}
-	if got := WithoutXRDeadline(run); got != run {
-		t.Errorf("WithoutXRDeadline(run) did not return run unchanged")
-	}
+	t.Run("NoBudgetCallsFnWithCtx", func(t *testing.T) {
+		ctx := context.Background()
+		_ = OutsideXRDeadline(ctx, func(run context.Context) error {
+			if run != ctx {
+				t.Errorf("run context != ctx without a budget")
+			}
+			return nil
+		})
+	})
+
+	t.Run("SlowWorkOutsideDoesNotTimeOutXR", func(t *testing.T) {
+		xrCtx, cancel := cfg.xrContext(context.Background())
+		defer cancel()
+
+		err := OutsideXRDeadline(xrCtx, func(run context.Context) error {
+			time.Sleep(150 * time.Millisecond)
+			return run.Err()
+		})
+		if err != nil || xrCtx.Err() != nil {
+			t.Errorf("after slow outside work: fn err %v, xr ctx err %v; want both nil", err, xrCtx.Err())
+		}
+		if err := cfg.afterXR(context.Background(), xrCtx, nil, nil); err != nil {
+			t.Errorf("afterXR() = %v, want nil", err)
+		}
+	})
+
+	t.Run("NestedAndConcurrentPausesRearmOnce", func(t *testing.T) {
+		xrCtx, cancel := cfg.xrContext(context.Background())
+		defer cancel()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = OutsideXRDeadline(xrCtx, func(context.Context) error {
+				time.Sleep(120 * time.Millisecond)
+				return nil
+			})
+		}()
+		time.Sleep(10 * time.Millisecond)
+		_ = OutsideXRDeadline(xrCtx, func(context.Context) error {
+			return OutsideXRDeadline(xrCtx, func(context.Context) error {
+				time.Sleep(60 * time.Millisecond)
+				return nil
+			})
+		})
+		if xrCtx.Err() != nil {
+			t.Errorf("xr ctx ended while another pause was active: %v", xrCtx.Err())
+		}
+		<-done
+	})
+
+	t.Run("WorkInsideStillTimesOut", func(t *testing.T) {
+		xrCtx, cancel := cfg.xrContext(context.Background())
+		defer cancel()
+
+		_ = OutsideXRDeadline(xrCtx, func(context.Context) error {
+			time.Sleep(20 * time.Millisecond)
+			return nil
+		})
+		<-xrCtx.Done()
+
+		err := cfg.afterXR(context.Background(), xrCtx, nil, xrCtx.Err())
+		if err == nil || !strings.Contains(err.Error(), "timed out after 50ms") {
+			t.Errorf("afterXR() = %v, want a timed out after 50ms error", err)
+		}
+	})
+
+	t.Run("ExpiredBudgetSkipsFn", func(t *testing.T) {
+		xrCtx, cancel := cfg.xrContext(context.Background())
+		defer cancel()
+		<-xrCtx.Done()
+
+		ran := false
+		err := OutsideXRDeadline(xrCtx, func(context.Context) error { ran = true; return nil })
+		if ran || !errors.Is(err, errXRTimedOut) {
+			t.Errorf("ran = %v, err = %v; want fn skipped and errXRTimedOut", ran, err)
+		}
+	})
 }

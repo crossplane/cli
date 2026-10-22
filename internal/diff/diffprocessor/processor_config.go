@@ -2,6 +2,7 @@ package diffprocessor
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -454,35 +455,110 @@ func WithFunctionProviderFactory(factory func(xp.FunctionClient, logging.Logger)
 	}
 }
 
+// errXRTimedOut is the cause an XR context is cancelled with when its XRTimeout budget runs out.
+var errXRTimedOut = errors.New("composite resource timed out")
+
 // xrContext returns the context one composite resource's diff runs under: ctx bounded by XRTimeout
-// when it is set.
+// when it is set. The budget can be paused with OutsideXRDeadline.
 func (c *ProcessorConfig) xrContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if c.XRTimeout <= 0 {
 		return ctx, func() {}
 	}
 
-	return ContextWithXRDeadline(ctx, c.XRTimeout)
+	xrCtx, cancel := context.WithCancelCause(ctx)
+	b := &xrBudget{remaining: c.XRTimeout, run: ctx, cancel: cancel, start: time.Now()}
+	b.timer = time.AfterFunc(c.XRTimeout, b.expire)
+
+	return context.WithValue(xrCtx, budgetKey{}, b), func() {
+		b.mu.Lock()
+		b.timer.Stop()
+		b.mu.Unlock()
+		cancel(context.Canceled)
+	}
 }
 
-// ContextWithXRDeadline returns the context a composite resource's diff runs under: ctx bounded by
-// d, remembering ctx as the run context WithoutXRDeadline returns.
-func ContextWithXRDeadline(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithValue(ctx, runContextKey{}, ctx), d)
+// NewXRContext returns the context a composite resource's diff runs under with an XRTimeout of d.
+func NewXRContext(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	return (&ProcessorConfig{XRTimeout: d}).xrContext(ctx)
 }
 
-// runContextKey keys the context a composite resource's XRTimeout deadline was added to.
-type runContextKey struct{}
+// budgetKey keys the xrBudget of a composite resource's context.
+type budgetKey struct{}
 
-// WithoutXRDeadline returns the context ctx's composite resource deadline was added to, or ctx when
-// it has none. Starting function runtimes, which pulls their images, runs under it: that work is
-// shared by the whole run, so it must not count against, or fail, the composite that happens to
-// need it first. An AfterXRDiff hook uses it the same way for run-wide work of its own.
-func WithoutXRDeadline(ctx context.Context) context.Context {
-	if run, ok := ctx.Value(runContextKey{}).(context.Context); ok {
-		return run
+// xrBudget is the pausable XRTimeout of one composite resource.
+type xrBudget struct {
+	run    context.Context //nolint:containedctx // The budget hands the run context to OutsideXRDeadline's callers.
+	cancel context.CancelCauseFunc
+
+	mu        sync.Mutex
+	timer     *time.Timer
+	start     time.Time
+	remaining time.Duration
+	pauses    int
+	expired   bool
+}
+
+func (b *xrBudget) expire() {
+	b.mu.Lock()
+	b.expired = true
+	b.mu.Unlock()
+	b.cancel(errXRTimedOut)
+}
+
+// pause stops the clock, reporting false when the budget already ran out.
+func (b *xrBudget) pause() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.expired {
+		return false
 	}
 
-	return ctx
+	if b.pauses == 0 {
+		if !b.timer.Stop() {
+			// The timer fired; its expiry is on its way.
+			b.expired = true
+			return false
+		}
+
+		b.remaining -= time.Since(b.start)
+	}
+
+	b.pauses++
+
+	return true
+}
+
+// resume restarts the clock once the last concurrent pause ends.
+func (b *xrBudget) resume() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.pauses--
+	if b.pauses == 0 && !b.expired {
+		b.start = time.Now()
+		b.timer = time.AfterFunc(max(b.remaining, 0), b.expire)
+	}
+}
+
+// OutsideXRDeadline runs fn with the run context, which ctx's composite resource budget (XRTimeout)
+// does not bound, and does not count fn's time against that budget. Work shared by the whole run,
+// like starting function runtimes and provider diff servers, which pulls images, goes through it so
+// it neither fails nor is billed to the composite that happens to need it first. Calls may nest and
+// run concurrently. Without a budget in ctx it calls fn(ctx). If the budget already ran out it
+// returns that expiry without running fn.
+func OutsideXRDeadline(ctx context.Context, fn func(run context.Context) error) error {
+	b, ok := ctx.Value(budgetKey{}).(*xrBudget)
+	if !ok {
+		return fn(ctx)
+	}
+
+	if !b.pause() {
+		return errXRTimedOut
+	}
+	defer b.resume()
+
+	return fn(b.run) //nolint:contextcheck // The run context is deliberately the one the XR budget does not bound.
 }
 
 // afterXR finishes one composite resource's diff, which returned diffs and err under xrCtx, a child
@@ -493,7 +569,7 @@ func (c *ProcessorConfig) afterXR(ctx, xrCtx context.Context, diffs map[string]*
 	}
 
 	// Only the composite's own deadline is named; the caller's ending reads as it always has.
-	if err != nil && ctx.Err() == nil && errors.Is(xrCtx.Err(), context.DeadlineExceeded) {
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(xrCtx), errXRTimedOut) {
 		return errors.Wrapf(err, "timed out after %s", c.XRTimeout)
 	}
 

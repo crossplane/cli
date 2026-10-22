@@ -307,13 +307,18 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 			// Render the report even when there are errors, so successful XRs
 			// are shown and structured output stays valid. The renderer
 			// includes the errors in structured output.
+			changed := report != nil && report.HasChanges()
 			if report != nil {
-				if renderErr := c.renderXRReport(k, logger, report); renderErr != nil {
+				rendered, renderErr := c.renderXRReport(k, logger, report)
+				if renderErr == nil {
+					changed = rendered
+				}
+				if renderErr != nil {
 					logger.Debug("Failed to render diffs", "error", renderErr)
 					err = withRenderError(err, errors.Wrap(renderErr, "failed to render diffs"))
 				}
 			}
-			return report != nil && report.HasChanges(), errors.Wrap(err, "cannot simulate composite resources")
+			return changed, errors.Wrap(err, "cannot simulate composite resources")
 		})
 	}
 
@@ -480,12 +485,17 @@ func (c *simulateCmd) diffCompositions(k *kong.Context, logger logging.Logger, p
 		// Render the report even when there are errors (e.g. every
 		// composition failed), so structured output stays valid. A render
 		// failure takes precedence over the processing error.
+		changed := output != nil && output.HasChanges()
 		if output != nil {
-			if renderErr := c.renderCompReport(k, logger, output); renderErr != nil {
+			rendered, renderErr := c.renderCompReport(k, logger, output)
+			if renderErr == nil {
+				changed = rendered
+			}
+			if renderErr != nil {
 				err = errors.Wrap(renderErr, "failed to render composition diff")
 			}
 		}
-		return output != nil && output.HasChanges(), errors.Wrap(err, msg)
+		return changed, errors.Wrap(err, msg)
 	}
 }
 
@@ -796,25 +806,69 @@ func (c *simulateCmd) diffOptions(k *kong.Context) renderer.DiffOptions {
 	return opts
 }
 
-// renderXRReport writes an xr or project run's report in the format -o
-// selects: the engine's human diff for diff, and plan.Result otherwise.
-func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport) error {
-	opts := c.diffOptions(k)
-	if c.Output == string(renderer.OutputFormatDiff) {
-		return renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
+// providerPlans returns the provider plans the run collected, or nil when
+// planning was skipped.
+func (c *simulateCmd) providerPlans() map[string]*plan.ResourcePlan {
+	if c.xrPlanner == nil {
+		return nil
 	}
-	return c.renderPlan(k, simulate.FromXRReport(r, nil), dt.XRDryRunWarnings(r.Groups))
+	return c.xrPlanner.Plans()
+}
+
+// planNotes returns the notes that replace the result's own, or nil to keep
+// them. noServers is true when diff servers were wanted but none ran.
+func planNotes(skipPlan bool, plans map[string]*plan.ResourcePlan, noServers bool) []string {
+	switch {
+	case skipPlan:
+		return []string{simulate.NoteProviderPlanSkipped}
+	case plans != nil && len(plans) == 0 && noServers:
+		return []string{simulate.NoteNoDiffServers}
+	}
+	return nil
+}
+
+func (c *simulateCmd) notes() []string {
+	return planNotes(c.SkipPlan, c.providerPlans(), c.servers != nil && !c.servers.Ran())
+}
+
+// renderXRReport writes an xr or project run's report in the format -o
+// selects: the engine's human diff for diff, and plan.Result otherwise. It
+// returns whether the run changed anything, provider plans included.
+func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport) (bool, error) {
+	opts := c.diffOptions(k)
+	plans := c.providerPlans()
+	res := simulate.FromXRReport(r, plans)
+	if n := c.notes(); n != nil {
+		res.Notes = n
+	}
+	changed := r.HasChanges() || (plans != nil && simulate.Changed(res))
+	if c.Output == string(renderer.OutputFormatDiff) {
+		if plans != nil {
+			r = simulate.AnnotateXRReport(r, plans)
+		}
+		return changed, renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
+	}
+	return changed, c.renderPlan(k, res, dt.XRDryRunWarnings(r.Groups))
 }
 
 // renderCompReport writes a composition run's report in the format -o
 // selects, as renderXRReport does.
-func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput) error {
+func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput) (bool, error) {
 	opts := c.diffOptions(k)
 	opts.MinimizeComposition = c.MinimizeComposition
-	if c.Output == string(renderer.OutputFormatDiff) {
-		return renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts).RenderCompDiff(o)
+	plans := c.providerPlans()
+	res := simulate.FromCompReport(o, plans)
+	if n := c.notes(); n != nil {
+		res.Notes = n
 	}
-	return c.renderPlan(k, simulate.FromCompReport(o, nil), dt.CompDryRunWarnings(o))
+	changed := o.HasChanges() || (plans != nil && simulate.Changed(res))
+	if c.Output == string(renderer.OutputFormatDiff) {
+		if plans != nil {
+			o = simulate.AnnotateCompReport(o, plans)
+		}
+		return changed, renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts).RenderCompDiff(o)
+	}
+	return changed, c.renderPlan(k, res, dt.CompDryRunWarnings(o))
 }
 
 // renderPlan writes res to stdout in the plan, json or yaml format, then

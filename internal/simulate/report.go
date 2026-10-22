@@ -34,8 +34,8 @@ import (
 )
 
 // noteProviderPlanNotRun says the cluster-layer result was not refined by
-// provider diff servers, so its plans say nothing about the cloud resources.
-const noteProviderPlanNotRun = "Cloud-layer plan not run (provider diff servers not yet wired)."
+// provider plans, so its plans say nothing about the cloud resources.
+const noteProviderPlanNotRun = "Cloud-layer plan not run."
 
 // Notes a caller sets on Result.Notes when no provider plans refined the
 // cluster-layer result, saying why. A result built from provider plans

@@ -327,7 +327,7 @@ func (p *DefaultCompDiffProcessor) preflightResourceRefs(ctx context.Context, co
 		// in refs mode (resolveCompositeTypes needs spec.compositeTypeRef).
 		matched, err := p.compositionClient.FindComposites(ctx, comp, dtypes.FindCompositesOptions{Refs: refs})
 		if err != nil {
-			return nil, errors.Wrapf(err, "preflight: cannot resolve --resource refs for composition %s", comp.GetName())
+			return nil, errors.Wrapf(err, "preflight: cannot resolve resource refs for composition %s", comp.GetName())
 		}
 
 		perComp[comp.GetName()] = matched

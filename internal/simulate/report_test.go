@@ -166,8 +166,8 @@ func TestFromXRReport(t *testing.T) {
 					{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Error: "schema validation failed", Composite: &xrPlan},
 				},
 				Errors: []plan.Error{{
-					Resource: &xrPlan,
-					Message:  "schema validation failed",
+					Ref:     &xrPlan,
+					Message: "schema validation failed",
 					ValidationFailures: []plan.ValidationFailure{{
 						APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Status: "invalid",
 						Errors: []plan.FieldValidationError{{Type: "schema", Field: "data.k", Message: "must be a string", Value: 7.0}},
@@ -394,7 +394,7 @@ func TestFromCompReport(t *testing.T) {
 				FormatVersion: plan.ResultFormatVersion,
 				Summary:       plan.Summary{NoOp: 1, Deferred: 1},
 				Composites: []plan.CompositeResult{
-					{Ref: named("pinned"), Status: plan.CompositeDeferred, Composition: &compPlan, Reason: "manual_policy", Detail: "compositionRevisionRef: net-6"},
+					{Ref: named("pinned"), Status: plan.CompositeDeferred, Composition: &compPlan, Reason: "manual_policy", Detail: "compositionRevisionRef: net-6", Pinned: true},
 					{Ref: named("selector"), Status: plan.CompositeSkipped, Composition: &compPlan, Reason: "revision_selector_mismatch", Detail: "channel=stable"},
 					{Ref: named("deleting"), Status: plan.CompositeSkipped, Composition: &compPlan, Reason: "deleting"},
 				},
@@ -463,7 +463,7 @@ func TestFromCompReport(t *testing.T) {
 				Plans: []*plan.ResourcePlan{
 					{APIVersion: compPlan.APIVersion, Kind: "Composition", Name: "net", Error: "cannot load"},
 				},
-				Errors: []plan.Error{{Resource: &compPlan, Message: "cannot load"}},
+				Errors: []plan.Error{{Ref: &compPlan, Message: "cannot load"}},
 				Notes:  notes(),
 			},
 		},
@@ -507,7 +507,7 @@ func TestFromCompReport(t *testing.T) {
 					compNoOp,
 					{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Error: "render failed", Composite: &xrPlan},
 				},
-				Errors: []plan.Error{{Resource: &xrPlan, Message: "render failed"}, {Message: "interrupted"}},
+				Errors: []plan.Error{{Ref: &xrPlan, Message: "render failed"}, {Message: "interrupted"}},
 				Notes:  notes(),
 			},
 		},

@@ -108,24 +108,24 @@ func TestParseResult(t *testing.T) {
 	}
 }
 
-func TestAssertStructuredDiff(t *testing.T) {
+func TestAssertStructuredXRPlan(t *testing.T) {
 	out := resultJSON(t, xrResult())
 
 	// Any resource expectation pins the change count, so a case about one change lists the others.
-	withoutBucket := func() *ExpectedDiff {
-		return ExpectDiff().WithAddedResource("ConfigMap", "cm-x7k2p", "default").And().WithRemovedResource("Secret", "gone", "default").And()
+	withoutBucket := func() *Expected {
+		return Expect().WithAddedResource("ConfigMap", "cm-x7k2p", "default").And().WithRemovedResource("Secret", "gone", "default").And()
 	}
-	withoutConfigMap := func() *ExpectedDiff {
-		return ExpectDiff().WithModifiedResource("Bucket", "bucket-a", "default").And().WithRemovedResource("Secret", "gone", "default").And()
+	withoutConfigMap := func() *Expected {
+		return Expect().WithModifiedResource("Bucket", "bucket-a", "default").And().WithRemovedResource("Secret", "gone", "default").And()
 	}
 
 	cases := map[string]struct {
-		want     DiffExpectation
+		want     Expectation
 		wantFail bool
 	}{
-		"Summary":      {want: ExpectDiff().WithSummary(1, 1, 1)},
-		"WrongSummary": {want: ExpectDiff().WithSummary(0, 1, 1), wantFail: true},
-		"AllChanges": {want: ExpectDiff().
+		"Summary":      {want: Expect().WithSummary(1, 1, 1)},
+		"WrongSummary": {want: Expect().WithSummary(0, 1, 1), wantFail: true},
+		"AllChanges": {want: Expect().
 			WithModifiedResource("Bucket", "bucket-a", "default").
 			WithFieldChange("spec.region", "us-east-1", "us-west-2").
 			WithFieldChange("metadata.annotations['example.org/source']", "old", "new").
@@ -138,10 +138,10 @@ func TestAssertStructuredDiff(t *testing.T) {
 			WithRemovedResource("Secret", "gone", "default").
 			WithField("type", "Opaque")},
 		// Any resource expectation pins the change count, so an unlisted change fails.
-		"UnlistedChange": {want: ExpectDiff().
+		"UnlistedChange": {want: Expect().
 			WithModifiedResource("Bucket", "bucket-a", "default").And().
 			WithAddedResource("ConfigMap", "cm-x7k2p", "default"), wantFail: true},
-		"WrongAction": {want: ExpectDiff().WithAddedResource("Bucket", "bucket-a", "default"), wantFail: true},
+		"WrongAction": {want: Expect().WithAddedResource("Bucket", "bucket-a", "default"), wantFail: true},
 		"WrongNewValue": {
 			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.region", "us-east-1", "eu-west-1"),
 			wantFail: true,
@@ -170,13 +170,13 @@ func TestAssertStructuredDiff(t *testing.T) {
 		},
 		"FieldAbsent":       {want: withoutConfigMap().WithAddedResource("ConfigMap", "cm-x7k2p", "default").WithFieldAbsent("spec.other")},
 		"FieldNotAbsent":    {want: withoutConfigMap().WithAddedResource("ConfigMap", "cm-x7k2p", "default").WithFieldAbsent("data.key"), wantFail: true},
-		"Error":             {want: ExpectDiff().WithError("XBucket/broken-xr").WithMessageContaining("cannot get")},
-		"WrongErrorMessage": {want: ExpectDiff().WithError("XBucket/broken-xr").WithMessageContaining("timeout"), wantFail: true},
-		"MissingError":      {want: ExpectDiff().WithError("XBucket/changed-xr"), wantFail: true},
-		"Warning":           {want: ExpectDiff().WithWarning("advisory").WithWarningContext(map[string]string{"composition": "c"})},
-		"WrongContext":      {want: ExpectDiff().WithWarning("advisory").WithWarningContext(map[string]string{"composition": "d"}), wantFail: true},
-		"NoWarnings":        {want: ExpectDiff().WithNoWarnings(), wantFail: true},
-		"GroupedByXR": {want: ExpectDiff().
+		"Error":             {want: Expect().WithError("XBucket/broken-xr").WithMessageContaining("cannot get")},
+		"WrongErrorMessage": {want: Expect().WithError("XBucket/broken-xr").WithMessageContaining("timeout"), wantFail: true},
+		"MissingError":      {want: Expect().WithError("XBucket/changed-xr"), wantFail: true},
+		"Warning":           {want: Expect().WithWarning("advisory").WithWarningContext(map[string]string{"composition": "c"})},
+		"WrongContext":      {want: Expect().WithWarning("advisory").WithWarningContext(map[string]string{"composition": "d"}), wantFail: true},
+		"NoWarnings":        {want: Expect().WithNoWarnings(), wantFail: true},
+		"GroupedByXR": {want: Expect().
 			WithXRs(
 				XR("XBucket", "changed-xr", "default").
 					Status("changed").
@@ -189,7 +189,7 @@ func TestAssertStructuredDiff(t *testing.T) {
 				XR("XBucket", "broken-xr", "default").Status("error").Err("XBucket/broken-xr"),
 			).
 			Build()},
-		"GroupedWrongStatus": {want: ExpectDiff().
+		"GroupedWrongStatus": {want: Expect().
 			WithXRs(
 				XR("XBucket", "changed-xr", "default").Status("unchanged"),
 				XR("XBucket", "unchanged-xr", "default"),
@@ -197,14 +197,14 @@ func TestAssertStructuredDiff(t *testing.T) {
 			).
 			Build(), wantFail: true},
 		// Two expectations cannot both consume the same entry.
-		"GroupedDuplicate": {want: ExpectDiff().
+		"GroupedDuplicate": {want: Expect().
 			WithXRs(
 				XR("XBucket", "changed-xr", "default"),
 				XR("XBucket", "changed-xr", "default"),
 				XR("XBucket", "broken-xr", "default"),
 			).
 			Build(), wantFail: true},
-		"GroupedErrorOnWrongXR": {want: ExpectDiff().
+		"GroupedErrorOnWrongXR": {want: Expect().
 			WithXRs(
 				XR("XBucket", "changed-xr", "default").Err("XBucket/broken-xr"),
 				XR("XBucket", "unchanged-xr", "default"),
@@ -214,7 +214,7 @@ func TestAssertStructuredDiff(t *testing.T) {
 	}
 
 	for name, tc := range cases {
-		checkAssertion(t, name, tc.wantFail, func(t *testing.T) { t.Helper(); AssertStructuredDiff(t, out, tc.want) })
+		checkAssertion(t, name, tc.wantFail, func(t *testing.T) { t.Helper(); AssertStructured(t, out, tc.want) })
 	}
 }
 
@@ -260,19 +260,19 @@ func compResult() plan.Result {
 	}
 }
 
-func TestAssertStructuredCompDiff(t *testing.T) {
+func TestAssertStructuredCompositionPlan(t *testing.T) {
 	out := resultJSON(t, compResult())
 
-	downstream := func() *DownstreamResourceExpectation {
-		return ExpectCompDiff().WithComposition("comp-a").WithXRImpact("XNop", "xr-1", "default", "changed").
+	downstream := func() *ResourceExpectation {
+		return Expect().WithComposition("comp-a").WithXRImpact("XNop", "xr-1", "default", "changed").
 			WithDownstreamResource("modified", "XDownstream", "xr-1-abc12", "default")
 	}
 
 	cases := map[string]struct {
-		want     CompDiffExpectation
+		want     Expectation
 		wantFail bool
 	}{
-		"Composition": {want: ExpectCompDiff().
+		"Composition": {want: Expect().
 			WithComposition("comp-a").
 			WithAffectedResources(3, 1, 1, 0).
 			WithFilteredByDeletion(1).
@@ -292,8 +292,8 @@ func TestAssertStructuredCompDiff(t *testing.T) {
 			WithXRImpact("XNop", "xr-3", "default", "filtered").
 			WithFilterReason(string(dt.FilterReasonDeleting))},
 		// Counts are per composition: comp-b's errored composite is not comp-a's.
-		"CountsArePerComposition": {want: ExpectCompDiff().WithComposition("comp-a").WithAffectedResources(4, 1, 1, 1), wantFail: true},
-		"OtherComposition": {want: ExpectCompDiff().
+		"CountsArePerComposition": {want: Expect().WithComposition("comp-a").WithAffectedResources(4, 1, 1, 1), wantFail: true},
+		"OtherComposition": {want: Expect().
 			WithErrorID("Composition/comp-b").
 			WithComposition("comp-b").
 			WithCompositionErrorContaining("cannot convert").
@@ -302,14 +302,14 @@ func TestAssertStructuredCompDiff(t *testing.T) {
 			WithXRImpact("XNop", "xr-1", "default", "error").
 			WithErrorContaining("maximum nesting depth").
 			WithErrorResourceID("XNop/xr-1")},
-		"MissingComposition":  {want: ExpectCompDiff().WithComposition("comp-c"), wantFail: true},
-		"WrongRevisionScope":  {want: ExpectCompDiff().WithComposition("comp-a").WithRevisionImpact("metadata", true, 2), wantFail: true},
-		"PredictedNameAbsent": {want: ExpectCompDiff().WithComposition("comp-a").WithoutPredictedRevisionName(), wantFail: true},
-		"NoRevisionImpact":    {want: ExpectCompDiff().WithComposition("comp-b").WithRevisionImpact("none", false, 0), wantFail: true},
-		"NotSkipped":          {want: ExpectCompDiff().WithComposition("comp-a").WithImpactAnalysisSkipped(), wantFail: true},
-		"WrongXRStatus":       {want: ExpectCompDiff().WithComposition("comp-a").WithXRImpact("XNop", "xr-2", "default", "changed"), wantFail: true},
+		"MissingComposition":  {want: Expect().WithComposition("comp-c"), wantFail: true},
+		"WrongRevisionScope":  {want: Expect().WithComposition("comp-a").WithRevisionImpact("metadata", true, 2), wantFail: true},
+		"PredictedNameAbsent": {want: Expect().WithComposition("comp-a").WithoutPredictedRevisionName(), wantFail: true},
+		"NoRevisionImpact":    {want: Expect().WithComposition("comp-b").WithRevisionImpact("none", false, 0), wantFail: true},
+		"NotSkipped":          {want: Expect().WithComposition("comp-a").WithImpactAnalysisSkipped(), wantFail: true},
+		"WrongXRStatus":       {want: Expect().WithComposition("comp-a").WithXRImpact("XNop", "xr-2", "default", "changed"), wantFail: true},
 		"WrongFilterReason": {
-			want: ExpectCompDiff().WithComposition("comp-a").WithXRImpact("XNop", "xr-3", "default", "filtered").
+			want: Expect().WithComposition("comp-a").WithXRImpact("XNop", "xr-3", "default", "filtered").
 				WithFilterReason(string(dt.FilterReasonManualPolicy)),
 			wantFail: true,
 		},
@@ -321,14 +321,14 @@ func TestAssertStructuredCompDiff(t *testing.T) {
 		"AbsentInChanges":      {want: downstream().WithFieldAbsent("spec.forProvider.configData"), wantFail: true},
 		"AbsentInAfter":        {want: downstream().WithFieldAbsent("spec.forProvider.afterOnly"), wantFail: true},
 		"ErrorOnOtherXR": {
-			want:     ExpectCompDiff().WithComposition("comp-a").WithXRImpact("XNop", "xr-2", "default", "unchanged").WithErrorResourceID("XNop/xr-1"),
+			want:     Expect().WithComposition("comp-a").WithXRImpact("XNop", "xr-2", "default", "unchanged").WithErrorResourceID("XNop/xr-1"),
 			wantFail: true,
 		},
-		"MissingTopLevelError": {want: ExpectCompDiff().WithErrorID("Composition/comp-a"), wantFail: true},
+		"MissingTopLevelError": {want: Expect().WithErrorID("Composition/comp-a"), wantFail: true},
 	}
 
 	for name, tc := range cases {
-		checkAssertion(t, name, tc.wantFail, func(t *testing.T) { t.Helper(); AssertStructuredCompDiff(t, out, tc.want) })
+		checkAssertion(t, name, tc.wantFail, func(t *testing.T) { t.Helper(); AssertStructured(t, out, tc.want) })
 	}
 }
 

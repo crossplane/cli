@@ -160,9 +160,14 @@ func FromCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan) p
 
 // compositeResult maps an affected composite's impact onto its status. A
 // Manual-policy composite is deferred: applying changes nothing for it until
-// its revision advances. Other filtered composites are skipped.
+// its revision advances, unless it was rendered against its pinned revision
+// because that calls a changed function. Other filtered composites are skipped.
 func compositeResult(impact dt.XRImpact) plan.CompositeResult {
 	c := plan.CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned}
+
+	if impact.Pinned && impact.RenderedRevision != "" {
+		c.Detail = "rendered against pinned revision " + impact.RenderedRevision + " with the project's functions"
+	}
 
 	switch impact.Status {
 	case dt.XRStatusChanged:

@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -328,6 +329,118 @@ func integrationEnvGap() string {
 // TestSimulateNameRejected runs the --name scopes simulate refuses: one
 // naming a composite no supplied Composition reaches, and a namespace/name
 // combined with --namespace.
+// TestSimulatePinnedChangedFunction runs a Composition simulate whose Manual
+// XR is pinned to a revision. Marking a function that revision calls as changed
+// renders the XR against that revision; any other function leaves it deferred.
+// The Hooks seam stands in for project mode's digest detection.
+func TestSimulatePinnedChangedFunction(t *testing.T) {
+	t.Parallel()
+
+	tu.SetupKubeTestLogger(t)
+
+	tt := IntegrationTestCase{
+		setupFiles: []string{
+			"testdata/comp/resources/xrd.yaml",
+			"testdata/comp/resources/revision-templating-composition.yaml",
+			"testdata/comp/resources/revision-templating-composition-revision.yaml",
+			"testdata/comp/resources/revision-templating-composition-older-revision.yaml",
+			"testdata/comp/resources/functions.yaml",
+		},
+		crossplaneManagedResources: []HierarchicalOwnershipRelation{
+			composes(
+				"testdata/comp/resources/existing-xr-pinned-revision-ref.yaml",
+				"testdata/comp/resources/existing-downstream-pinned-revision-ref-stale.yaml",
+			),
+		},
+	}
+	const rev = "xrevisionrefs.diff.example.org-0d65896"
+
+	cases := map[string]struct {
+		reason  string
+		changed []string
+		// wantDeferred is whether the XR stays deferred; otherwise it is
+		// rendered against its pinned revision.
+		wantDeferred bool
+	}{
+		"PinnedXRWithChangedFunctionRendersPinnedRevision": {
+			reason:  "A Manual XR whose pinned revision calls a changed function is rendered against that revision, not deferred.",
+			changed: []string{"function-go-templating"},
+		},
+		"PinnedXRWithUnchangedFunctionDeferred": {
+			reason:       "A Manual XR whose pinned revision calls no changed function stays deferred.",
+			changed:      []string{"function-extra-resources"},
+			wantDeferred: true,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if reason := integrationEnvGap(); reason != "" {
+				t.Skip(reason)
+			}
+
+			cfg := startIntegrationCluster(t, CompositionDiffTest, tt, defaultTimeout).cfg
+			base := []string{"project", "simulate", "--timeout=" + defaultTimeout.String(), "-f", "testdata/comp/revision-templating-updated-composition.yaml", "-n", "default"}
+
+			var stdout, stderr bytes.Buffer
+			code, err := runSimulateArgvHooked(t, cfg, append(slices.Clip(base), "-o", "json"), tc.changed, &stdout, &stderr)
+			if err != nil {
+				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
+			}
+			var res plan.Result
+			if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+				t.Fatalf("\n%s\nsimulate -o json: output is not a plan.Result: %v\n%s", tc.reason, err, stdout.String())
+			}
+			if len(res.Composites) != 1 {
+				t.Fatalf("\n%s\nsimulate -o json: want 1 composite, got %+v", tc.reason, res.Composites)
+			}
+			c := res.Composites[0]
+
+			if tc.wantDeferred {
+				if c.Status != plan.CompositeDeferred || strings.HasPrefix(c.Detail, "rendered against") {
+					t.Errorf("\n%s\nsimulate -o json: want a deferred pinned composite, got %+v", tc.reason, c)
+				}
+				return
+			}
+
+			if code != dp.ExitCodeDiffDetected {
+				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, dp.ExitCodeDiffDetected, code)
+			}
+			if c.Status != plan.CompositeChanged || !c.Pinned || c.Detail != "rendered against pinned revision "+rev+" with the project's functions" {
+				t.Errorf("\n%s\nsimulate -o json: want a changed pinned composite rendered against %s, got %+v", tc.reason, rev, c)
+			}
+			// The plan is rendered from the pinned revision's pipeline: its
+			// configData is the pinned revision's name, which the current
+			// composition's predicted revision name would not be.
+			var found bool
+			for _, p := range res.Plans {
+				for _, ch := range p.Changes {
+					if ch.Path == "spec.forProvider.configData" && ch.Planned != nil && ch.Planned.Value == rev {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Errorf("\n%s\nsimulate -o json: want a configData change to %q, got plans %+v", tc.reason, rev, res.Plans)
+			}
+
+			var text bytes.Buffer
+			if _, err := runSimulateArgvHooked(t, cfg, base, tc.changed, &text, &stderr); err != nil {
+				t.Fatalf("simulate -o plan: unexpected error: %v", err)
+			}
+			if os.Getenv("SIMULATE_DEMO") != "" {
+				j, _ := json.MarshalIndent(c, "", "  ")
+				t.Logf("-o plan:\n%s\n-o json composite:\n%s", text.String(), j)
+			}
+			if !strings.Contains(text.String(), "rendered against pinned revision "+rev) || strings.Contains(text.String(), "(deferred)") {
+				t.Errorf("\n%s\nsimulate -o plan: want the rendered-against note and no deferral, got:\n%s", tc.reason, text.String())
+			}
+		})
+	}
+}
+
 func TestSimulateNameRejected(t *testing.T) {
 	t.Parallel()
 

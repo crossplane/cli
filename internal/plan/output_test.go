@@ -276,6 +276,24 @@ Plan: 0 to add, 1 to change, 1 to destroy.
 	}
 }
 
+func TestRenderPlanCompositeDetail(t *testing.T) {
+	xr := ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
+	r := Result{Composites: []CompositeResult{{Ref: xr, Status: CompositeUnchanged, Pinned: true, Detail: "rendered against pinned revision net-6 with the project's functions"}}}
+	want := `XR: XNetwork.example.org prod-network
+    rendered against pinned revision net-6 with the project's functions
+
+Plan: 0 to add, 0 to change, 0 to destroy.
+`
+	var buf bytes.Buffer
+	r2, _ := NewRenderer(FormatPlan)
+	if err := r2.Render(&buf, r); err != nil {
+		t.Fatalf("Render(plan): unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(want, buf.String()); diff != "" {
+		t.Errorf("Render(plan): -want, +got:\n%s", diff)
+	}
+}
+
 func TestRenderPlanCompositions(t *testing.T) {
 	comp := ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "net"}
 	same := ResourceRef{APIVersion: comp.APIVersion, Kind: comp.Kind, Name: "same"}

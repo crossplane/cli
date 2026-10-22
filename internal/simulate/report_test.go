@@ -391,6 +391,20 @@ func TestFromCompReport(t *testing.T) {
 				Notes:         notes(),
 			},
 		},
+		"PinnedRenderedRevision": {
+			reason: "A pinned XR rendered against its revision maps to its changed status, with a detail naming the revision, not deferred.",
+			in: composition(dt.CompositionDiff{
+				ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: dt.XRStatusChanged, Pinned: true, RenderedRevision: "net-6"}},
+			}),
+			want: plan.Result{
+				FormatVersion: plan.ResultFormatVersion,
+				Summary:       plan.Summary{NoOp: 1},
+				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeChanged, Composition: &compPlan, Pinned: true, Detail: "rendered against pinned revision net-6 with the project's functions"}},
+				Compositions:  []plan.CompositionResult{{Ref: compPlan}},
+				Plans:         []*plan.ResourcePlan{compNoOp},
+				Notes:         notes(),
+			},
+		},
 		"AnalysisSkippedMaskedOnly": {
 			reason: "A masked-only Composition is a no-op plan; a skipped analysis is flagged on its Compositions entry.",
 			in: composition(dt.CompositionDiff{

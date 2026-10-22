@@ -80,6 +80,17 @@ The `--timeout` flag, 2m by default, bounds the time to simulate one composite
 resource: its render and its resources' provider plans. Function and provider
 image pulls don't count.
 
+By default `simulate` also runs provider plans: it asks each provider's diff
+server to plan the managed resources, so the plan shows changes the cluster
+can't see. The diff servers come from `--providers` when set, otherwise from
+the project's provider dependencies in project mode, otherwise from the
+providers installed on the cluster that own the rendered resources, started on
+demand. A resource no diff server serves keeps its cluster-layer diff. In `json`
+and `yaml` output, `approximate: true` on a plan means it was computed
+client-side, without a provider diff, because the provider couldn't diff that
+resource. The result's `notes` say when provider plans were skipped or no diff
+server served the resources.
+
 Provider plans are controlled by these flags:
 
 - `--skip-plan` doesn't run provider diff servers and shows only the
@@ -112,9 +123,11 @@ The command exits with one of these statuses, so a CI pipeline can gate on
 the result:
 
 - 0: the simulation succeeded and found no changes.
-- 1: the simulation failed.
+- 1: the simulation failed. A provider plan that fails fails its whole
+  composite resource, which then reports no plans.
 - 2: only schema validation failed.
-- 3: the simulation succeeded and found changes.
+- 3: the simulation succeeded and found changes, including drift a provider
+  plan found that the cluster diff didn't.
 - 130: the simulation was interrupted.
 
 When more than one applies, the lowest of 1, 2 and 3 wins.

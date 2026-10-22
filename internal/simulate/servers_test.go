@@ -274,6 +274,18 @@ func TestServerSetEnsure(t *testing.T) {
 	}
 }
 
+func TestServerSetEnsureDevelopmentKeys(t *testing.T) {
+	s := NewServerSet(terminal.NewNopSpinnerPrinter(), logging.NewNopLogger(), &bytes.Buffer{}, &failingPkgs{}, "s")
+	// Development inputs have no image, so each is keyed by its own name.
+	_ = s.Ensure(context.Background(), []diffserver.Input{
+		{Runtime: diffserver.RuntimeDevelopment, Name: "a", DevelopmentTarget: "localhost:1", APIGroups: []string{"a.example.org"}},
+		{Runtime: diffserver.RuntimeDevelopment, Name: "b", DevelopmentTarget: "localhost:2", APIGroups: []string{"b.example.org"}},
+	})
+	if len(s.handled) != 2 {
+		t.Errorf("handled %d Development providers, want 2: %v", len(s.handled), s.handled)
+	}
+}
+
 func TestNewKubeClientConcurrent(_ *testing.T) {
 	var wg sync.WaitGroup
 	for range 16 {

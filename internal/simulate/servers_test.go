@@ -17,6 +17,9 @@ limitations under the License.
 package simulate
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -25,7 +28,11 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
+
 	"github.com/crossplane/cli/v2/internal/diffserver"
+	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
 func TestLoadProviderInputs(t *testing.T) {
@@ -225,5 +232,42 @@ func TestNeedsDocker(t *testing.T) {
 				t.Errorf("%s\nNeedsDocker(...): want %t, got %t", tc.reason, tc.want, got)
 			}
 		})
+	}
+}
+
+// failingPkgs fails every Get, so each image is skipped.
+type failingPkgs struct {
+	runtimexpkg.Client
+
+	gets int
+}
+
+func (f *failingPkgs) Get(context.Context, string, ...runtimexpkg.GetOption) (*runtimexpkg.Package, error) {
+	f.gets++
+	return nil, errors.New("boom")
+}
+
+func TestServerSetEnsure(t *testing.T) {
+	pkgs := &failingPkgs{}
+	var out bytes.Buffer
+	s := NewServerSet(terminal.NewNopSpinnerPrinter(), logging.NewNopLogger(), &out, pkgs, "s")
+
+	if err := s.Ensure(context.Background(), nil); err != nil || out.Len() != 0 || pkgs.gets != 0 {
+		t.Fatalf("empty Ensure: err=%v out=%q gets=%d", err, out.String(), pkgs.gets)
+	}
+	in := []diffserver.Input{{Image: "xpkg.example/p:v1"}}
+	for range 2 {
+		if err := s.Ensure(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if pkgs.gets != 1 {
+		t.Errorf("Get called %d times, want 1", pkgs.gets)
+	}
+	if got := strings.Count(out.String(), "Not running a diff server for xpkg.example/p:v1: "); got != 1 {
+		t.Errorf("skip message printed %d times, want 1: %q", got, out.String())
+	}
+	if s.Ran() {
+		t.Error("Ran() = true, want false")
 	}
 }

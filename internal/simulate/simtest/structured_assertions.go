@@ -826,7 +826,12 @@ func (c *CompositionExpectation) And() *Expected {
 // multi-composition expectation readable instead of ending each composition with a run of climbs
 // whose purpose is not obvious from reading them.
 func (r *ResourceExpectation) AndComposition(name string) *CompositionExpectation {
-	return r.expectation().WithComposition(name)
+	e := r.expectation()
+	if e == nil {
+		panic("AndComposition chained on an XR-scoped change; it has no root builder")
+	}
+
+	return e.WithComposition(name)
 }
 
 // AndComposition starts an expectation for another composition. See

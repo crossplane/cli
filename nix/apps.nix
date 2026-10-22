@@ -11,7 +11,8 @@
 #   ''${SOME_VAR}        -> ${SOME_VAR}             (shell variable, escaped)
 #
 # Each app declares its tool dependencies via runtimeInputs, with inheritPath
-# set to false. This ensures apps only use explicitly declared tools.
+# set to false. This ensures apps only use explicitly declared tools. The
+# exception is integration-test, which keeps the host PATH for Docker.
 { pkgs }:
 let
   # envtest binaries for the integration tests; null only on systems

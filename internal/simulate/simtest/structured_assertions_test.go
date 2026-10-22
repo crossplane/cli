@@ -458,6 +458,9 @@ func TestResourceExpectationParents(t *testing.T) {
 	for name, fn := range map[string]func(){
 		"AndXR on flat":    func() { flat.AndXR() },
 		"And on XR-scoped": func() { XR("X", "x", "ns").Change("added", "K", "n", "ns").And() },
+		"AndComposition on XR-scoped": func() {
+			XR("X", "x", "ns").Change("added", "K", "n", "ns").AndComposition("c")
+		},
 	} {
 		func() {
 			defer func() {

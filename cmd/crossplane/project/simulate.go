@@ -228,6 +228,10 @@ func (c *simulateCmd) Help() string {
 // during parsing, so an unsupported render backend fails before any build or
 // cluster connection.
 func (c *simulateCmd) Validate() error {
+	if c.Hooks != nil && c.Hooks.Router != nil && c.Hooks.Servers != nil {
+		return errors.New("hooks Router and Servers are mutually exclusive")
+	}
+
 	if c.MaxIterations < 1 {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
 	}
@@ -376,9 +380,6 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 	var ics []pkgv1beta1.ImageConfig
 	var router simulate.Router
 	var depMgr *dependency.Manager
-	if c.Hooks != nil && c.Hooks.Router != nil && c.Hooks.Servers != nil {
-		return nil, errors.New("hooks Router and Servers are mutually exclusive")
-	}
 	if c.Hooks != nil && c.Hooks.Router != nil {
 		router = c.Hooks.Router
 	} else {

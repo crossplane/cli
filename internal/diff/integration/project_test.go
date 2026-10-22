@@ -105,6 +105,30 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				AndComp().
 				WithXRImpact("XNopResource", "another-resource", "default", "changed"),
 		},
+		"EmbeddedFunctionOverlay": {
+			reason: "A Composition step naming a function embedded in the project runs the project's function, whose output no cluster function produces.",
+			setupFiles: []string{
+				"testdata/comp/resources/xrd.yaml",
+				"testdata/comp/resources/original-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-xr-1.yaml",
+					"testdata/comp/resources/existing-downstream-1.yaml",
+				),
+			},
+			project:          "embedded",
+			extraArgs:        []string{"-n", "default"},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			slow:             true,
+			expectedStructured: simtest.Expect().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithXRImpact("XNopResource", "test-resource", "default", "changed").
+				WithDownstreamResource("modified", "XDownstreamResource", "test-resource", "default").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "embedded-existing-value"),
+		},
 	}
 
 	for name, tc := range cases {
@@ -112,7 +136,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			t.Parallel()
 
 			if tc.slow && testing.Short() {
-				t.Skip("slow: pulls or builds against a registry")
+				t.Skip("slow: builds an embedded function image")
 			}
 
 			if reason := integrationEnvGap(); reason != "" {

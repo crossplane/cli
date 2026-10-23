@@ -86,7 +86,9 @@ repository, then simulate with a Provider manifest annotated with
 crossplane resource simulate -f resources.yaml --providers providers.yaml
 ```
 
-Emit machine-readable results for CI gating:
+Emit machine-readable results for CI gating. Each plan carries the live
+object as `before` (absent for a create) and the desired manifest as `after`,
+with Secret values redacted:
 
 ```shell
 crossplane resource simulate -f resources.yaml -o json

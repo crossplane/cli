@@ -85,7 +85,7 @@ func (e *localRenderEngine) Render(ctx context.Context, req *renderv1alpha1.Rend
 			}
 			return rsp, errors.Errorf("crossplane internal render: pipeline returned fatal: %s", stderr.String())
 		}
-		return nil, errors.Wrapf(err, "crossplane internal render returned error with output: %s", stderr.String())
+		return nil, classifyRenderError(errors.Wrapf(err, "crossplane internal render returned error with output: %s", stderr.String()), stderr.Bytes())
 	}
 
 	rsp := &renderv1alpha1.RenderResponse{}

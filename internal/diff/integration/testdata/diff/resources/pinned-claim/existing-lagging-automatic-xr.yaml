@@ -1,0 +1,16 @@
+# An Automatic XR, bound to no claim, whose compositionRevisionRef still names revision 1 although revision
+# 2 is the latest. Its composed resource, as revision 1 rendered it, is
+# existing-lagging-automatic-downstream.yaml. Crossplane re-points an Automatic composite at the latest
+# revision on its next reconcile, so the ref lags until then: say, when the composite is diffed straight
+# after its composition changed.
+apiVersion: pinned.diff.example.org/v1alpha1
+kind: XPinned
+metadata:
+  name: lagging-xr
+spec:
+  coolField: existing-value
+  compositionUpdatePolicy: Automatic
+  compositionRef:
+    name: xpinneds.pinned.diff.example.org
+  compositionRevisionRef:
+    name: xpinneds.pinned.diff.example.org-3d33597

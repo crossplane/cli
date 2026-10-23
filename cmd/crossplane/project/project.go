@@ -19,9 +19,10 @@ package project
 
 // Cmd contains project subcommands.
 type Cmd struct {
-	Init  initCmd  `cmd:"" help:"Initialize a new project."`
-	Build buildCmd `cmd:"" help:"Build a project into Crossplane packages."`
-	Push  pushCmd  `cmd:"" help:"Push a built project to an OCI registry."`
-	Run   runCmd   `cmd:"" help:"Build and run a project in a local dev control plane." novale:"Google.WordList[\"admin\"]"`
-	Stop  stopCmd  `cmd:"" help:"Tear down a local dev control plane."`
+	Init     initCmd     `cmd:"" help:"Initialize a new project."`
+	Build    buildCmd    `cmd:"" help:"Build a project into Crossplane packages."`
+	Push     pushCmd     `cmd:"" help:"Push a built project to an OCI registry."`
+	Run      runCmd      `cmd:"" help:"Build and run a project in a local dev control plane."                              novale:"Google.WordList[\"admin\"]"`
+	Simulate simulateCmd `cmd:"" help:"Preview how a project's Compositions would change a cluster's composite resources." maturity:"alpha"`
+	Stop     stopCmd     `cmd:"" help:"Tear down a local dev control plane."`
 }

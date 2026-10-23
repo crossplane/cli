@@ -1,0 +1,10 @@
+apiVersion: ns.nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  annotations:
+    crossplane.io/composition-resource-name: resource2
+  name: resource-to-be-removed
+  namespace: default
+spec:
+  forProvider:
+    configData: existing-value

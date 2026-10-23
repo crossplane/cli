@@ -1,0 +1,547 @@
+/*
+Copyright 2025 The Crossplane Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package diffprocessor
+
+import (
+	"context"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	gcmp "github.com/google/go-cmp/cmp"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+
+	"github.com/crossplane/cli/v2/cmd/crossplane/render"
+	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
+)
+
+func TestNewCachedFunctionProvider(t *testing.T) {
+	fnClient := tu.NewMockFunctionClient().Build()
+	logger := tu.TestLogger(t, false)
+
+	provider := NewCachedFunctionProvider(fnClient, logger)
+
+	if provider == nil {
+		t.Fatal("NewCachedFunctionProvider() returned nil")
+	}
+
+	cached, ok := provider.(*CachedFunctionProvider)
+	if !ok {
+		t.Fatalf("NewCachedFunctionProvider() returned wrong type: %T", provider)
+	}
+
+	if cached.cache == nil {
+		t.Error("NewCachedFunctionProvider() did not initialize cache")
+	}
+
+	if len(cached.cache) != 0 {
+		t.Errorf("NewCachedFunctionProvider() cache not empty, got %d entries", len(cached.cache))
+	}
+}
+
+func TestCachedFunctionProvider_GetFunctionsForComposition_LazyLoading(t *testing.T) {
+	functions := []pkgv1.Function{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "function-test"},
+			Spec: pkgv1.FunctionSpec{
+				PackageSpec: pkgv1.PackageSpec{
+					Package: "xpkg.io/crossplane/function-go-templating:v0.11.0",
+				},
+			},
+		},
+	}
+
+	fnClient := tu.NewMockFunctionClient().
+		WithSuccessfulFunctionsFetch(functions).
+		Build()
+
+	logger := tu.TestLogger(t, false)
+	provider := NewCachedFunctionProvider(fnClient, logger)
+
+	comp := &apiextensionsv1.Composition{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-composition"},
+	}
+
+	fns, err := provider.GetFunctionsForComposition(t.Context(), comp)
+	if err != nil {
+		t.Fatalf("GetFunctionsForComposition() error = %v", err)
+	}
+
+	if len(fns) != 1 {
+		t.Fatalf("GetFunctionsForComposition() returned %d functions, want 1", len(fns))
+	}
+
+	// The provider only caches: naming and cleaning up function containers is the render engine's job,
+	// so the functions come back exactly as the cluster returned them.
+	if diff := gcmp.Diff(functions, fns); diff != "" {
+		t.Errorf("GetFunctionsForComposition() -want, +got:\n%s", diff)
+	}
+}
+
+func TestCachedFunctionProvider_GetFunctionsForComposition_CacheHit(t *testing.T) {
+	functions := []pkgv1.Function{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "function-test"},
+			Spec: pkgv1.FunctionSpec{
+				PackageSpec: pkgv1.PackageSpec{
+					Package: "xpkg.io/test/function:v1.0.0",
+				},
+			},
+		},
+	}
+
+	fetchCount := 0
+	fnClient := tu.NewMockFunctionClient().
+		WithFunctionsFetchCallback(func() ([]pkgv1.Function, error) {
+			fetchCount++
+			return functions, nil
+		}).
+		Build()
+
+	logger := tu.TestLogger(t, false)
+	provider := NewCachedFunctionProvider(fnClient, logger)
+
+	comp := &apiextensionsv1.Composition{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-composition"},
+	}
+
+	// First call should fetch
+	fns1, err := provider.GetFunctionsForComposition(t.Context(), comp)
+	if err != nil {
+		t.Fatalf("First GetFunctionsForComposition() error = %v", err)
+	}
+
+	if fetchCount != 1 {
+		t.Errorf("First call: fetch count = %d, want 1", fetchCount)
+	}
+
+	// Second call should use cache
+	fns2, err := provider.GetFunctionsForComposition(t.Context(), comp)
+	if err != nil {
+		t.Fatalf("Second GetFunctionsForComposition() error = %v", err)
+	}
+
+	if fetchCount != 1 {
+		t.Errorf("Second call: fetch count = %d, want 1 (should use cache)", fetchCount)
+	}
+
+	// Verify both calls return the same data
+	if len(fns1) != len(fns2) {
+		t.Errorf("Cache returned different number of functions: first=%d, second=%d", len(fns1), len(fns2))
+	}
+
+	if fns1[0].Name != fns2[0].Name {
+		t.Errorf("Cache returned different function: first=%s, second=%s", fns1[0].Name, fns2[0].Name)
+	}
+}
+
+func TestCachedFunctionProvider_GetFunctionsForComposition_Error(t *testing.T) {
+	fnClient := tu.NewMockFunctionClient().
+		WithFailedFunctionsFetch("fetch error").
+		Build()
+
+	logger := tu.TestLogger(t, false)
+	provider := NewCachedFunctionProvider(fnClient, logger)
+
+	comp := &apiextensionsv1.Composition{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-composition"},
+	}
+
+	_, err := provider.GetFunctionsForComposition(t.Context(), comp)
+	if err == nil {
+		t.Fatal("GetFunctionsForComposition() expected error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "cannot get functions from pipeline") {
+		t.Errorf("GetFunctionsForComposition() error = %v, want error containing 'cannot get functions from pipeline'", err)
+	}
+}
+
+func TestCachedFunctionProvider_GetFunctionsForComposition_MultipleCompositions(t *testing.T) {
+	fetchCalls := make(map[string]int)
+
+	fnClient := tu.NewMockFunctionClient().
+		WithGetFunctionsFromPipeline(func(_ context.Context, comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
+			fetchCalls[comp.Name]++
+
+			if comp.Name == "composition-1" {
+				return []pkgv1.Function{
+					{
+						ObjectMeta: metav1.ObjectMeta{Name: "function-1"},
+						Spec: pkgv1.FunctionSpec{
+							PackageSpec: pkgv1.PackageSpec{
+								Package: "xpkg.io/test/function-one:v1.0.0",
+							},
+						},
+					},
+				}, nil
+			}
+
+			return []pkgv1.Function{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "function-2"},
+					Spec: pkgv1.FunctionSpec{
+						PackageSpec: pkgv1.PackageSpec{
+							Package: "xpkg.io/test/function-two:v2.0.0",
+						},
+					},
+				},
+			}, nil
+		}).
+		Build()
+
+	logger := tu.TestLogger(t, false)
+	provider := NewCachedFunctionProvider(fnClient, logger)
+
+	comp1 := &apiextensionsv1.Composition{
+		ObjectMeta: metav1.ObjectMeta{Name: "composition-1"},
+	}
+	comp2 := &apiextensionsv1.Composition{
+		ObjectMeta: metav1.ObjectMeta{Name: "composition-2"},
+	}
+
+	// Fetch for composition 1
+	fns1, err := provider.GetFunctionsForComposition(t.Context(), comp1)
+	if err != nil {
+		t.Fatalf("GetFunctionsForComposition(comp1) error = %v", err)
+	}
+
+	// Fetch for composition 2
+	fns2, err := provider.GetFunctionsForComposition(t.Context(), comp2)
+	if err != nil {
+		t.Fatalf("GetFunctionsForComposition(comp2) error = %v", err)
+	}
+
+	// Fetch comp1 again (should hit cache)
+	fns1Again, err := provider.GetFunctionsForComposition(t.Context(), comp1)
+	if err != nil {
+		t.Fatalf("GetFunctionsForComposition(comp1 again) error = %v", err)
+	}
+
+	// Verify each composition gets its own functions
+	if fns1[0].Name == fns2[0].Name {
+		t.Error("Different compositions should have different functions")
+	}
+
+	// Verify cache works for comp1 second call
+	if fns1[0].Name != fns1Again[0].Name {
+		t.Error("Cache miss for composition-1 second call")
+	}
+
+	// Verify we only fetched once per composition
+	if fetchCalls["composition-1"] != 1 {
+		t.Errorf("composition-1 fetched %d times, want 1", fetchCalls["composition-1"])
+	}
+
+	if fetchCalls["composition-2"] != 1 {
+		t.Errorf("composition-2 fetched %d times, want 1", fetchCalls["composition-2"])
+	}
+}
+
+func TestCachedFunctionProvider_GetFunctionsForComposition_SameNameDifferentPipelinesNotShared(t *testing.T) {
+	// A CompositionRevision and its Composition share a name but may differ in pipeline.
+	fnClient := tu.NewMockFunctionClient().
+		WithGetFunctionsFromPipeline(func(_ context.Context, comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
+			fns := make([]pkgv1.Function, 0, len(comp.Spec.Pipeline))
+			for _, step := range comp.Spec.Pipeline {
+				fns = append(fns, pkgv1.Function{ObjectMeta: metav1.ObjectMeta{Name: step.FunctionRef.Name}})
+			}
+
+			return fns, nil
+		}).
+		Build()
+
+	provider := NewCachedFunctionProvider(fnClient, tu.TestLogger(t, false))
+
+	withPipeline := func(fnNames ...string) *apiextensionsv1.Composition {
+		comp := &apiextensionsv1.Composition{ObjectMeta: metav1.ObjectMeta{Name: "shared-name"}}
+		for _, n := range fnNames {
+			comp.Spec.Pipeline = append(comp.Spec.Pipeline, apiextensionsv1.PipelineStep{
+				Step:        n,
+				FunctionRef: apiextensionsv1.FunctionReference{Name: n},
+			})
+		}
+
+		return comp
+	}
+
+	if _, err := provider.GetFunctionsForComposition(t.Context(), withPipeline("function-a")); err != nil {
+		t.Fatalf("GetFunctionsForComposition(function-a) error = %v", err)
+	}
+
+	got, err := provider.GetFunctionsForComposition(t.Context(), withPipeline("function-b"))
+	if err != nil {
+		t.Fatalf("GetFunctionsForComposition(function-b) error = %v", err)
+	}
+
+	if len(got) != 1 || got[0].Name != "function-b" {
+		t.Errorf("GetFunctionsForComposition(function-b) = %v, want the function-b pipeline's functions", got)
+	}
+}
+
+func TestReplaceRegistry(t *testing.T) {
+	tests := map[string]struct {
+		pkg         string
+		newRegistry string
+		want        string
+	}{
+		"StandardPackage": {
+			pkg:         "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0",
+			newRegistry: "registry.example.com",
+			want:        "registry.example.com/crossplane-contrib/function-go-templating:v0.11.0",
+		},
+		"DifferentRegistry": {
+			pkg:         "ghcr.io/crossplane/function-auto-ready:v1.2.3",
+			newRegistry: "registry.example.com",
+			want:        "registry.example.com/crossplane/function-auto-ready:v1.2.3",
+		},
+		"SHA256Digest": {
+			pkg:         "old.registry.io/org/func@sha256:abc123",
+			newRegistry: "new.registry.io",
+			want:        "new.registry.io/org/func@sha256:abc123",
+		},
+		"NoExplicitRegistry": {
+			// First segment lacks '.', ':' or "localhost", so it is treated as
+			// part of the path (per OCI rules), and newRegistry is prepended.
+			pkg:         "crossplane-contrib/function-auto-ready:v1.0.0",
+			newRegistry: "new.registry.io",
+			want:        "new.registry.io/crossplane-contrib/function-auto-ready:v1.0.0",
+		},
+		"NewRegistryWithTrailingSlash": {
+			pkg:         "xpkg.crossplane.io/foo/bar:v1",
+			newRegistry: "new.registry.io/",
+			want:        "new.registry.io/foo/bar:v1",
+		},
+		"LocalhostWithPort": {
+			pkg:         "localhost:5000/foo/bar:v1",
+			newRegistry: "new.registry.io",
+			want:        "new.registry.io/foo/bar:v1",
+		},
+		"NoSlash": {
+			pkg:         "bare-image:v1",
+			newRegistry: "new.registry.io",
+			want:        "new.registry.io/bare-image:v1",
+		},
+		"DeepPath": {
+			pkg:         "registry.io/a/b/c/func:v1",
+			newRegistry: "other.io",
+			want:        "other.io/a/b/c/func:v1",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := replaceRegistry(tt.pkg, tt.newRegistry)
+			if got != tt.want {
+				t.Errorf("replaceRegistry(%q, %q) = %q, want %q", tt.pkg, tt.newRegistry, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRegistryOverrideFunctionProvider(t *testing.T) {
+	functions := []pkgv1.Function{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "function-go-templating"},
+			Spec: pkgv1.FunctionSpec{
+				PackageSpec: pkgv1.PackageSpec{
+					Package: "original.registry.io/crossplane-contrib/function-go-templating:v0.11.0",
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "function-auto-ready"},
+			Spec: pkgv1.FunctionSpec{
+				PackageSpec: pkgv1.PackageSpec{
+					Package: "other.registry.io/crossplane-contrib/function-auto-ready:v1.0.0",
+				},
+			},
+		},
+	}
+
+	fnClient := tu.NewMockFunctionClient().
+		WithSuccessfulFunctionsFetch(functions).
+		Build()
+
+	logger := tu.TestLogger(t, false)
+	inner := NewCachedFunctionProvider(fnClient, logger)
+
+	provider := NewRegistryOverrideFunctionProvider(inner, "registry.example.com", logger)
+
+	comp := &apiextensionsv1.Composition{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-composition"},
+	}
+
+	fns, err := provider.GetFunctionsForComposition(t.Context(), comp)
+	if err != nil {
+		t.Fatalf("GetFunctionsForComposition() error = %v", err)
+	}
+
+	if len(fns) != 2 {
+		t.Fatalf("GetFunctionsForComposition() returned %d functions, want 2", len(fns))
+	}
+
+	if fns[0].Spec.Package != "registry.example.com/crossplane-contrib/function-go-templating:v0.11.0" {
+		t.Errorf("function[0].Spec.Package = %q, want overridden registry", fns[0].Spec.Package)
+	}
+
+	if fns[1].Spec.Package != "registry.example.com/crossplane-contrib/function-auto-ready:v1.0.0" {
+		t.Errorf("function[1].Spec.Package = %q, want overridden registry", fns[1].Spec.Package)
+	}
+}
+
+func TestUpsertEnvPair(t *testing.T) {
+	tests := []struct {
+		name string
+		cur  string
+		key  string
+		val  string
+		want string
+	}{
+		{name: "empty", cur: "", key: "A", val: "1", want: "A=1"},
+		{name: "append to other key", cur: "FOO=bar", key: "A", val: "1", want: "FOO=bar,A=1"},
+		{name: "replace same key", cur: "A=1", key: "A", val: "2", want: "A=2"},
+		{name: "replace same key among others", cur: "FOO=bar,A=1,BAZ=qux", key: "A", val: "2", want: "FOO=bar,A=2,BAZ=qux"},
+		{name: "ignores blank segments", cur: "FOO=bar,", key: "A", val: "1", want: "FOO=bar,A=1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := upsertEnvPair(tt.cur, tt.key, tt.val); got != tt.want {
+				t.Errorf("upsertEnvPair(%q, %q, %q) = %q, want %q", tt.cur, tt.key, tt.val, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEnvInjectingFunctionProvider verifies the decorator injects the env pair
+// into every function's runtime-docker-env annotation, appends to any existing
+// value, and is idempotent across repeated calls (which matters when the inner
+// provider caches and returns the same Function values).
+func TestEnvInjectingFunctionProvider(t *testing.T) {
+	newInner := func(anns map[string]string) FunctionProvider {
+		fn := pkgv1.Function{ObjectMeta: metav1.ObjectMeta{Name: "function-go-templating"}}
+		if anns != nil {
+			fn.Annotations = anns
+		}
+
+		fnClient := tu.NewMockFunctionClient().
+			WithSuccessfulFunctionsFetch([]pkgv1.Function{fn}).
+			Build()
+		// CachedFunctionProvider caches and returns the same values on repeat
+		// calls, so it exercises idempotency of the decorator.
+		return NewCachedFunctionProvider(fnClient, tu.TestLogger(t, false))
+	}
+
+	comp := &apiextensionsv1.Composition{ObjectMeta: metav1.ObjectMeta{Name: "test-composition"}}
+	envs := map[string]string{EnvMaxRecvMessageSize: "16"}
+
+	t.Run("injects when annotation absent", func(t *testing.T) {
+		p := NewEnvInjectingFunctionProvider(newInner(nil), envs, tu.TestLogger(t, false))
+
+		fns, err := p.GetFunctionsForComposition(t.Context(), comp)
+		if err != nil {
+			t.Fatalf("GetFunctionsForComposition() error = %v", err)
+		}
+
+		if got := fns[0].Annotations[render.AnnotationKeyRuntimeEnvironmentVariables]; got != EnvMaxRecvMessageSize+"=16" {
+			t.Errorf("annotation = %q, want %q", got, EnvMaxRecvMessageSize+"=16")
+		}
+	})
+
+	t.Run("appends to existing runtime-docker-env", func(t *testing.T) {
+		p := NewEnvInjectingFunctionProvider(newInner(map[string]string{render.AnnotationKeyRuntimeEnvironmentVariables: "FOO=bar"}), envs, tu.TestLogger(t, false))
+
+		fns, err := p.GetFunctionsForComposition(t.Context(), comp)
+		if err != nil {
+			t.Fatalf("GetFunctionsForComposition() error = %v", err)
+		}
+
+		if got := fns[0].Annotations[render.AnnotationKeyRuntimeEnvironmentVariables]; got != "FOO=bar,"+EnvMaxRecvMessageSize+"=16" {
+			t.Errorf("annotation = %q, want %q", got, "FOO=bar,"+EnvMaxRecvMessageSize+"=16")
+		}
+	})
+
+	t.Run("idempotent across repeated calls", func(t *testing.T) {
+		p := NewEnvInjectingFunctionProvider(newInner(nil), envs, tu.TestLogger(t, false))
+		if _, err := p.GetFunctionsForComposition(t.Context(), comp); err != nil {
+			t.Fatalf("first call error = %v", err)
+		}
+
+		fns, err := p.GetFunctionsForComposition(t.Context(), comp)
+		if err != nil {
+			t.Fatalf("second call error = %v", err)
+		}
+
+		if got := fns[0].Annotations[render.AnnotationKeyRuntimeEnvironmentVariables]; got != EnvMaxRecvMessageSize+"=16" {
+			t.Errorf("annotation after repeat = %q, want single pair %q", got, EnvMaxRecvMessageSize+"=16")
+		}
+	})
+}
+
+// TestCachedFunctionProvider_ConcurrentUse has concurrent callers ask for one composition's
+// functions and modify what they get, as the render engine does when it annotates functions it
+// starts. The composition is fetched once, and no caller's change reaches another's or the cache.
+// Run it with -race.
+func TestCachedFunctionProvider_ConcurrentUse(t *testing.T) {
+	functions := []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "function-test", Annotations: map[string]string{}}}}
+
+	var fetches atomic.Int32
+
+	fnClient := tu.NewMockFunctionClient().
+		WithFunctionsFetchCallback(func() ([]pkgv1.Function, error) {
+			fetches.Add(1)
+			return functions, nil
+		}).
+		Build()
+
+	provider := NewCachedFunctionProvider(fnClient, tu.TestLogger(t, false))
+	comp := &apiextensionsv1.Composition{ObjectMeta: metav1.ObjectMeta{Name: "test-composition"}}
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			fns, err := provider.GetFunctionsForComposition(t.Context(), comp)
+			if err != nil {
+				t.Errorf("GetFunctionsForComposition(): %v", err)
+				return
+			}
+
+			fns[0].Annotations["caller"] = strconv.Itoa(i)
+		})
+	}
+
+	wg.Wait()
+
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("fetches = %d, want 1", got)
+	}
+
+	fns, err := provider.GetFunctionsForComposition(t.Context(), comp)
+	if err != nil {
+		t.Fatalf("GetFunctionsForComposition(): %v", err)
+	}
+
+	if diff := gcmp.Diff(map[string]string{}, fns[0].Annotations); diff != "" {
+		t.Errorf("a caller's change reached the cache (-want +got):\n%s", diff)
+	}
+}

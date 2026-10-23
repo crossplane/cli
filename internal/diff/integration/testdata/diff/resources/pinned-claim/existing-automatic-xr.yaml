@@ -1,0 +1,15 @@
+# The backing XR of existing-automatic.yaml, tracking revision 2, the latest.
+apiVersion: pinned.diff.example.org/v1alpha1
+kind: XPinned
+metadata:
+  name: automatic-claim-a1b2c
+spec:
+  coolField: existing-value
+  compositionUpdatePolicy: Automatic
+  compositionRef:
+    name: xpinneds.pinned.diff.example.org
+  claimRef:
+    apiVersion: pinned.diff.example.org/v1alpha1
+    kind: Pinned
+    name: automatic-claim
+    namespace: existing-namespace

@@ -1,0 +1,756 @@
+package diffprocessor
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/uuid"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	cpd "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composed"
+	cmp "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
+	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
+	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
+)
+
+// ResourceManager handles resource-related operations like fetching, updating owner refs,
+// and identifying resources to be removed.
+type ResourceManager interface {
+	// FetchCurrentObject retrieves the current state of an object from the cluster
+	FetchCurrentObject(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured) (*un.Unstructured, bool, error)
+
+	// UpdateOwnerRefs ensures all OwnerReferences have valid UIDs
+	UpdateOwnerRefs(ctx context.Context, parent *un.Unstructured, child *un.Unstructured)
+
+	// FetchObservedResources fetches the observed composed resources for the given XR
+	FetchObservedResources(ctx context.Context, xr *cmp.Unstructured) ([]cpd.Unstructured, error)
+}
+
+// treeNodeNotFoundWarning is raised when a composed resource recorded on its XR no longer exists.
+const treeNodeNotFoundWarning = "A composed resource referenced by its XR was not found in the cluster (it may have been deleted out of band); it is omitted from the observed resources"
+
+// DefaultResourceManager implements ResourceManager interface.
+type DefaultResourceManager struct {
+	client     k8.ResourceClient
+	defClient  xp.DefinitionClient
+	treeClient xp.ResourceTreeClient
+	logger     logging.Logger
+	advisories dt.Advisories
+}
+
+// NewResourceManager creates a new DefaultResourceManager.
+func NewResourceManager(client k8.ResourceClient, defClient xp.DefinitionClient, treeClient xp.ResourceTreeClient, logger logging.Logger, advisories dt.Advisories) ResourceManager {
+	return &DefaultResourceManager{
+		client:     client,
+		defClient:  defClient,
+		treeClient: treeClient,
+		logger:     logger,
+		advisories: advisories,
+	}
+}
+
+// FetchCurrentObject retrieves the current state of the object from the cluster
+// It returns the current object, a boolean indicating if it's a new object, and any error.
+func (m *DefaultResourceManager) FetchCurrentObject(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured) (*un.Unstructured, bool, error) {
+	// Get the GroupVersionKind and name/namespace for lookup
+	gvk := desired.GroupVersionKind()
+	name := desired.GetName()
+	generateName := desired.GetGenerateName()
+	namespace := desired.GetNamespace()
+
+	// Create a resource ID for logging
+	resourceID := m.createResourceID(gvk, namespace, name, generateName)
+
+	m.logger.Debug("Fetching current object state",
+		"resource", resourceID,
+		"hasName", name != "",
+		"hasGenerateName", generateName != "")
+
+	// Try direct lookup by name if available
+	if name != "" {
+		current, err := m.client.GetResource(ctx, gvk, namespace, name)
+		if err == nil && current != nil {
+			m.logger.Debug("Found resource by direct lookup",
+				"resource", resourceID,
+				"resourceVersion", current.GetResourceVersion())
+
+			m.checkCompositeOwnership(ctx, current, composite)
+
+			return current, false, nil
+		}
+
+		// If it's not a NotFound error, propagate it
+		if err != nil && !apierrors.IsNotFound(err) {
+			m.logger.Debug("Error getting resource",
+				"resource", resourceID,
+				"error", err)
+
+			return nil, false, err
+		}
+	}
+
+	// If direct lookup failed, try looking up by labels and annotations
+	if composite != nil {
+		current, found, err := m.lookupByComposite(ctx, composite, desired)
+		if err != nil {
+			// For resources that primarily use generateName, errors in label-based lookup
+			// should result in a new resource rather than an error.
+			// This matches the original behavior.
+			if generateName != "" {
+				m.logger.Debug("Error during label-based lookup for resource with generateName (treating as new)",
+					"resource", resourceID,
+					"error", err)
+
+				return nil, true, nil
+			}
+
+			// For direct name lookups, propagate the error
+			m.logger.Debug("Error during label-based lookup",
+				"resource", resourceID,
+				"error", err)
+
+			return nil, false, err
+		}
+
+		if found {
+			return current, false, nil
+		}
+	}
+
+	// We didn't find a matching resource using any strategy
+	m.logger.Debug("No matching resource found", "resource", resourceID)
+
+	return nil, true, nil
+}
+
+// createResourceID generates a resource ID string for logging purposes.
+func (m *DefaultResourceManager) createResourceID(gvk schema.GroupVersionKind, namespace, name, generateName string) string {
+	// Handle case with a proper name
+	if name != "" {
+		if namespace != "" {
+			return fmt.Sprintf("%s/%s/%s", gvk.String(), namespace, name)
+		}
+
+		return fmt.Sprintf("%s/%s", gvk.String(), name)
+	}
+
+	// Handle case with generateName
+	if generateName != "" {
+		if namespace != "" {
+			return fmt.Sprintf("%s/%s/%s*", gvk.String(), namespace, generateName)
+		}
+
+		return fmt.Sprintf("%s/%s*", gvk.String(), generateName)
+	}
+
+	// Fallback case when neither name nor generateName is provided
+	return fmt.Sprintf("%s/<no-name>", gvk.String())
+}
+
+// checkCompositeOwnership logs a warning if the resource is owned by a different composite.
+func (m *DefaultResourceManager) checkCompositeOwnership(ctx context.Context, current *un.Unstructured, composite *un.Unstructured) {
+	if composite == nil {
+		return
+	}
+
+	owner, exists := current.GetLabels()[LabelComposite]
+	if !exists {
+		return
+	}
+
+	newOwner := m.compositeLabelValue(ctx, composite)
+	if owner == newOwner {
+		return
+	}
+
+	m.advisories.Raise(dt.OutputWarning{
+		// TODO:  should we fail by default here?  maybe require a --force flag to proceed?
+		Message: "Resource already belongs to another composite.  Applying this diff will assume ownership!",
+		Context: map[string]string{
+			"resource":     fmt.Sprintf("%s/%s", current.GetKind(), current.GetName()),
+			"namespace":    current.GetNamespace(),
+			"currentOwner": owner,
+			"newOwner":     newOwner,
+		},
+	})
+}
+
+// compositeLabelValue returns the crossplane.io/composite label Crossplane gives composite's composed
+// resources. For an XR that is its own name. A claim composes nothing itself: its composed resources
+// belong to its backing XR and carry that XR's name, never the claim's (#534). The backing XR is the
+// one the claim's spec.resourceRef names or, for a claim not yet bound to one, one named after the
+// claim, the same XR CompositeResolver resolves.
+func (m *DefaultResourceManager) compositeLabelValue(ctx context.Context, composite *un.Unstructured) string {
+	if !m.defClient.IsClaimResource(ctx, composite) {
+		return composite.GetName()
+	}
+
+	if ref, bound := resourceRef(composite); bound {
+		return ref.name
+	}
+
+	return composite.GetName()
+}
+
+// lookupByComposite attempts to find a resource by looking at composite ownership and composition resource name.
+func (m *DefaultResourceManager) lookupByComposite(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured) (*un.Unstructured, bool, error) {
+	// Derive parameters from the provided arguments
+	gvk := desired.GroupVersionKind()
+	namespace := desired.GetNamespace()
+	generateName := desired.GetGenerateName()
+	resourceID := m.createResourceID(gvk, namespace, desired.GetName(), generateName)
+
+	// Check if we have annotations
+	annotations := desired.GetAnnotations()
+	if annotations == nil {
+		m.logger.Debug("Resource has no annotations, creating new",
+			"resource", resourceID)
+
+		return nil, false, nil
+	}
+
+	// Extract the composition resource name from annotations
+	compResourceName := m.getCompositionResourceName(annotations)
+	if compResourceName == "" {
+		m.logger.Debug("Resource has no composition-resource-name, creating new",
+			"resource", resourceID)
+
+		return nil, false, nil
+	}
+
+	m.logger.Debug("Looking up resource by labels and annotations",
+		"resource", resourceID,
+		"compositeName", composite.GetName(),
+		"compositionResourceName", compResourceName,
+		"hasGenerateName", generateName != "")
+
+	// Only proceed if we have a composite name
+	if composite.GetName() == "" {
+		return nil, false, nil
+	}
+
+	// Determine the appropriate label selector based on whether the composite is a claim
+	var (
+		labelSelector metav1.LabelSelector
+		lookupName    string
+	)
+
+	isCompositeAClaim := m.defClient.IsClaimResource(ctx, composite)
+
+	// Check if the desired resource already has a crossplane.io/composite label
+	// If so, use that for lookup instead of the parent's name. This handles nested XRs
+	// where the composed resources should have the ROOT XR's name in their composite label,
+	// not the intermediate nested XR's name.
+	desiredCompositeLabel := desired.GetLabels()[LabelComposite]
+
+	switch {
+	case isCompositeAClaim:
+		// For claims, we need to find the XR that was created from this claim
+		// The downstream resources will have labels pointing to that XR
+		// We'll use the claim labels to find downstream resources
+		labelSelector = metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				LabelClaimName:      composite.GetName(),
+				LabelClaimNamespace: composite.GetNamespace(),
+			},
+		}
+		lookupName = composite.GetName()
+		m.logger.Debug("Using claim labels for resource lookup",
+			"claim", composite.GetName(),
+			"namespace", composite.GetNamespace())
+	case desiredCompositeLabel != "" && desiredCompositeLabel != composite.GetName():
+		// The desired resource has a different composite label than the parent
+		// (e.g., for nested XRs where we've fixed the label to point to root XR)
+		// Use the resource's own label value for lookup
+		labelSelector = metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				LabelComposite: desiredCompositeLabel,
+			},
+		}
+		lookupName = desiredCompositeLabel
+		m.logger.Debug("Using resource's own composite label for lookup",
+			"composite", desiredCompositeLabel,
+			"parentComposite", composite.GetName())
+	default:
+		// For XRs, use the composite label
+		labelSelector = metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				LabelComposite: composite.GetName(),
+			},
+		}
+		lookupName = composite.GetName()
+		m.logger.Debug("Using composite label for resource lookup",
+			"composite", composite.GetName())
+	}
+
+	// Look up resources with the appropriate label selector
+	resources, err := m.client.GetResourcesByLabel(ctx, gvk, namespace, labelSelector)
+	if err != nil {
+		return nil, false, errors.Wrapf(err, "cannot list resources for %s %s",
+			map[bool]string{true: "claim", false: "composite"}[isCompositeAClaim], lookupName)
+	}
+
+	if len(resources) == 0 {
+		m.logger.Debug("No resources found with owner labels",
+			"lookupName", lookupName,
+			"isClaimLookup", isCompositeAClaim)
+
+		return nil, false, nil
+	}
+
+	m.logger.Debug("Found potential matches by label",
+		"resource", resourceID,
+		"matchCount", len(resources))
+
+	// Find a resource with matching composition-resource-name
+	return m.findMatchingResource(resources, compResourceName, generateName)
+}
+
+// getCompositionResourceName extracts the composition resource name from annotations.
+func (m *DefaultResourceManager) getCompositionResourceName(annotations map[string]string) string {
+	// First check standard annotation
+	if value, exists := annotations["crossplane.io/composition-resource-name"]; exists {
+		return value
+	}
+
+	// Then check function-specific variations
+	for key, value := range annotations {
+		if strings.HasSuffix(key, "/composition-resource-name") {
+			return value
+		}
+	}
+
+	return ""
+}
+
+// findMatchingResource looks through resources to find one matching the composition resource name.
+func (m *DefaultResourceManager) findMatchingResource(
+	resources []*un.Unstructured,
+	compResourceName string,
+	generateName string,
+) (*un.Unstructured, bool, error) {
+	for _, res := range resources {
+		resAnnotations := res.GetAnnotations()
+		if resAnnotations == nil {
+			continue
+		}
+
+		// Check if this resource has a matching composition resource name
+		if !m.hasMatchingResourceName(resAnnotations, compResourceName) {
+			continue
+		}
+
+		// TODO:  is this logic correct?  we should definitely match composition-resource-name, even if the generateName
+		// doesn't match.  maybe as a fallback if we don't have the annotation?
+
+		// If we have a generateName, verify the match has the right prefix
+		if generateName != "" {
+			resName := res.GetName()
+			if !strings.HasPrefix(resName, generateName) {
+				m.logger.Debug("Found resource with matching composition name but wrong generateName prefix",
+					"expectedPrefix", generateName,
+					"actualName", resName)
+
+				continue
+			}
+		}
+
+		// We found a match!
+		m.logger.Debug("Found resource by label and annotation",
+			"resource", res.GetName(),
+			"compositionResourceName", compResourceName)
+
+		return res, true, nil
+	}
+
+	m.logger.Debug("No matching resource found with composition resource name",
+		"compositionResourceName", compResourceName)
+
+	return nil, false, nil
+}
+
+// hasMatchingResourceName checks if annotations have a matching composition-resource-name.
+func (m *DefaultResourceManager) hasMatchingResourceName(annotations map[string]string, compResourceName string) bool {
+	// Check standard annotation
+	if value, exists := annotations["crossplane.io/composition-resource-name"]; exists && value == compResourceName {
+		return true
+	}
+
+	// Check function-specific variations
+	for key, value := range annotations {
+		if strings.HasSuffix(key, "/composition-resource-name") && value == compResourceName {
+			return true
+		}
+	}
+
+	return false
+}
+
+// UpdateOwnerRefs ensures all OwnerReferences have valid UIDs.
+// It handles Claims and XRs differently according to Crossplane's ownership model:
+// - Claims should never be controller owners of composed resources.
+// - XRs should be controller owners and use their UID for matching references.
+func (m *DefaultResourceManager) UpdateOwnerRefs(ctx context.Context, parent *un.Unstructured, child *un.Unstructured) {
+	// if there's no parent, we are the parent.
+	if parent == nil {
+		m.logger.Debug("No parent provided for owner references update")
+		return
+	}
+
+	// Check if the parent is a claim and dispatch to appropriate handler
+	isParentAClaim := m.defClient.IsClaimResource(ctx, parent)
+
+	switch {
+	case isParentAClaim:
+		m.updateOwnerRefsForClaim(parent, child)
+	default:
+		m.updateOwnerRefsForXR(parent, child)
+	}
+
+	// Update composite owner label (common for both Claims and XRs)
+	m.updateCompositeOwnerLabel(ctx, parent, child)
+}
+
+// updateOwnerRefsForClaim handles owner reference updates when the parent is a Claim.
+// Claims should not be controller owners of composed resources per Crossplane's model:
+// Claim -> owns -> XR -> owns -> Composed Resources.
+func (m *DefaultResourceManager) updateOwnerRefsForClaim(claim *un.Unstructured, child *un.Unstructured) {
+	m.logger.Debug("Processing owner references with claim parent",
+		"parentKind", claim.GetKind(),
+		"parentName", claim.GetName(),
+		"childKind", child.GetKind(),
+		"childName", child.GetName())
+
+	// Get the current owner references
+	refs := child.GetOwnerReferences()
+	updatedRefs := make([]metav1.OwnerReference, 0, len(refs))
+
+	for _, ref := range refs {
+		// Generate UIDs for any owner references that don't have them
+		// For Claims, we never use the Claim's UID even for matching refs
+		if ref.UID == "" {
+			ref.UID = uuid.NewUUID()
+			m.logger.Debug("Generated UID for owner reference",
+				"refKind", ref.Kind,
+				"refName", ref.Name,
+				"newUID", ref.UID)
+		}
+
+		// Ensure Claims are never controller owners
+		if ref.Kind == claim.GetKind() && ref.Name == claim.GetName() {
+			if ref.Controller != nil && *ref.Controller {
+				ref.Controller = new(false)
+				m.logger.Debug("Set Controller to false for claim owner reference",
+					"refKind", ref.Kind,
+					"refName", ref.Name)
+			}
+		}
+
+		updatedRefs = append(updatedRefs, ref)
+	}
+
+	child.SetOwnerReferences(updatedRefs)
+}
+
+// updateOwnerRefsForXR handles owner reference updates when the parent is an XR.
+// XRs should be controller owners of their composed resources and use their UID
+// for matching owner references.
+func (m *DefaultResourceManager) updateOwnerRefsForXR(xr *un.Unstructured, child *un.Unstructured) {
+	uid := xr.GetUID()
+	m.logger.Debug("Updating owner references",
+		"parentKind", xr.GetKind(),
+		"parentName", xr.GetName(),
+		"parentUID", uid,
+		"childKind", child.GetKind(),
+		"childName", child.GetName())
+
+	// Get the current owner references
+	refs := child.GetOwnerReferences()
+	m.logger.Debug("Current owner references", "count", len(refs))
+
+	// Create new slice to hold the updated references
+	updatedRefs := make([]metav1.OwnerReference, 0, len(refs))
+
+	// Set a valid UID for each reference
+	for _, ref := range refs {
+		originalUID := ref.UID
+
+		// If there is an owner ref on the dependent that matches the parent XR,
+		// overwrite its UID with the cluster UID (when known). The upstream
+		// render engine pre-fills a deterministic SHA1-derived UID, so the
+		// guard must match on name/apiVersion/kind alone and not on UID=="" —
+		// otherwise the synthetic UID survives alongside the real cluster UID
+		// and dry-run apply rejects the dual-controller ownerRefs.
+		if uid != "" &&
+			ref.Name == xr.GetName() &&
+			ref.APIVersion == xr.GetAPIVersion() &&
+			ref.Kind == xr.GetKind() {
+			ref.UID = uid
+			m.logger.Debug("Updated matching owner reference with parent UID",
+				"refName", ref.Name,
+				"oldUID", originalUID,
+				"newUID", ref.UID)
+		}
+
+		// For non-matching owner refs, generate a random UID
+		if ref.UID == "" {
+			ref.UID = uuid.NewUUID()
+			m.logger.Debug("Generated new random UID for owner reference",
+				"refName", ref.Name,
+				"oldUID", originalUID,
+				"newUID", ref.UID)
+		}
+
+		updatedRefs = append(updatedRefs, ref)
+	}
+
+	// Dedupe owner refs targeting the same parent. The upstream render
+	// engine can emit two controller refs to the same parent XR in nested
+	// scenarios — one with its SHA1-derived UID and one with the cluster
+	// UID. After the UID-overwrite loop above they carry the same UID, but
+	// their presence as two entries still fails the apiserver "single
+	// controller" validation. Collapse matches by (APIVersion, Kind, Name),
+	// keeping the first occurrence.
+	dedupedRefs := make([]metav1.OwnerReference, 0, len(updatedRefs))
+
+	seen := make(map[string]bool, len(updatedRefs))
+	for _, ref := range updatedRefs {
+		// OwnerReferences are namespace-scoped to the owning object's namespace,
+		// so MakeDiffKey's apiVersion/kind/namespace/name shape is overkill here
+		// — but reusing it keeps key construction consistent with the rest of
+		// the diff layer. Empty namespace is fine: dedup is per (kind, name).
+		key := dt.MakeDiffKey(ref.APIVersion, ref.Kind, "", ref.Name)
+		if seen[key] {
+			m.logger.Debug("Dropping duplicate owner reference",
+				"refKind", ref.Kind,
+				"refName", ref.Name,
+				"refUID", ref.UID)
+
+			continue
+		}
+
+		seen[key] = true
+
+		dedupedRefs = append(dedupedRefs, ref)
+	}
+
+	updatedRefs = dedupedRefs
+
+	// Update the object with the modified owner references
+	child.SetOwnerReferences(updatedRefs)
+
+	m.logger.Debug("Updated owner references and labels",
+		"newCount", len(updatedRefs))
+}
+
+// updateCompositeOwnerLabel updates the ownership labels on the child resource.
+// For Claims, it sets claim-name and claim-namespace labels.
+// For XRs, it sets the composite label.
+func (m *DefaultResourceManager) updateCompositeOwnerLabel(ctx context.Context, parent, child *un.Unstructured) {
+	if parent == nil {
+		return
+	}
+
+	// Get current labels or create a new map
+	labels := child.GetLabels()
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+
+	parentName := parent.GetName()
+	if parentName == "" && parent.GetGenerateName() != "" {
+		// For XRs with only generateName, use the generateName prefix
+		parentName = parent.GetGenerateName()
+	}
+
+	if parentName == "" {
+		return
+	}
+
+	// Check if the parent is a claim
+	isParentAClaim := m.defClient.IsClaimResource(ctx, parent)
+
+	switch {
+	case isParentAClaim:
+		// For claims, set claim-specific labels (all claims are namespaced)
+		labels[LabelClaimName] = parentName
+		labels[LabelClaimNamespace] = parent.GetNamespace()
+
+		// For claims, only set the composite label if it doesn't already exist
+		// If it exists, it likely points to a generated XR name which we should preserve
+		existingComposite, hasComposite := labels[LabelComposite]
+		if !hasComposite {
+			// No existing composite label, set it to the claim name
+			labels[LabelComposite] = parentName
+			m.logger.Debug("Set composite label for new claim resource",
+				"claimName", parentName,
+				"claimNamespace", parent.GetNamespace(),
+				"child", child.GetName())
+		} else {
+			// Preserve existing composite label (likely a generated XR name)
+			m.logger.Debug("Preserved existing composite label for claim resource",
+				"claimName", parentName,
+				"claimNamespace", parent.GetNamespace(),
+				"existingComposite", existingComposite,
+				"child", child.GetName())
+		}
+	default:
+		// For XRs, only set the composite label if it doesn't already exist
+		// If it exists, preserve it (e.g., for managed resources that already have correct ownership)
+		existingComposite, hasComposite := labels[LabelComposite]
+		if !hasComposite {
+			// No existing composite label, set it to the parent XR name
+			labels[LabelComposite] = parentName
+			m.logger.Debug("Set composite label for new XR resource",
+				"xrName", parentName,
+				"child", child.GetName())
+		} else {
+			// Preserve existing composite label
+			m.logger.Debug("Preserved existing composite label for XR resource",
+				"xrName", parentName,
+				"existingComposite", existingComposite,
+				"child", child.GetName())
+		}
+	}
+
+	child.SetLabels(labels)
+}
+
+// FetchObservedResources fetches the observed composed resources for the given XR.
+// Returns a flat slice of composed resources suitable for RenderInputs.ObservedResources.
+func (m *DefaultResourceManager) FetchObservedResources(ctx context.Context, xr *cmp.Unstructured) ([]cpd.Unstructured, error) {
+	m.logger.Debug("Fetching observed resources for XR",
+		"xr_kind", xr.GetKind(),
+		"xr_name", xr.GetName())
+
+	// Get the resource tree from the cluster
+	tree, err := m.treeClient.GetResourceTree(ctx, &xr.Unstructured)
+	if err != nil {
+		m.logger.Debug("Failed to get resource tree for XR",
+			"xr", xr.GetName(),
+			"error", err)
+
+		return nil, errors.Wrap(err, "cannot get resource tree")
+	}
+
+	// Extract composed resources from the tree, scoped to those this XR controls.
+	observed, err := m.extractComposedResourcesFromTree(tree, xr.GetUID())
+	if err != nil {
+		return nil, err
+	}
+
+	m.logger.Debug("Fetched observed composed resources",
+		"xr", xr.GetName(),
+		"count", len(observed))
+
+	return observed, nil
+}
+
+// extractComposedResourcesFromTree recursively extracts composed resources from a resource tree.
+// It returns a flat slice of composed resources, suitable for RenderInputs.ObservedResources.
+//
+// Only resources controlled by the XR being rendered are returned:
+//   - the resource must carry the crossplane.io/composition-resource-name annotation
+//     (this filters out the root XR and non-composed resources), AND
+//   - it must either have no controller owner reference, or have one whose UID matches
+//     xrUID (the UID of the XR this observed set is being assembled for).
+//
+// The second condition matters for nested XRs: the tree walk descends into a nested XR's
+// own children (grandchildren of the top XR), but those are controlled by the nested XR,
+// not the top XR. The crossplane render binary (>= v2.3.4) rejects observed resources whose
+// controller-ref UID does not match the XR being rendered ("has a controller ref but is not
+// controlled by the XR"), so each render level must only receive the resources it controls.
+// Nested XRs are rendered separately (with their own observed set) during recursive processing.
+//
+// The upstream tree client never fails as a whole: it records each node's fetch error on the node
+// and leaves that node's object holding only the GVK, name and namespace it was referenced by. Such
+// a node has no annotations, so without an explicit check it would be dropped exactly like a
+// resource that is legitimately not composed, and the diff would then report a resource that exists
+// as an addition. So every node's error is checked before the filters above:
+//   - NotFound on a descendant means the resource really is absent (deleted out of band since the
+//     XR recorded it). Omitting it is the correct observed state, so it is skipped with a warning.
+//   - Any other error (Forbidden, a timeout, a transport failure) means its state is unknown, so the
+//     whole extraction fails rather than return an observed set that is confidently wrong.
+//   - An error on the root fails the extraction whatever its type. The root is the XR handed to the
+//     tree client rather than one it fetched, so an error there means the tree as a whole is not
+//     usable, and skipping it would leave an empty observed set — the same silent wrong answer.
+func (m *DefaultResourceManager) extractComposedResourcesFromTree(tree *resource.Resource, xrUID k8stypes.UID) ([]cpd.Unstructured, error) {
+	if tree.Error != nil {
+		return nil, errors.Wrapf(tree.Error, "cannot load XR %s into its resource tree", m.treeNodeID(tree))
+	}
+
+	var resources []cpd.Unstructured
+
+	// Recursively collect composed resources from the tree
+	var collectResources func(node *resource.Resource) error
+
+	collectResources = func(node *resource.Resource) error {
+		if node.Error != nil {
+			if !apierrors.IsNotFound(node.Error) {
+				return errors.Wrapf(node.Error, "cannot fetch composed resource %s from the cluster", m.treeNodeID(node))
+			}
+
+			// The context deliberately omits the XR: a nested XR's grandchild is walked once for the top
+			// XR and again for the nested XR, and identical advisories collapse into one.
+			m.advisories.Raise(dt.OutputWarning{
+				Message: treeNodeNotFoundWarning,
+				Context: map[string]string{
+					"resource":  fmt.Sprintf("%s/%s", node.Unstructured.GetKind(), node.Unstructured.GetName()),
+					"namespace": node.Unstructured.GetNamespace(),
+				},
+			})
+
+			// A node that could not be fetched has no children to walk.
+			return nil
+		}
+
+		// Only include resources that have the composition-resource-name annotation
+		// (this filters out the root XR and non-composed resources)
+		if _, hasAnno := node.Unstructured.GetAnnotations()["crossplane.io/composition-resource-name"]; hasAnno {
+			// Only include resources controlled by this XR (or uncontrolled). A resource
+			// controlled by a *different* owner (e.g. a nested XR's own composed resource)
+			// is not part of this XR's observed set and would be rejected by the render
+			// binary's controller-ref validation.
+			if c := metav1.GetControllerOf(&node.Unstructured); c == nil || xrUID == "" || c.UID == xrUID {
+				resources = append(resources, cpd.Unstructured{
+					Unstructured: node.Unstructured,
+				})
+			}
+		}
+
+		// Recursively process children
+		for _, child := range node.Children {
+			if err := collectResources(child); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+
+	// Start from root's children to avoid including the XR itself
+	for _, child := range tree.Children {
+		if err := collectResources(child); err != nil {
+			return nil, err
+		}
+	}
+
+	return resources, nil
+}
+
+// treeNodeID identifies a resource-tree node in an error. Upstream keeps the GVK, name and namespace
+// on a node even when fetching it failed, so this is meaningful for exactly the nodes that need it.
+func (m *DefaultResourceManager) treeNodeID(node *resource.Resource) string {
+	u := &node.Unstructured
+	return m.createResourceID(u.GroupVersionKind(), u.GetNamespace(), u.GetName(), "")
+}

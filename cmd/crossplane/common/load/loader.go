@@ -259,6 +259,16 @@ type CompositeLoader struct {
 // Sources can be files, directories, or "-" for stdin.
 // If sources is empty, stdin is used by default.
 func NewCompositeLoader(sources []string) (Loader, error) {
+	return newCompositeLoader(sources, NewLoader)
+}
+
+// NewExactCompositeLoader is NewCompositeLoader, except each source is exactly
+// one path or "-": commas are part of the path, not separators.
+func NewExactCompositeLoader(sources []string) (Loader, error) {
+	return newCompositeLoader(sources, newLoader)
+}
+
+func newCompositeLoader(sources []string, newSource func(string) (Loader, error)) (Loader, error) {
 	if len(sources) == 0 {
 		// In unit tests, this will cause an error when Load() is called
 		// which is the expected behavior for NoSources test case
@@ -280,7 +290,7 @@ func NewCompositeLoader(sources []string) (Loader, error) {
 			stdinUsed = true
 		}
 
-		loader, err := NewLoader(source)
+		loader, err := newSource(source)
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot create loader for %q", source)
 		}

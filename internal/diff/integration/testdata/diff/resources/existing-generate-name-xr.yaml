@@ -1,0 +1,13 @@
+# existing-xr.yaml as Crossplane leaves it once generated-name-composition.yaml has composed it, so it
+# tracks that composition's revision rather than composition.yaml's.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: test-resource
+  namespace: default
+spec:
+  coolField: "existing-value"
+  crossplane:
+    compositionRef:
+      name: xnopresources.diff.example.org
+    compositionUpdatePolicy: Automatic

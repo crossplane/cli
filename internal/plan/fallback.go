@@ -41,6 +41,7 @@ func Fallback(desired, live *unstructured.Unstructured, reason string) *Resource
 	p := NewResourcePlan(desired)
 	p.Approximate = true
 	p.FallbackReason = reason
+	p.Before, p.After = cleanView(live), cleanView(desired)
 
 	desiredSpec, _, _ := unstructured.NestedMap(desired.Object, "spec")
 
@@ -85,7 +86,7 @@ func newCursor(root string) cursor {
 }
 
 func (c cursor) field(k string) cursor {
-	next := cursor{str: c.str + "." + k, fp: c.fp, inList: c.inList}
+	next := cursor{str: JoinKey(c.str, k), fp: c.fp, inList: c.inList}
 	if !c.inList {
 		next.fp = append(slices.Clip(c.fp), fieldpath.PathElement{FieldName: &k})
 	}
@@ -101,6 +102,14 @@ func (c cursor) index(i int) cursor {
 // applier-owned fields do.
 func (c cursor) removable(owned *fieldpath.Set) bool {
 	return owned == nil || ownedLeaf(owned, c.fp)
+}
+
+// FieldChanges returns the changes that turn actual into planned, with paths
+// rooted at the top level (e.g. metadata.labels.team). A nil planned yields
+// actual-only changes, as for a delete; a nil actual yields planned-only
+// changes, as for a create.
+func FieldChanges(actual, planned map[string]any) []FieldChange {
+	return diffMaps(cursor{}, actual, planned, nil)
 }
 
 // createChanges flattens a desired map into planned-only field changes, so a

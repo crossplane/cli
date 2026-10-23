@@ -51,8 +51,6 @@ type projectTestCase struct {
 	expectedExitCode      int
 	expectedErrorContains string
 	expectedStructured    simtest.Expectation
-	// slow cases are skipped under testing.Short (registry pulls, builds).
-	slow bool
 	// servers, when set, replaces the diff server set and the run does not
 	// pass --skip-plan.
 	servers simulate.Servers
@@ -130,7 +128,6 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			project:          "providerdep",
 			extraArgs:        []string{"-n", "default"},
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			slow:             true,
 			servers: &recordingServers{wantImage: providerDigest, plans: fakeProviderRouter{fn: func(*diffv1alpha1.PlanRequest) (*diffv1alpha1.PlanResponse, error) {
 				return &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_UPDATE, Changes: []*diffv1alpha1.FieldChange{region}}, nil
 			}}},
@@ -158,7 +155,6 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			project:          "embedded",
 			extraArgs:        []string{"-n", "default"},
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			slow:             true,
 			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
@@ -171,10 +167,6 @@ func TestProjectSimulateIntegration(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-
-			if tc.slow && testing.Short() {
-				t.Skip("slow: pulls from a registry")
-			}
 
 			if reason := integrationEnvGap(); reason != "" {
 				t.Skip(reason)

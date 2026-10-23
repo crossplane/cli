@@ -130,7 +130,7 @@ The command exits with one of these statuses, so a CI pipeline can gate on
 the result:
 
 - 0: the simulation succeeded and found no changes.
-- 1: the simulation failed. A provider plan that fails fails its whole
+- 1: the simulation failed. If a provider plan fails, so does its whole
   composite resource, which then reports an error entry and none of its
   resources' plans.
 - 2: only schema validation failed.

@@ -130,13 +130,14 @@ The command exits with one of these statuses, so a CI pipeline can gate on
 the result:
 
 - 0: the simulation succeeded and found no changes.
-- 1: the simulation failed. If a provider plan fails, so does its whole
+- 1: the simulation failed, including when the -f inputs can't be read or
+  can't be simulated together. If a provider plan fails, so does its whole
   composite resource, which then reports an error entry and none of its
   resources' plans.
 - 2: only schema validation failed.
 - 3: the simulation succeeded and found changes, including drift a provider
   plan found that the cluster diff didn't.
-- 80: the flags or arguments were invalid, so nothing was simulated.
+- 80: the flags were invalid, so nothing was simulated.
 - 130: the simulation was interrupted.
 
 When more than one applies, the lowest of 1, 2 and 3 wins.

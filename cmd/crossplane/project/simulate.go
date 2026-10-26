@@ -83,6 +83,9 @@ type simulateCmd struct {
 	servers   simulate.Servers
 	// noServersNoted is set once the "no diff servers" line is printed.
 	noServersNoted bool
+	// Validate sets these from scope(), so --name is parsed once.
+	ns   string
+	refs []k8stypes.NamespacedName
 
 	Input          []string `default:"${project_file}"   help:"Project file (default), or changed Composition or composite resource files. Takes one path per flag; repeat it for more. - reads standard input." placeholder:"PATH" sep:"none" short:"f"`
 	MaxConcurrency uint     `default:"8"                 help:"Max concurrent function builds."`
@@ -241,9 +244,11 @@ func (c *simulateCmd) Validate() error {
 	}
 
 	// Bad --name/--namespace values fail here, before any build.
-	if _, _, err := c.scope(); err != nil {
+	ns, refs, err := c.scope()
+	if err != nil {
 		return err
 	}
+	c.ns, c.refs = ns, refs
 
 	if c.Timeout <= 0 {
 		return errors.Errorf("--timeout must be greater than 0, got %s", c.Timeout)
@@ -321,7 +326,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, ns, in, proj)
 		// Stop even on error: upfront Ensure may have started servers.
 		if c.servers != nil {
-			defer c.servers.Stop(context.WithoutCancel(sigCtx))
+			defer c.servers.Stop(sigCtx)
 		}
 		if err != nil {
 			return err
@@ -407,18 +412,27 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 
 	var ensure simulate.EnsureServers
 	if c.servers != nil {
+		// --providers, else the project's provider dependencies, start up
+		// front; otherwise servers start per composite resource.
 		var upfront []diffserver.Input
-		upfront, ensure, err = selectServers(c.Providers, in.mode == projectMode, simulate.LoadProviderInputs,
-			func() ([]string, error) { return project.LoadProviderDependencies(depMgr, proj) },
-			func() simulate.EnsureServers {
-				cache := simulate.NewImageCache()
-				return func(ctx context.Context, rs []*un.Unstructured) error {
-					imgs := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, rs, len(ics) > 0, cache, k.Stderr)
-					return c.servers.Ensure(ctx, diffserver.Images(imgs))
-				}
-			})
-		if err != nil {
-			return nil, err
+		switch {
+		case c.Providers != "":
+			upfront, err = simulate.LoadProviderInputs(c.Providers)
+			if err != nil {
+				return nil, errors.Wrapf(err, "cannot load provider manifests from %q", c.Providers)
+			}
+		case in.mode == projectMode:
+			images, err := project.LoadProviderDependencies(depMgr, proj)
+			if err != nil {
+				return nil, errors.Wrap(err, "cannot load the project's provider dependencies")
+			}
+			upfront = diffserver.Images(images)
+		default:
+			cache := simulate.NewImageCache()
+			ensure = func(ctx context.Context, rs []*un.Unstructured) error {
+				imgs := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, rs, len(ics) > 0, cache, k.Stderr)
+				return c.servers.Ensure(ctx, diffserver.Images(imgs))
+			}
 		}
 		if ensure == nil {
 			if err := c.servers.Ensure(sigCtx, upfront); err != nil {
@@ -430,29 +444,6 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 	keep := simulate.ProviderManaged(sigCtx, kubeClient, rmapper)
 	c.xrPlanner = simulate.NewXRPlanner(simulate.NewPlanner(kubeClient, rmapper, ns, router, c.Timeout), keep, ensure)
 	return []dp.ProcessorOption{dp.WithAfterXRDiff(c.xrPlanner.AfterXRDiff), dp.WithKeepEqualDiffs(keep)}, nil
-}
-
-// selectServers picks where the diff servers come from: --providers when
-// set, else the project's provider dependencies in project mode, both
-// returned as inputs to start up front with a nil ensure; otherwise the
-// ensure func from onDemand, which starts servers per composite resource.
-func selectServers(providers string, projectMode bool, loadInputs func(string) ([]diffserver.Input, error), loadDeps func() ([]string, error), onDemand func() simulate.EnsureServers) ([]diffserver.Input, simulate.EnsureServers, error) {
-	switch {
-	case providers != "":
-		inputs, err := loadInputs(providers)
-		if err != nil {
-			return nil, nil, errors.Wrapf(err, "cannot load provider manifests from %q", providers)
-		}
-		return inputs, nil, nil
-	case projectMode:
-		images, err := loadDeps()
-		if err != nil {
-			return nil, nil, errors.Wrap(err, "cannot load the project's provider dependencies")
-		}
-		return diffserver.Images(images), nil, nil
-	default:
-		return nil, onDemand(), nil
-	}
 }
 
 // noteNoServers prints once, when planning is on and no diff server ever
@@ -549,11 +540,7 @@ func (c *simulateCmd) diffCompositions(k *kong.Context, logger logging.Logger, p
 		msg = "cannot simulate project"
 	}
 	return func(ctx context.Context) (bool, error) {
-		ns, refs, err := c.scope()
-		if err != nil {
-			return false, errors.Wrap(err, msg)
-		}
-		output, err := proc.DiffComposition(ctx, comps, ns, refs)
+		output, err := proc.DiffComposition(ctx, comps, c.ns, c.refs)
 
 		// Render the report even when there are errors (e.g. every
 		// composition failed), so structured output stays valid. A render
@@ -825,7 +812,7 @@ func (c *simulateCmd) scope() (string, []k8stypes.NamespacedName, error) {
 		}
 		r, err := ref.Parse(v)
 		if err != nil {
-			return "", nil, errors.New(strings.ReplaceAll(err.Error(), "--resource", "--name"))
+			return "", nil, errors.Wrapf(err, "invalid --name %q", v)
 		}
 		refs = append(refs, r)
 	}

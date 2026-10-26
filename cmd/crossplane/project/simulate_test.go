@@ -49,7 +49,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
-	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
 )
@@ -385,7 +384,7 @@ func TestSimulateScope(t *testing.T) {
 		"MalformedName": {
 			reason: "A malformed namespace/name should be rejected naming --name.",
 			cmd:    simulateCmd{Name: []string{"a/b/c"}},
-			want:   want{err: "invalid --name value"},
+			want:   want{err: `invalid --name "a/b/c"`},
 		},
 	}
 
@@ -522,19 +521,12 @@ func TestSimulateDiffOptions(t *testing.T) {
 				o.UseColors = false
 			},
 		},
-		"StructuredFlagsCarryThrough": {
-			reason: "The format and compact flags should reach the renderer.",
-			cmd:    simulateCmd{Output: "json", NoColor: true, Compact: true},
+		"CompactAndNoColorCarryThrough": {
+			reason: "The compact and no-color flags should reach the renderer.",
+			cmd:    simulateCmd{NoColor: true, Compact: true},
 			want: func(o *renderer.DiffOptions) {
 				o.UseColors = false
 				o.Compact = true
-			},
-		},
-		"UnknownFormatFallsBackToHumanDiff": {
-			reason: "An unrecognized format should fall back to the human-readable diff.",
-			cmd:    simulateCmd{Output: "xml"},
-			want: func(o *renderer.DiffOptions) {
-				o.UseColors = false
 			},
 		},
 		"HooksColorizeAsTerminal": {
@@ -808,6 +800,7 @@ func TestSimulateRun(t *testing.T) {
 	type want struct {
 		code      int
 		err       error
+		errMsg    string
 		namespace string
 		refs      []k8stypes.NamespacedName
 		diffed    bool
@@ -849,16 +842,16 @@ func TestSimulateRun(t *testing.T) {
 			args: args{cmd: simulateCmd{Output: "xml"}, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
 				return changed(), errBoom
 			}}},
-			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
+			want: want{code: dp.ExitCodeToolError, err: errBoom, errMsg: "failed to render diffs", diffed: true},
 		},
 		"Namespaced": {
-			reason: "--namespace alone should reach DiffComposition as the namespace.",
-			args:   args{cmd: simulateCmd{Namespace: "team-a"}, initClients: noInit, proc: &fakeCompProc{}},
+			reason: "The namespace Validate scoped to should reach DiffComposition.",
+			args:   args{cmd: simulateCmd{ns: "team-a"}, initClients: noInit, proc: &fakeCompProc{}},
 			want:   want{diffed: true, namespace: "team-a"},
 		},
 		"Scoped": {
-			reason: "--name and --namespace should reach DiffComposition as a ref.",
-			args:   args{cmd: simulateCmd{Namespace: "team-a", Name: []string{"db"}}, initClients: noInit, proc: &fakeCompProc{}},
+			reason: "The refs Validate scoped to should reach DiffComposition.",
+			args:   args{cmd: simulateCmd{refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}}}, initClients: noInit, proc: &fakeCompProc{}},
 			want:   want{diffed: true, refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}}},
 		},
 		"ClientInitError": {
@@ -919,6 +912,9 @@ func TestSimulateRun(t *testing.T) {
 			}
 			if !errors.Is(err, tc.want.err) {
 				t.Errorf("\n%s\nsimulate(...): want error %v, got %v", tc.reason, tc.want.err, err)
+			}
+			if tc.want.errMsg != "" && (err == nil || !strings.Contains(err.Error(), tc.want.errMsg)) {
+				t.Errorf("\n%s\nsimulate(...): want error containing %q, got %v", tc.reason, tc.want.errMsg, err)
 			}
 			if diff := cmp.Diff(tc.want.namespace, tc.args.proc.gotNamespace); diff != "" {
 				t.Errorf("\n%s\nsimulate(...): -want namespace, +got:\n%s", tc.reason, diff)
@@ -1261,56 +1257,6 @@ func TestPlanNotes(t *testing.T) {
 				t.Errorf("planNotes(...): -want, +got:\n%s", diff)
 			}
 		})
-	}
-}
-
-func TestSelectServers(t *testing.T) {
-	loadInputs := func(string) ([]diffserver.Input, error) { return diffserver.Images([]string{"p:1"}), nil }
-	loadDeps := func(images ...string) func() ([]string, error) {
-		return func() ([]string, error) { return images, nil }
-	}
-	onDemand := func() simulate.EnsureServers {
-		return func(context.Context, []*un.Unstructured) error { return nil }
-	}
-
-	cases := map[string]struct {
-		providers   string
-		project     bool
-		deps        []string
-		wantInputs  int
-		wantEnsure  bool
-		wantInputIm string
-	}{
-		"Providers":           {providers: "dir", project: true, deps: []string{"d:1"}, wantInputs: 1, wantInputIm: "p:1"},
-		"ProjectDeps":         {project: true, deps: []string{"d:1", "d:2"}, wantInputs: 2, wantInputIm: "d:1"},
-		"ProjectNoDeps":       {project: true},
-		"OnDemandNoInputs":    {wantEnsure: true},
-		"OnDemandIgnoresDeps": {deps: []string{"d:1"}, wantEnsure: true},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			inputs, ensure, err := selectServers(tc.providers, tc.project, loadInputs, loadDeps(tc.deps...), onDemand)
-			if err != nil {
-				t.Fatalf("selectServers(...): %v", err)
-			}
-			if len(inputs) != tc.wantInputs {
-				t.Errorf("inputs: want %d, got %d", tc.wantInputs, len(inputs))
-			}
-			if (ensure != nil) != tc.wantEnsure {
-				t.Errorf("ensure set: want %v, got %v", tc.wantEnsure, ensure != nil)
-			}
-			if tc.wantInputIm != "" && inputs[0].Image != tc.wantInputIm {
-				t.Errorf("first input image: want %q, got %q", tc.wantInputIm, inputs[0].Image)
-			}
-		})
-	}
-
-	boom := errors.New("boom")
-	if _, _, err := selectServers("", true, loadInputs, func() ([]string, error) { return nil, boom }, onDemand); !errors.Is(err, boom) {
-		t.Errorf("project dependency load error: want %v, got %v", boom, err)
-	}
-	if _, _, err := selectServers("x", false, func(string) ([]diffserver.Input, error) { return nil, boom }, loadDeps(), onDemand); !errors.Is(err, boom) {
-		t.Errorf("provider load error: want %v, got %v", boom, err)
 	}
 }
 

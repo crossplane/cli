@@ -36,6 +36,7 @@ import (
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
 
 	xperrors "github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -527,7 +528,6 @@ func TestSimulateDiffOptions(t *testing.T) {
 			want: func(o *renderer.DiffOptions) {
 				o.UseColors = false
 				o.Compact = true
-				o.Format = renderer.OutputFormatJSON
 			},
 		},
 		"UnknownFormatFallsBackToHumanDiff": {
@@ -652,11 +652,11 @@ func TestSimulateRenderReports(t *testing.T) {
 				want   func(*testing.T, string)
 			}{
 				"xr": {func(k *kong.Context) error {
-					_, err := tc.cmd.renderXRReport(k, logging.NewNopLogger(), xrReport)
+					_, err := tc.cmd.renderXRReport(k, logging.NewNopLogger(), xrReport, nil)
 					return err
 				}, tc.wantXR},
 				"comp": {func(k *kong.Context) error {
-					_, err := tc.cmd.renderCompReport(k, logging.NewNopLogger(), compReport)
+					_, err := tc.cmd.renderCompReport(k, logging.NewNopLogger(), compReport, nil)
 					return err
 				}, tc.wantComp},
 			} {
@@ -666,6 +666,59 @@ func TestSimulateRenderReports(t *testing.T) {
 					t.Fatalf("\n%s\nrender %s report: %v", tc.reason, kind, err)
 				}
 				t.Run(kind, func(t *testing.T) { run.want(t, stdout.String()) })
+			}
+		})
+	}
+}
+
+func TestSimulateRESTConfigNamespace(t *testing.T) {
+	kubeconfig := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(kubeconfig, []byte(`apiVersion: v1
+kind: Config
+clusters:
+- name: c
+  cluster: {server: "https://127.0.0.1:6443"}
+users:
+- name: u
+contexts:
+- name: ctx
+  context: {cluster: c, user: u, namespace: team-a}
+- name: nons
+  context: {cluster: c, user: u}
+current-context: ctx
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KUBECONFIG", kubeconfig)
+
+	cases := map[string]struct {
+		reason string
+		cmd    simulateCmd
+		want   string
+	}{
+		"ContextNamespace": {
+			reason: "The kubeconfig context's namespace should be used for resources without one.",
+			want:   "team-a",
+		},
+		"NoContextNamespace": {
+			reason: "A context without a namespace should fall back to default.",
+			cmd:    simulateCmd{Context: "nons"},
+			want:   "default",
+		},
+		"Hooks": {
+			reason: "The test hooks' cluster should use default.",
+			cmd:    simulateCmd{Hooks: &SimulateHooks{RESTConfig: &rest.Config{}}},
+			want:   "default",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, ns, err := tc.cmd.restConfig()
+			if err != nil {
+				t.Fatalf("\n%s\nrestConfig(): %v", tc.reason, err)
+			}
+			if diff := cmp.Diff(tc.want, ns); diff != "" {
+				t.Errorf("\n%s\nrestConfig(): -want namespace, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}
@@ -790,6 +843,13 @@ func TestSimulateRun(t *testing.T) {
 				return changed(), dp.NewSchemaValidationError("XR/db", "invalid", errBoom)
 			}}},
 			want: want{code: dp.ExitCodeSchemaValidation, err: errBoom, diffed: true},
+		},
+		"RenderErrorKeepsDiffError": {
+			reason: "A render failure should be joined with the simulation's error, not replace it.",
+			args: args{cmd: simulateCmd{Output: "xml"}, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return changed(), errBoom
+			}}},
+			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
 		},
 		"Namespaced": {
 			reason: "--namespace alone should reach DiffComposition as the namespace.",

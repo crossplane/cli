@@ -287,7 +287,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 
 	// Load the kubeconfig before the slow function build, so a bad context
 	// fails fast.
-	restCfg, err := c.restConfig()
+	restCfg, ns, err := c.restConfig()
 	if err != nil {
 		return err
 	}
@@ -318,7 +318,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	// xrPlanner and servers are for rendering the plans; they stay nil with
 	// --skip-plan, and servers also when Hooks.Router supplies the router.
 	if !c.SkipPlan {
-		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, in, proj)
+		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, ns, in, proj)
 		// Stop even on error: upfront Ensure may have started servers.
 		if c.servers != nil {
 			defer c.servers.Stop(context.WithoutCancel(sigCtx))
@@ -348,14 +348,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 			// includes the errors in structured output.
 			changed := report != nil && report.HasChanges()
 			if report != nil {
-				rendered, renderErr := c.renderXRReport(k, logger, report)
-				if renderErr == nil {
-					changed = rendered
-				}
-				if renderErr != nil {
-					logger.Debug("Failed to render diffs", "error", renderErr)
-					err = withRenderError(err, errors.Wrap(renderErr, "failed to render diffs"))
-				}
+				changed, err = c.renderXRReport(k, logger, report, err)
 			}
 			return changed, errors.Wrap(err, "cannot simulate composite resources")
 		})
@@ -367,15 +360,13 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 
 // planOptions sets up provider diff servers and the XRPlanner, and returns
 // the processor options that plan each composite resource's composed
-// resources. Run stops c.servers when it is set.
-func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, in *inputs, proj *v1alpha1.Project) ([]dp.ProcessorOption, error) {
+// resources. Namespaced resources without a namespace plan in ns, the
+// kubeconfig's namespace. Run stops c.servers when it is set.
+func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, ns string, in *inputs, proj *v1alpha1.Project) ([]dp.ProcessorOption, error) {
 	kubeClient, rmapper, err := simulate.NewKubeClient(restCfg)
 	if err != nil {
 		return nil, err
 	}
-	// ponytail: the kubeconfig's namespace isn't plumbed through
-	// restConfig, so namespaced resources without one plan in "default".
-	const ns = "default"
 
 	var ics []pkgv1beta1.ImageConfig
 	var router simulate.Router
@@ -474,14 +465,24 @@ func (c *simulateCmd) noteNoServers(k *kong.Context) {
 	_, _ = fmt.Fprintln(k.Stderr, "No provider diff servers to run; showing the cluster-layer diff.")
 }
 
-// restConfig returns the cluster to simulate against: the hooks' when set,
-// otherwise the kubeconfig's.
-func (c *simulateCmd) restConfig() (*rest.Config, error) {
+// restConfig returns the cluster to simulate against and the namespace for
+// namespaced resources that set none: the hooks' cluster and "default" when
+// set, otherwise the kubeconfig's cluster and namespace. Unlike kubectl's
+// -n, simulate's -n filters composite resources, so it doesn't override this
+// namespace.
+func (c *simulateCmd) restConfig() (*rest.Config, string, error) {
 	if c.Hooks != nil && c.Hooks.RESTConfig != nil {
-		return c.Hooks.RESTConfig, nil
+		return c.Hooks.RESTConfig, "default", nil
 	}
-	cfg, _, err := kube.RESTConfig(c.Context, c.Impersonation)
-	return cfg, err
+	cfg, clientconfig, err := kube.RESTConfig(c.Context, c.Impersonation)
+	if err != nil {
+		return nil, "", err
+	}
+	ns, _, err := clientconfig.Namespace()
+	if err != nil {
+		return nil, "", errors.Wrap(err, "failed to get namespace from kubeconfig")
+	}
+	return cfg, ns, nil
 }
 
 // buildProject returns the project's compositions and its locally built
@@ -559,13 +560,7 @@ func (c *simulateCmd) diffCompositions(k *kong.Context, logger logging.Logger, p
 		// failure is joined with the processing error, so neither is lost.
 		changed := output != nil && output.HasChanges()
 		if output != nil {
-			rendered, renderErr := c.renderCompReport(k, logger, output)
-			if renderErr == nil {
-				changed = rendered
-			}
-			if renderErr != nil {
-				err = errors.Wrap(renderErr, "failed to render composition diff")
-			}
+			changed, err = c.renderCompReport(k, logger, output, err)
 		}
 		return changed, errors.Wrap(err, msg)
 	}
@@ -891,15 +886,6 @@ func (c *simulateCmd) diffOptions(k *kong.Context) renderer.DiffOptions {
 	opts.Compact = c.Compact
 	opts.Stdout = k.Stdout
 	opts.Stderr = k.Stderr
-
-	switch format := renderer.OutputFormat(c.Output); format {
-	case renderer.OutputFormatJSON, renderer.OutputFormatYAML, renderer.OutputFormatDiff:
-		opts.Format = format
-	default:
-		// Empty string or unrecognized values fall back to the human-readable diff.
-		opts.Format = renderer.OutputFormatDiff
-	}
-
 	return opts
 }
 
@@ -933,51 +919,58 @@ func (c *simulateCmd) notes() []string {
 }
 
 // renderXRReport writes an xr or project run's report in the format -o
-// selects: the engine's human diff for diff, and plan.Result otherwise. It
-// returns whether the run changed anything, provider plans included.
-func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport) (bool, error) {
-	c.noteNoServers(k)
-	opts := c.diffOptions(k)
+// selects, as renderReport does.
+func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport, runErr error) (bool, error) {
 	plans := c.providerPlans()
-	if plans != nil {
-		opts.Replaced = simulate.ReplacedBy(plans)
-	}
-	res := simulate.FromXRReport(r, plans)
-	if n := c.notes(); n != nil {
-		res.Notes = n
-	}
-	changed := r.HasChanges() || (plans != nil && simulate.Changed(res))
-	if c.Output == string(renderer.OutputFormatDiff) {
+	return c.renderReport(k, logger, runErr, simulate.FromXRReport(r, plans), r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
 		if plans != nil {
 			r = simulate.AnnotateXRReport(r, plans)
 		}
-		return changed, renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
-	}
-	return changed, c.renderPlan(k, res, dt.XRDryRunWarnings(r.Groups))
+		return renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
+	})
 }
 
 // renderCompReport writes a composition run's report in the format -o
-// selects, as renderXRReport does.
-func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput) (bool, error) {
+// selects, as renderReport does.
+func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput, runErr error) (bool, error) {
+	plans := c.providerPlans()
+	return c.renderReport(k, logger, runErr, simulate.FromCompReport(o, plans), o.HasChanges(), dt.CompDryRunWarnings(o), func(opts renderer.DiffOptions) error {
+		opts.MinimizeComposition = c.MinimizeComposition
+		if plans != nil {
+			o = simulate.AnnotateCompReport(o, plans)
+		}
+		return renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts).RenderCompDiff(o)
+	})
+}
+
+// renderReport writes a run's report in the format -o selects: renderDiff's
+// human diff for diff, and res otherwise, followed by warnings. It returns
+// whether the run changed anything, provider plans included, and runErr
+// with any render failure joined to it, so neither is lost. changed is
+// whether the report itself has changes.
+func (c *simulateCmd) renderReport(k *kong.Context, logger logging.Logger, runErr error, res plan.Result, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (bool, error) {
 	c.noteNoServers(k)
 	opts := c.diffOptions(k)
-	opts.MinimizeComposition = c.MinimizeComposition
 	plans := c.providerPlans()
 	if plans != nil {
 		opts.Replaced = simulate.ReplacedBy(plans)
 	}
-	res := simulate.FromCompReport(o, plans)
 	if n := c.notes(); n != nil {
 		res.Notes = n
 	}
-	changed := o.HasChanges() || (plans != nil && simulate.Changed(res))
+	changed = changed || (plans != nil && simulate.Changed(res))
+
+	var err error
 	if c.Output == string(renderer.OutputFormatDiff) {
-		if plans != nil {
-			o = simulate.AnnotateCompReport(o, plans)
-		}
-		return changed, renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts).RenderCompDiff(o)
+		err = renderDiff(opts)
+	} else {
+		err = c.renderPlan(k, res, warnings)
 	}
-	return changed, c.renderPlan(k, res, dt.CompDryRunWarnings(o))
+	if err != nil {
+		logger.Debug("Failed to render diffs", "error", err)
+		return changed, withRenderError(runErr, errors.Wrap(err, "failed to render diffs"))
+	}
+	return changed, runErr
 }
 
 // renderPlan writes res to stdout in the plan, json or yaml format, then

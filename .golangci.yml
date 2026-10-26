@@ -111,11 +111,6 @@ linters:
     # Deprecated and replaced by a new version, but still on by default.
     - gomodguard
   settings:
-    exhaustive:
-      # Only check switches marked //exhaustive:enforce, and don't let a
-      # default case satisfy them.
-      explicit-exhaustive-switch: true
-      default-signifies-exhaustive: false
     depguard:
       rules:
         no_third_party_test_libraries:

@@ -197,7 +197,6 @@ func compositeReason(r dt.FilterReason) plan.CompositeReason {
 		return ""
 	}
 
-	//exhaustive:enforce
 	switch r {
 	case dt.FilterReasonManualPolicy:
 		return plan.CompositeReasonManualPolicy

@@ -98,6 +98,7 @@ type Servers interface {
 	Router
 	Ensure(ctx context.Context, inputs []diffserver.Input) error
 	Ran() bool
+	// Stop must stop the servers even when ctx is already cancelled.
 	Stop(ctx context.Context)
 }
 

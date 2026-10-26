@@ -17,7 +17,6 @@ limitations under the License.
 package ref
 
 import (
-	"strings"
 	"testing"
 
 	k8stypes "k8s.io/apimachinery/pkg/types"
@@ -80,10 +79,6 @@ func TestParse(t *testing.T) {
 					t.Fatalf("expected error for input %q, got %+v", tt.input, got)
 				}
 
-				if !strings.Contains(err.Error(), tt.input) && tt.input != "" {
-					t.Errorf("error message %q should reference offending input %q", err.Error(), tt.input)
-				}
-
 				return
 			}
 
@@ -93,78 +88,6 @@ func TestParse(t *testing.T) {
 
 			if got != tt.want {
 				t.Errorf("Parse(%q) = %+v, want %+v", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestParseAll(t *testing.T) {
-	tests := map[string]struct {
-		input         []string
-		want          []k8stypes.NamespacedName
-		wantErr       bool
-		wantErrSubstr string
-	}{
-		"Empty_NilInput": {
-			input: nil,
-			want:  nil,
-		},
-		"Empty_EmptySlice": {
-			input: []string{},
-			want:  nil,
-		},
-		"AllValid": {
-			input: []string{"foo", "ns/bar", "default/baz"},
-			want: []k8stypes.NamespacedName{
-				{Name: "foo"},
-				{Namespace: "ns", Name: "bar"},
-				{Namespace: "default", Name: "baz"},
-			},
-		},
-		"FirstErrorStopsParsing": {
-			input:         []string{"good", "/bad", "would-be-good"},
-			wantErr:       true,
-			wantErrSubstr: "/bad",
-		},
-		"InvalidEntry": {
-			input:         []string{"a/b/c"},
-			wantErr:       true,
-			wantErrSubstr: "a/b/c",
-		},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			got, err := ParseAll(tt.input)
-
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got %+v", got)
-				}
-
-				if tt.wantErrSubstr != "" && !strings.Contains(err.Error(), tt.wantErrSubstr) {
-					t.Errorf("error %q should contain %q", err.Error(), tt.wantErrSubstr)
-				}
-
-				if got != nil {
-					t.Errorf("expected nil result on error, got %+v", got)
-				}
-
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if len(got) != len(tt.want) {
-				t.Fatalf("got %d refs, want %d (%+v vs %+v)", len(got), len(tt.want), got, tt.want)
-			}
-
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Errorf("ParseAll[%d] = %+v, want %+v", i, got[i], tt.want[i])
-				}
 			}
 		})
 	}

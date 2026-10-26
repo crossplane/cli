@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package ref handles parsing and formatting of [namespace/]name composite
-// references supplied via the `--resource` CLI flag. Parse and Format are
+// references supplied on the command line. Parse and Format are
 // inverses: Parse turns a user-typed string into a NamespacedName, Format
 // turns a NamespacedName back into the user's original spelling
 // (bare "name" for cluster-scoped, "namespace/name" for namespaced).
@@ -29,28 +29,6 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
 
-// ParseAll parses each value via Parse and returns the resulting slice.
-// Returns (nil, error) on the first parse failure — no partial results.
-// Returns (nil, nil) for an empty input.
-func ParseAll(values []string) ([]k8stypes.NamespacedName, error) {
-	if len(values) == 0 {
-		return nil, nil
-	}
-
-	out := make([]k8stypes.NamespacedName, 0, len(values))
-
-	for _, v := range values {
-		n, err := Parse(v)
-		if err != nil {
-			return nil, err
-		}
-
-		out = append(out, n)
-	}
-
-	return out, nil
-}
-
 // Parse parses a "[namespace/]name" CLI arg into a NamespacedName.
 // Bare "name" (no slash) means cluster-scoped (v1 XRs, v2 cluster-scoped XRs).
 // "ns/name" means namespaced (Claims, v2 namespaced XRs).
@@ -58,7 +36,7 @@ func ParseAll(values []string) ([]k8stypes.NamespacedName, error) {
 func Parse(value string) (k8stypes.NamespacedName, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return k8stypes.NamespacedName{}, errors.Errorf("invalid --resource value %q: cannot be empty", value)
+		return k8stypes.NamespacedName{}, errors.New("must not be empty")
 	}
 
 	parts := strings.Split(trimmed, "/")
@@ -76,16 +54,16 @@ func Parse(value string) (k8stypes.NamespacedName, error) {
 	case 2:
 		ns, name := parts[0], parts[1]
 		if ns == "" {
-			return k8stypes.NamespacedName{}, errors.Errorf("invalid --resource value %q: namespace must not be empty (use bare name for cluster-scoped composites)", value)
+			return k8stypes.NamespacedName{}, errors.New("namespace must not be empty (use bare name for cluster-scoped composites)")
 		}
 
 		if name == "" {
-			return k8stypes.NamespacedName{}, errors.Errorf("invalid --resource value %q: name must not be empty", value)
+			return k8stypes.NamespacedName{}, errors.New("name must not be empty")
 		}
 
 		return k8stypes.NamespacedName{Namespace: ns, Name: name}, nil
 	default:
-		return k8stypes.NamespacedName{}, errors.Errorf("invalid --resource value %q: expected [namespace/]name format, got %d slashes", value, len(parts)-1)
+		return k8stypes.NamespacedName{}, errors.Errorf("expected [namespace/]name format, got %d slashes", len(parts)-1)
 	}
 }
 

@@ -141,7 +141,7 @@ func TestNewLoader(t *testing.T) {
 			if diff := cmp.Diff(
 				tc.want.loader,
 				got,
-				cmpopts.IgnoreUnexported(FileLoader{}, FolderLoader{}, MultiLoader{}),
+				cmpopts.IgnoreUnexported(StdinLoader{}, FileLoader{}, FolderLoader{}, MultiLoader{}),
 			); diff != "" {
 				t.Errorf("%s\nLoad(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -508,7 +508,7 @@ spec:
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := streamToUnstructured(tc.args.stream)
+			got, err := streamToUnstructured(tc.args.stream, false)
 			if diff := cmp.Diff(tc.want.resources, got); diff != "" {
 				t.Errorf("%s\nstreamToUnstructured(...): -want, +got:\n%s", tc.reason, diff)
 			}

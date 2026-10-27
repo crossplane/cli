@@ -261,9 +261,8 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *p
 	// Exit as main does: a silent ExitError, such as changes found, exits
 	// with its code and prints nothing; any other error is printed the way
 	// FatalIfErrorf does and exits with its ExitCoder's code or 1.
-	var exit simulate.ExitError
-	if errors.As(err, &exit) && exit.Silent() {
-		return exit.Code, nil
+	if code, ok := simulate.SilentExit(err); ok {
+		return code, nil
 	}
 	if err != nil {
 		parser.Errorf("%s", err)

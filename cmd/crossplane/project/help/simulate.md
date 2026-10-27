@@ -42,11 +42,13 @@ instead.
 Some flags apply only to some inputs. `--namespace`, `--name`,
 `--include-pinned`, and `--analyze-on` choose which composite resources a
 Composition change reaches, so passing them with composite resource files is a
-usage error (exit 80) rather than a run that looks scoped but isn't. A flag that
+usage error (exit 80) rather than a run that looks scoped but isn't; no other flag combination
+exits 80. A flag that
 does nothing for the inputs prints a warning and the run continues:
 `--minimize-composition` with composite resource files, `--max-concurrency`
-(which configures the project's function builds) without a project file, and
-`--cache-dir` with `--skip-plan` and no project file.
+(which configures the project's function builds) without a project file,
+`--cache-dir` with `--skip-plan` and no project file, and `--providers` or
+`--session-id` with `--skip-plan`.
 
 The `-o` flag picks the output format:
 
@@ -101,8 +103,8 @@ server served the resources.
 Provider plans are controlled by these flags:
 
 - `--skip-plan` doesn't run provider diff servers and shows only the
-  cluster-layer diff. It can't be combined with `--providers` or
-  `--session-id`.
+  cluster-layer diff. `--providers` and `--session-id` do nothing with it, so
+  they print a warning and are ignored.
 - `--providers` takes a YAML file or directory of Provider manifests to run as
   diff servers, instead of discovering providers from the cluster. The manifests
   can carry per-provider runtime annotations.

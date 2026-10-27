@@ -70,7 +70,8 @@ started with `--session-id`, to runs on Windows, or to a different
 `DOCKER_HOST`.
 
 Provider packages are cached in `--cache-dir`, which defaults to
-`$CROSSPLANE_XPKG_CACHE` or the same directory the other commands use.
+`$CROSSPLANE_XPKG_CACHE` or the same xpkg cache directory as
+`project simulate` and `render`.
 
 The command exits with one of these statuses, so a CI pipeline can gate on
 the result:

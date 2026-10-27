@@ -18,13 +18,18 @@ package simulate
 
 import "errors"
 
-// ExitCodeChanges is the status a simulate command exits with when the
-// simulation succeeded and found changes.
-const ExitCodeChanges = 3
-
-// ExitCodeUsage is the status kong exits with for parse and Validate errors.
-// Commands return it for invalid flags they can only detect in Run.
-const ExitCodeUsage = 80
+// Exit statuses the simulate commands share.
+const (
+	// ExitCodeSchemaValidation means only schema validation failed.
+	ExitCodeSchemaValidation = 2
+	// ExitCodeChanges is the status a simulate command exits with when the
+	// simulation succeeded and found changes.
+	ExitCodeChanges = 3
+	// ExitCodeUsage is the status kong exits with for parse and Validate
+	// errors. Commands return it for invalid flags they can only detect in
+	// Run.
+	ExitCodeUsage = 80
+)
 
 // ExitError is an error that sets the command's exit status; it implements
 // kong.ExitCoder. With a nil Err it reports a result that is not an error,

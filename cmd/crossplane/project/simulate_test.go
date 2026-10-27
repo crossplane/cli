@@ -78,15 +78,7 @@ func parseSimulate(t *testing.T, args ...string) (*simulateCmd, error) {
 func TestSimulateFlags(t *testing.T) {
 	dir := t.TempDir()
 	creds := filepath.Join(dir, "creds.yaml")
-	noSecrets := filepath.Join(dir, "none.yaml")
 	if err := os.WriteFile(creds, []byte("apiVersion: v1\nkind: Secret\nmetadata:\n  name: creds\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	mixed := filepath.Join(dir, "mixed.yaml")
-	if err := os.WriteFile(mixed, []byte("apiVersion: v1\nkind: Secret\nmetadata:\n  name: creds\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\ndata:\n  key: plain text\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(noSecrets, []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -180,34 +172,9 @@ func TestSimulateFlags(t *testing.T) {
 				}},
 			},
 		},
-		"FunctionCredentialsMixedKinds": {
-			reason: "--function-credentials should load only the Secrets, ignoring other kinds without decoding them.",
-			args:   []string{"--function-credentials", mixed},
-			want: want{
-				cmd: &simulateCmd{
-					Input:               []string{"crossplane-project.yaml"},
-					MaxConcurrency:      8,
-					MaxIterations:       dp.DefaultMaxRenderIterations,
-					Timeout:             2 * time.Minute,
-					Output:              "plan",
-					MaxNestedDepth:      10,
-					DryRunOn:            "all",
-					FunctionCredentials: mixed,
-				},
-				secrets: []corev1.Secret{{
-					TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-					ObjectMeta: metav1.ObjectMeta{Name: "creds"},
-				}},
-			},
-		},
 		"FunctionCredentialsMissing": {
 			reason: "A missing credentials path should be rejected at parse time.",
 			args:   []string{"--function-credentials", filepath.Join(t.TempDir(), "nope.yaml")},
-			want:   want{err: true},
-		},
-		"FunctionCredentialsNoSecrets": {
-			reason: "A credentials file with no Secrets should be rejected.",
-			args:   []string{"--function-credentials", noSecrets},
 			want:   want{err: true},
 		},
 		"UnknownDryRunOn": {

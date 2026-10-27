@@ -32,10 +32,8 @@ import (
 	"github.com/spf13/afero"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/rest"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -163,35 +161,6 @@ func (c *simulateCmd) hookChangedFunctions() []string {
 	return c.hooks.ChangedFunctions
 }
 
-// loadFunctionCredentials loads the v1 Secrets in a YAML file, or in the
-// top-level YAML files of a directory. Documents of other kinds are ignored
-// without being decoded. A path with no Secrets is an error.
-func loadFunctionCredentials(path string) ([]corev1.Secret, error) {
-	stream, err := render.LoadYAMLStream(afero.NewOsFs(), path)
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot load function credentials from %q", path)
-	}
-	secrets := make([]corev1.Secret, 0, len(stream))
-	for _, y := range stream {
-		tm := metav1.TypeMeta{}
-		if err := k8syaml.Unmarshal(y, &tm); err != nil {
-			return nil, errors.Wrapf(err, "cannot parse function credentials in %q", path)
-		}
-		if tm.Kind != "Secret" || tm.APIVersion != "v1" {
-			continue
-		}
-		s := corev1.Secret{}
-		if err := k8syaml.Unmarshal(y, &s); err != nil {
-			return nil, errors.Wrapf(err, "cannot parse Secret in %q", path)
-		}
-		secrets = append(secrets, s)
-	}
-	if len(secrets) == 0 {
-		return nil, errors.Errorf("no Secret resources found in %q: it must contain v1/Secret resources", path)
-	}
-	return secrets, nil
-}
-
 func (c *simulateCmd) Help() string {
 	return simulateHelp
 }
@@ -216,9 +185,9 @@ func (c *simulateCmd) Validate() error {
 	c.ns, c.refs = ns, refs
 
 	if c.FunctionCredentials != "" {
-		secrets, err := loadFunctionCredentials(c.FunctionCredentials)
+		secrets, err := render.LoadCredentials(afero.NewOsFs(), c.FunctionCredentials)
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "cannot load function credentials from %q", c.FunctionCredentials)
 		}
 		c.functionCredentials = secrets
 	}

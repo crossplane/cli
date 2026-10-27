@@ -34,7 +34,6 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/load"
 	"github.com/crossplane/cli/v2/internal/dependency"
-	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/kube"
@@ -154,12 +153,16 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 	return exitStatus(plans)
 }
 
-// exitStatus returns a silent common.ExitError that exits 3 when a plan
-// would change anything, as project simulate does, and nil otherwise.
+// exitStatus ranks as project simulate does: an error, which exits 1, when
+// any plan errored; otherwise a silent common.ExitError that exits 3 when a
+// plan would change anything; otherwise nil.
 func exitStatus(plans []*plan.ResourcePlan) error {
 	s := plan.Summarize(plans)
+	if s.Errored > 0 {
+		return errors.Errorf("cannot plan %d of %d resources; see their errors in the output", s.Errored, len(plans))
+	}
 	if s.Create+s.Update+s.Destroy+s.Replace > 0 {
-		return common.ExitError{Code: dp.ExitCodeDiffDetected}
+		return common.ExitError{Code: common.ExitCodeChanges}
 	}
 	return nil
 }

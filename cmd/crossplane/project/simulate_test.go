@@ -294,9 +294,19 @@ func TestSimulateFlags(t *testing.T) {
 			}},
 		},
 		"SkipPlanWithProviders": {
-			reason: "--skip-plan conflicts with --providers.",
+			reason: "--providers does nothing with --skip-plan, so Run warns rather than Validate rejecting it.",
 			args:   []string{"--skip-plan", "--providers", dir},
-			want:   want{err: true},
+			want: want{cmd: &simulateCmd{
+				Input:          []string{"crossplane-project.yaml"},
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        2 * time.Minute,
+				Output:         "plan",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+				SkipPlan:       true,
+				Providers:      dir,
+			}},
 		},
 		"SkipPlanWithImageConfigs": {
 			reason: "--image-configs also rewrites function images, so it applies with --skip-plan.",
@@ -314,9 +324,19 @@ func TestSimulateFlags(t *testing.T) {
 			}},
 		},
 		"SkipPlanWithSessionID": {
-			reason: "--skip-plan conflicts with --session-id.",
+			reason: "--session-id does nothing with --skip-plan, so Run warns rather than Validate rejecting it.",
 			args:   []string{"--skip-plan", "--session-id", "s1"},
-			want:   want{err: true},
+			want: want{cmd: &simulateCmd{
+				Input:          []string{"crossplane-project.yaml"},
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        2 * time.Minute,
+				Output:         "plan",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+				SkipPlan:       true,
+				EngineFlags:    render.EngineFlags{SessionID: "s1"},
+			}},
 		},
 		"UnknownOutput": {
 			reason: "Output formats other than plan, diff, json and yaml should be rejected.",
@@ -1052,8 +1072,7 @@ func TestSimulateRun(t *testing.T) {
 				t.Errorf("\n%s\nsimulate(...): -want exit code, +got:\n%s", tc.reason, diff)
 			}
 			// Changes found return a silent ExitError, which main prints nothing for.
-			var exit common.ExitError
-			if tc.want.err == nil && err != nil && (!errors.As(err, &exit) || !exit.Silent()) {
+			if _, silent := common.SilentExit(err); tc.want.err == nil && err != nil && !silent {
 				t.Errorf("\n%s\nsimulate(...): want no error or a silent exit, got %v", tc.reason, err)
 			}
 			if tc.want.err != nil && !errors.Is(err, tc.want.err) {
@@ -1260,6 +1279,20 @@ func TestValidateModeFlags(t *testing.T) {
 			skipPlan: true,
 			warn:     "ignoring --cache-dir",
 		},
+		"ProjectWarnsProvidersSkipPlan": {
+			reason:   "--skip-plan runs no diff servers, so --providers is ignored with a warning in every mode.",
+			mode:     projectMode,
+			args:     []string{"--providers", "/p"},
+			skipPlan: true,
+			warn:     "ignoring --providers",
+		},
+		"XRWarnsSessionIDSkipPlan": {
+			reason:   "--skip-plan runs no diff servers, so --session-id is ignored with a warning.",
+			mode:     xrMode,
+			args:     []string{"--session-id", "s1"},
+			skipPlan: true,
+			warn:     "ignoring --session-id",
+		},
 		"XRWarnsMinimizeComposition": {
 			reason: "Composite resource files have no Composition to minimize, so --minimize-composition is ignored with a warning.",
 			mode:   xrMode,
@@ -1457,5 +1490,16 @@ func TestPipelineInputsMalformedStep(t *testing.T) {
 	got, err := pipelineInputs([]*un.Unstructured{c})
 	if err != nil || len(got) != 0 {
 		t.Errorf("pipelineInputs(...) = %v, %v; want no inputs and no error", got, err)
+	}
+}
+
+// TestExitCodesMatchEngine pins the CLI's exit statuses to the engine's, so
+// DetermineExitCode's ranking keeps meaning what the help says.
+func TestExitCodesMatchEngine(t *testing.T) {
+	if diff := cmp.Diff(dp.ExitCodeDiffDetected, common.ExitCodeChanges); diff != "" {
+		t.Errorf("common.ExitCodeChanges: -engine, +cli:\n%s", diff)
+	}
+	if diff := cmp.Diff(dp.ExitCodeSchemaValidation, common.ExitCodeSchemaValidation); diff != "" {
+		t.Errorf("common.ExitCodeSchemaValidation: -engine, +cli:\n%s", diff)
 	}
 }

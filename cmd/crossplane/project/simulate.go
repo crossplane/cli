@@ -84,7 +84,7 @@ type simulateCmd struct {
 	// EngineFlags select the crossplane render backend, as for render. Its
 	// SessionID labels the diff server containers; the render's containers
 	// are labelled with the run's own ID, which reclaims them.
-	render.EngineFlags `prefix:"" set:"session_id_help=Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID. Cannot be used with --skip-plan."`
+	render.EngineFlags `prefix:"" set:"session_id_help=Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID. Ignored with --skip-plan."`
 
 	// Run sets these; nil with --skip-plan (servers also when Hooks.Router is set).
 	xrPlanner *simulate.XRPlanner
@@ -226,14 +226,6 @@ func (c *simulateCmd) Validate() error {
 
 	if c.Timeout <= 0 {
 		return errors.Errorf("--timeout must be greater than 0, got %s", c.Timeout)
-	}
-
-	if c.SkipPlan {
-		for _, f := range []struct{ name, val string }{{"providers", c.Providers}, {"session-id", c.SessionID}} {
-			if f.val != "" {
-				return errors.Errorf("--%s cannot be used with --skip-plan", f.name)
-			}
-		}
 	}
 
 	// The render backend flags are mutually exclusive (kong xor), so at most
@@ -711,13 +703,19 @@ func pipelineInputs(resources []*un.Unstructured) (map[string]int, error) {
 
 // validateModeFlags checks the flags set on the command line against mode.
 // A flag that does nothing in mode prints a warning to stderr and the run
-// continues: functions come from the cluster unless -f names a project, so
-// --max-concurrency applies only to a project, and --cache-dir caches
-// nothing with --skip-plan and no project. A flag that would mislead is a
+// continues: --skip-plan runs no diff servers, so --providers and
+// --session-id do nothing with it; functions come from the cluster unless -f
+// names a project, so --max-concurrency applies only to a project; and
+// --cache-dir caches nothing with --skip-plan and no project. A flag that would mislead is a
 // usage error that exits 80: composite resource files name the composite
 // resources to simulate, so the flags that pick which ones a Composition
 // change reaches would look like they scope the run when they don't.
 func validateModeFlags(stderr io.Writer, mode inputMode, set map[string]bool, skipPlan bool) error {
+	for _, f := range []string{"providers", "session-id"} {
+		if skipPlan && set[f] {
+			_, _ = fmt.Fprintf(stderr, "Warning: ignoring --%s; --skip-plan runs no diff servers.\n", f)
+		}
+	}
 	if mode == projectMode {
 		return nil
 	}
@@ -761,9 +759,9 @@ type processor interface {
 
 // simulate initializes the clients and processor and runs diff. A run that
 // finds changes and fails nothing returns a silent common.ExitError that
-// exits 3; one that fails only schema validation returns one that exits 2. ctx must not be
-// cancelled by its owner until simulate returns, so a cancellation reads as
-// an interrupt.
+// exits 3; one that fails only schema validation returns one that exits 2.
+// ctx must not be cancelled by its owner until simulate returns, so a
+// cancellation reads as an interrupt.
 func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, initClients func(context.Context, logging.Logger) error, proc processor, diff func(context.Context) (bool, error)) (err error) {
 	// An interrupted run reports the interruption, not the cancelled calls it
 	// caused. main exits 130 for it.
@@ -786,12 +784,12 @@ func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, initC
 	// Exit codes rank as crossplane-diff's do: a tool error (1) over schema
 	// validation (2) over changes found (3) over success (0).
 	hasDiffs, err := diff(ctx)
-	switch code := dp.DetermineExitCode(err, hasDiffs); code {
+	switch dp.DetermineExitCode(err, hasDiffs) {
 	case dp.ExitCodeSchemaValidation:
-		return common.ExitError{Err: err, Code: code}
+		return common.ExitError{Err: err, Code: common.ExitCodeSchemaValidation}
 	case dp.ExitCodeDiffDetected:
 		// Changes found are a result, not an error, so nothing is printed.
-		return common.ExitError{Code: code}
+		return common.ExitError{Code: common.ExitCodeChanges}
 	}
 
 	return err

@@ -55,21 +55,19 @@ and carry `simulate.crossplane.io/managed-by` and session labels; any later
 run without the annotation cleans them up, or remove them with docker rm.
 
 Provider packages are cached in `--cache-dir`, which defaults to
-`$CROSSPLANE_XPKG_CACHE` or the same directory the other commands use.
+`$CROSSPLANE_XPKG_CACHE` or the same xpkg cache directory as
+`project simulate` and `render`.
 
 The command exits with one of these statuses, so a CI pipeline can gate on
 the result:
 
 - 0: the simulation found no changes.
-- 1: the simulation failed.
+- 1: the simulation failed, including when any resource couldn't be planned
+  (its error is in the output).
 - 3: the simulation found changes: a plan would create, update, destroy or
   replace a resource.
 - 80: the flags were invalid, so nothing was simulated.
 - 130: the simulation was interrupted.
-
-A resource that couldn't be planned still appears in the output with its
-error, and doesn't change the exit status on its own; check `errored` in
-`-o json` output.
 
 ## Examples
 

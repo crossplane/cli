@@ -17,12 +17,11 @@ limitations under the License.
 package simulate
 
 import (
-	"errors"
 	"testing"
 
-	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -43,20 +42,26 @@ func TestExitStatus(t *testing.T) {
 			want:   3,
 		},
 		"ErroredOnly": {
-			reason: "An errored plan isn't a change.",
+			reason: "A plan that errored should exit 1, as project simulate does.",
 			plans:  []*plan.ResourcePlan{{Action: plan.ActionUpdate, Error: "boom"}},
-			want:   0,
+			want:   1,
+		},
+		"ErroredWithChanges": {
+			reason: "An errored plan should exit 1, not 3, even when other plans have changes.",
+			plans:  []*plan.ResourcePlan{{Action: plan.ActionUpdate}, {Error: "boom"}},
+			want:   1,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			// Exit as main does: a silent ExitError with its code, any
+			// other error with 1.
 			got := 0
-			var ec kong.ExitCoder
-			if err := exitStatus(tc.plans); errors.As(err, &ec) {
-				if err.Error() != "" {
-					t.Errorf("\n%s\nexitStatus(...): want a silent error, got %q", tc.reason, err)
-				}
-				got = ec.ExitCode()
+			err := exitStatus(tc.plans)
+			if code, ok := common.SilentExit(err); ok {
+				got = code
+			} else if err != nil {
+				got = 1
 			}
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("\n%s\nexitStatus(...): -want exit code, +got:\n%s", tc.reason, diff)

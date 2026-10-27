@@ -181,8 +181,7 @@ func main() {
 	stop()
 	// A silent ExitError is a result, such as changes found, not an error,
 	// so it exits with its code and prints nothing.
-	var exit common.ExitError
-	silent := errors.As(err, &exit) && exit.Silent()
+	code, silent := common.SilentExit(err)
 	if interrupted {
 		// Exit with the conventional 128+SIGINT status.
 		if err != nil && !silent {
@@ -191,7 +190,7 @@ func main() {
 		os.Exit(130)
 	}
 	if silent {
-		os.Exit(exit.Code)
+		os.Exit(code)
 	}
 	// An error is printed and exits 1, or with its ExitCoder's code.
 	ctx.FatalIfErrorf(err)

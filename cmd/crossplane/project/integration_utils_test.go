@@ -985,8 +985,8 @@ func resourceRefsPath(xrdAPIVersion XrdAPIVersion) []string {
 }
 
 // localCrossplaneBinary returns the absolute path to a locally-built
-// `crossplane` binary at _output/bin/crossplane (relative to cmd/diff/) when
-// it exists, or "" when it doesn't. The binary, when present, contains the
+// `crossplane` binary at ../../../_output/bin/crossplane (relative to
+// cmd/crossplane/project, so the repo root's _output) when it exists, or "" when it doesn't. The binary, when present, contains the
 // `crossplane internal render` subcommand introduced by upstream PR #7339
 // and is exec'd directly for fast in-process rendering. When absent, callers
 // pass the empty string through to the diff command, which falls through to
@@ -1001,7 +1001,7 @@ func resourceRefsPath(xrdAPIVersion XrdAPIVersion) []string {
 // CROSSPLANE_DIFF_RENDER_BINARY env var when a different layout is needed.
 //
 // Callers thread the returned path into the diff command via
-// --crossplane-render-binary=<path> rather than via a process-global env var,
+// --crossplane-binary=<path> rather than via a process-global env var,
 // so concurrent t.Parallel() tests don't race on shared state.
 func localCrossplaneBinary(t *testing.T) string {
 	t.Helper()

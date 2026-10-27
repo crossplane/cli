@@ -1,6 +1,7 @@
 # Simulate integration tests (crossplane-diff port)
 
-The `integration_*_test.go` files in `cmd/crossplane/project` port crossplane-diff's integration tests (origin/main 6a140b6:
+The `integration_*_test.go` files in `cmd/crossplane/project` port
+crossplane-diff's integration tests (origin/main 6a140b6:
 `cmd/diff/diff_integration_test.go`, `diff_it_utils_test.go`, `main_test.go`
 and the `testdata` tree) case for case. The case tables are verbatim; only
 the harness wiring differs.

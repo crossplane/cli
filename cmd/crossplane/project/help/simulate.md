@@ -104,14 +104,6 @@ Provider plans are controlled by these flags:
   `--session-id`.
 - `--providers` takes a YAML file or directory of Provider manifests to run as
   diff servers, instead of discovering providers from the cluster.
-- `--image-configs` takes a YAML file of ImageConfig manifests that rewrite
-  package paths for pulls: the images of the functions the render runs, except
-  the project's embedded functions, provider images, and in project mode the
-  project's function and provider dependencies. It replaces the project's imageConfigs
-  for those pulls rather than adding to them; schema generation images still
-  use the project's imageConfigs. Without it, the project's imageConfigs apply when
-  `-f` names a project file; in Composition and XR modes `simulate` falls back,
-  best effort, to the project file in the current directory.
 - `--session-id` sets the `simulate.crossplane.io/session` label on diff server
   containers. It defaults to a random per-process ID.
 
@@ -120,7 +112,19 @@ The render takes the same render engine flags as `crossplane render`:
 `--crossplane-binary`, pick what renders, and `--crossplane-docker-network`
 names the Docker network the render and function containers join. Without
 `--crossplane-docker-network`, the `CROSSPLANE_DIFF_DOCKER_NETWORK` environment
-variable names it.
+variable names it. `--crossplane-binary` runs no render container, so it can't
+be combined with `--crossplane-docker-network`.
+
+`--image-configs` takes a YAML file of ImageConfig manifests that rewrite
+package paths for pulls, for both the render and the provider plans: the images
+of the functions the render runs, except the project's embedded functions,
+provider images, and in project mode the project's function and provider
+dependencies. It replaces the project's imageConfigs for those pulls rather
+than adding to them; schema generation images still use the project's
+imageConfigs. Without it, the project's imageConfigs apply when `-f` names a
+project file; in Composition and XR modes `simulate` falls back to the project
+file in the current directory. That fallback is skipped when the file doesn't
+exist, but a project file there that can't be parsed is an error.
 
 The command accepts the same diff-tuning flags as `crossplane-diff`:
 

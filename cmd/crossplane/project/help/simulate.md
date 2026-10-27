@@ -131,7 +131,8 @@ The command accepts the same diff-tuning flags as `crossplane-diff`:
 
 - `--ignore-paths` leaves paths out of the diff.
 - `--function-credentials` passes credentials to the functions the render runs:
-  the v1 Secrets in a YAML file or directory, which must hold at least one.
+  the v1 Secrets in a YAML file, or in the top-level YAML files of a directory.
+  Other kinds are ignored, and at least one Secret is required.
 - `--max-nested-depth` limits nested composite resource recursion.
 - `--dry-run-on` picks which resources the server-side dry run verifies:
   `existing` only checks resources already in the cluster; `all`, the default,

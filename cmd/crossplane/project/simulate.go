@@ -251,12 +251,12 @@ func (c *simulateCmd) Validate() error {
 // Run previews the inputs -f names against the cluster: a project's
 // compositions, with its functions built locally, or changed Composition or
 // composite resource files, with functions from the cluster.
-func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config, status *common.ExitStatus) error {
+func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config) error {
 	in, err := loadInputs(c.Input)
 	if err != nil {
 		return err
 	}
-	if err := validateModeFlags(in.mode, setFlags(k), c.SkipPlan); err != nil {
+	if err := validateModeFlags(k.Stderr, in.mode, setFlags(k), c.SkipPlan); err != nil {
 		return err
 	}
 
@@ -322,7 +322,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		// crossplane-diff's xr command. A claim is simulated as its XR, but
 		// the report names the input, so its result is listed under the
 		// claim's name (crossplane/cli#367).
-		return c.simulate(ctx, logger, status, clients.Initialize, xrProc, func(ctx context.Context) (bool, error) {
+		return c.simulate(ctx, logger, clients.Initialize, xrProc, func(ctx context.Context) (bool, error) {
 			if err := checkComposites(ctx, clients.XpClients.Definition, in.resources); err != nil {
 				return false, err
 			}
@@ -340,7 +340,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	}
 
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
-	return c.simulate(ctx, logger, status, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, in.mode))
+	return c.simulate(ctx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, in.mode))
 }
 
 // packages is how a simulation fetches packages. Functions and providers go
@@ -709,29 +709,34 @@ func pipelineInputs(resources []*un.Unstructured) (map[string]int, error) {
 	return inputs, nil
 }
 
-// validateModeFlags rejects flags set on the command line that don't apply
-// to mode. Composite resource files name the composite resources to
-// simulate, so the flags that pick and tune which ones a Composition change
-// reaches don't apply to them, as in crossplane-diff, whose xr command lacks
-// its comp command's equivalents. Functions come from the cluster unless -f
-// names a project, so --max-concurrency applies only to a project; --cache-dir also caches provider packages, so it applies whenever planning is on.
-func validateModeFlags(mode inputMode, set map[string]bool, skipPlan bool) error {
+// validateModeFlags checks the flags set on the command line against mode.
+// A flag that does nothing in mode prints a warning to stderr and the run
+// continues: functions come from the cluster unless -f names a project, so
+// --max-concurrency applies only to a project, and --cache-dir caches
+// nothing with --skip-plan and no project. A flag that would mislead is a
+// usage error that exits 80: composite resource files name the composite
+// resources to simulate, so the flags that pick which ones a Composition
+// change reaches would look like they scope the run when they don't.
+func validateModeFlags(stderr io.Writer, mode inputMode, set map[string]bool, skipPlan bool) error {
 	if mode == projectMode {
 		return nil
 	}
 	if set["max-concurrency"] {
-		return errors.New("--max-concurrency configures the project's function builds, so it applies only when -f names a project file; Composition and composite resource files use the cluster's functions")
+		_, _ = fmt.Fprintln(stderr, "Warning: ignoring --max-concurrency, which configures a project's function builds; Composition and composite resource files use the cluster's functions.")
 	}
 	if set["cache-dir"] && skipPlan {
-		return errors.New("--cache-dir caches function builds in project mode and provider packages when planning; with --skip-plan and no project file there is nothing to cache, so drop it or drop --skip-plan")
+		_, _ = fmt.Fprintln(stderr, "Warning: ignoring --cache-dir; with --skip-plan and no project file there is nothing to cache.")
 	}
 	if mode != xrMode {
 		return nil
 	}
-	for _, f := range []string{"namespace", "name", "include-pinned", "minimize-composition", "analyze-on"} {
+	for _, f := range []string{"namespace", "name", "include-pinned", "analyze-on"} {
 		if set[f] {
-			return errors.Errorf("--%s selects which composite resources a Composition change reaches, so it doesn't apply when -f names composite resource files; drop it, or pass Composition or project files", f)
+			return common.ExitError{Code: common.ExitCodeUsage, Err: errors.Errorf("--%s selects which composite resources a Composition change reaches, so it doesn't apply when -f names composite resource files; drop it, or pass Composition or project files", f)}
 		}
+	}
+	if set["minimize-composition"] {
+		_, _ = fmt.Fprintln(stderr, "Warning: ignoring --minimize-composition, which collapses changed Compositions; composite resource files have none.")
 	}
 	return nil
 }
@@ -755,11 +760,11 @@ type processor interface {
 }
 
 // simulate initializes the clients and processor and runs diff. A run that
-// finds changes and fails nothing sets status to 3 and returns nil; one that
-// fails only schema validation returns an error that exits 2. ctx must not be
+// finds changes and fails nothing returns a silent common.ExitError that
+// exits 3; one that fails only schema validation returns one that exits 2. ctx must not be
 // cancelled by its owner until simulate returns, so a cancellation reads as
 // an interrupt.
-func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, status *common.ExitStatus, initClients func(context.Context, logging.Logger) error, proc processor, diff func(context.Context) (bool, error)) (err error) {
+func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, initClients func(context.Context, logging.Logger) error, proc processor, diff func(context.Context) (bool, error)) (err error) {
 	// An interrupted run reports the interruption, not the cancelled calls it
 	// caused. main exits 130 for it.
 	defer func() {
@@ -783,11 +788,10 @@ func (c *simulateCmd) simulate(ctx context.Context, logger logging.Logger, statu
 	hasDiffs, err := diff(ctx)
 	switch code := dp.DetermineExitCode(err, hasDiffs); code {
 	case dp.ExitCodeSchemaValidation:
-		return exitError{error: err, code: code}
+		return common.ExitError{Err: err, Code: code}
 	case dp.ExitCodeDiffDetected:
 		// Changes found are a result, not an error, so nothing is printed.
-		status.Code = code
-		return nil
+		return common.ExitError{Code: code}
 	}
 
 	return err
@@ -1034,22 +1038,4 @@ func withRenderError(err, renderErr error) error {
 func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	return ok && term.IsTerminal(f.Fd())
-}
-
-// exitError is an error that sets the command's exit status. kong's
-// FatalIfErrorf honours it.
-type exitError struct {
-	error
-
-	code int
-}
-
-// ExitCode implements kong.ExitCoder.
-func (e exitError) ExitCode() int {
-	return e.code
-}
-
-// Unwrap returns the underlying error.
-func (e exitError) Unwrap() error {
-	return e.error
 }

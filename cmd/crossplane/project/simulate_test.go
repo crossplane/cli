@@ -64,7 +64,7 @@ func parseSimulate(t *testing.T, args ...string) (*simulateCmd, error) {
 	var cli struct {
 		Simulate simulateCmd `cmd:""`
 	}
-	parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}), kong.Bind(&common.ExitStatus{}))
+	parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}))
 	if err != nil {
 		t.Fatalf("kong.New(...): %v", err)
 	}
@@ -909,10 +909,10 @@ func (f *fakeCompProc) Cleanup(context.Context) error {
 	return nil
 }
 
-// exitCode returns the code main would exit with for err and status.
-func exitCode(err error, status *common.ExitStatus) int {
+// exitCode returns the code main would exit with for err.
+func exitCode(err error) int {
 	if err == nil {
-		return status.Code
+		return 0
 	}
 	var ec kong.ExitCoder
 	if errors.As(err, &ec) {
@@ -1046,13 +1046,17 @@ func TestSimulateRun(t *testing.T) {
 			}
 			k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
 			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, compositionMode)
-			status := &common.ExitStatus{}
-			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), status, tc.args.initClients, tc.args.proc, diff)
+			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), tc.args.initClients, tc.args.proc, diff)
 
-			if diff := cmp.Diff(tc.want.code, exitCode(err, status)); diff != "" {
+			if diff := cmp.Diff(tc.want.code, exitCode(err)); diff != "" {
 				t.Errorf("\n%s\nsimulate(...): -want exit code, +got:\n%s", tc.reason, diff)
 			}
-			if !errors.Is(err, tc.want.err) {
+			// Changes found return a silent ExitError, which main prints nothing for.
+			var exit common.ExitError
+			if tc.want.err == nil && err != nil && (!errors.As(err, &exit) || !exit.Silent()) {
+				t.Errorf("\n%s\nsimulate(...): want no error or a silent exit, got %v", tc.reason, err)
+			}
+			if tc.want.err != nil && !errors.Is(err, tc.want.err) {
 				t.Errorf("\n%s\nsimulate(...): want error %v, got %v", tc.reason, tc.want.err, err)
 			}
 			if tc.want.errMsg != "" && (err == nil || !strings.Contains(err.Error(), tc.want.errMsg)) {
@@ -1226,6 +1230,7 @@ func TestValidateModeFlags(t *testing.T) {
 		args     []string
 		skipPlan bool
 		err      string
+		warn     string
 	}{
 		"ProjectAcceptsAll": {
 			reason: "A project accepts every flag.",
@@ -1237,23 +1242,35 @@ func TestValidateModeFlags(t *testing.T) {
 			mode:   compositionMode,
 			args:   []string{"-n", "a", "--name", "b", "--include-pinned", "--analyze-on", "always", "--minimize-composition"},
 		},
-		"CompositionRejectsBuildFlags": {
-			reason: "Compositions use the cluster's functions, so the build flags don't apply.",
+		"CompositionWarnsBuildFlags": {
+			reason: "Compositions use the cluster's functions, so the build flags are ignored with a warning.",
 			mode:   compositionMode,
 			args:   []string{"--max-concurrency", "2"},
-			err:    "--max-concurrency configures the project's function builds",
+			warn:   "ignoring --max-concurrency",
 		},
 		"XRAcceptsCacheDir": {
 			reason: "--cache-dir also caches provider packages, so it applies whenever planning is on.",
 			mode:   xrMode,
 			args:   []string{"--cache-dir", "/c"},
 		},
-		"XRRejectsCacheDirSkipPlan": {
-			reason:   "With --skip-plan and no project there is nothing to cache.",
+		"XRWarnsCacheDirSkipPlan": {
+			reason:   "With --skip-plan and no project there is nothing to cache, so --cache-dir is ignored with a warning.",
 			mode:     xrMode,
 			args:     []string{"--cache-dir", "/c"},
 			skipPlan: true,
-			err:      "--cache-dir caches function builds in project mode",
+			warn:     "ignoring --cache-dir",
+		},
+		"XRWarnsMinimizeComposition": {
+			reason: "Composite resource files have no Composition to minimize, so --minimize-composition is ignored with a warning.",
+			mode:   xrMode,
+			args:   []string{"--minimize-composition"},
+			warn:   "ignoring --minimize-composition",
+		},
+		"XRRejectsAnalyzeOn": {
+			reason: "--analyze-on doesn't apply to composite resource files.",
+			mode:   xrMode,
+			args:   []string{"--analyze-on", "always"},
+			err:    "--analyze-on selects",
 		},
 		"ProjectAcceptsCacheDirSkipPlan": {
 			reason:   "A project caches function builds even without planning.",
@@ -1291,7 +1308,7 @@ func TestValidateModeFlags(t *testing.T) {
 			var cli struct {
 				Simulate simulateCmd `cmd:""`
 			}
-			parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}), kong.Bind(&common.ExitStatus{}))
+			parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}))
 			if err != nil {
 				t.Fatalf("kong.New(...): %v", err)
 			}
@@ -1300,7 +1317,11 @@ func TestValidateModeFlags(t *testing.T) {
 				t.Fatalf("Parse(%v): %v", tc.args, err)
 			}
 
-			err = validateModeFlags(tc.mode, setFlags(k), tc.skipPlan)
+			var stderr bytes.Buffer
+			err = validateModeFlags(&stderr, tc.mode, setFlags(k), tc.skipPlan)
+			if tc.warn == "" && stderr.Len() > 0 || !strings.Contains(stderr.String(), tc.warn) {
+				t.Errorf("\n%s\nvalidateModeFlags(...): want warning containing %q, got %q", tc.reason, tc.warn, stderr.String())
+			}
 			if tc.err == "" {
 				if err != nil {
 					t.Errorf("\n%s\nvalidateModeFlags(...): %v", tc.reason, err)
@@ -1309,6 +1330,9 @@ func TestValidateModeFlags(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
 				t.Errorf("\n%s\nvalidateModeFlags(...): want error containing %q, got %v", tc.reason, tc.err, err)
+			}
+			if diff := cmp.Diff(common.ExitCodeUsage, exitCode(err)); diff != "" {
+				t.Errorf("\n%s\nvalidateModeFlags(...): -want exit code, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

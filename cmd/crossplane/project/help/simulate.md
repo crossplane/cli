@@ -40,12 +40,13 @@ still simulated, rendered against the revision it's pinned to. Pass
 instead.
 
 Some flags apply only to some inputs. `--namespace`, `--name`,
-`--include-pinned`, `--analyze-on`, and `--minimize-composition` choose which
-composite resources a Composition change reaches, so composite resource files
-don't take them. `--max-concurrency` configures the project's function builds,
-so only a project file takes it. `--cache-dir` caches function builds and
-provider packages, so Composition and composite resource files take it unless
-`--skip-plan` is set.
+`--include-pinned`, and `--analyze-on` choose which composite resources a
+Composition change reaches, so passing them with composite resource files is a
+usage error (exit 80) rather than a run that looks scoped but isn't. A flag that
+does nothing for the inputs prints a warning and the run continues:
+`--minimize-composition` with composite resource files, `--max-concurrency`
+(which configures the project's function builds) without a project file, and
+`--cache-dir` with `--skip-plan` and no project file.
 
 The `-o` flag picks the output format:
 
@@ -162,7 +163,8 @@ the result:
 - 2: only schema validation failed.
 - 3: the simulation succeeded and found changes, including drift a provider
   plan found that the cluster diff didn't.
-- 80: the flags were invalid, so nothing was simulated.
+- 80: the flags were invalid or misleading for the inputs, so nothing was
+  simulated.
 - 130: the simulation was interrupted.
 
 When more than one applies, the lowest of 1, 2 and 3 wins.

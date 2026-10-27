@@ -16,11 +16,40 @@ limitations under the License.
 
 package common
 
-// ExitStatus is the exit status of a command that returns no error. main
-// binds a pointer to one, so a command's Run can take it as a parameter and
-// set a non-zero status for a result that is not an error, such as changes
-// found. An error the command returns takes precedence over the status.
-type ExitStatus struct {
-	// Code is the status to exit with. Zero unless the command sets it.
+// ExitCodeUsage is the status kong exits with for parse and Validate errors.
+// Commands return it for invalid flags they can only detect in Run.
+const ExitCodeUsage = 80
+
+// ExitError is an error that sets the command's exit status; it implements
+// kong.ExitCoder. With a nil Err it reports a result that is not an error,
+// such as changes found: main exits with Code without printing anything.
+type ExitError struct {
+	// Err is the error to print, or nil to exit silently.
+	Err error
+
+	// Code is the status to exit with.
 	Code int
+}
+
+// Error returns Err's message, or an empty string when Err is nil.
+func (e ExitError) Error() string {
+	if e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+// ExitCode implements kong.ExitCoder.
+func (e ExitError) ExitCode() int {
+	return e.Code
+}
+
+// Unwrap returns Err.
+func (e ExitError) Unwrap() error {
+	return e.Err
+}
+
+// Silent reports whether e exits without printing anything.
+func (e ExitError) Silent() bool {
+	return e.Err == nil
 }

@@ -132,7 +132,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	status := &common.ExitStatus{}
 	parser := kong.Must(&cli{},
 		kong.Name("crossplane"),
 		// Binding a variable to kong context makes it available to all commands
@@ -141,8 +140,6 @@ func main() {
 		kong.BindTo(configcmd.ConfigPath(cfgPath), (*configcmd.ConfigPath)(nil)),
 		// Bind the loaded config so commands can read feature flags at runtime.
 		kong.Bind(cfg),
-		// Commands set the exit status of a run that returns no error.
-		kong.Bind(status),
 		kongVars,
 		kong.Help(helpPrinter),
 		kong.UsageOnError())
@@ -182,19 +179,22 @@ func main() {
 	interrupted := sigCtx.Err() != nil
 	stopExitOnSignal()
 	stop()
+	// A silent ExitError is a result, such as changes found, not an error,
+	// so it exits with its code and prints nothing.
+	var exit common.ExitError
+	silent := errors.As(err, &exit) && exit.Silent()
 	if interrupted {
 		// Exit with the conventional 128+SIGINT status.
-		if err != nil {
+		if err != nil && !silent {
 			fmt.Fprintf(os.Stderr, "crossplane: %v\n", err)
 		}
 		os.Exit(130)
 	}
-	// An error is printed and exits 1, or with its ExitCoder's code;
-	// otherwise the run exits with the status its command set.
-	ctx.FatalIfErrorf(err)
-	if status.Code != 0 {
-		os.Exit(status.Code)
+	if silent {
+		os.Exit(exit.Code)
 	}
+	// An error is printed and exits 1, or with its ExitCoder's code.
+	ctx.FatalIfErrorf(err)
 }
 
 // exitOnSignal waits for SIGINT or SIGTERM, then exits with status 130

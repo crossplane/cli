@@ -21,9 +21,6 @@ package simulate
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -34,7 +31,10 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/load"
+	"github.com/crossplane/cli/v2/internal/dependency"
+	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/kube"
@@ -58,7 +58,7 @@ type Cmd struct {
 	ProjectFile  string        `help:"Path to a project definition file to read imageConfigs from. Defaults to ${project_file} when present."                                                         name:"project-file"                                      optional:""`
 	SessionID    string        `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID."                                placeholder:"ID"`
 	Context      string        `default:""                                                                                                                                                            help:"Kubernetes context."                               name:"context"                                  predictor:"context"                short:"c"`
-	CacheDir     string        `default:"~/.crossplane/cache"                                                                                                                                         help:"Cache directory for downloaded provider packages." name:"cache-dir"                                predictor:"directory"`
+	CacheDir     string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                                                                           help:"Cache directory for downloaded provider packages." name:"cache-dir"                                predictor:"directory"`
 	Timeout      time.Duration `default:"2m"                                                                                                                                                          help:"Per-resource plan timeout."`
 	Output       string        `default:"plan"                                                                                                                                                        enum:"plan,json,yaml"                                    help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
 
@@ -68,18 +68,6 @@ type Cmd struct {
 // Help returns the help message for the simulate command.
 func (c *Cmd) Help() string {
 	return helpDetail
-}
-
-// AfterApply expands the cache directory.
-func (c *Cmd) AfterApply() error {
-	if strings.HasPrefix(c.CacheDir, "~/") {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return errors.Wrap(err, "cannot determine home directory for cache dir")
-		}
-		c.CacheDir = filepath.Join(homeDir, c.CacheDir[2:])
-	}
-	return nil
 }
 
 // Run runs the simulate command. ctx is the signal-bound command context from
@@ -135,8 +123,12 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		images := isimulate.RelevantProviderImages(ctx, kubeClient, rmapper, resources, len(imageConfigs) > 0, isimulate.NewImageCache(), k.Stderr)
 		inputs = diffserver.Images(images)
 	}
+	cacheDir := c.CacheDir
+	if cacheDir == "" {
+		cacheDir = dependency.DefaultCacheDir()
+	}
 	pkgClient, err := clixpkg.NewClient(clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), c.CacheDir),
+		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
 		clixpkg.WithImageConfigs(imageConfigs),
 	)
 	if err != nil {
@@ -156,7 +148,20 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		plans = append(plans, planner.Plan(ctx, desired))
 	}
 
-	return renderer.Render(k.Stdout, plans)
+	if err := renderer.Render(k.Stdout, plans); err != nil {
+		return err
+	}
+	return exitStatus(plans)
+}
+
+// exitStatus returns a silent common.ExitError that exits 3 when a plan
+// would change anything, as project simulate does, and nil otherwise.
+func exitStatus(plans []*plan.ResourcePlan) error {
+	s := plan.Summarize(plans)
+	if s.Create+s.Update+s.Destroy+s.Replace > 0 {
+		return common.ExitError{Code: dp.ExitCodeDiffDetected}
+	}
+	return nil
 }
 
 func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMapper, string, error) {

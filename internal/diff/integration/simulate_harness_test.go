@@ -224,7 +224,6 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *p
 	var cli struct {
 		Project project.Cmd `cmd:""`
 	}
-	status := &common.ExitStatus{}
 	parser, err := kong.New(&cli,
 		kong.Name("crossplane"),
 		kong.Vars{"project_file": clixpkg.ProjectFile},
@@ -234,7 +233,6 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *p
 		kong.BindTo(tu.TestLogger(t, true), (*logging.Logger)(nil)),
 		kong.BindTo(terminal.NewNopSpinnerPrinter(), (*terminal.SpinnerPrinter)(nil)),
 		kong.Bind(&config.Config{}),
-		kong.Bind(status),
 	)
 	if err != nil {
 		t.Fatalf("failed to create kong parser: %v", err)
@@ -261,9 +259,13 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *p
 	cli.Project.Simulate.Hooks = hooks
 
 	err = kctx.Run()
-	// Exit as main does: print an error the way FatalIfErrorf does, the only
-	// place errors are printed, and exit with its ExitCoder's code or 1;
-	// otherwise exit with the status the command set.
+	// Exit as main does: a silent ExitError, such as changes found, exits
+	// with its code and prints nothing; any other error is printed the way
+	// FatalIfErrorf does and exits with its ExitCoder's code or 1.
+	var exit common.ExitError
+	if errors.As(err, &exit) && exit.Silent() {
+		return exit.Code, nil
+	}
 	if err != nil {
 		parser.Errorf("%s", err)
 	}
@@ -271,7 +273,7 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *p
 	var ec kong.ExitCoder
 	switch {
 	case err == nil:
-		return status.Code, nil
+		return 0, nil
 	case errors.As(err, &ec):
 		return ec.ExitCode(), err
 	default:

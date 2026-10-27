@@ -106,7 +106,8 @@ Provider plans are controlled by these flags:
 - `--image-configs` takes a YAML file of ImageConfig manifests that rewrite
   package paths for pulls: provider images, and in project mode the project's
   function and provider dependencies. It replaces the project's imageConfigs
-  rather than adding to them. Without it, the project's imageConfigs apply when
+  for those pulls rather than adding to them; schema generation images still
+  use the project's imageConfigs. Without it, the project's imageConfigs apply when
   `-f` names a project file; in Composition and XR modes `simulate` falls back,
   best effort, to the project file in the current directory.
 - `--session-id` sets the `simulate.crossplane.io/session` label on diff server

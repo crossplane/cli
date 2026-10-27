@@ -50,6 +50,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
+	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 	xrpkg "github.com/crossplane/cli/v2/pkg/xr"
@@ -414,10 +415,42 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 	}
 
 	if isProject {
-		return project.LoadFunctions(ctx, log, sp, cfg, fs, filePath, fileName, c.MaxConcurrency, c.newClientAndResolver)
+		return c.loadFunctionsFromProject(ctx, log, sp, cfg, fs, filePath, fileName)
 	}
 
 	return c.loadFunctionsFromConfiguration(ctx, log, fs, fileName)
+}
+
+func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config, projFS afero.Fs, projFilePath, projFileName string) ([]pkgv1.Function, error) {
+	proj, err := projectfile.Parse(projFS, projFileName)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
+	}
+
+	xpkgClient, resolver, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
+	if err != nil {
+		return nil, err
+	}
+
+	generators := generator.AllLanguages(
+		generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+		generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+	)
+
+	depMgr := dependency.NewManager(proj, projFS,
+		dependency.WithProjectFile(projFileName),
+		dependency.WithSchemaGenerators(generators),
+		dependency.WithXpkgClient(xpkgClient),
+		dependency.WithResolver(resolver),
+	)
+
+	fns, _, err := project.LoadFunctions(ctx, proj, projFS, depMgr, project.LoadFunctionsOptions{
+		Logger:         log,
+		Spinner:        sp,
+		Generators:     generators,
+		MaxConcurrency: c.MaxConcurrency,
+	})
+	return fns, err
 }
 
 // resolveProjectFile returns the absolute path of the project or configuration
@@ -442,20 +475,6 @@ func (c *Cmd) resolveProjectFile() (string, error) {
 	return "", errors.New("functions argument is required when not in a project or configuration")
 }
 
-func (c *Cmd) newClientAndResolver(extraOpts ...clixpkg.ClientOption) (runtimexpkg.Client, *clixpkg.Resolver, error) {
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	opts := append([]clixpkg.ClientOption{clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir)}, extraOpts...)
-	xpkgClient, err := clixpkg.NewClient(clixpkg.NewRemoteFetcher(), opts...)
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "cannot create xpkg client")
-	}
-	return xpkgClient, clixpkg.NewResolver(xpkgClient), nil
-}
-
 func (c *Cmd) loadFunctionsFromConfiguration(ctx context.Context, log logging.Logger, cfgFS afero.Fs, cfgFileName string) ([]pkgv1.Function, error) {
 	log.Debug("Loading functions from configuration file", "configuration-file", cfgFileName)
 
@@ -464,7 +483,7 @@ func (c *Cmd) loadFunctionsFromConfiguration(ctx context.Context, log logging.Lo
 		return nil, errors.Wrapf(err, "cannot parse configuration file %q", cfgFileName)
 	}
 
-	_, resolver, err := c.newClientAndResolver()
+	_, resolver, err := project.NewXpkgClient(c.CacheDir)
 	if err != nil {
 		return nil, err
 	}

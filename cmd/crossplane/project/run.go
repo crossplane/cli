@@ -149,8 +149,6 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 		c.ControlPlaneName = "crossplane-" + c.proj.Name
 	}
 
-	concurrency := max(1, c.MaxConcurrency)
-
 	schemasFS := afero.NewBasePathFs(c.projFS, c.proj.Spec.Paths.Schemas)
 	generators := generator.Filter(
 		generator.AllLanguages(
@@ -161,20 +159,10 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	)
 	schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs))
 	schemaMgr := manager.New(schemasFS, generators, schemaRunner)
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	client, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-		clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs),
-	)
+	client, resolver, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs))
 	if err != nil {
 		return err
 	}
-	resolver := clixpkg.NewResolver(client)
 
 	depMgr := dependency.NewManager(c.proj, c.projFS,
 		dependency.WithProjectFile(c.ProjectFile),
@@ -195,7 +183,7 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	defer os.RemoveAll(tempDir) //nolint:errcheck // Best-effort cleanup of temporary files.
 
 	b := project.NewBuilder(
-		project.BuildWithMaxConcurrency(concurrency),
+		project.BuildWithMaxConcurrency(c.MaxConcurrency),
 		project.BuildWithFunctionIdentifier(functions.DefaultIdentifier),
 		project.BuildWithSchemaManager(schemaMgr),
 		project.BuildWithDependencyManager(depMgr),

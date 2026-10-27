@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -297,6 +298,43 @@ func TestBuilderDependsOn(t *testing.T) {
 	}
 	if diff := cmp.Diff(2, foundArchs); diff != "" {
 		t.Errorf("function arch images (-want +got):\n%s", diff)
+	}
+}
+
+// TestBuilderZeroConcurrency verifies a max concurrency of 0 still builds:
+// an unbuffered semaphore would block every function build forever.
+func TestBuilderZeroConcurrency(t *testing.T) {
+	t.Parallel()
+
+	projFS := afero.NewMemMapFs()
+	writeProject(t, projFS,
+		map[string]string{"db.yaml": xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase")},
+		[]string{"fn-one"},
+	)
+	proj := &devv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+		Spec:       devv1alpha1.ProjectSpec{Repository: "xpkg.crossplane.io/example/test"},
+	}
+	proj.Default()
+
+	b := NewBuilder(
+		BuildWithFunctionIdentifier(functions.FakeIdentifier),
+		BuildWithMaxConcurrency(0),
+	)
+
+	// The semaphore send ignores ctx, so time the build out from here.
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Build(t.Context(), proj, projFS)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Build with max concurrency 0 didn't finish")
 	}
 }
 

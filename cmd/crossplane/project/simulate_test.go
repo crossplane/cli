@@ -250,9 +250,16 @@ func TestSimulateFlags(t *testing.T) {
 			want:   want{err: true},
 		},
 		"ZeroConcurrency": {
-			reason: "Zero build slots would hang a project build forever.",
+			reason: "Zero build slots should be accepted; the builder runs one build at a time.",
 			args:   []string{"--max-concurrency", "0"},
-			want:   want{err: true},
+			want: want{cmd: &simulateCmd{
+				Input:          []string{"crossplane-project.yaml"},
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        2 * time.Minute,
+				Output:         "plan",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+			}},
 		},
 		"EmptyName": {
 			reason: "An empty --name should fail at parse time.",

@@ -64,6 +64,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
+	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -112,9 +113,9 @@ type simulateCmd struct {
 	DryRunOn                 string              `default:"all"                                                                                                                               enum:"existing,all"                                                                   help:"Which resources to verify against the apiserver with a dry run: 'all' also dry-run creates added resources so their diffs include server-side defaulting and admission (needs the 'create' verb; degrades per-resource without it), 'existing' only resources already in the cluster."`
 
 	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster-layer diff."`
-	Providers    string `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                                                                           name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
-	ImageConfigs string `help:"YAML file with ImageConfig manifests that rewrite provider image paths for local pulls. Defaults to the project's imageConfigs when -f names a project file; in Composition and XR modes it falls back, best effort, to the project file in the current directory." name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
-	SessionID    string `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID."                                                                                                                                    placeholder:"ID"`
+	Providers    string `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                                                                                                                                               name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
+	ImageConfigs string `help:"YAML file with ImageConfig manifests that rewrite package paths for pulls: provider images, and in project mode the project's dependencies. Replaces the project's imageConfigs; without it, they are used when -f names a project file, and in Composition and XR modes, best effort, from the project file in the current directory." name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
+	SessionID    string `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID."                                                                                                                                                                                                        placeholder:"ID"`
 
 	// CrossplaneVersion and CrossplaneImage select the crossplane render
 	// backend, as they do for crossplane-diff. When neither is set the render
@@ -239,10 +240,6 @@ func (c *simulateCmd) Validate() error {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
 	}
 
-	if c.MaxConcurrency == 0 {
-		return errors.Errorf("--max-concurrency must be at least 1, got %d", c.MaxConcurrency)
-	}
-
 	// Bad --name/--namespace values fail here, before any build.
 	ns, refs, err := c.scope()
 	if err != nil {
@@ -299,10 +296,10 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 
 	var fns []pkgv1.Function
 	var digests map[string]project.EmbeddedDigest
-	var proj *v1alpha1.Project
+	var pkgs *packages
 	comps := in.resources
 	if in.mode == projectMode {
-		comps, fns, digests, proj, err = c.buildProject(sigCtx, logger, sp, cliCfg, in.projectFile)
+		comps, fns, digests, pkgs, err = c.buildProject(sigCtx, logger, sp, cliCfg, in.projectFile)
 		if err != nil {
 			return err
 		}
@@ -323,7 +320,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	// xrPlanner and servers are for rendering the plans; they stay nil with
 	// --skip-plan, and servers also when Hooks.Router supplies the router.
 	if !c.SkipPlan {
-		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, ns, in, proj)
+		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, ns, in, pkgs)
 		// Stop even on error: upfront Ensure may have started servers.
 		if c.servers != nil {
 			defer c.servers.Stop(sigCtx)
@@ -363,49 +360,48 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	return c.simulate(ctx, logger, status, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, in.mode))
 }
 
+// packages is how a simulation fetches packages. Functions and providers go
+// through one client with one set of ImageConfigs, so --image-configs
+// rewrites both.
+type packages struct {
+	ics    []pkgv1beta1.ImageConfig
+	client runtimexpkg.Client
+
+	// proj and depMgr are set in project mode.
+	proj   *v1alpha1.Project
+	depMgr *dependency.Manager
+}
+
 // planOptions sets up provider diff servers and the XRPlanner, and returns
 // the processor options that plan each composite resource's composed
 // resources. Namespaced resources without a namespace plan in ns, the
-// kubeconfig's namespace. Run stops c.servers when it is set.
-func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, ns string, in *inputs, proj *v1alpha1.Project) ([]dp.ProcessorOption, error) {
+// kubeconfig's namespace. pkgs is the project's, in project mode, and nil
+// otherwise. Run stops c.servers when it is set.
+func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, ns string, in *inputs, pkgs *packages) ([]dp.ProcessorOption, error) {
 	kubeClient, rmapper, err := simulate.NewKubeClient(restCfg)
 	if err != nil {
 		return nil, err
 	}
 
-	var ics []pkgv1beta1.ImageConfig
 	var router simulate.Router
-	var depMgr *dependency.Manager
 	if c.Hooks != nil && c.Hooks.Router != nil {
 		router = c.Hooks.Router
 	} else {
-		projectFile := ""
-		if in.mode == projectMode {
-			projectFile = in.projectFile
-		}
-		if ics, err = simulate.ImageConfigs(c.ImageConfigs, projectFile); err != nil {
-			return nil, err
-		}
-		var pkgs runtimexpkg.Client
-		var resolver *clixpkg.Resolver
-		if pkgs, resolver, err = c.newClientAndResolver(clixpkg.WithImageConfigs(ics)); err != nil {
-			return nil, errors.Wrap(err, "cannot create package client")
-		}
-		if in.mode == projectMode {
-			projFilePath, err := filepath.Abs(in.projectFile)
+		if pkgs == nil {
+			ics, err := simulate.ImageConfigs(c.ImageConfigs, "")
 			if err != nil {
 				return nil, err
 			}
-			depMgr = dependency.NewManager(proj, afero.NewBasePathFs(afero.NewOsFs(), filepath.Dir(projFilePath)),
-				dependency.WithProjectFile(filepath.Base(projFilePath)),
-				dependency.WithXpkgClient(pkgs),
-				dependency.WithResolver(resolver),
-			)
+			client, _, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(ics))
+			if err != nil {
+				return nil, err
+			}
+			pkgs = &packages{ics: ics, client: client}
 		}
 		if c.Hooks != nil && c.Hooks.Servers != nil {
 			c.servers = c.Hooks.Servers
 		} else {
-			c.servers = simulate.NewServerSet(sp, logger, k.Stderr, pkgs, c.SessionID)
+			c.servers = simulate.NewServerSet(sp, logger, k.Stderr, pkgs.client, c.SessionID)
 		}
 		router = c.servers
 	}
@@ -422,7 +418,7 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 				return nil, errors.Wrapf(err, "cannot load provider manifests from %q", c.Providers)
 			}
 		case in.mode == projectMode:
-			images, err := project.LoadProviderDependencies(depMgr, proj)
+			images, err := project.LoadProviderDependencies(pkgs.depMgr, pkgs.proj)
 			if err != nil {
 				return nil, errors.Wrap(err, "cannot load the project's provider dependencies")
 			}
@@ -430,7 +426,7 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 		default:
 			cache := simulate.NewImageCache()
 			ensure = func(ctx context.Context, rs []*un.Unstructured) error {
-				imgs := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, rs, len(ics) > 0, cache, k.Stderr)
+				imgs := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, rs, len(pkgs.ics) > 0, cache, k.Stderr)
 				return c.servers.Ensure(ctx, diffserver.Images(imgs))
 			}
 		}
@@ -476,9 +472,10 @@ func (c *simulateCmd) restConfig() (*rest.Config, string, error) {
 	return cfg, ns, nil
 }
 
-// buildProject returns the project's compositions and its locally built
-// functions.
-func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config, projectFile string) ([]*un.Unstructured, []pkgv1.Function, map[string]project.EmbeddedDigest, *v1alpha1.Project, error) {
+// buildProject returns the project's compositions, its locally built
+// functions, and the packages its provider dependencies resolve through.
+// --image-configs, when set, replaces the project's ImageConfigs for both.
+func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config, projectFile string) ([]*un.Unstructured, []pkgv1.Function, map[string]project.EmbeddedDigest, *packages, error) {
 	projFilePath, err := filepath.Abs(projectFile)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -499,11 +496,37 @@ func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, s
 		return nil, nil, nil, nil, errors.Errorf("no Compositions found under the project's APIs path %q", proj.Spec.Paths.APIs)
 	}
 
-	fns, digests, err := project.LoadFunctionsWithDigests(ctx, logger, sp, cliCfg, projFS, projFilePath, projFileName, c.MaxConcurrency, c.newClientAndResolver)
+	ics := proj.Spec.ImageConfigs
+	if c.ImageConfigs != "" {
+		if ics, err = simulate.ImageConfigs(c.ImageConfigs, ""); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+	client, resolver, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(ics))
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	return comps, fns, digests, proj, nil
+	generators := generator.AllLanguages(
+		generator.WithGoModelAccessors(cliCfg.Features.GenerateGoModelAccessors),
+		generator.WithGoRuntimeObjects(cliCfg.Features.GenerateGoRuntimeObjects),
+	)
+	depMgr := dependency.NewManager(proj, projFS,
+		dependency.WithProjectFile(projFileName),
+		dependency.WithSchemaGenerators(generators),
+		dependency.WithXpkgClient(client),
+		dependency.WithResolver(resolver),
+	)
+
+	fns, digests, err := project.LoadFunctions(ctx, proj, projFS, depMgr, project.LoadFunctionsOptions{
+		Logger:         logger,
+		Spinner:        sp,
+		Generators:     generators,
+		MaxConcurrency: c.MaxConcurrency,
+	})
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return comps, fns, digests, &packages{ics: ics, client: client, proj: proj, depMgr: depMgr}, nil
 }
 
 // changedFunctions returns the cluster names of the embedded functions whose
@@ -994,20 +1017,6 @@ func withRenderError(err, renderErr error) error {
 	}
 
 	return errors.Join(append(errs, renderErr)...)
-}
-
-func (c *simulateCmd) newClientAndResolver(extraOpts ...clixpkg.ClientOption) (runtimexpkg.Client, *clixpkg.Resolver, error) {
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	opts := append([]clixpkg.ClientOption{clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir)}, extraOpts...)
-	xpkgClient, err := clixpkg.NewClient(clixpkg.NewRemoteFetcher(), opts...)
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "cannot create xpkg client")
-	}
-	return xpkgClient, clixpkg.NewResolver(xpkgClient), nil
 }
 
 // isTerminal reports whether w is a terminal, so diffs are colorized only

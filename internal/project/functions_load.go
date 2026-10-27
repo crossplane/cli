@@ -28,11 +28,10 @@ import (
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/async"
-	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project/functions"
-	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/schemas/manager"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
@@ -40,44 +39,44 @@ import (
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
-// NewXpkgClientFn returns an xpkg client and resolver built with the given
-// options.
-type NewXpkgClientFn func(opts ...clixpkg.ClientOption) (runtimexpkg.Client, *clixpkg.Resolver, error)
+// NewXpkgClient returns an xpkg client that caches packages in cacheDir, or
+// in dependency.DefaultCacheDir() when cacheDir is empty, and a resolver
+// backed by it.
+func NewXpkgClient(cacheDir string, opts ...clixpkg.ClientOption) (runtimexpkg.Client, *clixpkg.Resolver, error) {
+	if cacheDir == "" {
+		cacheDir = dependency.DefaultCacheDir()
+	}
 
-// LoadFunctions resolves a project's function dependencies and builds its
-// embedded functions, loading their images into the docker daemon. It returns
-// a Function for each dependency and each embedded function.
-func LoadFunctions(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config, projFS afero.Fs, projFilePath, projFileName string, maxConcurrency uint, newClient NewXpkgClientFn) ([]pkgv1.Function, error) {
-	fns, _, err := LoadFunctionsWithDigests(ctx, log, sp, cfg, projFS, projFilePath, projFileName, maxConcurrency, newClient)
-	return fns, err
+	opts = append([]clixpkg.ClientOption{clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir)}, opts...)
+	client, err := clixpkg.NewClient(clixpkg.NewRemoteFetcher(), opts...)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "cannot create xpkg client")
+	}
+	return client, clixpkg.NewResolver(client), nil
 }
 
-// LoadFunctionsWithDigests is LoadFunctions, and also returns the index
-// digest of each embedded function, as EmbeddedFunctionDigests does.
-func LoadFunctionsWithDigests(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config, projFS afero.Fs, projFilePath, projFileName string, maxConcurrency uint, newClient NewXpkgClientFn) ([]pkgv1.Function, map[string]EmbeddedDigest, error) {
-	log.Debug("Loading functions from project", "project-file", projFilePath)
+// LoadFunctionsOptions configure LoadFunctions.
+type LoadFunctionsOptions struct {
+	Logger  logging.Logger
+	Spinner terminal.SpinnerPrinter
 
-	proj, err := projectfile.Parse(projFS, projFileName)
-	if err != nil {
-		return nil, nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
-	}
+	// Generators generate the language schemas the embedded functions build
+	// against. Required: pass the ones the dependency manager was built
+	// with, so both generate schemas the same way.
+	Generators []generator.Interface
 
-	xpkgClient, resolver, err := newClient(clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
-	if err != nil {
-		return nil, nil, err
-	}
+	// MaxConcurrency is the most embedded functions built at once.
+	MaxConcurrency uint
+}
 
-	generators := generator.AllLanguages(
-		generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-		generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
-	)
-
-	depMgr := dependency.NewManager(proj, projFS,
-		dependency.WithProjectFile(projFileName),
-		dependency.WithSchemaGenerators(generators),
-		dependency.WithXpkgClient(xpkgClient),
-		dependency.WithResolver(resolver),
-	)
+// LoadFunctions resolves a project's function dependencies with depMgr and
+// builds its embedded functions, loading their images into the docker daemon.
+// It returns a Function for each dependency and each embedded function, and
+// the index digest of each embedded function, as EmbeddedFunctionDigests
+// does.
+func LoadFunctions(ctx context.Context, proj *devv1alpha1.Project, projFS afero.Fs, depMgr *dependency.Manager, o LoadFunctionsOptions) ([]pkgv1.Function, map[string]EmbeddedDigest, error) {
+	log, sp := o.Logger, o.Spinner
+	log.Debug("Loading functions from project", "project", proj.GetName())
 
 	var fns []pkgv1.Function
 	var digests map[string]EmbeddedDigest
@@ -92,7 +91,7 @@ func LoadFunctionsWithDigests(ctx context.Context, log logging.Logger, sp termin
 	if err := sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
 		schemasFS := afero.NewBasePathFs(projFS, proj.Spec.Paths.Schemas)
 		schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(proj.Spec.ImageConfigs))
-		schemaMgr := manager.New(schemasFS, generators, schemaRunner)
+		schemaMgr := manager.New(schemasFS, o.Generators, schemaRunner)
 
 		tempDir, err := os.MkdirTemp("", "crossplane-build-")
 		if err != nil {
@@ -101,7 +100,7 @@ func LoadFunctionsWithDigests(ctx context.Context, log logging.Logger, sp termin
 		defer os.RemoveAll(tempDir) //nolint:errcheck // Best-effort cleanup of temporary files.
 
 		b := NewBuilder(
-			BuildWithMaxConcurrency(maxConcurrency),
+			BuildWithMaxConcurrency(o.MaxConcurrency),
 			BuildWithFunctionIdentifier(functions.DefaultIdentifier),
 			BuildWithSchemaManager(schemaMgr),
 			BuildWithDependencyManager(depMgr),

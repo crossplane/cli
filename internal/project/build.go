@@ -80,10 +80,10 @@ func BuildWithFunctionIdentifier(i functions.Identifier) BuilderOption {
 }
 
 // BuildWithMaxConcurrency sets the maximum concurrency for building embedded
-// functions.
+// functions. Zero means 1: a build with no slots would never start.
 func BuildWithMaxConcurrency(n uint) BuilderOption {
 	return func(b *Builder) {
-		b.maxConcurrency = n
+		b.maxConcurrency = max(1, n)
 	}
 }
 

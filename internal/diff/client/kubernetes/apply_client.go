@@ -21,7 +21,7 @@ const (
 	FieldOwnerComposedPrefix = "apiextensions.crossplane.io/composed"
 
 	// FieldOwnerDefault is the default field owner when no specific owner is provided.
-	FieldOwnerDefault = "crossplane-diff"
+	FieldOwnerDefault = "crossplane-simulate"
 )
 
 // GetComposedFieldOwner extracts the Crossplane composed resource field owner from

@@ -85,7 +85,7 @@ func DefaultLeaseDir() string {
 		return ""
 	}
 
-	return filepath.Join(dir, "crossplane-diff", "runs")
+	return filepath.Join(dir, "crossplane-simulate", "runs")
 }
 
 // Run is one crossplane-diff run's claim on the Docker resources it creates. It is not safe for

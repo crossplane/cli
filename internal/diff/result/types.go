@@ -192,7 +192,7 @@ const generatedSuffixLen = 12
 // resulting XR name matches the shape of binary-generated composed names AND
 // the suffix value itself is recognisable on its own — which we rely on for
 // downstream detection in LooksLikeGeneratedName.
-const xrSynthesisSeed = "crossplane-diff/synthesized-xr"
+const xrSynthesisSeed = "crossplane-simulate/synthesized-xr"
 
 // xrSynthesisSuffix returns the deterministic 12-hex suffix we use for XR
 // name synthesis. Two surfaces depend on it:

@@ -49,6 +49,7 @@ import (
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	ld "github.com/crossplane/cli/v2/cmd/crossplane/common/load"
+	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/diff/client"
@@ -79,6 +80,11 @@ var simulateHelp string
 // or composite resource files, would change the composite resources in a
 // cluster.
 type simulateCmd struct {
+	// EngineFlags select the crossplane render backend, as for render. Its
+	// SessionID labels the diff server containers; the render's containers
+	// are labelled with the run's own ID, which reclaims them.
+	render.EngineFlags `prefix:""`
+
 	// Run sets these; nil with --skip-plan (servers also when Hooks.Router is set).
 	xrPlanner *simulate.XRPlanner
 	servers   simulate.Servers
@@ -100,28 +106,20 @@ type simulateCmd struct {
 	Timeout       time.Duration `default:"2m"                                                                                                                                                                                            help:"Max time to simulate one composite resource: its render and its resources' provider plans. Function and provider image pulls don't count, but the render image pull counts against the first composite."`
 	Output        string        `default:"plan"                                                                                                                                                                                          enum:"plan,diff,json,yaml"                                                                                                                                                                                     help:"Output format. One of: plan, diff, json, yaml." short:"o"`
 
-	NoColor                  bool                `help:"Disable colorized output."`
-	Compact                  bool                `help:"Show compact diffs with minimal context."`
-	MaxNestedDepth           int                 `default:"10"                                                                                                                                help:"Maximum depth for nested XR recursion."`
-	IgnorePaths              []string            `help:"Paths to ignore in diffs (e.g., 'metadata.annotations[argocd.argoproj.io/tracking-id]')."`
-	FunctionCredentials      FunctionCredentials `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."                                           placeholder:"PATH"`
-	FunctionRegistryOverride string              `help:"Override the registry for all function images (e.g., 'my-company.registry.io')."`
-	EventualState            bool                `help:"Show eventual state after all reconciliation cycles complete (useful with function-sequencer)."`
-	MaxRecvMessageSize       int                 `env:"MAX_RECV_MESSAGE_SIZE"                                                                                                                 help:"Max gRPC message size (MB) for render function containers (4 MB if undefined)."`
-	MinimizeComposition      bool                `help:"Collapse each changed composition to a single marker line in -o diff output (errors and no-change compositions still print in full)."`
-	AnalyzeOn                string              `default:""                                                                                                                                  enum:",spec-change,any-change,always"                                                 help:"Smallest composition change that triggers per-composite impact analysis. \"spec-change\": only when the composition spec changes. \"any-change\": also when only its metadata changes, which still creates a new CompositionRevision that composites re-point to. \"always\": even when the composition is identical, for a pre-edit convergence baseline. Defaults to any-change."`
-	DryRunOn                 string              `default:"all"                                                                                                                               enum:"existing,all"                                                                   help:"Which resources to verify against the apiserver with a dry run: 'all' also dry-run creates added resources so their diffs include server-side defaulting and admission (needs the 'create' verb; degrades per-resource without it), 'existing' only resources already in the cluster."`
+	NoColor             bool                `help:"Disable colorized output."`
+	Compact             bool                `help:"Show compact diffs with minimal context."`
+	MaxNestedDepth      int                 `default:"10"                                                                                                                                help:"Maximum depth for nested XR recursion."`
+	IgnorePaths         []string            `help:"Paths to ignore in diffs (e.g., 'metadata.annotations[argocd.argoproj.io/tracking-id]')."`
+	FunctionCredentials FunctionCredentials `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."                                           placeholder:"PATH"`
+	EventualState       bool                `help:"Show eventual state after all reconciliation cycles complete (useful with function-sequencer)."`
+	MaxRecvMessageSize  int                 `env:"MAX_RECV_MESSAGE_SIZE"                                                                                                                 help:"Max gRPC message size (MB) for render function containers (4 MB if undefined)."`
+	MinimizeComposition bool                `help:"Collapse each changed composition to a single marker line in -o diff output (errors and no-change compositions still print in full)."`
+	AnalyzeOn           string              `default:""                                                                                                                                  enum:",spec-change,any-change,always"                                                 help:"Smallest composition change that triggers per-composite impact analysis. \"spec-change\": only when the composition spec changes. \"any-change\": also when only its metadata changes, which still creates a new CompositionRevision that composites re-point to. \"always\": even when the composition is identical, for a pre-edit convergence baseline. Defaults to any-change."`
+	DryRunOn            string              `default:"all"                                                                                                                               enum:"existing,all"                                                                   help:"Which resources to verify against the apiserver with a dry run: 'all' also dry-run creates added resources so their diffs include server-side defaulting and admission (needs the 'create' verb; degrades per-resource without it), 'existing' only resources already in the cluster."`
 
 	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster-layer diff."`
-	Providers    string `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                                                                                                                                                                                                                  name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
-	ImageConfigs string `help:"YAML file with ImageConfig manifests that rewrite package paths for pulls: provider images, and in project mode the project's dependencies. Replaces the project's imageConfigs for those pulls (schema generation images still use the project's); without it, they are used when -f names a project file, and in Composition and XR modes, best effort, from the project file in the current directory." name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
-	SessionID    string `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID."                                                                                                                                                                                                                                                                           placeholder:"ID"`
-
-	// CrossplaneVersion and CrossplaneImage select the crossplane render
-	// backend, as they do for crossplane-diff. When neither is set the render
-	// engine pulls xpkg.crossplane.io/crossplane/crossplane:stable.
-	CrossplaneVersion string `help:"Pin the crossplane render version, for example v2.3.4. Minimum v2.3.4."                                  placeholder:"VERSION" xor:"crossplane-render-backend"`
-	CrossplaneImage   string `help:"Override the full crossplane render image reference. Minimum v2.3.4 when its tag is a semantic version." placeholder:"IMAGE"   xor:"crossplane-render-backend"`
+	Providers    string `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                                                                                                                                                                                                                               name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
+	ImageConfigs string `help:"YAML file with ImageConfig manifests that rewrite package paths for pulls: function and provider images, and in project mode the project's dependencies. Replaces the project's imageConfigs for those pulls (schema generation images still use the project's); without it, they are used when -f names a project file, and in Composition and XR modes, best effort, from the project file in the current directory." name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 
@@ -135,10 +133,6 @@ type simulateCmd struct {
 type SimulateHooks struct {
 	// RESTConfig replaces loading the kubeconfig.
 	RESTConfig *rest.Config
-
-	// RenderBinary renders with this local crossplane binary instead of the
-	// crossplane render image.
-	RenderBinary string
 
 	// Terminal colorizes diffs as if stdout were a terminal, unless
 	// --no-color is set.
@@ -252,15 +246,15 @@ func (c *simulateCmd) Validate() error {
 	}
 
 	if c.SkipPlan {
-		for _, f := range []struct{ name, val string }{{"providers", c.Providers}, {"image-configs", c.ImageConfigs}, {"session-id", c.SessionID}} {
+		for _, f := range []struct{ name, val string }{{"providers", c.Providers}, {"session-id", c.SessionID}} {
 			if f.val != "" {
 				return errors.Errorf("--%s cannot be used with --skip-plan", f.name)
 			}
 		}
 	}
 
-	// The two flags are mutually exclusive (kong xor), so at most one of
-	// these has anything to check.
+	// The render backend flags are mutually exclusive (kong xor), so at most
+	// one of these has anything to check.
 	if c.CrossplaneImage != "" {
 		return dp.ValidateMinRenderImage(c.CrossplaneImage)
 	}
@@ -303,6 +297,12 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		if err != nil {
 			return err
 		}
+	} else {
+		ics, err := simulate.ImageConfigs(c.ImageConfigs, "")
+		if err != nil {
+			return err
+		}
+		pkgs = &packages{ics: ics}
 	}
 
 	clients, err := client.New(restCfg, logger)
@@ -315,7 +315,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		return err
 	}
 
-	opts := append(c.processorOptions(k, logger, fns), dp.WithChangedFunctions(append(changed, c.hookChangedFunctions()...)...), dp.WithXRTimeout(c.Timeout))
+	opts := append(c.processorOptions(k, logger, fns, digests, pkgs.ics), dp.WithChangedFunctions(append(changed, c.hookChangedFunctions()...)...), dp.WithXRTimeout(c.Timeout))
 
 	// xrPlanner and servers are for rendering the plans; they stay nil with
 	// --skip-plan, and servers also when Hooks.Router supplies the router.
@@ -361,10 +361,10 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 }
 
 // packages is how a simulation fetches packages. Functions and providers go
-// through one client with one set of ImageConfigs, so --image-configs
-// rewrites both.
+// through one set of ImageConfigs, so --image-configs rewrites both.
 type packages struct {
-	ics    []pkgv1beta1.ImageConfig
+	ics []pkgv1beta1.ImageConfig
+	// client is set in project mode, and otherwise by planOptions.
 	client runtimexpkg.Client
 
 	// proj and depMgr are set in project mode.
@@ -375,8 +375,8 @@ type packages struct {
 // planOptions sets up provider diff servers and the XRPlanner, and returns
 // the processor options that plan each composite resource's composed
 // resources. Namespaced resources without a namespace plan in ns, the
-// kubeconfig's namespace. pkgs is the project's, in project mode, and nil
-// otherwise. Run stops c.servers when it is set.
+// kubeconfig's namespace. pkgs is the project's in project mode; otherwise
+// planOptions sets its client. Run stops c.servers when it is set.
 func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, ns string, in *inputs, pkgs *packages) ([]dp.ProcessorOption, error) {
 	kubeClient, rmapper, err := simulate.NewKubeClient(restCfg)
 	if err != nil {
@@ -387,16 +387,12 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 	if c.Hooks != nil && c.Hooks.Router != nil {
 		router = c.Hooks.Router
 	} else {
-		if pkgs == nil {
-			ics, err := simulate.ImageConfigs(c.ImageConfigs, "")
+		if pkgs.client == nil {
+			client, _, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(pkgs.ics))
 			if err != nil {
 				return nil, err
 			}
-			client, _, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(ics))
-			if err != nil {
-				return nil, err
-			}
-			pkgs = &packages{ics: ics, client: client}
+			pkgs.client = client
 		}
 		if c.Hooks != nil && c.Hooks.Servers != nil {
 			c.servers = c.Hooks.Servers
@@ -846,8 +842,10 @@ func (c *simulateCmd) scope() (string, []k8stypes.NamespacedName, error) {
 
 // processorOptions returns the diff processor options for this run. Both the
 // XR and composition processors get the same options, as crossplane-diff
-// does, so they share one advisory collector.
-func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, fns []pkgv1.Function) []dp.ProcessorOption {
+// does, so they share one advisory collector. fns are the project's
+// functions, of which embedded are the locally built ones, and ics rewrite
+// the other functions' images.
+func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, fns []pkgv1.Function, embedded map[string]project.EmbeddedDigest, ics []pkgv1beta1.ImageConfig) []dp.ProcessorOption {
 	opts := []dp.ProcessorOption{
 		dp.WithLogger(logger),
 		dp.WithAdvisories(dp.NewAdvisoryCollector(k.Stderr)),
@@ -860,17 +858,12 @@ func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, f
 		dp.WithMaxRenderIterations(c.MaxIterations),
 	}
 
-	// Project functions, built locally, replace the cluster's. With none,
-	// every function comes from the cluster.
-	if len(fns) > 0 {
-		opts = append(opts, dp.WithFunctionProviderFactory(dp.NewProjectFunctionProviderFactory(fns)))
+	if len(fns) > 0 || len(ics) > 0 {
+		opts = append(opts, dp.WithFunctionProviderFactory(functionProviderFactory(fns, embedded, ics)))
 	}
 
 	if len(c.FunctionCredentials.Secrets) > 0 {
 		opts = append(opts, dp.WithFunctionCredentials(c.FunctionCredentials.Secrets))
-	}
-	if c.FunctionRegistryOverride != "" {
-		opts = append(opts, dp.WithFunctionRegistryOverride(c.FunctionRegistryOverride))
 	}
 	if c.MaxRecvMessageSize > 0 {
 		opts = append(opts, dp.WithMaxRecvMessageSize(c.MaxRecvMessageSize))
@@ -881,11 +874,43 @@ func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, f
 	if c.CrossplaneImage != "" {
 		opts = append(opts, dp.WithCrossplaneImage(c.CrossplaneImage))
 	}
-	if c.Hooks != nil && c.Hooks.RenderBinary != "" {
-		opts = append(opts, dp.WithCrossplaneRenderBinary(c.Hooks.RenderBinary))
+	if c.CrossplaneBinary != "" {
+		opts = append(opts, dp.WithCrossplaneRenderBinary(c.CrossplaneBinary))
+	}
+	if c.CrossplaneDockerNetwork != "" {
+		opts = append(opts, dp.WithCrossplaneDockerNetwork(c.CrossplaneDockerNetwork))
 	}
 
 	return opts
+}
+
+// functionProviderFactory returns the functions a render runs: the project's
+// functions in place of the cluster's of the same name, with every image
+// except the embedded functions' rewritten by ics. Embedded functions run
+// from the images loaded into the Docker daemon, so they keep their package.
+func functionProviderFactory(fns []pkgv1.Function, embedded map[string]project.EmbeddedDigest, ics []pkgv1beta1.ImageConfig) func(xpclient.FunctionClient, logging.Logger) dp.FunctionProvider {
+	var deps, own []pkgv1.Function
+	for _, fn := range fns {
+		if _, ok := embedded[fn.GetName()]; ok {
+			own = append(own, fn)
+			continue
+		}
+		deps = append(deps, fn)
+	}
+
+	return func(fnClient xpclient.FunctionClient, logger logging.Logger) dp.FunctionProvider {
+		p := dp.NewCachedFunctionProvider(fnClient, logger)
+		if len(deps) > 0 {
+			p = dp.NewProjectFunctionProvider(p, deps, logger)
+		}
+		if len(ics) > 0 {
+			p = dp.NewImageConfigFunctionProvider(p, ics, logger)
+		}
+		if len(own) > 0 {
+			p = dp.NewProjectFunctionProvider(p, own, logger)
+		}
+		return p
+	}
 }
 
 // diffOptions returns the renderer options the command's flags select,

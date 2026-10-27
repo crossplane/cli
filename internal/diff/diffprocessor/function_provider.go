@@ -23,12 +23,15 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
 // FunctionProvider provides functions for rendering compositions.
@@ -44,7 +47,8 @@ type FunctionProvider interface {
 
 // EnvDockerNetwork is the environment variable that specifies which Docker
 // network the crossplane-render container and function containers should
-// join. NewEngineRenderFn reads this once and routes the value through
+// join when no network is passed explicitly. NewEngineRenderFn reads this once
+// and routes the value through
 // render.EngineFlags.CrossplaneDockerNetwork; the upstream docker engine
 // then both runs the render container on that network and annotates fns
 // to join it at Setup time. This is needed when crossplane-diff runs
@@ -59,7 +63,7 @@ const EnvDockerNetwork = "CROSSPLANE_DIFF_DOCKER_NETWORK"
 // by the render engine, which names them for the run that owns them (see EngineRenderFn).
 //
 // It is safe for concurrent use, and every call returns its own copy of the functions: the
-// providers that wrap it (RegistryOverrideFunctionProvider, EnvInjectingFunctionProvider) and the
+// providers that wrap it (ImageConfigFunctionProvider, EnvInjectingFunctionProvider) and the
 // render engine modify the functions they are given.
 type CachedFunctionProvider struct {
 	fnClient xp.FunctionClient
@@ -137,50 +141,56 @@ func (p *CachedFunctionProvider) Cleanup(_ context.Context) error {
 	return nil
 }
 
-// RegistryOverrideFunctionProvider wraps another FunctionProvider and replaces
-// the registry in each function's package reference before returning them.
-type RegistryOverrideFunctionProvider struct {
-	inner    FunctionProvider
-	registry string
-	logger   logging.Logger
+// ImageConfigFunctionProvider wraps another FunctionProvider and rewrites each
+// function's package with the ImageConfig that matches it, as Crossplane does
+// when it pulls a package, so the render pulls function images from a mirror.
+type ImageConfigFunctionProvider struct {
+	inner  FunctionProvider
+	store  xpkg.ConfigStore
+	logger logging.Logger
 }
 
-// NewRegistryOverrideFunctionProvider wraps inner, replacing the registry
-// portion of every function package ref with the given registry.
-func NewRegistryOverrideFunctionProvider(inner FunctionProvider, registry string, logger logging.Logger) FunctionProvider {
-	return &RegistryOverrideFunctionProvider{
-		inner:    inner,
-		registry: registry,
-		logger:   logger,
+// NewImageConfigFunctionProvider wraps inner, rewriting every function package
+// a rewriting ImageConfig in ics matches.
+func NewImageConfigFunctionProvider(inner FunctionProvider, ics []pkgv1beta1.ImageConfig, logger logging.Logger) FunctionProvider {
+	return &ImageConfigFunctionProvider{
+		inner:  inner,
+		store:  clixpkg.NewStaticImageConfigStore(ics),
+		logger: logger,
 	}
 }
 
 // GetFunctionsForComposition delegates to the wrapped provider and rewrites
-// the registry portion of each returned function's package ref.
-func (p *RegistryOverrideFunctionProvider) GetFunctionsForComposition(ctx context.Context, comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
+// each returned function's package.
+func (p *ImageConfigFunctionProvider) GetFunctionsForComposition(ctx context.Context, comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
 	fns, err := p.inner.GetFunctionsForComposition(ctx, comp)
 	if err != nil {
 		return nil, err
 	}
 
 	for i := range fns {
-		orig := fns[i].Spec.Package
-
-		replaced := replaceRegistry(orig, p.registry)
-		if replaced != orig {
-			p.logger.Debug("Overriding function registry",
-				"function", fns[i].GetName(),
-				"from", orig,
-				"to", replaced)
-			fns[i].Spec.Package = replaced
+		ic, rewritten, err := p.store.RewritePath(ctx, fns[i].Spec.Package)
+		if err != nil {
+			return nil, errors.Wrapf(err, "cannot rewrite the package of function %q with ImageConfig %q", fns[i].GetName(), ic)
 		}
+
+		if rewritten == "" {
+			continue
+		}
+
+		p.logger.Debug("Rewriting function package",
+			"function", fns[i].GetName(),
+			"imageConfig", ic,
+			"from", fns[i].Spec.Package,
+			"to", rewritten)
+		fns[i].Spec.Package = rewritten
 	}
 
 	return fns, nil
 }
 
 // Cleanup delegates to the wrapped provider.
-func (p *RegistryOverrideFunctionProvider) Cleanup(ctx context.Context) error {
+func (p *ImageConfigFunctionProvider) Cleanup(ctx context.Context) error {
 	return p.inner.Cleanup(ctx)
 }
 
@@ -274,29 +284,4 @@ func upsertEnvPair(cur, key, val string) string {
 	}
 
 	return strings.Join(pairs, ",")
-}
-
-// replaceRegistry replaces the registry portion of an OCI package reference,
-// preserving the repository path, tag, and/or digest. A trailing slash on
-// newRegistry is trimmed.
-//
-// The first path component is treated as a registry host only when it follows
-// the standard OCI rule: it contains a '.' or ':', or it is exactly
-// "localhost". Otherwise the ref has no explicit registry (e.g.
-// "crossplane-contrib/function-auto-ready:v1.0.0") and newRegistry is prepended
-// to the full ref instead of replacing the first path segment.
-func replaceRegistry(pkg, newRegistry string) string {
-	newRegistry = strings.TrimRight(newRegistry, "/")
-
-	idx := strings.Index(pkg, "/")
-	if idx < 0 {
-		return newRegistry + "/" + pkg
-	}
-
-	first := pkg[:idx]
-	if !strings.ContainsAny(first, ".:") && first != "localhost" {
-		return newRegistry + "/" + pkg
-	}
-
-	return newRegistry + pkg[idx:]
 }

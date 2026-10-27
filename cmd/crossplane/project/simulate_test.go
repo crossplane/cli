@@ -42,14 +42,18 @@ import (
 	xperrors "github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/common"
+	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/plan"
+	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
@@ -110,43 +114,42 @@ func TestSimulateFlags(t *testing.T) {
 				"--as", "jane", "--as-group", "admins",
 			},
 			want: want{cmd: &simulateCmd{
-				Input:             []string{"p.yaml"},
-				Context:           "staging",
-				Namespace:         "team-a",
-				Name:              []string{"db"},
-				IncludePinned:     true,
-				MaxIterations:     3,
-				Timeout:           2 * time.Minute,
-				MaxConcurrency:    2,
-				Output:            "json",
-				CrossplaneVersion: "v2.3.4",
-				MaxNestedDepth:    10,
-				DryRunOn:          "all",
+				Input:          []string{"p.yaml"},
+				Context:        "staging",
+				Namespace:      "team-a",
+				Name:           []string{"db"},
+				IncludePinned:  true,
+				MaxIterations:  3,
+				Timeout:        2 * time.Minute,
+				MaxConcurrency: 2,
+				Output:         "json",
+				EngineFlags:    render.EngineFlags{CrossplaneVersion: "v2.3.4"},
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
 			}},
 		},
 		"ParityFlags": {
 			reason: "The crossplane-diff parity flags should land on their fields.",
 			args: []string{
 				"--no-color", "--compact", "--max-nested-depth", "3", "--ignore-paths", "a.b", "--ignore-paths", "c.d",
-				"--function-registry-override", "reg.example.com", "--eventual-state", "--max-recv-message-size", "16",
+				"--eventual-state", "--max-recv-message-size", "16",
 				"--minimize-composition", "--analyze-on", "always", "--dry-run-on", "existing",
 			},
 			want: want{cmd: &simulateCmd{
-				Input:                    []string{"crossplane-project.yaml"},
-				MaxConcurrency:           8,
-				MaxIterations:            dp.DefaultMaxRenderIterations,
-				Timeout:                  2 * time.Minute,
-				Output:                   "plan",
-				NoColor:                  true,
-				Compact:                  true,
-				MaxNestedDepth:           3,
-				IgnorePaths:              []string{"a.b", "c.d"},
-				FunctionRegistryOverride: "reg.example.com",
-				EventualState:            true,
-				MaxRecvMessageSize:       16,
-				MinimizeComposition:      true,
-				AnalyzeOn:                "always",
-				DryRunOn:                 "existing",
+				Input:               []string{"crossplane-project.yaml"},
+				MaxConcurrency:      8,
+				MaxIterations:       dp.DefaultMaxRenderIterations,
+				Timeout:             2 * time.Minute,
+				Output:              "plan",
+				NoColor:             true,
+				Compact:             true,
+				MaxNestedDepth:      3,
+				IgnorePaths:         []string{"a.b", "c.d"},
+				EventualState:       true,
+				MaxRecvMessageSize:  16,
+				MinimizeComposition: true,
+				AnalyzeOn:           "always",
+				DryRunOn:            "existing",
 			}},
 		},
 		"FunctionCredentials": {
@@ -212,8 +215,41 @@ func TestSimulateFlags(t *testing.T) {
 				DryRunOn:       "all",
 				Providers:      dir,
 				ImageConfigs:   creds,
-				SessionID:      "s1",
+				EngineFlags:    render.EngineFlags{SessionID: "s1"},
 			}},
+		},
+		"RenderEngineFlags": {
+			reason: "The render engine flags should land on the embedded EngineFlags.",
+			args:   []string{"--crossplane-binary", creds, "--session-id", "s1"},
+			want: want{cmd: &simulateCmd{
+				Input:          []string{"crossplane-project.yaml"},
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        2 * time.Minute,
+				Output:         "plan",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+				EngineFlags:    render.EngineFlags{CrossplaneBinary: creds, SessionID: "s1"},
+			}},
+		},
+		"RenderDockerNetwork": {
+			reason: "--crossplane-docker-network should land on the embedded EngineFlags.",
+			args:   []string{"--crossplane-docker-network", "ci"},
+			want: want{cmd: &simulateCmd{
+				Input:          []string{"crossplane-project.yaml"},
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        2 * time.Minute,
+				Output:         "plan",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+				EngineFlags:    render.EngineFlags{CrossplaneDockerNetwork: "ci"},
+			}},
+		},
+		"RenderBinaryWithNetwork": {
+			reason: "A local render binary runs no container, so it can't take a Docker network.",
+			args:   []string{"--crossplane-binary", creds, "--crossplane-docker-network", "ci"},
+			want:   want{err: true},
 		},
 		"SkipPlan": {
 			reason: "--skip-plan alone should be accepted.",
@@ -235,9 +271,19 @@ func TestSimulateFlags(t *testing.T) {
 			want:   want{err: true},
 		},
 		"SkipPlanWithImageConfigs": {
-			reason: "--skip-plan conflicts with --image-configs.",
+			reason: "--image-configs also rewrites function images, so it applies with --skip-plan.",
 			args:   []string{"--skip-plan", "--image-configs", creds},
-			want:   want{err: true},
+			want: want{cmd: &simulateCmd{
+				Input:          []string{"crossplane-project.yaml"},
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        2 * time.Minute,
+				Output:         "plan",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+				SkipPlan:       true,
+				ImageConfigs:   creds,
+			}},
 		},
 		"SkipPlanWithSessionID": {
 			reason: "--skip-plan conflicts with --session-id.",
@@ -305,14 +351,14 @@ func TestSimulateFlags(t *testing.T) {
 			reason: "A render image with no comparable version should be accepted.",
 			args:   []string{"--crossplane-image", "example.com/crossplane:stable"},
 			want: want{cmd: &simulateCmd{
-				Input:           []string{"crossplane-project.yaml"},
-				MaxConcurrency:  8,
-				MaxIterations:   dp.DefaultMaxRenderIterations,
-				Timeout:         2 * time.Minute,
-				Output:          "plan",
-				MaxNestedDepth:  10,
-				DryRunOn:        "all",
-				CrossplaneImage: "example.com/crossplane:stable",
+				Input:          []string{"crossplane-project.yaml"},
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        2 * time.Minute,
+				Output:         "plan",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+				EngineFlags:    render.EngineFlags{CrossplaneImage: "example.com/crossplane:stable"},
 			}},
 		},
 		"RenderBackendsExclusive": {
@@ -421,22 +467,21 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: stderr}}
 	c := &simulateCmd{
-		IncludePinned:     true,
-		MaxIterations:     7,
-		CrossplaneVersion: "v2.3.4",
+		IncludePinned: true,
+		MaxIterations: 7,
+		EngineFlags:   render.EngineFlags{CrossplaneVersion: "v2.3.4", CrossplaneDockerNetwork: "ci"},
 
-		MaxNestedDepth:           4,
-		IgnorePaths:              []string{"a.b"},
-		FunctionCredentials:      FunctionCredentials{Secrets: []corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "creds"}}}},
-		FunctionRegistryOverride: "reg.example.com",
-		EventualState:            true,
-		MaxRecvMessageSize:       16,
-		AnalyzeOn:                "spec-change",
-		DryRunOn:                 "existing",
+		MaxNestedDepth:      4,
+		IgnorePaths:         []string{"a.b"},
+		FunctionCredentials: FunctionCredentials{Secrets: []corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "creds"}}}},
+		EventualState:       true,
+		MaxRecvMessageSize:  16,
+		AnalyzeOn:           "spec-change",
+		DryRunOn:            "existing",
 	}
 
 	cfg := dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn"}}}) {
+	for _, o := range c.processorOptions(k, logging.NewNopLogger(), []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn"}}}, nil, nil) {
 		o(&cfg)
 	}
 
@@ -445,12 +490,12 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		MaxRenderIterations int
 		CrossplaneVersion   string
 		CrossplaneImage     string
+		DockerNetwork       string
 		HasAdvisories       bool
 		HasFunctionProvider bool
 		MaxNestedDepth      int
 		IgnorePaths         []string
 		Credentials         []corev1.Secret
-		RegistryOverride    string
 		EventualState       bool
 		MaxRecvMessageSize  int
 		AnalyzeOn           dp.AnalyzeOn
@@ -460,12 +505,12 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		IncludeManual:       true,
 		MaxRenderIterations: 7,
 		CrossplaneVersion:   "v2.3.4",
+		DockerNetwork:       "ci",
 		HasAdvisories:       true,
 		HasFunctionProvider: true,
 		MaxNestedDepth:      4,
 		IgnorePaths:         []string{"a.b"},
 		Credentials:         c.FunctionCredentials.Secrets,
-		RegistryOverride:    "reg.example.com",
 		EventualState:       true,
 		MaxRecvMessageSize:  16,
 		AnalyzeOn:           dp.AnalyzeOnSpecChange,
@@ -476,12 +521,12 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		MaxRenderIterations: cfg.MaxRenderIterations,
 		CrossplaneVersion:   cfg.CrossplaneVersion,
 		CrossplaneImage:     cfg.CrossplaneImage,
+		DockerNetwork:       cfg.CrossplaneDockerNetwork,
 		HasAdvisories:       cfg.Advisories != nil,
 		HasFunctionProvider: cfg.Factories.FunctionProvider != nil,
 		MaxNestedDepth:      cfg.MaxNestedDepth,
 		IgnorePaths:         cfg.IgnorePaths,
 		Credentials:         cfg.FunctionCredentials,
-		RegistryOverride:    cfg.FunctionRegistryOverride,
 		EventualState:       cfg.EventualState,
 		MaxRecvMessageSize:  cfg.MaxRecvMessageSize,
 		AnalyzeOn:           cfg.AnalyzeOn,
@@ -491,25 +536,84 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		t.Errorf("processorOptions(...): -want, +got:\n%s", diff)
 	}
 
-	// Without project functions every function comes from the cluster, so
-	// there is nothing to overlay.
+	// Without project functions or ImageConfigs every function comes from the
+	// cluster as is, so there is nothing to wrap.
 	cfg = dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil) {
+	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil, nil, nil) {
 		o(&cfg)
 	}
 	if cfg.Factories.FunctionProvider != nil {
 		t.Errorf("processorOptions(..., nil): want no function provider overlay, got one")
 	}
 
-	// The test hooks render with a local binary.
-	c.Hooks = &SimulateHooks{RenderBinary: "/bin/crossplane"}
-	c.CrossplaneVersion = ""
+	// ImageConfigs alone still wrap the cluster's functions.
 	cfg = dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil) {
+	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil, nil, []pkgv1beta1.ImageConfig{{}}) {
+		o(&cfg)
+	}
+	if cfg.Factories.FunctionProvider == nil {
+		t.Errorf("processorOptions(..., ics): want a function provider that rewrites images, got none")
+	}
+
+	// --crossplane-binary renders with a local binary.
+	c.EngineFlags = render.EngineFlags{CrossplaneBinary: "/bin/crossplane"}
+	cfg = dp.ProcessorConfig{}
+	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil, nil, nil) {
 		o(&cfg)
 	}
 	if cfg.CrossplaneRenderBinary != "/bin/crossplane" {
-		t.Errorf("processorOptions(...) with hooks: want render binary %q, got %q", "/bin/crossplane", cfg.CrossplaneRenderBinary)
+		t.Errorf("processorOptions(...) with --crossplane-binary: want render binary %q, got %q", "/bin/crossplane", cfg.CrossplaneRenderBinary)
+	}
+}
+
+func TestFunctionProviderFactory(t *testing.T) {
+	ics := []pkgv1beta1.ImageConfig{{
+		ObjectMeta: metav1.ObjectMeta{Name: "mirror"},
+		Spec: pkgv1beta1.ImageConfigSpec{
+			MatchImages:  []pkgv1beta1.ImageMatch{{Prefix: "xpkg.crossplane.io/"}},
+			RewriteImage: &pkgv1beta1.ImageRewrite{Prefix: "mirror.example.com/"},
+		},
+	}}
+	fn := func(name, pkg string) pkgv1.Function {
+		return pkgv1.Function{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: pkg}}}
+	}
+	cluster := fn("fn-cluster", "xpkg.crossplane.io/org/fn-cluster:v1")
+	projFns := []pkgv1.Function{
+		fn("fn-dep", "xpkg.crossplane.io/org/fn-dep:v1"),
+		fn("fn-own", "xpkg.crossplane.io/org/proj_fn-own:arm64"),
+	}
+	embedded := map[string]project.EmbeddedDigest{"fn-own": {}}
+
+	comp := &apiextensionsv1.Composition{
+		ObjectMeta: metav1.ObjectMeta{Name: "comp"},
+		Spec: apiextensionsv1.CompositionSpec{
+			Mode: apiextensionsv1.CompositionModePipeline,
+			Pipeline: []apiextensionsv1.PipelineStep{
+				{Step: "a", FunctionRef: apiextensionsv1.FunctionReference{Name: "fn-cluster"}},
+				{Step: "b", FunctionRef: apiextensionsv1.FunctionReference{Name: "fn-dep"}},
+				{Step: "c", FunctionRef: apiextensionsv1.FunctionReference{Name: "fn-own"}},
+			},
+		},
+	}
+	fnClient := testutils.NewMockFunctionClient().WithSuccessfulFunctionsFetch([]pkgv1.Function{cluster}).Build()
+
+	p := functionProviderFactory(projFns, embedded, ics)(fnClient, logging.NewNopLogger())
+	fns, err := p.GetFunctionsForComposition(context.Background(), comp)
+	if err != nil {
+		t.Fatalf("GetFunctionsForComposition(...): %v", err)
+	}
+	got := map[string]string{}
+	for _, f := range fns {
+		got[f.GetName()] = f.Spec.Package
+	}
+	want := map[string]string{
+		"fn-cluster": "mirror.example.com/org/fn-cluster:v1",
+		"fn-dep":     "mirror.example.com/org/fn-dep:v1",
+		// Embedded functions run from the images loaded into the daemon.
+		"fn-own": "xpkg.crossplane.io/org/proj_fn-own:arm64",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("GetFunctionsForComposition(...): -want, +got:\n%s", diff)
 	}
 }
 

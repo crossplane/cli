@@ -29,6 +29,7 @@ import (
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
@@ -298,114 +299,82 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_SameNameDifferentPipe
 	}
 }
 
-func TestReplaceRegistry(t *testing.T) {
+func TestImageConfigFunctionProvider(t *testing.T) {
+	fn := func(name, pkg string) pkgv1.Function {
+		return pkgv1.Function{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: pkg}},
+		}
+	}
+	mirror := pkgv1beta1.ImageConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "mirror"},
+		Spec: pkgv1beta1.ImageConfigSpec{
+			MatchImages:  []pkgv1beta1.ImageMatch{{Prefix: "xpkg.crossplane.io/crossplane-contrib/"}},
+			RewriteImage: &pkgv1beta1.ImageRewrite{Prefix: "registry.example.com/mirror/"},
+		},
+	}
+
 	tests := map[string]struct {
-		pkg         string
-		newRegistry string
-		want        string
+		reason  string
+		ics     []pkgv1beta1.ImageConfig
+		want    []string
+		wantErr bool
 	}{
-		"StandardPackage": {
-			pkg:         "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0",
-			newRegistry: "registry.example.com",
-			want:        "registry.example.com/crossplane-contrib/function-go-templating:v0.11.0",
+		"RewritesMatchingPackages": {
+			reason: "A package a rewriting ImageConfig matches should be rewritten; others kept.",
+			ics:    []pkgv1beta1.ImageConfig{mirror},
+			want: []string{
+				"registry.example.com/mirror/function-go-templating:v0.11.0",
+				"other.registry.io/crossplane-contrib/function-auto-ready:v1.0.0",
+			},
 		},
-		"DifferentRegistry": {
-			pkg:         "ghcr.io/crossplane/function-auto-ready:v1.2.3",
-			newRegistry: "registry.example.com",
-			want:        "registry.example.com/crossplane/function-auto-ready:v1.2.3",
+		"NoImageConfigs": {
+			reason: "Without ImageConfigs every package should be kept.",
+			want: []string{
+				"xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0",
+				"other.registry.io/crossplane-contrib/function-auto-ready:v1.0.0",
+			},
 		},
-		"SHA256Digest": {
-			pkg:         "old.registry.io/org/func@sha256:abc123",
-			newRegistry: "new.registry.io",
-			want:        "new.registry.io/org/func@sha256:abc123",
-		},
-		"NoExplicitRegistry": {
-			// First segment lacks '.', ':' or "localhost", so it is treated as
-			// part of the path (per OCI rules), and newRegistry is prepended.
-			pkg:         "crossplane-contrib/function-auto-ready:v1.0.0",
-			newRegistry: "new.registry.io",
-			want:        "new.registry.io/crossplane-contrib/function-auto-ready:v1.0.0",
-		},
-		"NewRegistryWithTrailingSlash": {
-			pkg:         "xpkg.crossplane.io/foo/bar:v1",
-			newRegistry: "new.registry.io/",
-			want:        "new.registry.io/foo/bar:v1",
-		},
-		"LocalhostWithPort": {
-			pkg:         "localhost:5000/foo/bar:v1",
-			newRegistry: "new.registry.io",
-			want:        "new.registry.io/foo/bar:v1",
-		},
-		"NoSlash": {
-			pkg:         "bare-image:v1",
-			newRegistry: "new.registry.io",
-			want:        "new.registry.io/bare-image:v1",
-		},
-		"DeepPath": {
-			pkg:         "registry.io/a/b/c/func:v1",
-			newRegistry: "other.io",
-			want:        "other.io/a/b/c/func:v1",
+		"MissingRewritePrefix": {
+			reason: "A matching ImageConfig with an empty rewrite prefix should fail rather than pull the original image.",
+			ics: []pkgv1beta1.ImageConfig{{
+				ObjectMeta: metav1.ObjectMeta{Name: "broken"},
+				Spec: pkgv1beta1.ImageConfigSpec{
+					MatchImages:  []pkgv1beta1.ImageMatch{{Prefix: "xpkg.crossplane.io/"}},
+					RewriteImage: &pkgv1beta1.ImageRewrite{},
+				},
+			}},
+			wantErr: true,
 		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := replaceRegistry(tt.pkg, tt.newRegistry)
-			if got != tt.want {
-				t.Errorf("replaceRegistry(%q, %q) = %q, want %q", tt.pkg, tt.newRegistry, got, tt.want)
+			fnClient := tu.NewMockFunctionClient().
+				WithSuccessfulFunctionsFetch([]pkgv1.Function{
+					fn("function-go-templating", "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0"),
+					fn("function-auto-ready", "other.registry.io/crossplane-contrib/function-auto-ready:v1.0.0"),
+				}).
+				Build()
+			logger := tu.TestLogger(t, false)
+			provider := NewImageConfigFunctionProvider(NewCachedFunctionProvider(fnClient, logger), tt.ics, logger)
+
+			fns, err := provider.GetFunctionsForComposition(t.Context(), &apiextensionsv1.Composition{ObjectMeta: metav1.ObjectMeta{Name: "test-composition"}})
+			if gotErr := err != nil; gotErr != tt.wantErr {
+				t.Fatalf("\n%s\nGetFunctionsForComposition(): want error %t, got %v", tt.reason, tt.wantErr, err)
+			}
+
+			got := make([]string, 0, len(fns))
+			for _, f := range fns {
+				got = append(got, f.Spec.Package)
+			}
+			if tt.wantErr {
+				return
+			}
+			if diff := gcmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("\n%s\nGetFunctionsForComposition(): -want, +got:\n%s", tt.reason, diff)
 			}
 		})
-	}
-}
-
-func TestRegistryOverrideFunctionProvider(t *testing.T) {
-	functions := []pkgv1.Function{
-		{
-			ObjectMeta: metav1.ObjectMeta{Name: "function-go-templating"},
-			Spec: pkgv1.FunctionSpec{
-				PackageSpec: pkgv1.PackageSpec{
-					Package: "original.registry.io/crossplane-contrib/function-go-templating:v0.11.0",
-				},
-			},
-		},
-		{
-			ObjectMeta: metav1.ObjectMeta{Name: "function-auto-ready"},
-			Spec: pkgv1.FunctionSpec{
-				PackageSpec: pkgv1.PackageSpec{
-					Package: "other.registry.io/crossplane-contrib/function-auto-ready:v1.0.0",
-				},
-			},
-		},
-	}
-
-	fnClient := tu.NewMockFunctionClient().
-		WithSuccessfulFunctionsFetch(functions).
-		Build()
-
-	logger := tu.TestLogger(t, false)
-	inner := NewCachedFunctionProvider(fnClient, logger)
-
-	provider := NewRegistryOverrideFunctionProvider(inner, "registry.example.com", logger)
-
-	comp := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-composition"},
-	}
-
-	fns, err := provider.GetFunctionsForComposition(t.Context(), comp)
-	if err != nil {
-		t.Fatalf("GetFunctionsForComposition() error = %v", err)
-	}
-
-	if len(fns) != 2 {
-		t.Fatalf("GetFunctionsForComposition() returned %d functions, want 2", len(fns))
-	}
-
-	if fns[0].Spec.Package != "registry.example.com/crossplane-contrib/function-go-templating:v0.11.0" {
-		t.Errorf("function[0].Spec.Package = %q, want overridden registry", fns[0].Spec.Package)
-	}
-
-	if fns[1].Spec.Package != "registry.example.com/crossplane-contrib/function-auto-ready:v1.0.0" {
-		t.Errorf("function[1].Spec.Package = %q, want overridden registry", fns[1].Spec.Package)
 	}
 }
 

@@ -986,7 +986,8 @@ func resourceRefsPath(xrdAPIVersion XrdAPIVersion) []string {
 
 // localCrossplaneBinary returns the absolute path to a locally-built
 // `crossplane` binary at ../../../_output/bin/crossplane (relative to
-// cmd/crossplane/project, so the repo root's _output) when it exists, or "" when it doesn't. The binary, when present, contains the
+// cmd/crossplane/project, so the repo root's _output) when it exists, or ""
+// when it doesn't. The binary, when present, contains the
 // `crossplane internal render` subcommand introduced by upstream PR #7339
 // and is exec'd directly for fast in-process rendering. When absent, callers
 // pass the empty string through to the diff command, which falls through to

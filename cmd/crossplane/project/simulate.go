@@ -257,8 +257,6 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		return err
 	}
 
-	c.SetDefaultCrossplaneDockerNetwork(fns)
-
 	opts := append(c.processorOptions(k, logger, fns, digests, pkgs.ics), dp.WithChangedFunctions(append(changed, c.hookChangedFunctions()...)...), dp.WithXRTimeout(c.Timeout))
 
 	// xrPlanner and servers are for rendering the plans; they stay nil with
@@ -758,6 +756,8 @@ func (c *simulateCmd) scope() (string, []k8stypes.NamespacedName, error) {
 // functions, of which embedded are the locally built ones, and ics rewrite
 // the other functions' images.
 func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, fns []pkgv1.Function, embedded map[string]project.EmbeddedDigest, ics []pkgv1beta1.ImageConfig) []dp.ProcessorOption {
+	c.SetDefaultCrossplaneDockerNetwork(fns)
+
 	opts := []dp.ProcessorOption{
 		dp.WithLogger(logger),
 		dp.WithAdvisories(dp.NewAdvisoryCollector(k.Stderr)),

@@ -1587,3 +1587,38 @@ func TestPlanOptionsProvidersOverProjectDeps(t *testing.T) {
 		t.Errorf("planOptions(...) with --providers in project mode: -want ensured, +got:\n%s", diff)
 	}
 }
+
+func TestSimulateProcessorOptionsDockerNetwork(t *testing.T) {
+	fns := []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn", Annotations: map[string]string{render.AnnotationKeyRuntimeDockerNetwork: "fn-net"}}}}
+	cases := map[string]struct {
+		env  string
+		args []string
+		want string
+	}{
+		"Annotation":         {want: "fn-net"},
+		"EnvBeatsAnnotation": {env: "env-net", want: "env-net"},
+		"FlagBeatsEnv":       {env: "env-net", args: []string{"--crossplane-docker-network=flag-net"}, want: "flag-net"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			// t.Setenv restores any outer value; kong treats a set-but-empty
+			// variable as set, so unset it for the no-env cases.
+			t.Setenv("CROSSPLANE_DOCKER_NETWORK", tc.env)
+			if tc.env == "" {
+				_ = os.Unsetenv("CROSSPLANE_DOCKER_NETWORK")
+			}
+			c, err := parseSimulate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("parseSimulate(%v): %v", tc.args, err)
+			}
+			k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
+			cfg := dp.ProcessorConfig{}
+			for _, o := range c.processorOptions(k, logging.NewNopLogger(), fns, nil, nil) {
+				o(&cfg)
+			}
+			if cfg.CrossplaneDockerNetwork != tc.want {
+				t.Errorf("processorOptions(...): want network %q, got %q", tc.want, cfg.CrossplaneDockerNetwork)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
@@ -143,7 +144,7 @@ type ProcessorConfig struct {
 	// ChangedFunctions names functions whose behaviour differs from the cluster's. A composition whose
 	// pipeline calls one is analysed as at least a metadata-scope change, even if it is otherwise
 	// identical. Empty by default, which changes nothing.
-	ChangedFunctions map[string]bool
+	ChangedFunctions sets.Set[string]
 
 	// IgnorePaths is a list of paths to ignore when calculating diffs
 	IgnorePaths []string
@@ -274,12 +275,10 @@ func WithAnalyzeOn(analyzeOn AnalyzeOn) ProcessorOption {
 func WithChangedFunctions(names ...string) ProcessorOption {
 	return func(config *ProcessorConfig) {
 		if config.ChangedFunctions == nil {
-			config.ChangedFunctions = make(map[string]bool, len(names))
+			config.ChangedFunctions = sets.New[string]()
 		}
 
-		for _, n := range names {
-			config.ChangedFunctions[n] = true
-		}
+		config.ChangedFunctions.Insert(names...)
 	}
 }
 

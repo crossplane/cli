@@ -31,7 +31,9 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	corev1 "k8s.io/api/core/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
@@ -1018,10 +1020,7 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 				WithLabels(tt.compLabels).
 				BuildAsUnstructured()
 
-			pred, err := predictRevision(newComp)
-			if err != nil {
-				t.Fatalf("predictRevision() unexpected error: %v", err)
-			}
+			pred := predictRevision(typedComposition(t, newComp))
 
 			kept, dropped, repointing, err := processor.partitionXRsByUpdatePolicy(tt.xrs, newComp, pred)
 
@@ -1252,7 +1251,7 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_RevisionName(t *testing.T) {
 				config: ProcessorConfig{Logger: tu.TestLogger(t, false), IncludeManual: true},
 			}
 
-			comp := tu.NewComposition("comp").WithCompositeTypeRef("example.org/v1", "XResource").WithPipelineMode().BuildAsUnstructured()
+			comp := tu.NewComposition("comp").WithCompositeTypeRef("example.org/v1", "XResource").WithPipelineMode().Build()
 			results := processor.collectXRDiffs(t.Context(), []*un.Unstructured{tt.xr}, comp, tt.revisionName, revisionLabels, nil)
 
 			if err := results[dt.MakeDiffKeyFromResource(tt.xr)].Error; err != nil {
@@ -1309,7 +1308,7 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_PerXR(t *testing.T) {
 		},
 	}
 
-	comp := tu.NewComposition("comp").WithCompositeTypeRef("example.org/v1", "XResource").WithPipelineMode().BuildAsUnstructured()
+	comp := tu.NewComposition("comp").WithCompositeTypeRef("example.org/v1", "XResource").WithPipelineMode().Build()
 	results := processor.collectXRDiffs(t.Context(), []*un.Unstructured{slow, fast, failing}, comp, "", nil, nil)
 
 	got := map[string]string{}
@@ -1443,19 +1442,13 @@ func TestPredictRevision(t *testing.T) {
 			WithCompositeTypeRef("example.org/v1", "XBucket")
 	}
 
-	baseline, err := predictRevision(base().BuildAsUnstructured())
-	if err != nil {
-		t.Fatalf("predictRevision() unexpected error: %v", err)
-	}
+	baseline := predictRevision(base().Build())
 
 	if want := "xbuckets.example.org-"; !strings.HasPrefix(baseline.name, want) {
 		t.Errorf("predictRevision() name = %q, want prefix %q", baseline.name, want)
 	}
 
-	same, err := predictRevision(base().BuildAsUnstructured())
-	if err != nil {
-		t.Fatalf("predictRevision() unexpected error: %v", err)
-	}
+	same := predictRevision(base().Build())
 
 	if same != baseline {
 		t.Errorf("predictRevision() is not deterministic: %+v vs %+v", baseline, same)
@@ -1463,17 +1456,13 @@ func TestPredictRevision(t *testing.T) {
 
 	// Labels and annotations are hashed as well as spec, which is the whole reason a metadata-only
 	// composition edit still mints a revision.
-	for name, differing := range map[string]*un.Unstructured{
-		"Labels":      base().WithLabels(map[string]string{"channel": "preview"}).BuildAsUnstructured(),
-		"Annotations": base().WithAnnotations(map[string]string{"example.org/note": "hi"}).BuildAsUnstructured(),
-		"Spec":        base().WithPipelineMode().BuildAsUnstructured(),
+	for name, differing := range map[string]*apiextensionsv1.Composition{
+		"Labels":      base().WithLabels(map[string]string{"channel": "preview"}).Build(),
+		"Annotations": base().WithAnnotations(map[string]string{"example.org/note": "hi"}).Build(),
+		"Spec":        base().WithPipelineMode().Build(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, err := predictRevision(differing)
-			if err != nil {
-				t.Fatalf("predictRevision() unexpected error: %v", err)
-			}
-
+			got := predictRevision(differing)
 			if got == baseline {
 				t.Errorf("predictRevision() unchanged by a difference in %s: %+v", name, got)
 			}
@@ -1561,11 +1550,6 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRCompositionLookup(t *te
 		WithPipelineMode().
 		Build()
 
-	parentCompUnstructured := tu.NewComposition("parent-composition").
-		WithCompositeTypeRef("parent.example.org/v1", "XParentResource").
-		WithPipelineMode().
-		BuildAsUnstructured()
-
 	// Create a composition for the nested XR (different type)
 	childComposition := tu.NewComposition("child-composition").
 		WithCompositeTypeRef("child.example.org/v1", "XChildResource").
@@ -1586,7 +1570,7 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRCompositionLookup(t *te
 		description        string
 		setupMocks         func() (xp.CompositionClient, *tu.MockDiffProcessor, *[]string)
 		xrs                []*un.Unstructured
-		cliComposition     *un.Unstructured
+		cliComposition     *apiextensionsv1.Composition
 		wantRootCompName   string // Expected composition name for root XR
 		wantNestedCompName string // Expected composition name for nested XR (if any)
 	}{
@@ -1629,7 +1613,7 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRCompositionLookup(t *te
 				return mockCompClient, mockXRProc, &compositionRequests
 			},
 			xrs:            []*un.Unstructured{rootXR},
-			cliComposition: parentCompUnstructured,
+			cliComposition: parentComposition,
 			// Correct behavior: root XR gets CLI composition, nested XR gets its own from cluster
 			wantRootCompName:   "parent-composition",
 			wantNestedCompName: "child-composition",
@@ -2123,10 +2107,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 
 				// The predicted name's derivation is pinned by TestRevisionIdentity; this matrix only
 				// needs it present, since the composition's name is predictable in every case.
-				pred, err := predictRevision(metaOnlyComp)
-				if err != nil {
-					t.Fatalf("predictRevision: %v", err)
-				}
+				pred := predictRevision(typedComposition(t, metaOnlyComp))
 
 				tt.want.RevisionImpact.PredictedRevisionName = pred.name
 
@@ -2449,4 +2430,42 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 			}
 		})
 	}
+}
+
+func TestCallsChangedFunction(t *testing.T) {
+	steps := []apiextensionsv1.PipelineStep{
+		{Step: "a", FunctionRef: apiextensionsv1.FunctionReference{Name: "fn-a"}},
+		{Step: "b", FunctionRef: apiextensionsv1.FunctionReference{Name: "fn-b"}},
+	}
+
+	tests := map[string]struct {
+		steps   []apiextensionsv1.PipelineStep
+		changed sets.Set[string]
+		want    bool
+	}{
+		"Match":         {steps: steps, changed: sets.New("fn-b"), want: true},
+		"NoMatch":       {steps: steps, changed: sets.New("fn-c"), want: false},
+		"EmptyPipeline": {steps: nil, changed: sets.New("fn-a"), want: false},
+		"NilSet":        {steps: steps, changed: nil, want: false},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := callsChangedFunction(tt.steps, tt.changed); got != tt.want {
+				t.Errorf("callsChangedFunction() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// typedComposition converts u to a typed Composition, failing the test if it cannot.
+func typedComposition(t *testing.T, u *un.Unstructured) *apiextensionsv1.Composition {
+	t.Helper()
+
+	comp := &apiextensionsv1.Composition{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, comp); err != nil {
+		t.Fatalf("cannot convert composition to typed: %v", err)
+	}
+
+	return comp
 }

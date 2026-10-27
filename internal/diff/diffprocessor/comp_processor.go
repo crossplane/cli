@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -29,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
@@ -390,13 +392,15 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	result.CompositionDiff = comparison.diff
 	result.MaskedChangesOnly = comparison.diff == nil && comparison.changed()
 
+	cliComp := &apiextensionsv1.Composition{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(newComp.Object, cliComp); err != nil {
+		return nil, errors.Wrapf(err, "cannot convert composition %q to typed", newComp.GetName())
+	}
+
 	// Predict the identity of the revision this composition would produce. Needed twice below: to
 	// evaluate compositionRevisionSelectors against the label set the revision would carry, and to seed
 	// the composites so a template observing the revision name renders the value it would really get.
-	pred, err := predictRevision(newComp)
-	if err != nil {
-		return nil, err
-	}
+	pred := predictRevision(cliComp)
 
 	// Report what applying this composition does to CompositionRevisions regardless of whether the
 	// composites are evaluated below. This is the mutative consequence of the apply, and it is
@@ -431,7 +435,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// revision, so it is analysed as at least a metadata-scope change: any-change analyses it,
 	// spec-change still skips it. Only the decision is raised; RevisionImpact still reports the real scope.
 	analysisScope := comparison.scope
-	if analysisScope == ChangeScopeNone && callsChangedFunction(newComp, p.config.ChangedFunctions) {
+	if analysisScope == ChangeScopeNone && callsChangedFunction(cliComp.Spec.Pipeline, p.config.ChangedFunctions) {
 		analysisScope = ChangeScopeMetadata
 	}
 
@@ -537,7 +541,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// Process kept XRs and collect diffs to determine which ones have changes
 	p.config.Logger.Debug("Processing XRs to collect diff information", "count", len(keptXRs))
 
-	xrResults := p.collectXRDiffs(ctx, keptXRs, newComp, revisionName, predictedRevisionLabels(newComp, pred), pinnedXRs)
+	xrResults := p.collectXRDiffs(ctx, keptXRs, cliComp, revisionName, predictedRevisionLabels(newComp, pred), pinnedXRs)
 
 	// Build impact analysis and counts from results for the kept set, then merge in any
 	// already-appended filtered entries.
@@ -564,30 +568,13 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 
 // collectXRDiffs processes XRs and collects their diffs, returning results for each XR.
 //
-// revisionName is the name of the CompositionRevision applying newComp would leave its composites on,
+// revisionName is the name of the CompositionRevision applying cliComp would leave its composites on,
 // or empty when that is not predictable; revisionLabels is the label set that revision would carry. See
 // cliCompositionRevision for which composites are rendered with that name.
 //
 // pinned, keyed by dt.MakeDiffKeyFromResource, holds the composites rendered against their own pinned
-// revision instead of newComp; see pinnedFunctionChangeXRs.
-func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un.Unstructured, newComp *un.Unstructured, revisionName string, revisionLabels map[string]string, pinned map[string]pinnedResolution) map[string]*XRDiffResult {
-	// Convert the CLI composition to typed once for reuse
-	cliComp := &apiextensionsv1.Composition{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(newComp.Object, cliComp); err != nil {
-		// If we can't convert, return an error result for all XRs
-		results := make(map[string]*XRDiffResult)
-
-		for _, xr := range xrs {
-			resourceID := dt.MakeDiffKeyFromResource(xr)
-			results[resourceID] = &XRDiffResult{
-				Diffs: make(map[string]*dt.ResourceDiff),
-				Error: errors.Wrap(err, "cannot convert CLI composition to typed"),
-			}
-		}
-
-		return results
-	}
-
+// revision instead of cliComp; see pinnedFunctionChangeXRs.
+func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string, pinned map[string]pinnedResolution) map[string]*XRDiffResult {
 	// Extract the target GVK from the CLI composition's compositeTypeRef
 	cliCompTargetAPIVersion := cliComp.Spec.CompositeTypeRef.APIVersion
 	cliCompTargetKind := cliComp.Spec.CompositeTypeRef.Kind
@@ -754,7 +741,7 @@ func (p *DefaultCompDiffProcessor) pinnedFunctionChangeXRs(ctx context.Context, 
 // changed function. A resolution with no revision name (the composition itself) or for another type
 // (a claim, whose backing XR the render looks up under a different key) is not.
 // ponytail: a pinned claim stays deferred; route the backing XR's key to support it.
-func pinnedRevisionCallsChangedFunction(xr *un.Unstructured, resolved dtypes.ResolvedComposition, changed map[string]bool) bool {
+func pinnedRevisionCallsChangedFunction(xr *un.Unstructured, resolved dtypes.ResolvedComposition, changed sets.Set[string]) bool {
 	if resolved.Composition == nil || resolved.RevisionName == "" {
 		return false
 	}
@@ -767,9 +754,7 @@ func pinnedRevisionCallsChangedFunction(xr *un.Unstructured, resolved dtypes.Res
 		return false
 	}
 
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(resolved.Composition)
-
-	return err == nil && callsChangedFunction(&un.Unstructured{Object: obj}, changed)
+	return callsChangedFunction(resolved.Composition.Spec.Pipeline, changed)
 }
 
 // cliCompositionRevision resolves a composite that is rendered against cliComp, the diffed composition.
@@ -1021,25 +1006,9 @@ func withoutLastApplied(obj *un.Unstructured) *un.Unstructured {
 	return out
 }
 
-// callsChangedFunction reports whether comp's pipeline references any function in changed.
-func callsChangedFunction(comp *un.Unstructured, changed map[string]bool) bool {
-	if len(changed) == 0 {
-		return false
-	}
-
-	steps, _, _ := un.NestedSlice(comp.Object, "spec", "pipeline")
-	for _, s := range steps {
-		step, ok := s.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		if name, _, _ := un.NestedString(step, "functionRef", "name"); changed[name] {
-			return true
-		}
-	}
-
-	return false
+// callsChangedFunction reports whether any pipeline step references a function in changed.
+func callsChangedFunction(steps []apiextensionsv1.PipelineStep, changed sets.Set[string]) bool {
+	return slices.ContainsFunc(steps, func(s apiextensionsv1.PipelineStep) bool { return changed.Has(s.FunctionRef.Name) })
 }
 
 // compositionChangeScope classifies how much of a composition differs from its in-cluster version,
@@ -1104,16 +1073,10 @@ func revisionIdentity(compName, hash string) predictedRevision {
 	}
 }
 
-// predictRevision computes the identity of the CompositionRevision applying newComp would produce, by
-// calling Crossplane's own exported Composition.Hash() on the typed composition. newComp is not
-// mutated.
-func predictRevision(newComp *un.Unstructured) (predictedRevision, error) {
-	comp := &apiextensionsv1.Composition{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(newComp.Object, comp); err != nil {
-		return predictedRevision{}, errors.Wrapf(err, "cannot convert composition %q to typed to predict its revision", newComp.GetName())
-	}
-
-	return revisionIdentity(comp.GetName(), comp.Hash()), nil
+// predictRevision computes the identity of the CompositionRevision applying comp would produce, by
+// calling Crossplane's own exported Composition.Hash().
+func predictRevision(comp *apiextensionsv1.Composition) predictedRevision {
+	return revisionIdentity(comp.GetName(), comp.Hash())
 }
 
 // predictedRevisionLabels returns the label set the CompositionRevision resulting from this

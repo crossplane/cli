@@ -31,6 +31,8 @@ func TestFieldChangePaths(t *testing.T) {
 	}{
 		"Plain":               {planned: map[string]any{"spec": map[string]any{"region": "x"}}, path: "spec.region", levels: []string{"spec", "region"}},
 		"Dots":                {planned: map[string]any{"metadata": map[string]any{"annotations": map[string]any{"crossplane.io/composite": "x"}}}, path: "metadata.annotations[crossplane.io/composite]", levels: []string{"metadata", "annotations", "crossplane.io/composite"}},
+		"Digits":              {planned: map[string]any{"data": map[string]any{"0": "x"}}, path: "data.0", levels: []string{"data", "0"}},
+		"Quoted":              {planned: map[string]any{"data": map[string]any{`"q"`: "x"}}, path: `data."q"`, levels: []string{"data", "q"}},
 		"Slash":               {planned: map[string]any{"data": map[string]any{"a/b": "x"}}, path: "data.a/b", levels: []string{"data", "a/b"}},
 		"FirstKey":            {planned: map[string]any{"a.b": map[string]any{"c": "x"}}, path: "[a.b].c", levels: []string{"a.b", "c"}},
 		"ListIndex":           {planned: map[string]any{"spec": map[string]any{"pipeline": []any{map[string]any{"step": "x"}}}}, path: "spec.pipeline[0].step", levels: []string{"spec", "pipeline[0]", "step"}},

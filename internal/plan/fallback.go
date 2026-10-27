@@ -87,9 +87,15 @@ func newCursor(root string) cursor {
 }
 
 func (c cursor) field(k string) cursor {
-	// ponytail: a key containing '[' or ']' has no fieldpath form, so its
-	// path will not parse back; upgrade if a real key needs it.
-	next := cursor{segs: append(slices.Clip(c.segs), xpfieldpath.Field(k)), fp: c.fp, inList: c.inList}
+	// The segment is built directly: xpfieldpath.Field would trim quotes
+	// from the key and rename it.
+	//
+	// ponytail: fieldpath has no escaping, so a key with unbalanced or nested
+	// brackets (e.g. "a[b", "a[b]c") yields a path that does not parse back.
+	// Such a change shows as one display level and misses its annotate
+	// marker; its values are still printed. Upgrade if a real key needs it.
+	seg := xpfieldpath.Segment{Type: xpfieldpath.SegmentField, Field: k}
+	next := cursor{segs: append(slices.Clip(c.segs), seg), fp: c.fp, inList: c.inList}
 	if !c.inList {
 		next.fp = append(slices.Clip(c.fp), fieldpath.PathElement{FieldName: &k})
 	}

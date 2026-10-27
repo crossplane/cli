@@ -414,7 +414,7 @@ func renderOverlapError(groups []dt.XRDiffGroup, producers []overlapProducer) er
 	case allEqual:
 		return nil
 	case sharedPlaceholder:
-		return errors.Errorf("cannot combine diffs: inputs %s both produce resource %s only because crossplane-diff "+
+		return errors.Errorf("cannot combine diffs: inputs %s both produce resource %s only because simulate "+
 			"gives XRs that share a generateName the same placeholder name; the API server would name them "+
 			"differently, so they cannot be told apart here — diff them separately", strings.Join(inputs, ", "), key)
 	case len(controllers) > 1:

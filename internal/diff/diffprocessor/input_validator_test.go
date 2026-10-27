@@ -458,7 +458,7 @@ func TestRenderOverlapErrors(t *testing.T) {
 		disagreement = `cannot combine diffs: inputs XR/a, XR/b both produce resource "example.org/v1/Bucket/default/shared", ` +
 			`but differently, so no single diff is correct for both — diff them separately`
 		placeholder = `cannot combine diffs: inputs XR/g-(generated), XR/g-(generated) both produce resource ` +
-			`"example.org/v1/Bucket/default/shared" only because crossplane-diff gives XRs that share a generateName the ` +
+			`"example.org/v1/Bucket/default/shared" only because simulate gives XRs that share a generateName the ` +
 			`same placeholder name; the API server would name them differently, so they cannot be told apart here — diff ` +
 			`them separately`
 	)

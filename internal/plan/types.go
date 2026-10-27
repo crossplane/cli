@@ -111,9 +111,9 @@ type ResourcePlan struct {
 	// Before is the live object the plan compares, nil for a create. After
 	// is the desired object, nil for a delete. They let a consumer match the
 	// plan to its input and render its own diff. For project simulate both
-	// are the cleaned views the cluster layer diffs, with ignored paths,
+	// are the cleaned views the cluster diff compares, with ignored paths,
 	// status and server-managed metadata removed, so they agree with Changes;
-	// both are nil when the cluster layer found the resource unchanged. For a
+	// both are nil when the cluster diff found the resource unchanged. For a
 	// provider-planned resource After is the manifest sent to the provider,
 	// not the provider's view of the result: computed values and provider
 	// defaults appear only in Changes. A Secret's data and stringData values

@@ -1,6 +1,6 @@
 //go:build integration
 
-package integration
+package project
 
 import (
 	"bytes"
@@ -1010,7 +1010,7 @@ func localCrossplaneBinary(t *testing.T) string {
 		return override
 	}
 
-	absPath, err := filepath.Abs("../../_output/bin/crossplane")
+	absPath, err := filepath.Abs("../../../_output/bin/crossplane")
 	if err != nil {
 		t.Fatalf("cannot resolve crossplane binary path: %v", err)
 	}

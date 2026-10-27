@@ -85,7 +85,7 @@ type simulateCmd struct {
 	// are labelled with the run's own ID, which reclaims them.
 	render.EngineFlags `prefix:"" set:"session_id_help=Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID. Ignored with --skip-plan."`
 
-	// Run sets these; nil with --skip-plan (servers also when Hooks.Router is set).
+	// Run sets these; nil with --skip-plan (servers also when hooks.Router is set).
 	xrPlanner *simulate.XRPlanner
 	servers   simulate.Servers
 	// noServersNoted is set once the "no diff servers" line is printed.
@@ -125,14 +125,14 @@ type simulateCmd struct {
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 
-	// Hooks is for tests; the CLI never sets it.
-	Hooks *SimulateHooks `kong:"-"`
+	// hooks is for tests; the CLI never sets it.
+	hooks *simulateHooks `kong:"-"`
 }
 
-// SimulateHooks replace what project simulate otherwise takes from its
+// simulateHooks replace what project simulate otherwise takes from its
 // environment, so a test can run the real command against a cluster it
 // started. Fields left zero keep the CLI's behavior.
-type SimulateHooks struct {
+type simulateHooks struct {
 	// RESTConfig replaces loading the kubeconfig.
 	RESTConfig *rest.Config
 
@@ -156,11 +156,11 @@ type SimulateHooks struct {
 
 // hookChangedFunctions returns the functions a test marked as changed.
 func (c *simulateCmd) hookChangedFunctions() []string {
-	if c.Hooks == nil {
+	if c.hooks == nil {
 		return nil
 	}
 
-	return c.Hooks.ChangedFunctions
+	return c.hooks.ChangedFunctions
 }
 
 // loadFunctionCredentials loads the v1 Secrets in a YAML file, or in the
@@ -200,7 +200,7 @@ func (c *simulateCmd) Help() string {
 // during parsing, so an unsupported render backend fails before any build or
 // cluster connection.
 func (c *simulateCmd) Validate() error {
-	if c.Hooks != nil && c.Hooks.Router != nil && c.Hooks.Servers != nil {
+	if c.hooks != nil && c.hooks.Router != nil && c.hooks.Servers != nil {
 		return errors.New("hooks Router and Servers are mutually exclusive")
 	}
 
@@ -292,7 +292,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	opts := append(c.processorOptions(k, logger, fns, digests, pkgs.ics), dp.WithChangedFunctions(append(changed, c.hookChangedFunctions()...)...), dp.WithXRTimeout(c.Timeout))
 
 	// xrPlanner and servers are for rendering the plans; they stay nil with
-	// --skip-plan, and servers also when Hooks.Router supplies the router.
+	// --skip-plan, and servers also when hooks.Router supplies the router.
 	if !c.SkipPlan {
 		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, ns, in, pkgs)
 		// Stop even on error: upfront Ensure may have started servers.
@@ -358,8 +358,8 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 	}
 
 	var router simulate.Router
-	if c.Hooks != nil && c.Hooks.Router != nil {
-		router = c.Hooks.Router
+	if c.hooks != nil && c.hooks.Router != nil {
+		router = c.hooks.Router
 	} else {
 		if pkgs.client == nil {
 			client, _, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(pkgs.ics))
@@ -368,8 +368,8 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 			}
 			pkgs.client = client
 		}
-		if c.Hooks != nil && c.Hooks.Servers != nil {
-			c.servers = c.Hooks.Servers
+		if c.hooks != nil && c.hooks.Servers != nil {
+			c.servers = c.hooks.Servers
 		} else {
 			c.servers = simulate.NewServerSet(sp, logger, k.Stderr, pkgs.client, c.SessionID)
 		}
@@ -428,8 +428,8 @@ func (c *simulateCmd) noteNoServers(k *kong.Context, notes []string) {
 // -n, simulate's -n filters composite resources, so it doesn't override this
 // namespace.
 func (c *simulateCmd) restConfig() (*rest.Config, string, error) {
-	if c.Hooks != nil && c.Hooks.RESTConfig != nil {
-		return c.Hooks.RESTConfig, "default", nil
+	if c.hooks != nil && c.hooks.RESTConfig != nil {
+		return c.hooks.RESTConfig, "default", nil
 	}
 	cfg, clientconfig, err := kube.RESTConfig(c.Context, c.Impersonation)
 	if err != nil {
@@ -862,7 +862,7 @@ func functionProviderFactory(fns []pkgv1.Function, embedded map[string]project.E
 // reads them: on a terminal, or as if on one under the test hooks.
 func (c *simulateCmd) diffOptions(k *kong.Context) renderer.DiffOptions {
 	opts := renderer.DefaultDiffOptions()
-	opts.UseColors = !c.NoColor && (c.Hooks != nil && c.Hooks.Terminal || isTerminal(k.Stdout))
+	opts.UseColors = !c.NoColor && (c.hooks != nil && c.hooks.Terminal || isTerminal(k.Stdout))
 	opts.Compact = c.Compact
 	opts.Stdout = k.Stdout
 	opts.Stderr = k.Stderr

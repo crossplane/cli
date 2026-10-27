@@ -66,7 +66,7 @@ in
           # -coverpkg credits the tests' coverage to the packages they exercise;
           # without it the profile only covers the test package itself.
           go test -tags integration -covermode=count -coverpkg=./... \
-            -coverprofile=coverage-integration.txt ./internal/diff/integration/... "$@"
+            -coverprofile=coverage-integration.txt ./cmd/crossplane/project/ "$@"
         '';
       }
     );

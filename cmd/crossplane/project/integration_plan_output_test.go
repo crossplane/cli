@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package integration
+package project
 
 import (
 	"bytes"
@@ -333,7 +333,7 @@ func integrationEnvGap() string {
 // TestSimulatePinnedChangedFunction runs a Composition simulate whose Manual
 // XR is pinned to a revision. Marking a function that revision calls as changed
 // renders the XR against that revision; any other function leaves it deferred.
-// The Hooks seam stands in for project mode's digest detection.
+// The hooks seam stands in for project mode's digest detection.
 func TestSimulatePinnedChangedFunction(t *testing.T) {
 	t.Parallel()
 

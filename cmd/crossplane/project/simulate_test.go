@@ -693,12 +693,12 @@ func TestSimulateDiffOptions(t *testing.T) {
 		},
 		"HooksColorizeAsTerminal": {
 			reason: "The test hooks should colorize as for a terminal.",
-			cmd:    simulateCmd{Hooks: &SimulateHooks{Terminal: true}},
+			cmd:    simulateCmd{hooks: &simulateHooks{Terminal: true}},
 			want:   func(*renderer.DiffOptions) {},
 		},
 		"NoColorWinsOverHooks": {
 			reason: "--no-color should disable colors even under the test hooks.",
-			cmd:    simulateCmd{NoColor: true, Hooks: &SimulateHooks{Terminal: true}},
+			cmd:    simulateCmd{NoColor: true, hooks: &simulateHooks{Terminal: true}},
 			want: func(o *renderer.DiffOptions) {
 				o.UseColors = false
 			},
@@ -861,7 +861,7 @@ current-context: ctx
 		},
 		"Hooks": {
 			reason: "The test hooks' cluster should use default.",
-			cmd:    simulateCmd{Hooks: &SimulateHooks{RESTConfig: &rest.Config{}}},
+			cmd:    simulateCmd{hooks: &simulateHooks{RESTConfig: &rest.Config{}}},
 			want:   "default",
 		},
 	}

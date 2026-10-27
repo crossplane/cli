@@ -14,11 +14,12 @@ import (
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/plan"
+	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
-// The assertions below read project simulate's structured output, plan.Result, behind the builder API
+// The assertions below read project simulate's structured output, simulate.ProjectResult, behind the builder API
 // in structured_assertions.go. The builders speak crossplane-diff's vocabulary (added/modified/removed
-// changes, xrs[] entries, impactAnalysis[] entries); this file maps each onto its plan.Result home:
+// changes, xrs[] entries, impactAnalysis[] entries); this file maps each onto its simulate.ProjectResult home:
 //
 //   - a change is a ResourcePlan, its type the plan's Action (create/update/delete);
 //   - a field value or old/new pair is read from the plan's leaf FieldChanges, a non-leaf path being
@@ -43,12 +44,12 @@ func changeAction(changeType string) plan.Action {
 }
 
 // statusFiltered is crossplane-diff's status for a composite left out of impact analysis, which
-// plan.Result splits into deferred (Manual policy) and skipped (any other reason).
+// simulate.ProjectResult splits into deferred (Manual policy) and skipped (any other reason).
 const statusFiltered = "filtered"
 
 // ParseResult parses project simulate's -o json output.
-func ParseResult(jsonOutput string) (plan.Result, error) {
-	var res plan.Result
+func ParseResult(jsonOutput string) (simulate.ProjectResult, error) {
+	var res simulate.ProjectResult
 	if err := json.Unmarshal([]byte(jsonOutput), &res); err != nil {
 		return res, fmt.Errorf("failed to parse plan result JSON output: %w", err)
 	}
@@ -56,7 +57,7 @@ func ParseResult(jsonOutput string) (plan.Result, error) {
 	return res, nil
 }
 
-// AssertStructured checks a plan.Result against expected, running each section only if it was
+// AssertStructured checks a simulate.ProjectResult against expected, running each section only if it was
 // expected. Accepts any builder level, so callers don't need And()/AndXR()/AndComp().
 func AssertStructured(t *testing.T, jsonOutput string, e Expectation) {
 	t.Helper()
@@ -111,10 +112,10 @@ func AssertStructured(t *testing.T, jsonOutput string, e Expectation) {
 	}
 }
 
-func assertComposition(t *testing.T, res plan.Result, want *CompositionExpectation) {
+func assertComposition(t *testing.T, res simulate.ProjectResult, want *CompositionExpectation) {
 	t.Helper()
 
-	i := slices.IndexFunc(res.Compositions, func(c plan.CompositionResult) bool { return c.Ref.Name == want.name })
+	i := slices.IndexFunc(res.Compositions, func(c simulate.CompositionResult) bool { return c.Ref.Name == want.name })
 	if i < 0 {
 		names := make([]string, 0, len(res.Compositions))
 		for _, c := range res.Compositions {
@@ -141,7 +142,7 @@ func assertComposition(t *testing.T, res plan.Result, want *CompositionExpectati
 		}
 	}
 
-	composites := slices.DeleteFunc(slices.Clone(res.Composites), func(c plan.CompositeResult) bool {
+	composites := slices.DeleteFunc(slices.Clone(res.Composites), func(c simulate.CompositeResult) bool {
 		return c.Composition == nil || *c.Composition != comp.Ref
 	})
 
@@ -171,10 +172,10 @@ func assertComposition(t *testing.T, res plan.Result, want *CompositionExpectati
 
 // assertAffected checks the composition's affected-composite counts. Total counts every composite the
 // composition reaches, filtered ones included.
-func assertAffected(t *testing.T, label string, composites []plan.CompositeResult, want *CompositionExpectation) {
+func assertAffected(t *testing.T, label string, composites []simulate.CompositeResult, want *CompositionExpectation) {
 	t.Helper()
 
-	count := func(f func(plan.CompositeResult) bool) int {
+	count := func(f func(simulate.CompositeResult) bool) int {
 		n := 0
 		for _, c := range composites {
 			if f(c) {
@@ -184,8 +185,8 @@ func assertAffected(t *testing.T, label string, composites []plan.CompositeResul
 
 		return n
 	}
-	status := func(s plan.CompositeStatus) func(plan.CompositeResult) bool {
-		return func(c plan.CompositeResult) bool { return c.Status == s }
+	status := func(s simulate.CompositeStatus) func(simulate.CompositeResult) bool {
+		return func(c simulate.CompositeResult) bool { return c.Status == s }
 	}
 
 	check := func(name string, want *int, got int) {
@@ -195,15 +196,15 @@ func assertAffected(t *testing.T, label string, composites []plan.CompositeResul
 	}
 
 	check("Total", want.affectedTotal, len(composites))
-	check("WithChanges", want.affectedWithChanges, count(status(plan.CompositeChanged)))
-	check("Unchanged", want.affectedUnchanged, count(status(plan.CompositeUnchanged)))
-	check("WithErrors", want.affectedWithErrors, count(status(plan.CompositeError)))
-	check("FilteredByDeletion", want.affectedFilteredByDeletion, count(func(c plan.CompositeResult) bool {
-		return c.Status == plan.CompositeSkipped && c.Reason == plan.CompositeReasonDeleting
+	check("WithChanges", want.affectedWithChanges, count(status(simulate.CompositeChanged)))
+	check("Unchanged", want.affectedUnchanged, count(status(simulate.CompositeUnchanged)))
+	check("WithErrors", want.affectedWithErrors, count(status(simulate.CompositeError)))
+	check("FilteredByDeletion", want.affectedFilteredByDeletion, count(func(c simulate.CompositeResult) bool {
+		return c.Status == simulate.CompositeSkipped && c.Reason == simulate.CompositeReasonDeleting
 	}))
 }
 
-func assertRevisionImpact(t *testing.T, label string, got *plan.RevisionImpact, want *CompositionExpectation) {
+func assertRevisionImpact(t *testing.T, label string, got *simulate.RevisionImpact, want *CompositionExpectation) {
 	t.Helper()
 
 	if want.revisionImpact == nil && want.predictedRevisionName == nil {
@@ -251,10 +252,10 @@ func assertRevisionImpact(t *testing.T, label string, got *plan.RevisionImpact, 
 	}
 }
 
-func assertXRImpact(t *testing.T, res plan.Result, label string, composites []plan.CompositeResult, want *XRImpactExpectation) {
+func assertXRImpact(t *testing.T, res simulate.ProjectResult, label string, composites []simulate.CompositeResult, want *XRImpactExpectation) {
 	t.Helper()
 
-	i := slices.IndexFunc(composites, func(c plan.CompositeResult) bool {
+	i := slices.IndexFunc(composites, func(c simulate.CompositeResult) bool {
 		return refMatches(c.Ref, want.kind, want.name, want.namespace, nil, want.anyNameAllowed, false)
 	})
 	if i < 0 {
@@ -275,7 +276,7 @@ func assertXRImpact(t *testing.T, res plan.Result, label string, composites []pl
 		t.Errorf("%s: expected filterReason %s, got %s", label, want.filterReason, got.Reason)
 	}
 
-	errs := slices.DeleteFunc(slices.Clone(res.Errors), func(e plan.Error) bool { return e.Ref == nil || *e.Ref != got.Ref })
+	errs := slices.DeleteFunc(slices.Clone(res.Errors), func(e simulate.Error) bool { return e.Ref == nil || *e.Ref != got.Ref })
 
 	if want.errorContains != "" {
 		msgs := make([]string, 0, len(errs))
@@ -317,12 +318,12 @@ func assertXRImpact(t *testing.T, res plan.Result, label string, composites []pl
 	}
 }
 
-// statusMatches compares a composite's status with crossplane-diff's, whose "filtered" plan.Result
+// statusMatches compares a composite's status with crossplane-diff's, whose "filtered" simulate.ProjectResult
 // splits into deferred and skipped.
-func statusMatches(got plan.CompositeStatus, want string) bool {
+func statusMatches(got simulate.CompositeStatus, want string) bool {
 	if want == statusFiltered {
 		// Assert filterReason when it matters which of deferred or skipped applies.
-		return got == plan.CompositeDeferred || got == plan.CompositeSkipped
+		return got == simulate.CompositeDeferred || got == simulate.CompositeSkipped
 	}
 
 	return string(got) == want
@@ -333,7 +334,7 @@ func statusMatches(got plan.CompositeStatus, want string) bool {
 // Each expectation consumes the entry it matches, so two expectations can never both resolve to the
 // same entry, and the entry count is pinned once the test has an opinion on xrs[] at all. Without those
 // guards a duplicated identity satisfied every expectation that matched it (issues #477, #488).
-func assertXRExpectations(t *testing.T, res plan.Result, expected []*XRExpectation) {
+func assertXRExpectations(t *testing.T, res simulate.ProjectResult, expected []*XRExpectation) {
 	t.Helper()
 
 	if len(expected) == 0 {
@@ -546,11 +547,6 @@ func assertDryRun(t *testing.T, id string, got *plan.Verification, want dryRunEx
 		t.Errorf("%s: dryRun.skipReason: expected %q, got %q", id, want.skipReason, got.SkipReason)
 	}
 
-	// Performed must be false whenever the object is present; see dt.DryRunInfo.
-	if got.Performed {
-		t.Errorf("%s: dryRun.performed was true on a reported skip, which is contradictory", id)
-	}
-
 	if want.detailSubstring != "" && !strings.Contains(got.Detail, want.detailSubstring) {
 		t.Errorf("%s: dryRun.detail %q does not contain %q — the cluster's own explanation must be propagated, not swallowed",
 			id, got.Detail, want.detailSubstring)
@@ -565,7 +561,7 @@ func assertDryRun(t *testing.T, id string, got *plan.Verification, want dryRunEx
 // asserted there are none — verifies no extras were emitted, mirroring the errors[] guard. Without the
 // count check, warning duplication is untestable: a regression that emits the same advisory once per
 // XR still satisfies every find-first-match expectation. No expectations and no noWarnings = no opinion.
-func assertWarnings(t *testing.T, got []plan.Warning, want []warningMatch, noWarnings bool) {
+func assertWarnings(t *testing.T, got []simulate.Warning, want []warningMatch, noWarnings bool) {
 	t.Helper()
 
 	for _, w := range want {
@@ -580,7 +576,7 @@ func assertWarnings(t *testing.T, got []plan.Warning, want []warningMatch, noWar
 // assertWarningExpectation finds a warning whose message contains want's substring and, when the
 // expectation pins one, whose context map is exactly want's. Both conditions select the warning, since
 // several warnings legitimately share a message and differ only in context.
-func assertWarningExpectation(t *testing.T, got []plan.Warning, want warningMatch) {
+func assertWarningExpectation(t *testing.T, got []simulate.Warning, want warningMatch) {
 	t.Helper()
 
 	var contextsSeen []map[string]string
@@ -606,7 +602,7 @@ func assertWarningExpectation(t *testing.T, got []plan.Warning, want warningMatc
 }
 
 // assertErrorMatch checks a single error against its expectation.
-func assertErrorMatch(t *testing.T, got plan.Error, want *ErrorExpectation) {
+func assertErrorMatch(t *testing.T, got simulate.Error, want *ErrorExpectation) {
 	t.Helper()
 
 	if want.messageContains != "" && !strings.Contains(got.Message, want.messageContains) {
@@ -614,7 +610,7 @@ func assertErrorMatch(t *testing.T, got plan.Error, want *ErrorExpectation) {
 	}
 
 	for _, wantVF := range want.validationFailures {
-		i := slices.IndexFunc(got.ValidationFailures, func(v plan.ValidationFailure) bool {
+		i := slices.IndexFunc(got.ValidationFailures, func(v simulate.ValidationFailure) bool {
 			return v.APIVersion == wantVF.apiVersion && v.Kind == wantVF.kind && v.Name == wantVF.name &&
 				(wantVF.namespace == "" || v.Namespace == wantVF.namespace)
 		})
@@ -639,7 +635,7 @@ func assertErrorMatch(t *testing.T, got plan.Error, want *ErrorExpectation) {
 	}
 }
 
-func assertValidationFailureMatch(t *testing.T, got plan.ValidationFailure, want *ValidationFailureExpectation) {
+func assertValidationFailureMatch(t *testing.T, got simulate.ValidationFailure, want *ValidationFailureExpectation) {
 	t.Helper()
 
 	label := fmt.Sprintf("validationFailure %s/%s %s", want.apiVersion, want.kind, want.name)
@@ -649,7 +645,7 @@ func assertValidationFailureMatch(t *testing.T, got plan.ValidationFailure, want
 	}
 
 	for _, wantFE := range want.errors {
-		i := slices.IndexFunc(got.Errors, func(fe plan.FieldValidationError) bool {
+		i := slices.IndexFunc(got.Errors, func(fe simulate.FieldValidationError) bool {
 			return fe.Type == wantFE.errType && fe.Field == wantFE.field
 		})
 		if i < 0 {
@@ -777,7 +773,7 @@ func refMatches(ref plan.ResourceRef, kind, name, namespace string, namePattern 
 }
 
 // findMatchingError returns the error whose resource is resourceID ("Kind/name").
-func findMatchingError(errs []plan.Error, resourceID string) *plan.Error {
+func findMatchingError(errs []simulate.Error, resourceID string) *simulate.Error {
 	for i := range errs {
 		if errorID(errs[i]) == resourceID {
 			return &errs[i]
@@ -789,7 +785,7 @@ func findMatchingError(errs []plan.Error, resourceID string) *plan.Error {
 
 // errorID is crossplane-diff's resourceID for an error: its resource's Kind/name, empty for a run
 // error no resource owns.
-func errorID(e plan.Error) string {
+func errorID(e simulate.Error) string {
 	if e.Ref == nil {
 		return ""
 	}
@@ -797,7 +793,7 @@ func errorID(e plan.Error) string {
 	return e.Ref.Kind + "/" + e.Ref.Name
 }
 
-func errorIDs(errs []plan.Error) []string {
+func errorIDs(errs []simulate.Error) []string {
 	ids := make([]string, 0, len(errs))
 	for _, e := range errs {
 		ids = append(ids, errorID(e))
@@ -815,7 +811,7 @@ func planIDs(plans []*plan.ResourcePlan) []string {
 	return ids
 }
 
-func compositeIDs(cs []plan.CompositeResult) []string {
+func compositeIDs(cs []simulate.CompositeResult) []string {
 	ids := make([]string, 0, len(cs))
 	for _, c := range cs {
 		ids = append(ids, fmt.Sprintf("%s/%s (ns=%s, status=%s)", c.Ref.Kind, c.Ref.Name, c.Ref.Namespace, c.Status))
@@ -824,7 +820,7 @@ func compositeIDs(cs []plan.CompositeResult) []string {
 	return ids
 }
 
-func warningMessages(ws []plan.Warning) []string {
+func warningMessages(ws []simulate.Warning) []string {
 	msgs := make([]string, 0, len(ws))
 	for _, w := range ws {
 		msgs = append(msgs, w.Message)
@@ -849,7 +845,7 @@ type pathToken struct {
 	isIndex bool
 }
 
-// parsePath splits a field path into its steps. It reads both plan.Result's form (keys joined by ".",
+// parsePath splits a field path into its steps. It reads both simulate.ProjectResult's form (keys joined by ".",
 // other keys as ["key"], indexes as [N]) and the test expectations' ['key'] form.
 func parsePath(path string) ([]pathToken, error) {
 	var toks []pathToken

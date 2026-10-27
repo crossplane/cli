@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // fakePlanClient implements diffv1alpha1.PlanServiceClient in-process,
@@ -114,4 +115,62 @@ func TestPlan(t *testing.T) {
 			t.Errorf("Plan(...): want NotFound to pass through, got %v", err)
 		}
 	})
+}
+
+func TestCleanView(t *testing.T) {
+	cases := map[string]struct {
+		reason string
+		in     map[string]any
+		want   map[string]any
+	}{
+		"StripsServerFields": {
+			reason: "status, server-managed metadata, last-applied-configuration and composed resource references are dropped, emptied parents with them.",
+			in: map[string]any{
+				"apiVersion": "example.org/v1", "kind": "XNetwork",
+				"metadata": map[string]any{
+					"name": "n", "uid": "u", "resourceVersion": "1", "generation": int64(2), "creationTimestamp": "t",
+					"managedFields": []any{}, "selfLink": "s", "ownerReferences": []any{},
+					"annotations": map[string]any{"kubectl.kubernetes.io/last-applied-configuration": "{}"},
+				},
+				"spec": map[string]any{
+					"region":       "us-east-1",
+					"resourceRefs": []any{"a"},
+					"crossplane":   map[string]any{"resourceRefs": []any{"b"}},
+				},
+				"status": map[string]any{"ready": true},
+			},
+			want: map[string]any{
+				"apiVersion": "example.org/v1", "kind": "XNetwork",
+				"metadata": map[string]any{"name": "n"},
+				"spec":     map[string]any{"region": "us-east-1"},
+			},
+		},
+		"KeepsOtherAnnotationsAndCrossplaneFields": {
+			reason: "Removing one annotation or spec.crossplane.resourceRefs keeps the parent's other keys.",
+			in: map[string]any{
+				"metadata": map[string]any{"annotations": map[string]any{"kubectl.kubernetes.io/last-applied-configuration": "{}", "keep": "me"}},
+				"spec":     map[string]any{"crossplane": map[string]any{"resourceRefs": []any{"b"}, "compositionRef": map[string]any{"name": "c"}}},
+			},
+			want: map[string]any{
+				"metadata": map[string]any{"annotations": map[string]any{"keep": "me"}},
+				"spec":     map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "c"}}},
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			in := &unstructured.Unstructured{Object: tc.in}
+			orig := in.DeepCopy()
+			got := cleanView(in)
+			if diff := cmp.Diff(tc.want, got.Object); diff != "" {
+				t.Errorf("\n%s\ncleanView(...): -want, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(orig, in); diff != "" {
+				t.Errorf("\n%s\ncleanView(...) mutated its input: -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+	if cleanView(nil) != nil {
+		t.Error("cleanView(nil): want nil")
+	}
 }

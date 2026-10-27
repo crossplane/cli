@@ -116,7 +116,7 @@ func simulateGap(_ DiffTestType, _ *simArgs) string {
 // --namespace), --include-manual as --include-pinned, and
 // --analyze-unchanged as its replacement --analyze-on=always. The output
 // is passed explicitly: crossplane-diff's default diff, since simulate
-// defaults to -o plan, and json or yaml as plan.Result.
+// defaults to -o plan, and json or yaml as simulate.ProjectResult.
 func simulateArgv(t *testing.T, a *simArgs) []string {
 	t.Helper()
 

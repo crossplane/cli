@@ -9,10 +9,11 @@ import (
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/plan"
+	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
 // resultJSON serializes r the way project simulate's -o json does.
-func resultJSON(t *testing.T, r plan.Result) string {
+func resultJSON(t *testing.T, r simulate.ProjectResult) string {
 	t.Helper()
 
 	out, err := json.Marshal(r)
@@ -54,7 +55,7 @@ func bucket(region string) *unstructured.Unstructured {
 
 // xrResult is an xr run: one changed XR (a modified Bucket, a created ConfigMap and a deleted Secret),
 // one unchanged XR, and one errored XR.
-func xrResult() plan.Result {
+func xrResult() simulate.ProjectResult {
 	plans := []*plan.ResourcePlan{
 		{
 			APIVersion: "example.org/v1", Kind: "Bucket", Name: "bucket-a", Namespace: "default", Action: plan.ActionUpdate, Composite: &xrA,
@@ -80,16 +81,19 @@ func xrResult() plan.Result {
 		{APIVersion: xrC.APIVersion, Kind: xrC.Kind, Name: xrC.Name, Namespace: xrC.Namespace, Error: "cannot get composition", Composite: &xrC},
 	}
 
-	return plan.Result{
-		Summary: plan.Summarize(plans),
-		Composites: []plan.CompositeResult{
-			{Ref: xrA, Status: plan.CompositeChanged},
-			{Ref: xrB, Status: plan.CompositeUnchanged},
-			{Ref: xrC, Status: plan.CompositeError},
+	return simulate.ProjectResult{
+		Result: plan.Result{
+			Summary: plan.Summarize(plans),
+			Plans:   plans,
 		},
-		Plans:    plans,
-		Errors:   []plan.Error{{Ref: &xrC, Message: "cannot get composition"}},
-		Warnings: []plan.Warning{{Message: "something advisory", Context: map[string]string{"composition": "c"}}},
+		Summary: simulate.ProjectSummary{Summary: plan.Summarize(plans)},
+		Composites: []simulate.CompositeResult{
+			{Ref: xrA, Status: simulate.CompositeChanged},
+			{Ref: xrB, Status: simulate.CompositeUnchanged},
+			{Ref: xrC, Status: simulate.CompositeError},
+		},
+		Errors:   []simulate.Error{{Ref: &xrC, Message: "cannot get composition"}},
+		Warnings: []simulate.Warning{{Message: "something advisory", Context: map[string]string{"composition": "c"}}},
 	}
 }
 
@@ -228,32 +232,34 @@ var (
 
 // compResult is a comp run over two compositions: comp-a reaches a changed, an unchanged and a deleting
 // composite; comp-b reaches only a composite whose analysis failed.
-func compResult() plan.Result {
-	return plan.Result{
-		Compositions: []plan.CompositionResult{
-			{Ref: compA, RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2, PredictedRevision: "comp-a-1a2b3c4"}},
+func compResult() simulate.ProjectResult {
+	return simulate.ProjectResult{
+		Result: plan.Result{
+			Plans: []*plan.ResourcePlan{
+				{
+					APIVersion: compA.APIVersion, Kind: compA.Kind, Name: compA.Name, Action: plan.ActionUpdate,
+					Changes: []plan.FieldChange{{Path: "spec.mode", Actual: val("Resources"), Planned: val("Pipeline")}},
+				},
+				{APIVersion: compB.APIVersion, Kind: compB.Kind, Name: compB.Name, Error: "cannot convert composition"},
+				{
+					APIVersion: "example.org/v1", Kind: "XDownstream", Name: "xr-1-abc12", Namespace: "default", Action: plan.ActionUpdate, Composite: &xr1,
+					Changes: []plan.FieldChange{{Path: "spec.forProvider.configData", Actual: val("old"), Planned: val("new-value-42")}},
+					After:   &unstructured.Unstructured{Object: map[string]any{"apiVersion": "example.org/v1", "kind": "XDownstream", "metadata": map[string]any{"name": "xr-1-abc12"}, "spec": map[string]any{"forProvider": map[string]any{"afterOnly": "x"}}}},
+					DryRun:  &plan.Verification{SkipReason: "not-found", Detail: "the server could not find it"},
+				},
+			},
+		},
+		Compositions: []simulate.CompositionResult{
+			{Ref: compA, RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2, PredictedRevision: "comp-a-1a2b3c4"}},
 			{Ref: compB, ImpactAnalysisSkipped: true},
 		},
-		Composites: []plan.CompositeResult{
-			{Ref: xr1, Status: plan.CompositeChanged, Composition: &compA},
-			{Ref: xr2, Status: plan.CompositeUnchanged, Composition: &compA},
-			{Ref: xr3, Status: plan.CompositeSkipped, Reason: plan.CompositeReasonDeleting, Composition: &compA},
-			{Ref: xr1, Status: plan.CompositeError, Composition: &compB},
+		Composites: []simulate.CompositeResult{
+			{Ref: xr1, Status: simulate.CompositeChanged, Composition: &compA},
+			{Ref: xr2, Status: simulate.CompositeUnchanged, Composition: &compA},
+			{Ref: xr3, Status: simulate.CompositeSkipped, Reason: simulate.CompositeReasonDeleting, Composition: &compA},
+			{Ref: xr1, Status: simulate.CompositeError, Composition: &compB},
 		},
-		Plans: []*plan.ResourcePlan{
-			{
-				APIVersion: compA.APIVersion, Kind: compA.Kind, Name: compA.Name, Action: plan.ActionUpdate,
-				Changes: []plan.FieldChange{{Path: "spec.mode", Actual: val("Resources"), Planned: val("Pipeline")}},
-			},
-			{APIVersion: compB.APIVersion, Kind: compB.Kind, Name: compB.Name, Error: "cannot convert composition"},
-			{
-				APIVersion: "example.org/v1", Kind: "XDownstream", Name: "xr-1-abc12", Namespace: "default", Action: plan.ActionUpdate, Composite: &xr1,
-				Changes: []plan.FieldChange{{Path: "spec.forProvider.configData", Actual: val("old"), Planned: val("new-value-42")}},
-				After:   &unstructured.Unstructured{Object: map[string]any{"apiVersion": "example.org/v1", "kind": "XDownstream", "metadata": map[string]any{"name": "xr-1-abc12"}, "spec": map[string]any{"forProvider": map[string]any{"afterOnly": "x"}}}},
-				DryRun:  &plan.Verification{SkipReason: "not-found", Detail: "the server could not find it"},
-			},
-		},
-		Errors: []plan.Error{
+		Errors: []simulate.Error{
 			{Ref: &compB, Message: "cannot convert composition"},
 			{Ref: &xr1, Message: "maximum nesting depth exceeded"},
 		},
@@ -394,11 +400,11 @@ func TestValueAt(t *testing.T) {
 }
 
 // TestAssertStructuredCombined checks that xr-style and composition-style sections of one Expect()
-// are asserted against a single plan.Result, and that each still fails where it did on its own.
+// are asserted against a single simulate.ProjectResult, and that each still fails where it did on its own.
 func TestAssertStructuredCombined(t *testing.T) {
 	res := xrResult()
-	res.Compositions = []plan.CompositionResult{{Ref: compA, RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1}}}
-	res.Composites = append(res.Composites, plan.CompositeResult{Ref: xr1, Status: plan.CompositeChanged, Composition: &compA})
+	res.Compositions = []simulate.CompositionResult{{Ref: compA, RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1}}}
+	res.Composites = append(res.Composites, simulate.CompositeResult{Ref: xr1, Status: simulate.CompositeChanged, Composition: &compA})
 	out := resultJSON(t, res)
 
 	combined := func() *Expected {

@@ -968,7 +968,7 @@ func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o
 // whether the run changed anything, provider plans included, and runErr
 // with any render failure joined to it, so neither is lost. changed is
 // whether the report itself has changes.
-func (c *simulateCmd) renderReport(k *kong.Context, logger logging.Logger, runErr error, res plan.Result, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (bool, error) {
+func (c *simulateCmd) renderReport(k *kong.Context, logger logging.Logger, runErr error, res simulate.ProjectResult, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (bool, error) {
 	c.noteNoServers(k)
 	opts := c.diffOptions(k)
 	plans := c.providerPlans()
@@ -997,8 +997,8 @@ func (c *simulateCmd) renderReport(k *kong.Context, logger logging.Logger, runEr
 // writes derived, the warnings derived from the report, to stderr, as the
 // engine's renderers do. The run's other warnings went to stderr when they
 // were raised.
-func (c *simulateCmd) renderPlan(k *kong.Context, res plan.Result, derived []dt.OutputWarning) error {
-	r, err := plan.NewRenderer(c.Output)
+func (c *simulateCmd) renderPlan(k *kong.Context, res simulate.ProjectResult, derived []dt.OutputWarning) error {
+	r, err := simulate.NewRenderer(c.Output)
 	if err != nil {
 		return err
 	}

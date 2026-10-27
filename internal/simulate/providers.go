@@ -70,7 +70,7 @@ func PlanDiffs(ctx context.Context, p *Planner, keep func(*unstructured.Unstruct
 // Changed reports whether res plans any change: a plan that is not an error
 // and creates, updates, replaces or deletes. With provider plans merged in it
 // is the run's verdict, since a provider can find drift the cluster cannot.
-func Changed(res plan.Result) bool {
+func Changed(res ProjectResult) bool {
 	for _, p := range res.Plans {
 		if p.Error == "" && isChange(p.Action) {
 			return true

@@ -156,7 +156,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		plans = append(plans, planner.Plan(ctx, desired))
 	}
 
-	return renderer.Render(k.Stdout, plan.NewResult(plans))
+	return renderer.Render(k.Stdout, plans)
 }
 
 func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMapper, string, error) {

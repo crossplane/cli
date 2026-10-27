@@ -642,7 +642,7 @@ func (c *DefaultDiffCalculator) classifyApplyFailure(ctx context.Context, desire
 		case ssarErr != nil:
 			return errors.Wrapf(applyErr, "cannot dry-run apply desired object %s, and cannot determine whether that was an authorization denial (%v)", resourceID, ssarErr)
 		case !allowed:
-			return errors.Wrapf(applyErr, "not authorized to dry-run apply %s (%s); crossplane-diff requires the 'patch' verb on every GVK it diffs", resourceID, reason)
+			return errors.Wrapf(applyErr, "not authorized to dry-run apply %s (%s); simulate requires the 'patch' verb on every GVK it diffs", resourceID, reason)
 		default:
 			return NewAdmissionRejectionError(resourceID, desired, applyErr)
 		}

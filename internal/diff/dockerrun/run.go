@@ -172,7 +172,7 @@ func (r *Run) Close(ctx context.Context, release func()) {
 
 	if err != nil {
 		r.advisories.Raise(dt.OutputWarning{
-			Message: "Some Docker containers or networks this run created could not be cleaned up; the next crossplane-diff run will retry",
+			Message: "Some Docker containers or networks this run created could not be cleaned up; the next run will retry",
 			Context: map[string]string{"error": err.Error()},
 		})
 	}
@@ -227,7 +227,7 @@ func (r *Run) reapDead(ctx context.Context) {
 
 	if len(errs) > 0 {
 		r.advisories.Raise(dt.OutputWarning{
-			Message: "Cannot clean up Docker containers or networks left behind by an earlier crossplane-diff run; the next run will retry",
+			Message: "Cannot clean up Docker containers or networks left behind by an earlier run; the next run will retry",
 			Context: map[string]string{"error": errors.Join(errs...).Error()},
 		})
 	}

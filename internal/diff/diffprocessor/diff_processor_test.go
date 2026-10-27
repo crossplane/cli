@@ -827,7 +827,7 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 
 	const (
 		generatedErr = `cannot combine diffs: inputs XR1/gen-xr-(generated), XR1/gen-xr-(generated) both produce resource ` +
-			`"example.org/v1/Bucket/default/shared" only because crossplane-diff gives XRs that share a generateName the ` +
+			`"example.org/v1/Bucket/default/shared" only because simulate gives XRs that share a generateName the ` +
 			`same placeholder name; the API server would name them differently, so they cannot be told apart here — diff ` +
 			`them separately`
 

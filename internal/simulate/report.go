@@ -42,7 +42,7 @@ const noteProviderPlanNotRun = "Provider plan not run."
 // carries no note: each approximate plan already says why it is approximate.
 const (
 	NoteProviderPlanSkipped = "Provider plan skipped (--skip-plan)."
-	NoteNoDiffServers       = "Provider plan not run: no provider diff servers serve these resources."
+	NoteNoDiffServers       = "Provider plan not run: no provider diff server planned these resources."
 )
 
 // FromXRReport maps an xr or project diff run onto a ProjectResult: one plan per

@@ -150,8 +150,8 @@ type ProjectResult struct {
 	Compositions []CompositionResult `json:"compositions,omitempty"`
 	Errors       []Error             `json:"errors,omitempty"`
 	Warnings     []Warning           `json:"warnings,omitempty"`
-	// Notes are statements about how the result was produced, e.g. that a
-	// planning layer did not run.
+	// Notes are statements about how the result was produced, e.g. that the
+	// provider plans did not run.
 	Notes []string `json:"notes,omitempty"`
 }
 

@@ -103,7 +103,8 @@ crossplane resource simulate -f resources.yaml --providers providers.yaml
 
 Emit machine-readable results for CI gating. Each plan carries the live
 object as `before` (absent for a create) and the desired manifest as `after`,
-with Secret values redacted:
+both without status, server-managed metadata and ignored paths, and with
+Secret values redacted:
 
 ```shell
 crossplane resource simulate -f resources.yaml -o json

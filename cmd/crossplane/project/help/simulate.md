@@ -57,7 +57,10 @@ The `-o` flag picks the output format:
 - `json` and `yaml` print the same plan as a structured result, for CI and
   other tools. Each plan carries the objects it compares, as `before` (the
   live object, absent for a create) and `after` (the rendered object, absent
-  for a delete), with Secret values redacted.
+  for a delete), both without status, server-managed metadata and ignored
+  paths, and with Secret values redacted. For a resource the provider planned,
+  `after` is the manifest sent to it; values the provider computes appear only
+  in the changes.
 - `diff` prints a line diff of each changed resource's manifest.
 
 For example, a changed Composition run with `--skip-plan` prints a plan like this:

@@ -98,7 +98,7 @@ func TestSimulatePlanOutput(t *testing.T) {
 
 Plan: 0 to add, 2 to change, 0 to destroy.
 
-Note: Provider plan not run: no provider diff servers serve these resources.
+Note: Provider plan not run: no provider diff server planned these resources.
 `,
 		},
 		"XRCreatePlanText": {
@@ -123,7 +123,7 @@ Note: Provider plan not run: no provider diff servers serve these resources.
 
 Plan: 2 to add, 0 to change, 0 to destroy.
 
-Note: Provider plan not run: no provider diff servers serve these resources.
+Note: Provider plan not run: no provider diff server planned these resources.
 `,
 		},
 		"XRPlanJSON": {
@@ -169,7 +169,7 @@ XR: XNopResource.ns.diff.example.org default/test-resource
 
 Plan: 0 to add, 3 to change, 0 to destroy.
 
-Note: Provider plan not run: no provider diff servers serve these resources.
+Note: Provider plan not run: no provider diff server planned these resources.
 `,
 		},
 		"CompPlanJSON": {

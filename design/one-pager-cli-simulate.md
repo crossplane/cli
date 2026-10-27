@@ -210,12 +210,12 @@ The flow:
    first pass, so most runs converge in one iteration. The loop itself
    stays: simulate renders with local changes, and a changed pipeline can
    require different resources than the ones recorded.)
-4. **Diff the cluster layer.** Compare rendered against live composed
+4. **Compute the cluster diff.** Compare rendered against live composed
    resources with crossplane-diff's calculator, including its server-side
    dry-run so defaulting does not masquerade as change, and its removal
    detection so resources the new Composition no longer produces show as
    deletes.
-5. **Plan the cloud layer.** For every rendered MR, merge in the live MR's
+5. **Run the provider plans.** For every rendered MR, merge in the live MR's
    external-name and status, route it to a diff server by group and kind, and get
    the provider's verdict: no-op, update, or the replace nobody spotted in
    review.

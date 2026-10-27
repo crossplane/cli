@@ -42,9 +42,8 @@ instead.
 Some flags apply only to some inputs. `--namespace`, `--name`,
 `--include-pinned`, and `--analyze-on` choose which composite resources a
 Composition change reaches, so passing them with composite resource files is a
-usage error (exit 80) rather than a run that looks scoped but isn't; no other flag combination
-exits 80. A flag that
-does nothing for the inputs prints a warning and the run continues:
+usage error (exit 80) rather than a run that looks scoped but isn't. A flag
+that does nothing for the inputs prints a warning and the run continues:
 `--minimize-composition` with composite resource files, `--max-concurrency`
 (which configures the project's function builds) without a project file,
 `--cache-dir` with `--skip-plan` and no project file, and `--providers` or

@@ -57,8 +57,10 @@ The `-o` flag picks the output format:
 - `json` and `yaml` print the same plan as a structured result, for CI and
   other tools. Each plan carries the objects it compares, as `before` (the
   live object, absent for a create) and `after` (the rendered object, absent
-  for a delete), both without status, server-managed metadata and ignored
-  paths, and with Secret values redacted. For a resource the provider planned,
+  for a delete), and neither when the cluster diff found the resource
+  unchanged, such as drift only the provider plan found. Both are without
+  status, server-managed metadata and ignored paths, and with Secret values
+  redacted. For a resource the provider planned,
   `after` is the manifest sent to it; values the provider computes appear only
   in the changes.
 - `diff` prints a line diff of each changed resource's manifest.
@@ -100,7 +102,8 @@ demand. A resource no diff server serves keeps its cluster diff. In `json`
 and `yaml` output, `approximate: true` on a plan means it was computed
 client-side, without a provider diff, because the provider couldn't diff that
 resource. The result's `notes` say when provider plans were skipped or no diff
-server served the resources; `-o diff` prints that note to stderr.
+server served the resources; `-o diff` prints the no-diff-server note to
+stderr.
 
 Provider plans are controlled by these flags:
 

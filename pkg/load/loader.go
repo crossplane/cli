@@ -66,8 +66,9 @@ func newLoader(input string) (Loader, error) {
 	return newSourceLoader(input, false)
 }
 
-// newSourceLoader is newLoader; skipPipelineInputs stops the loader from
-// returning Composition pipeline step inputs as manifests of their own.
+// newSourceLoader returns the Loader for one input. With skipPipelineInputs,
+// the loader doesn't return Composition pipeline step inputs as manifests of
+// their own.
 func newSourceLoader(input string, skipPipelineInputs bool) (Loader, error) {
 	if input == "-" {
 		return &StdinLoader{skipPipelineInputs: skipPipelineInputs}, nil

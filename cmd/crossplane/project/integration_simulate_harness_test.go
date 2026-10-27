@@ -35,6 +35,9 @@ limitations under the License.
 //     The render engine runs functions as Docker containers, so without
 //     a Docker daemon no rendering case can run; cases that would not
 //     render cannot be told apart upfront, so they skip too.
+//
+// testdata/README.md describes how a case runs, the skips, and how to run
+// the suite and read its coverage.
 
 package project
 

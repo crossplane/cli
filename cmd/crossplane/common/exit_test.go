@@ -34,11 +34,13 @@ func TestSilentExit(t *testing.T) {
 		err    error
 		want   want
 	}{
-		"Nil":     {reason: "No error isn't a silent exit.", err: nil},
-		"Silent":  {reason: "A silent ExitError value exits silently with its code.", err: ExitError{Code: ExitCodeChanges}, want: want{code: ExitCodeChanges, silent: true}},
-		"WithErr": {reason: "An ExitError with an error is printed.", err: ExitError{Code: 2, Err: errors.New("boom")}},
-		"Wrapped": {reason: "A wrapped silent ExitError is printed, so the wrapper's message isn't lost.", err: errors.Wrap(ExitError{Code: ExitCodeChanges}, "boom")},
-		"Pointer": {reason: "A pointer isn't matched; ExitError must be returned by value.", err: &ExitError{Code: ExitCodeChanges}},
+		"Nil":      {reason: "No error isn't a silent exit.", err: nil},
+		"Silent":   {reason: "A silent ExitError value exits silently with its code.", err: ExitError{Code: ExitCodeChanges}, want: want{code: ExitCodeChanges, silent: true}},
+		"WithErr":  {reason: "An ExitError with an error is printed.", err: ExitError{Code: 2, Err: errors.New("boom")}},
+		"Wrapped":  {reason: "A wrapped silent ExitError is printed, so the wrapper's message isn't lost.", err: errors.Wrap(ExitError{Code: ExitCodeChanges}, "boom")},
+		"KongJoin": {reason: "kong's Run joins a silent ExitError with nil hook errors, which still exits silently.", err: errors.Join(ExitError{Code: ExitCodeChanges}, nil), want: want{code: ExitCodeChanges, silent: true}},
+		"Joined":   {reason: "A silent ExitError joined with a real error is printed.", err: errors.Join(ExitError{Code: ExitCodeChanges}, errors.New("boom"))},
+		"Pointer":  {reason: "A pointer isn't matched; ExitError must be returned by value.", err: &ExitError{Code: ExitCodeChanges}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

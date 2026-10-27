@@ -19,12 +19,13 @@ package plan
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"maps"
 	"slices"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
+
+	xpfieldpath "github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 )
 
 // Fallback computes an approximate client-side plan for desired by comparing
@@ -41,6 +42,7 @@ func Fallback(desired, live *unstructured.Unstructured, reason string) *Resource
 	p := NewResourcePlan(desired)
 	p.Approximate = true
 	p.FallbackReason = reason
+	p.Before, p.After = cleanView(live), cleanView(desired)
 
 	desiredSpec, _, _ := unstructured.NestedMap(desired.Object, "spec")
 
@@ -68,24 +70,38 @@ func Fallback(desired, live *unstructured.Unstructured, reason string) *Resource
 	return p
 }
 
-// cursor tracks a position in the diffed object: the rendered path for the
-// plan's output, and the structured field path for ownership lookups in a
-// managedFields set. The two diverge on purpose: the rendered path is lossy
-// (a map key may itself contain dots or brackets) and indexes list elements,
-// while FieldsV1 sets never index lists positionally, so below a list the
-// field path freezes at the list itself and ownership is decided there.
+// cursor tracks a position in the diffed object: the crossplane-runtime field
+// path for the plan's output, and the structured field path for ownership
+// lookups in a managedFields set. The two diverge on purpose: the output path
+// indexes list elements, while FieldsV1 sets never index lists positionally,
+// so below a list the field path freezes at the list itself and ownership is
+// decided there.
 type cursor struct {
-	str    string
+	segs   xpfieldpath.Segments
 	fp     fieldpath.Path
 	inList bool
 }
 
 func newCursor(root string) cursor {
-	return cursor{str: root, fp: fieldpath.MakePathOrDie(root)}
+	return cursor{segs: xpfieldpath.Segments{xpfieldpath.Field(root)}, fp: fieldpath.MakePathOrDie(root)}
 }
 
 func (c cursor) field(k string) cursor {
-	next := cursor{str: c.str + "." + k, fp: c.fp, inList: c.inList}
+	// The segment is built directly so the JSON path keeps the key verbatim:
+	// xpfieldpath.Field would trim its quotes. Parsing the path back
+	// (DisplayLevels) still trims them; see below.
+	//
+	// ponytail: fieldpath has no escaping, so some keys do not round-trip:
+	//   - the path does not parse, so the change shows as one display level:
+	//     e.g. "a[b", "a]b", "a.b[0]", or the empty key (written "data.");
+	//   - the path parses silently as a different one: "a[b]c" comes back as
+	//     data.a.b.c, so the change shows as several display levels;
+	//   - a leading or trailing quote is trimmed, and a key of only quote
+	//     characters trims to empty, so the key is lost.
+	// Either way the annotate marker for the change is missed; its values are
+	// still printed. Upgrade if a real key needs it.
+	seg := xpfieldpath.Segment{Type: xpfieldpath.SegmentField, Field: k}
+	next := cursor{segs: append(slices.Clip(c.segs), seg), fp: c.fp, inList: c.inList}
 	if !c.inList {
 		next.fp = append(slices.Clip(c.fp), fieldpath.PathElement{FieldName: &k})
 	}
@@ -93,7 +109,8 @@ func (c cursor) field(k string) cursor {
 }
 
 func (c cursor) index(i int) cursor {
-	return cursor{str: fmt.Sprintf("%s[%d]", c.str, i), fp: c.fp, inList: true}
+	seg := xpfieldpath.Segment{Type: xpfieldpath.SegmentIndex, Index: uint(i)}
+	return cursor{segs: append(slices.Clip(c.segs), seg), fp: c.fp, inList: true}
 }
 
 // removable reports whether a removal at the cursor would really happen on
@@ -101,6 +118,14 @@ func (c cursor) index(i int) cursor {
 // applier-owned fields do.
 func (c cursor) removable(owned *fieldpath.Set) bool {
 	return owned == nil || ownedLeaf(owned, c.fp)
+}
+
+// FieldChanges returns the changes that turn actual into planned, with paths
+// rooted at the top level (e.g. metadata.labels.team). A nil planned yields
+// actual-only changes, as for a delete; a nil actual yields planned-only
+// changes, as for a create.
+func FieldChanges(actual, planned map[string]any) []FieldChange {
+	return diffMaps(cursor{}, actual, planned, nil)
 }
 
 // createChanges flattens a desired map into planned-only field changes, so a
@@ -135,9 +160,9 @@ func flattenValue(c cursor, v any, removed bool, owned *fieldpath.Set) []FieldCh
 			if !c.removable(owned) {
 				return nil
 			}
-			return []FieldChange{{Path: c.str, Actual: &Value{Value: v}}}
+			return []FieldChange{{Path: c.segs.String(), Actual: &Value{Value: v}}}
 		}
-		return []FieldChange{{Path: c.str, Planned: &Value{Value: v}}}
+		return []FieldChange{{Path: c.segs.String(), Planned: &Value{Value: v}}}
 	}
 }
 
@@ -189,7 +214,7 @@ func diffValues(c cursor, actual, planned any, owned *fieldpath.Set) []FieldChan
 		return nil
 	}
 	return []FieldChange{{
-		Path:    c.str,
+		Path:    c.segs.String(),
 		Actual:  &Value{Value: actual},
 		Planned: &Value{Value: planned},
 	}}

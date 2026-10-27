@@ -1,0 +1,2222 @@
+// Package testutils provides test utilities for crossplane-diff.
+package testutils
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	cpd "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composed"
+	cmp "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+
+	xpextv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
+	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+
+	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	dtypes "github.com/crossplane/cli/v2/internal/diff/types"
+)
+
+const (
+	fieldSpec      = "spec"
+	jsonTypeObject = "object"
+	jsonTypeString = "string"
+)
+
+// MockBuilder provides a fluent API for building mock objects used in testing.
+// This helps reduce duplication in test setup code while making the intent clearer.
+
+// region Kubernetes API layer mock builders
+
+// ======================================================================================
+// Kubernetes API Layer Mock Builders
+// ======================================================================================
+
+// MockResourceClientBuilder helps build kubernetes.ResourceClient mocks.
+type MockResourceClientBuilder struct {
+	mock *MockResourceClient
+
+	// resourceScopes accumulates GVK -> namespaced across successive
+	// WithNamespacedResource / WithClusterScopedResource calls so the two
+	// can be combined on one builder.
+	resourceScopes map[schema.GroupVersionKind]bool
+
+	// forbiddenLists holds the GVKs WithErrorOnListOf denies a full list of.
+	forbiddenLists map[schema.GroupVersionKind]bool
+}
+
+// NewMockResourceClient creates a new MockResourceClientBuilder.
+func NewMockResourceClient() *MockResourceClientBuilder {
+	return &MockResourceClientBuilder{
+		mock: &MockResourceClient{},
+	}
+}
+
+// WithInitialize sets the Initialize behavior.
+func (b *MockResourceClientBuilder) WithInitialize(fn func(context.Context) error) *MockResourceClientBuilder {
+	b.mock.InitializeFn = fn
+	return b
+}
+
+// WithSuccessfulInitialize sets a successful Initialize implementation.
+func (b *MockResourceClientBuilder) WithSuccessfulInitialize() *MockResourceClientBuilder {
+	return b.WithInitialize(func(context.Context) error {
+		return nil
+	})
+}
+
+// WithFoundGVKs sets the GetGVKsForGroupKind behavior.
+func (b *MockResourceClientBuilder) WithFoundGVKs(gvks []schema.GroupVersionKind) *MockResourceClientBuilder {
+	b.mock.GetGVKsForGroupKindFn = func(_ context.Context, _, _ string) ([]schema.GroupVersionKind, error) {
+		return gvks, nil
+	}
+
+	return b
+}
+
+// WithoutFoundGVKs sets the GetGVKsForGroupKind behavior.
+func (b *MockResourceClientBuilder) WithoutFoundGVKs(err string) *MockResourceClientBuilder {
+	b.mock.GetGVKsForGroupKindFn = func(_ context.Context, _, _ string) ([]schema.GroupVersionKind, error) {
+		return nil, errors.New(err)
+	}
+
+	return b
+}
+
+// WithGetResource sets the GetResource behavior.
+func (b *MockResourceClientBuilder) WithGetResource(fn func(context.Context, schema.GroupVersionKind, string, string) (*un.Unstructured, error)) *MockResourceClientBuilder {
+	b.mock.GetResourceFn = fn
+	return b
+}
+
+// WithResourcesExist sets up GetResource to return resources from a map.
+// Resources are keyed using MakeDiffKey (apiVersion/kind/namespace/name) to correctly handle
+// same-named resources in different namespaces.
+func (b *MockResourceClientBuilder) WithResourcesExist(resources ...*un.Unstructured) *MockResourceClientBuilder {
+	resourceMap := make(map[string]*un.Unstructured)
+
+	// Build a map for fast lookup using the same key format as diff keys
+	for _, res := range resources {
+		key := dt.MakeDiffKeyFromResource(res)
+		resourceMap[key] = res
+	}
+
+	return b.WithGetResource(func(_ context.Context, gvk schema.GroupVersionKind, namespace, name string) (*un.Unstructured, error) {
+		key := dt.MakeDiffKey(gvk.GroupVersion().String(), gvk.Kind, namespace, name)
+		if res, found := resourceMap[key]; found {
+			return res, nil
+		}
+
+		return nil, apierrors.NewNotFound(
+			schema.GroupResource{
+				Group:    gvk.Group,
+				Resource: strings.ToLower(gvk.Kind) + "s",
+			},
+			name,
+		)
+	})
+}
+
+// WithResourceNotFound sets GetResource to always return "not found".
+func (b *MockResourceClientBuilder) WithResourceNotFound() *MockResourceClientBuilder {
+	return b.WithGetResource(func(_ context.Context, gvk schema.GroupVersionKind, _, name string) (*un.Unstructured, error) {
+		// Create a proper Kubernetes "not found" error
+		return nil, apierrors.NewNotFound(
+			schema.GroupResource{
+				Group:    gvk.Group,
+				Resource: strings.ToLower(gvk.Kind) + "s", // Naive pluralization similar to the real code
+			},
+			name,
+		)
+	})
+}
+
+// WithGetResourceError sets GetResource to always return the given error
+// (for non-NotFound transport-failure scenarios; use WithResourceNotFound
+// for clean 404 cases).
+func (b *MockResourceClientBuilder) WithGetResourceError(err error) *MockResourceClientBuilder {
+	return b.WithGetResource(func(context.Context, schema.GroupVersionKind, string, string) (*un.Unstructured, error) {
+		return nil, err
+	})
+}
+
+// WithListResources sets the ListResources behavior.
+func (b *MockResourceClientBuilder) WithListResources(fn func(context.Context, schema.GroupVersionKind, string) ([]*un.Unstructured, error)) *MockResourceClientBuilder {
+	b.mock.ListResourcesFn = fn
+	return b
+}
+
+// WithEmptyListResources mimics an empty but successful response.
+func (b *MockResourceClientBuilder) WithEmptyListResources() *MockResourceClientBuilder {
+	b.WithListResources(func(context.Context, schema.GroupVersionKind, string) ([]*un.Unstructured, error) {
+		return []*un.Unstructured{}, nil
+	})
+	// Also set up GetResourcesByLabel to return empty (for composition revision queries)
+	return b.WithGetResourcesByLabel(func(context.Context, schema.GroupVersionKind, string, metav1.LabelSelector) ([]*un.Unstructured, error) {
+		return []*un.Unstructured{}, nil
+	})
+}
+
+// WithListResourcesFailure mimics a failed response.
+func (b *MockResourceClientBuilder) WithListResourcesFailure(errorStr string) *MockResourceClientBuilder {
+	return b.WithListResources(func(context.Context, schema.GroupVersionKind, string) ([]*un.Unstructured, error) {
+		return nil, errors.New(errorStr)
+	})
+}
+
+// WithErrorOnListOf makes ListResources return Forbidden for these GVKs, as for credentials
+// without list permission on them, and behave as otherwise configured for the rest. It can be
+// combined with any other ListResources option, in any order. GetResource and
+// GetResourcesByLabel are unaffected.
+func (b *MockResourceClientBuilder) WithErrorOnListOf(gvks ...schema.GroupVersionKind) *MockResourceClientBuilder {
+	if b.forbiddenLists == nil {
+		b.forbiddenLists = make(map[schema.GroupVersionKind]bool)
+	}
+
+	for _, gvk := range gvks {
+		b.forbiddenLists[gvk] = true
+	}
+
+	return b
+}
+
+// WithGetResourcesByLabel sets the GetResourcesByLabel behavior.
+func (b *MockResourceClientBuilder) WithGetResourcesByLabel(fn func(context.Context, schema.GroupVersionKind, string, metav1.LabelSelector) ([]*un.Unstructured, error)) *MockResourceClientBuilder {
+	b.mock.GetResourcesByLabelFn = fn
+	return b
+}
+
+// WithResourcesFoundByLabel sets GetResourcesByLabel to return resources for a specific label value.
+// This method is stateful - multiple calls accumulate mappings for different label values.
+// The label parameter specifies which label key to match on (e.g., "crossplane.io/composition-name").
+//
+// An optional expectNamespace pins the lookup namespace: when supplied, the
+// resources are returned only if GetResourcesByLabel is called with that exact
+// namespace. Pass metav1.NamespaceAll to require a cluster-wide (all-namespaces)
+// lookup, as for matchLabels ExtraResources
+// (crossplane-contrib/crossplane-diff#376) — a regression that scopes the lookup
+// to a specific namespace then yields zero results. When omitted, the namespace
+// is not considered and only the label value is matched.
+func (b *MockResourceClientBuilder) WithResourcesFoundByLabel(resources []*un.Unstructured, label, value string, expectNamespace ...string) *MockResourceClientBuilder {
+	matches := func(namespace string, selector metav1.LabelSelector) bool {
+		labelValue, exists := selector.MatchLabels[label]
+		if !exists || labelValue != value {
+			return false
+		}
+
+		return len(expectNamespace) == 0 || namespace == expectNamespace[0]
+	}
+
+	// If we don't have an existing GetResourcesByLabel function, create a new one
+	if b.mock.GetResourcesByLabelFn == nil {
+		return b.WithGetResourcesByLabel(func(_ context.Context, _ schema.GroupVersionKind, namespace string, selector metav1.LabelSelector) ([]*un.Unstructured, error) {
+			if matches(namespace, selector) {
+				return resources, nil
+			}
+
+			return []*un.Unstructured{}, nil
+		})
+	}
+
+	// If we already have a GetResourcesByLabel function, we need to wrap it
+	// This allows multiple calls to accumulate state
+	originalFn := b.mock.GetResourcesByLabelFn
+
+	return b.WithGetResourcesByLabel(func(ctx context.Context, gvk schema.GroupVersionKind, namespace string, selector metav1.LabelSelector) ([]*un.Unstructured, error) {
+		if matches(namespace, selector) {
+			return resources, nil
+		}
+
+		// Fall through to the original function
+		return originalFn(ctx, gvk, namespace, selector)
+	})
+}
+
+// WithListableResources serves resources to ListResources and GetResourcesByLabel as a cluster holding
+// them would: each returns those of the requested GVK in the requested namespace (every namespace for
+// ""), and GetResourcesByLabel only those its selector matches, evaluated as the apiserver does. Other
+// GVKs list empty.
+func (b *MockResourceClientBuilder) WithListableResources(resources ...*un.Unstructured) *MockResourceClientBuilder {
+	listed := func(gvk schema.GroupVersionKind, namespace string, sel labels.Selector) []*un.Unstructured {
+		out := []*un.Unstructured{}
+
+		for _, r := range resources {
+			if r.GroupVersionKind() == gvk && (namespace == "" || r.GetNamespace() == namespace) && sel.Matches(labels.Set(r.GetLabels())) {
+				out = append(out, r)
+			}
+		}
+
+		return out
+	}
+
+	b.WithListResources(func(_ context.Context, gvk schema.GroupVersionKind, namespace string) ([]*un.Unstructured, error) {
+		return listed(gvk, namespace, labels.Everything()), nil
+	})
+
+	return b.WithGetResourcesByLabel(func(_ context.Context, gvk schema.GroupVersionKind, namespace string, ls metav1.LabelSelector) ([]*un.Unstructured, error) {
+		sel, err := metav1.LabelSelectorAsSelector(&ls)
+		if err != nil {
+			return nil, err
+		}
+
+		return listed(gvk, namespace, sel), nil
+	})
+}
+
+// WithGetAllResourcesByLabels sets the GetAllResourcesByLabels behavior.
+func (b *MockResourceClientBuilder) WithGetAllResourcesByLabels(fn func(context.Context, []schema.GroupVersionKind, []metav1.LabelSelector) ([]*un.Unstructured, error)) *MockResourceClientBuilder {
+	b.mock.GetAllResourcesByLabelsFn = fn
+	return b
+}
+
+// WithIsNamespacedResource sets the IsNamespacedResource behavior.
+func (b *MockResourceClientBuilder) WithIsNamespacedResource(fn func(context.Context, schema.GroupVersionKind) (bool, error)) *MockResourceClientBuilder {
+	b.mock.IsNamespacedResourceFn = fn
+	return b
+}
+
+// WithNamespacedResource sets specific GVKs to be namespaced.
+//
+// Composes with WithClusterScopedResource: each call adds to the set of known
+// scopes rather than replacing it, so a single mock can describe a mix of
+// namespaced and cluster-scoped kinds. GVKs that no call has described still
+// return an error, keeping tests explicit about what they rely on.
+func (b *MockResourceClientBuilder) WithNamespacedResource(gvks ...schema.GroupVersionKind) *MockResourceClientBuilder {
+	return b.withResourceScopes(gvks, true)
+}
+
+// WithClusterScopedResource sets specific GVKs to be cluster-scoped.
+//
+// Composes with WithNamespacedResource — see that method for details.
+func (b *MockResourceClientBuilder) WithClusterScopedResource(gvks ...schema.GroupVersionKind) *MockResourceClientBuilder {
+	return b.withResourceScopes(gvks, false)
+}
+
+// withResourceScopes records the scope of each GVK and installs a lookup that
+// consults the accumulated map. Successive calls share the map, which is what
+// lets the two exported helpers be combined.
+func (b *MockResourceClientBuilder) withResourceScopes(gvks []schema.GroupVersionKind, namespaced bool) *MockResourceClientBuilder {
+	if b.resourceScopes == nil {
+		b.resourceScopes = make(map[schema.GroupVersionKind]bool)
+	}
+
+	for _, gvk := range gvks {
+		b.resourceScopes[gvk] = namespaced
+	}
+
+	scopes := b.resourceScopes
+
+	return b.WithIsNamespacedResource(func(_ context.Context, gvk schema.GroupVersionKind) (bool, error) {
+		if isNamespaced, exists := scopes[gvk]; exists {
+			return isNamespaced, nil
+		}
+		// Default to error for unconfigured resources to make tests explicit
+		return false, errors.Errorf("IsNamespacedResource not configured for %s in mock", gvk.String())
+	})
+}
+
+// Build returns the built mock.
+func (b *MockResourceClientBuilder) Build() *MockResourceClient {
+	if len(b.forbiddenLists) == 0 {
+		return b.mock
+	}
+
+	forbidden := b.forbiddenLists
+	m := *b.mock
+	m.ListResourcesFn = func(ctx context.Context, gvk schema.GroupVersionKind, namespace string) ([]*un.Unstructured, error) {
+		if forbidden[gvk] {
+			return nil, apierrors.NewForbidden(
+				schema.GroupResource{Group: gvk.Group, Resource: strings.ToLower(gvk.Kind) + "s"},
+				"",
+				errors.New("list is not permitted"),
+			)
+		}
+
+		return b.mock.ListResources(ctx, gvk, namespace)
+	}
+
+	return &m
+}
+
+// MockSchemaClientBuilder helps build kubernetes.SchemaClient mocks.
+type MockSchemaClientBuilder struct {
+	mock *MockSchemaClient
+}
+
+// NewMockSchemaClient creates a new MockSchemaClientBuilder.
+func NewMockSchemaClient() *MockSchemaClientBuilder {
+	return &MockSchemaClientBuilder{
+		mock: &MockSchemaClient{},
+	}
+}
+
+// WithInitialize sets the Initialize behavior.
+func (b *MockSchemaClientBuilder) WithInitialize(fn func(context.Context) error) *MockSchemaClientBuilder {
+	b.mock.InitializeFn = fn
+	return b
+}
+
+// WithGetCRD sets the GetCRD behavior.
+func (b *MockSchemaClientBuilder) WithGetCRD(fn func(context.Context, schema.GroupVersionKind) (*extv1.CustomResourceDefinition, error)) *MockSchemaClientBuilder {
+	b.mock.GetCRDFn = fn
+	return b
+}
+
+// WithCRDNotFound sets GetCRD to return a not found error.
+func (b *MockSchemaClientBuilder) WithCRDNotFound() *MockSchemaClientBuilder {
+	return b.WithGetCRD(func(context.Context, schema.GroupVersionKind) (*extv1.CustomResourceDefinition, error) {
+		return nil, errors.New("CRD not found")
+	})
+}
+
+// WithSuccessfulCRDFetch sets GetCRD to return a specific CRD.
+func (b *MockSchemaClientBuilder) WithSuccessfulCRDFetch(crd *extv1.CustomResourceDefinition) *MockSchemaClientBuilder {
+	return b.WithGetCRD(func(context.Context, schema.GroupVersionKind) (*extv1.CustomResourceDefinition, error) {
+		return crd, nil
+	})
+}
+
+// WithFoundCRD sets GetCRD to return a specific CRD when the group and kind match.
+func (b *MockSchemaClientBuilder) WithFoundCRD(group, kind string, crd *extv1.CustomResourceDefinition) *MockSchemaClientBuilder {
+	// If we don't have an existing GetCRD function, create a new one
+	if b.mock.GetCRDFn == nil {
+		return b.WithGetCRD(func(_ context.Context, gvk schema.GroupVersionKind) (*extv1.CustomResourceDefinition, error) {
+			if gvk.Group == group && gvk.Kind == kind {
+				return crd, nil
+			}
+
+			return nil, errors.New("CRD not found")
+		})
+	}
+
+	// If we already have a GetCRD function, wrap it to add this mapping
+	originalFn := b.mock.GetCRDFn
+
+	return b.WithGetCRD(func(ctx context.Context, gvk schema.GroupVersionKind) (*extv1.CustomResourceDefinition, error) {
+		if gvk.Group == group && gvk.Kind == kind {
+			return crd, nil
+		}
+
+		return originalFn(ctx, gvk)
+	})
+}
+
+// WithFoundCRDs sets GetCRD to return specific CRDs when the group and kind match, with a fallback error.
+func (b *MockSchemaClientBuilder) WithFoundCRDs(crdMappings map[schema.GroupKind]*extv1.CustomResourceDefinition) *MockSchemaClientBuilder {
+	return b.WithGetCRD(func(_ context.Context, gvk schema.GroupVersionKind) (*extv1.CustomResourceDefinition, error) {
+		groupKind := schema.GroupKind{Group: gvk.Group, Kind: gvk.Kind}
+		if crd, found := crdMappings[groupKind]; found {
+			return crd, nil
+		}
+
+		return nil, errors.New("CRD not found")
+	})
+}
+
+// WithGetCRDByName sets the GetCRDByName behavior.
+func (b *MockSchemaClientBuilder) WithGetCRDByName(fn func(string) (*extv1.CustomResourceDefinition, error)) *MockSchemaClientBuilder {
+	b.mock.GetCRDByNameFn = func(_ context.Context, name string) (*extv1.CustomResourceDefinition, error) {
+		return fn(name)
+	}
+
+	return b
+}
+
+// WithSuccessfulCRDByNameFetch sets GetCRDByName to return a specific CRD for a given name.
+func (b *MockSchemaClientBuilder) WithSuccessfulCRDByNameFetch(name string, crd *extv1.CustomResourceDefinition) *MockSchemaClientBuilder {
+	return b.WithGetCRDByName(func(searchName string) (*extv1.CustomResourceDefinition, error) {
+		if searchName == name {
+			return crd, nil
+		}
+
+		return nil, errors.Errorf("CRD with name %s not found", searchName)
+	})
+}
+
+// WithIsCRDRequired sets the IsCRDRequired behavior.
+func (b *MockSchemaClientBuilder) WithIsCRDRequired(fn func(context.Context, schema.GroupVersionKind) bool) *MockSchemaClientBuilder {
+	b.mock.IsCRDRequiredFn = fn
+	return b
+}
+
+// WithResourcesRequiringCRDs sets only the specified GVKs to require CRDs.
+func (b *MockSchemaClientBuilder) WithResourcesRequiringCRDs(crdsRequiredGVKs ...schema.GroupVersionKind) *MockSchemaClientBuilder {
+	requiresCRD := make(map[schema.GroupVersionKind]bool)
+	for _, gvk := range crdsRequiredGVKs {
+		requiresCRD[gvk] = true
+	}
+
+	return b.WithIsCRDRequired(func(_ context.Context, gvk schema.GroupVersionKind) bool {
+		// Only require CRDs for specified GVKs
+		return requiresCRD[gvk]
+	})
+}
+
+// WithAllResourcesRequiringCRDs sets all resources to require CRDs.
+func (b *MockSchemaClientBuilder) WithAllResourcesRequiringCRDs() *MockSchemaClientBuilder {
+	return b.WithIsCRDRequired(func(context.Context, schema.GroupVersionKind) bool {
+		return true
+	})
+}
+
+// WithNoResourcesRequiringCRDs sets all resources to not require CRDs.
+func (b *MockSchemaClientBuilder) WithNoResourcesRequiringCRDs() *MockSchemaClientBuilder {
+	return b.WithIsCRDRequired(func(context.Context, schema.GroupVersionKind) bool {
+		return false
+	})
+}
+
+// WithValidateResource sets the ValidateResource behavior.
+func (b *MockSchemaClientBuilder) WithValidateResource(fn func(context.Context, *un.Unstructured) error) *MockSchemaClientBuilder {
+	b.mock.ValidateResourceFn = fn
+	return b
+}
+
+// WithGetAllCRDs sets the GetAllCRDs behavior.
+func (b *MockSchemaClientBuilder) WithGetAllCRDs(fn func() []*extv1.CustomResourceDefinition) *MockSchemaClientBuilder {
+	b.mock.GetAllCRDsFn = fn
+	return b
+}
+
+// WithCachingBehavior creates a mock that simulates caching CRDs when GetCRD is called.
+func (b *MockSchemaClientBuilder) WithCachingBehavior() *MockSchemaClientBuilder {
+	cachedCRDs := make(map[string]*extv1.CustomResourceDefinition)
+
+	// Override GetCRD to track cached CRDs
+	originalGetCRD := b.mock.GetCRDFn
+	b.mock.GetCRDFn = func(ctx context.Context, gvk schema.GroupVersionKind) (*extv1.CustomResourceDefinition, error) {
+		// Check cache first
+		key := gvk.String()
+		if crd, ok := cachedCRDs[key]; ok {
+			return crd, nil
+		}
+
+		// Call original function
+		if originalGetCRD != nil {
+			crd, err := originalGetCRD(ctx, gvk)
+			if err == nil && crd != nil {
+				// Cache the CRD
+				cachedCRDs[key] = crd
+			}
+
+			return crd, err
+		}
+
+		return nil, errors.New("GetCRD not implemented")
+	}
+
+	// Override GetAllCRDs to return cached CRDs
+	b.mock.GetAllCRDsFn = func() []*extv1.CustomResourceDefinition {
+		result := make([]*extv1.CustomResourceDefinition, 0, len(cachedCRDs))
+		for _, crd := range cachedCRDs {
+			result = append(result, crd)
+		}
+
+		return result
+	}
+
+	return b
+}
+
+// Build returns the built mock.
+func (b *MockSchemaClientBuilder) Build() *MockSchemaClient {
+	return b.mock
+}
+
+// MockApplyClientBuilder helps build kubernetes.ApplyClient mocks.
+type MockApplyClientBuilder struct {
+	mock *MockApplyClient
+}
+
+// NewMockApplyClient creates a new MockApplyClientBuilder.
+func NewMockApplyClient() *MockApplyClientBuilder {
+	return &MockApplyClientBuilder{
+		mock: &MockApplyClient{},
+	}
+}
+
+// WithInitialize sets the Initialize behavior.
+func (b *MockApplyClientBuilder) WithInitialize(fn func(context.Context) error) *MockApplyClientBuilder {
+	b.mock.InitializeFn = fn
+	return b
+}
+
+// WithApply sets the Apply behavior.
+func (b *MockApplyClientBuilder) WithApply(fn func(context.Context, *un.Unstructured) (*un.Unstructured, error)) *MockApplyClientBuilder {
+	b.mock.ApplyFn = fn
+	return b
+}
+
+// WithDryRunApply sets the DryRunApply behavior.
+func (b *MockApplyClientBuilder) WithDryRunApply(fn func(context.Context, *un.Unstructured, string) (*un.Unstructured, error)) *MockApplyClientBuilder {
+	b.mock.DryRunApplyFn = fn
+	return b
+}
+
+// WithSuccessfulDryRun sets DryRunApply to return the input resource.
+func (b *MockApplyClientBuilder) WithSuccessfulDryRun() *MockApplyClientBuilder {
+	return b.WithDryRunApply(func(_ context.Context, obj *un.Unstructured, _ string) (*un.Unstructured, error) {
+		return obj, nil
+	})
+}
+
+// WithFailedDryRun sets DryRunApply to return an error.
+func (b *MockApplyClientBuilder) WithFailedDryRun(errMsg string) *MockApplyClientBuilder {
+	return b.WithDryRunApply(func(context.Context, *un.Unstructured, string) (*un.Unstructured, error) {
+		return nil, errors.New(errMsg)
+	})
+}
+
+// WithDryRunCreate sets the DryRunCreate behavior.
+func (b *MockApplyClientBuilder) WithDryRunCreate(fn func(context.Context, *un.Unstructured) (*un.Unstructured, error)) *MockApplyClientBuilder {
+	b.mock.DryRunCreateFn = fn
+	return b
+}
+
+// WithSuccessfulDryRunCreate sets DryRunCreate to return the input resource.
+func (b *MockApplyClientBuilder) WithSuccessfulDryRunCreate() *MockApplyClientBuilder {
+	return b.WithDryRunCreate(func(_ context.Context, obj *un.Unstructured) (*un.Unstructured, error) {
+		return obj, nil
+	})
+}
+
+// WithFailedDryRunCreate sets DryRunCreate to return an error.
+func (b *MockApplyClientBuilder) WithFailedDryRunCreate(errMsg string) *MockApplyClientBuilder {
+	return b.WithDryRunCreate(func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+		return nil, errors.New(errMsg)
+	})
+}
+
+// Build returns the built mock.
+func (b *MockApplyClientBuilder) Build() *MockApplyClient {
+	return b.mock
+}
+
+// MockAccessCheckerBuilder helps build kubernetes.AccessChecker mocks.
+type MockAccessCheckerBuilder struct {
+	mock *MockAccessChecker
+}
+
+// NewMockAccessChecker creates a new MockAccessCheckerBuilder. With no further calls the mock allows
+// everything — see MockAccessChecker.Can for why that is the right default.
+func NewMockAccessChecker() *MockAccessCheckerBuilder {
+	return &MockAccessCheckerBuilder{
+		mock: &MockAccessChecker{},
+	}
+}
+
+// WithCan sets the Can behavior.
+func (b *MockAccessCheckerBuilder) WithCan(fn func(context.Context, schema.GroupVersionKind, string, dtypes.Verb) (bool, string, error)) *MockAccessCheckerBuilder {
+	b.mock.CanFn = fn
+	return b
+}
+
+// WithAllowed makes every authorization check succeed.
+func (b *MockAccessCheckerBuilder) WithAllowed() *MockAccessCheckerBuilder {
+	return b.WithCan(func(_ context.Context, _ schema.GroupVersionKind, _ string, _ dtypes.Verb) (bool, string, error) {
+		return true, "", nil
+	})
+}
+
+// WithDenied makes every authorization check report that we are not permitted, with the given
+// reason. This is what turns a Forbidden dry-run into a graceful per-resource degradation rather
+// than a reported cluster rejection.
+func (b *MockAccessCheckerBuilder) WithDenied(reason string) *MockAccessCheckerBuilder {
+	return b.WithCan(func(_ context.Context, _ schema.GroupVersionKind, _ string, _ dtypes.Verb) (bool, string, error) {
+		return false, reason, nil
+	})
+}
+
+// WithDeniedVerb denies only the named verb and allows everything else. A user holding patch but not
+// create is the exact configuration this feature exists to cope with, so it needs to be expressible.
+func (b *MockAccessCheckerBuilder) WithDeniedVerb(deniedVerb dtypes.Verb, reason string) *MockAccessCheckerBuilder {
+	return b.WithCan(func(_ context.Context, _ schema.GroupVersionKind, _ string, verb dtypes.Verb) (bool, string, error) {
+		if verb == deniedVerb {
+			return false, reason, nil
+		}
+
+		return true, "", nil
+	})
+}
+
+// WithFailedCheck makes the authorization check itself fail, leaving a Forbidden dry-run
+// unclassifiable.
+func (b *MockAccessCheckerBuilder) WithFailedCheck(err error) *MockAccessCheckerBuilder {
+	return b.WithCan(func(_ context.Context, _ schema.GroupVersionKind, _ string, _ dtypes.Verb) (bool, string, error) {
+		return false, "", err
+	})
+}
+
+// Build returns the built mock.
+func (b *MockAccessCheckerBuilder) Build() *MockAccessChecker {
+	return b.mock
+}
+
+// MockTypeConverterBuilder helps build kubernetes.TypeConverter mocks.
+type MockTypeConverterBuilder struct {
+	mock *MockTypeConverter
+}
+
+// NewMockTypeConverter creates a new MockTypeConverterBuilder.
+func NewMockTypeConverter() *MockTypeConverterBuilder {
+	return &MockTypeConverterBuilder{
+		mock: &MockTypeConverter{},
+	}
+}
+
+// WithGVKToGVR sets the GVKToGVR behavior.
+func (b *MockTypeConverterBuilder) WithGVKToGVR(fn func(context.Context, schema.GroupVersionKind) (schema.GroupVersionResource, error)) *MockTypeConverterBuilder {
+	b.mock.GVKToGVRFn = fn
+	return b
+}
+
+// WithDefaultGVKToGVR sets a default implementation for GVKToGVR.
+func (b *MockTypeConverterBuilder) WithDefaultGVKToGVR() *MockTypeConverterBuilder {
+	return b.WithGVKToGVR(func(_ context.Context, gvk schema.GroupVersionKind) (schema.GroupVersionResource, error) {
+		// Simple default implementation that converts Kind to lowercase and adds 's'
+		return schema.GroupVersionResource{
+			Group:    gvk.Group,
+			Version:  gvk.Version,
+			Resource: strings.ToLower(gvk.Kind) + "s",
+		}, nil
+	})
+}
+
+// WithGetResourceNameForGVK sets the GetResourceNameForGVK behavior.
+func (b *MockTypeConverterBuilder) WithGetResourceNameForGVK(fn func(context.Context, schema.GroupVersionKind) (string, error)) *MockTypeConverterBuilder {
+	b.mock.GetResourceNameForGVKFn = fn
+	return b
+}
+
+// WithDefaultGetResourceNameForGVK sets a default implementation for GetResourceNameForGVK.
+func (b *MockTypeConverterBuilder) WithDefaultGetResourceNameForGVK() *MockTypeConverterBuilder {
+	return b.WithGetResourceNameForGVK(func(_ context.Context, gvk schema.GroupVersionKind) (string, error) {
+		// Simple default implementation that converts Kind to lowercase and adds 's'
+		return strings.ToLower(gvk.Kind) + "s", nil
+	})
+}
+
+// WithResourceNameForGVK sets GetResourceNameForGVK to return a specific resource name for a given GVK.
+func (b *MockTypeConverterBuilder) WithResourceNameForGVK(gvk schema.GroupVersionKind, resourceName string) *MockTypeConverterBuilder {
+	// If we don't have an existing GetResourceNameForGVK function, create a new one
+	if b.mock.GetResourceNameForGVKFn == nil {
+		return b.WithGetResourceNameForGVK(func(_ context.Context, testGVK schema.GroupVersionKind) (string, error) {
+			if testGVK.Group == gvk.Group && testGVK.Version == gvk.Version && testGVK.Kind == gvk.Kind {
+				return resourceName, nil
+			}
+
+			return "", errors.New("unexpected GVK in test")
+		})
+	}
+
+	// If we already have a GetResourceNameForGVK function, wrap it to add this mapping
+	originalFn := b.mock.GetResourceNameForGVKFn
+
+	return b.WithGetResourceNameForGVK(func(ctx context.Context, testGVK schema.GroupVersionKind) (string, error) {
+		if testGVK.Group == gvk.Group && testGVK.Version == gvk.Version && testGVK.Kind == gvk.Kind {
+			return resourceName, nil
+		}
+
+		return originalFn(ctx, testGVK)
+	})
+}
+
+// WithResourceNameForGVKs sets GetResourceNameForGVK to return specific resource names for given GVKs, with a fallback error.
+func (b *MockTypeConverterBuilder) WithResourceNameForGVKs(gvkMappings map[schema.GroupVersionKind]string) *MockTypeConverterBuilder {
+	return b.WithGetResourceNameForGVK(func(_ context.Context, gvk schema.GroupVersionKind) (string, error) {
+		if resourceName, found := gvkMappings[gvk]; found {
+			return resourceName, nil
+		}
+
+		return "", errors.New("unexpected GVK in test")
+	})
+}
+
+// Build returns the built mock.
+func (b *MockTypeConverterBuilder) Build() *MockTypeConverter {
+	return b.mock
+}
+
+// endregion
+
+// region Crossplane API layer mock builders
+
+// ======================================================================================
+// Crossplane API Layer Mock Builders
+// ======================================================================================
+
+// MockCompositionClientBuilder helps build crossplane.CompositionClient mocks.
+type MockCompositionClientBuilder struct {
+	mock *MockCompositionClient
+
+	// composites accumulates the per-composition XR sets registered by
+	// WithResourcesForComposition, keyed by "<compositionName>/<namespace>". It exists so repeated
+	// calls compose instead of overwriting each other: a multi-composition test needs a different XR
+	// set per composition, and silently keeping only the last registration made the earlier
+	// compositions look net-new (empty affected set) rather than failing the test.
+	composites map[string][]*un.Unstructured
+}
+
+// NewMockCompositionClient creates a new MockCompositionClientBuilder.
+func NewMockCompositionClient() *MockCompositionClientBuilder {
+	return &MockCompositionClientBuilder{
+		mock: &MockCompositionClient{},
+	}
+}
+
+// WithInitialize sets the Initialize behavior.
+func (b *MockCompositionClientBuilder) WithInitialize(fn func(context.Context) error) *MockCompositionClientBuilder {
+	b.mock.InitializeFn = fn
+	return b
+}
+
+// WithSuccessfulInitialize mocks a successful call to Initialize.
+func (b *MockCompositionClientBuilder) WithSuccessfulInitialize() *MockCompositionClientBuilder {
+	b.mock.InitializeFn = func(context.Context) error {
+		return nil
+	}
+
+	return b
+}
+
+// WithFailedInitialize mocks a failed call to Initialize.
+func (b *MockCompositionClientBuilder) WithFailedInitialize(errMsg string) *MockCompositionClientBuilder {
+	b.mock.InitializeFn = func(context.Context) error {
+		return errors.New(errMsg)
+	}
+
+	return b
+}
+
+// WithFindMatchingComposition sets the FindMatchingComposition behavior.
+func (b *MockCompositionClientBuilder) WithFindMatchingComposition(fn func(context.Context, *un.Unstructured) (dtypes.ResolvedComposition, error)) *MockCompositionClientBuilder {
+	b.mock.FindMatchingCompositionFn = fn
+	return b
+}
+
+// WithSuccessfulCompositionMatch sets FindMatchingComposition to return a specific composition, with no
+// revision resolved.
+func (b *MockCompositionClientBuilder) WithSuccessfulCompositionMatch(comp *xpextv1.Composition) *MockCompositionClientBuilder {
+	return b.WithFindMatchingComposition(func(context.Context, *un.Unstructured) (dtypes.ResolvedComposition, error) {
+		return dtypes.ResolvedComposition{Composition: comp}, nil
+	})
+}
+
+// WithNoMatchingComposition sets FindMatchingComposition to return "not found".
+func (b *MockCompositionClientBuilder) WithNoMatchingComposition() *MockCompositionClientBuilder {
+	return b.WithFindMatchingComposition(func(context.Context, *un.Unstructured) (dtypes.ResolvedComposition, error) {
+		return dtypes.ResolvedComposition{}, errors.New("composition not found")
+	})
+}
+
+// WithListCompositions sets the ListCompositions behavior.
+func (b *MockCompositionClientBuilder) WithListCompositions(fn func(context.Context) ([]*xpextv1.Composition, error)) *MockCompositionClientBuilder {
+	b.mock.ListCompositionsFn = fn
+	return b
+}
+
+// WithGetComposition sets the GetComposition behavior.
+func (b *MockCompositionClientBuilder) WithGetComposition(fn func(context.Context, string) (*xpextv1.Composition, error)) *MockCompositionClientBuilder {
+	b.mock.GetCompositionFn = fn
+	return b
+}
+
+// WithSuccessfulCompositionFetch sets up a successful composition fetch.
+func (b *MockCompositionClientBuilder) WithSuccessfulCompositionFetch(comp *xpextv1.Composition) *MockCompositionClientBuilder {
+	return b.WithGetComposition(func(_ context.Context, name string) (*xpextv1.Composition, error) {
+		if name == comp.GetName() {
+			return comp, nil
+		}
+
+		return nil, errors.New("composition not found")
+	})
+}
+
+// WithSuccessfulCompositionFetches sets up successful composition fetches for multiple compositions.
+func (b *MockCompositionClientBuilder) WithSuccessfulCompositionFetches(comps []*xpextv1.Composition) *MockCompositionClientBuilder {
+	compositionMap := make(map[string]*xpextv1.Composition)
+	for _, comp := range comps {
+		compositionMap[comp.GetName()] = comp
+	}
+
+	return b.WithGetComposition(func(_ context.Context, name string) (*xpextv1.Composition, error) {
+		if composition, found := compositionMap[name]; found {
+			return composition, nil
+		}
+
+		return nil, errors.New("composition not found")
+	})
+}
+
+// WithFindComposites sets the FindComposites behavior.
+func (b *MockCompositionClientBuilder) WithFindComposites(fn func(context.Context, *un.Unstructured, dtypes.FindCompositesOptions) ([]*un.Unstructured, error)) *MockCompositionClientBuilder {
+	b.mock.FindCompositesFn = fn
+	return b
+}
+
+// WithResourcesForComposition sets FindComposites (default-discovery mode) to return specific resources
+// for a given composition name and namespace. Refs-mode calls return an explicit error identifying this
+// helper as default-discovery only — use WithFindComposites directly if you need to mock both modes.
+func (b *MockCompositionClientBuilder) WithResourcesForComposition(compositionName, namespace string, resources []*un.Unstructured) *MockCompositionClientBuilder {
+	if b.composites == nil {
+		b.composites = map[string][]*un.Unstructured{}
+	}
+
+	b.composites[compositionName+"/"+namespace] = resources
+
+	// The closure reads the map at call time, so registrations added after this one are visible too.
+	return b.WithFindComposites(func(_ context.Context, comp *un.Unstructured, opts dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
+		if len(opts.Refs) > 0 {
+			return nil, errors.New("WithResourcesForComposition only handles default-discovery (empty Refs)")
+		}
+
+		if resources, ok := b.composites[comp.GetName()+"/"+opts.Namespace]; ok {
+			return resources, nil
+		}
+
+		return nil, errors.Errorf("no resources found for composition %s in namespace %s", comp.GetName(), opts.Namespace)
+	})
+}
+
+// WithFindResourcesError sets FindComposites (default-discovery mode) to return an error. Refs-mode calls
+// return an explicit error identifying this helper as default-discovery only — use WithFindComposites
+// directly if you need to mock both modes.
+func (b *MockCompositionClientBuilder) WithFindResourcesError(errMsg string) *MockCompositionClientBuilder {
+	return b.WithFindComposites(func(_ context.Context, _ *un.Unstructured, opts dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
+		if len(opts.Refs) > 0 {
+			return nil, errors.New("WithFindResourcesError only handles default-discovery (empty Refs)")
+		}
+
+		return nil, errors.New(errMsg)
+	})
+}
+
+// WithCompositesByRef sets FindComposites (refs mode) to return the given resources for any
+// non-empty-Refs request. Default-discovery calls return an explicit error identifying this helper
+// as refs-only — use WithFindComposites directly if you need to mock both modes. Mirror of
+// WithResourcesForComposition for the refs-mode side.
+func (b *MockCompositionClientBuilder) WithCompositesByRef(matched ...*un.Unstructured) *MockCompositionClientBuilder {
+	return b.WithFindComposites(func(_ context.Context, _ *un.Unstructured, opts dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
+		if len(opts.Refs) == 0 {
+			return nil, errors.New("WithCompositesByRef only handles refs-mode (non-empty Refs)")
+		}
+
+		return matched, nil
+	})
+}
+
+// WithNoMatchingComposites sets FindComposites to return an empty matched set regardless of mode
+// (default-discovery or refs). Use for "nothing matches anywhere" tests where neither default nor
+// refs lookup should produce results. Mirrors WithNoMatchingComposition for the FindMatchingComposition
+// method.
+func (b *MockCompositionClientBuilder) WithNoMatchingComposites() *MockCompositionClientBuilder {
+	return b.WithFindComposites(func(context.Context, *un.Unstructured, dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
+		return nil, nil
+	})
+}
+
+// WithComposition is an alias for WithSuccessfulCompositionMatch for convenience.
+func (b *MockCompositionClientBuilder) WithComposition(comp *xpextv1.Composition) *MockCompositionClientBuilder {
+	return b.WithSuccessfulCompositionMatch(comp)
+}
+
+// Build returns the built mock.
+func (b *MockCompositionClientBuilder) Build() *MockCompositionClient {
+	return b.mock
+}
+
+// MockFunctionClientBuilder helps build crossplane.FunctionClient mocks.
+type MockFunctionClientBuilder struct {
+	mock *MockFunctionClient
+}
+
+// NewMockFunctionClient creates a new MockFunctionClientBuilder.
+func NewMockFunctionClient() *MockFunctionClientBuilder {
+	return &MockFunctionClientBuilder{
+		mock: &MockFunctionClient{},
+	}
+}
+
+// WithInitialize sets the Initialize behavior.
+func (b *MockFunctionClientBuilder) WithInitialize(fn func(context.Context) error) *MockFunctionClientBuilder {
+	b.mock.InitializeFn = fn
+	return b
+}
+
+// WithSuccessfulInitialize mocks a successful call to Initialize.
+func (b *MockFunctionClientBuilder) WithSuccessfulInitialize() *MockFunctionClientBuilder {
+	b.mock.InitializeFn = func(context.Context) error {
+		return nil
+	}
+
+	return b
+}
+
+// WithFailedInitialize mocks a failed call to Initialize.
+func (b *MockFunctionClientBuilder) WithFailedInitialize(errMsg string) *MockFunctionClientBuilder {
+	b.mock.InitializeFn = func(context.Context) error {
+		return errors.New(errMsg)
+	}
+
+	return b
+}
+
+// WithGetFunctionsFromPipeline sets the GetFunctionsFromPipeline behavior.
+func (b *MockFunctionClientBuilder) WithGetFunctionsFromPipeline(fn func(context.Context, *xpextv1.Composition) ([]pkgv1.Function, error)) *MockFunctionClientBuilder {
+	b.mock.GetFunctionsFromPipelineFn = fn
+	return b
+}
+
+// WithSuccessfulFunctionsFetch sets GetFunctionsFromPipeline to return specific functions.
+func (b *MockFunctionClientBuilder) WithSuccessfulFunctionsFetch(functions []pkgv1.Function) *MockFunctionClientBuilder {
+	return b.WithGetFunctionsFromPipeline(func(context.Context, *xpextv1.Composition) ([]pkgv1.Function, error) {
+		return functions, nil
+	})
+}
+
+// WithNoFunctions sets GetFunctionsFromPipeline to return an empty function list.
+func (b *MockFunctionClientBuilder) WithNoFunctions() *MockFunctionClientBuilder {
+	return b.WithGetFunctionsFromPipeline(func(context.Context, *xpextv1.Composition) ([]pkgv1.Function, error) {
+		return []pkgv1.Function{}, nil
+	})
+}
+
+// WithFailedFunctionsFetch sets GetFunctionsFromPipeline to return an error.
+func (b *MockFunctionClientBuilder) WithFailedFunctionsFetch(errMsg string) *MockFunctionClientBuilder {
+	return b.WithGetFunctionsFromPipeline(func(context.Context, *xpextv1.Composition) ([]pkgv1.Function, error) {
+		return nil, errors.New(errMsg)
+	})
+}
+
+// WithListFunctions sets the ListFunctions behavior.
+func (b *MockFunctionClientBuilder) WithListFunctions(fn func(context.Context) ([]pkgv1.Function, error)) *MockFunctionClientBuilder {
+	b.mock.ListFunctionsFn = fn
+	return b
+}
+
+// WithFunctionsFetchCallback sets a callback that's called when GetFunctionsFromPipeline is invoked.
+// This is useful for testing caching behavior by tracking how many times functions are fetched.
+func (b *MockFunctionClientBuilder) WithFunctionsFetchCallback(callback func() ([]pkgv1.Function, error)) *MockFunctionClientBuilder {
+	return b.WithGetFunctionsFromPipeline(func(context.Context, *xpextv1.Composition) ([]pkgv1.Function, error) {
+		return callback()
+	})
+}
+
+// Build returns the built mock.
+func (b *MockFunctionClientBuilder) Build() *MockFunctionClient {
+	return b.mock
+}
+
+// MockEnvironmentClientBuilder helps build crossplane.EnvironmentClient mocks.
+type MockEnvironmentClientBuilder struct {
+	mock *MockEnvironmentClient
+}
+
+// NewMockEnvironmentClient creates a new MockEnvironmentClientBuilder.
+func NewMockEnvironmentClient() *MockEnvironmentClientBuilder {
+	return &MockEnvironmentClientBuilder{
+		mock: &MockEnvironmentClient{},
+	}
+}
+
+// WithInitialize sets the Initialize behavior.
+func (b *MockEnvironmentClientBuilder) WithInitialize(fn func(context.Context) error) *MockEnvironmentClientBuilder {
+	b.mock.InitializeFn = fn
+	return b
+}
+
+// WithSuccessfulInitialize mocks a successful call to Initialize.
+func (b *MockEnvironmentClientBuilder) WithSuccessfulInitialize() *MockEnvironmentClientBuilder {
+	b.mock.InitializeFn = func(context.Context) error {
+		return nil
+	}
+
+	return b
+}
+
+// WithFailedInitialize mocks a failed call to Initialize.
+func (b *MockEnvironmentClientBuilder) WithFailedInitialize(errMsg string) *MockEnvironmentClientBuilder {
+	b.mock.InitializeFn = func(context.Context) error {
+		return errors.New(errMsg)
+	}
+
+	return b
+}
+
+// WithGetEnvironmentConfigs sets the GetEnvironmentConfigs behavior.
+func (b *MockEnvironmentClientBuilder) WithGetEnvironmentConfigs(fn func(context.Context) ([]*un.Unstructured, error)) *MockEnvironmentClientBuilder {
+	b.mock.GetEnvironmentConfigsFn = fn
+	return b
+}
+
+// WithSuccessfulEnvironmentConfigsFetch sets GetEnvironmentConfigs to return specific configs.
+func (b *MockEnvironmentClientBuilder) WithSuccessfulEnvironmentConfigsFetch(configs []*un.Unstructured) *MockEnvironmentClientBuilder {
+	return b.WithGetEnvironmentConfigs(func(context.Context) ([]*un.Unstructured, error) {
+		return configs, nil
+	})
+}
+
+// WithNoEnvironmentConfigs sets GetEnvironmentConfigs to return an empty list.
+func (b *MockEnvironmentClientBuilder) WithNoEnvironmentConfigs() *MockEnvironmentClientBuilder {
+	return b.WithGetEnvironmentConfigs(func(context.Context) ([]*un.Unstructured, error) {
+		return []*un.Unstructured{}, nil
+	})
+}
+
+// WithGetEnvironmentConfig sets the GetEnvironmentConfig behavior.
+func (b *MockEnvironmentClientBuilder) WithGetEnvironmentConfig(fn func(context.Context, string) (*un.Unstructured, error)) *MockEnvironmentClientBuilder {
+	b.mock.GetEnvironmentConfigFn = fn
+	return b
+}
+
+// Build returns the built mock.
+func (b *MockEnvironmentClientBuilder) Build() *MockEnvironmentClient {
+	return b.mock
+}
+
+// MockDefinitionClientBuilder helps build crossplane.DefinitionClient mocks.
+type MockDefinitionClientBuilder struct {
+	mock   *MockDefinitionClient
+	xrdMap map[schema.GroupVersionKind]*un.Unstructured
+}
+
+// NewMockDefinitionClient creates a new MockDefinitionClientBuilder.
+func NewMockDefinitionClient() *MockDefinitionClientBuilder {
+	return &MockDefinitionClientBuilder{
+		mock:   &MockDefinitionClient{},
+		xrdMap: make(map[schema.GroupVersionKind]*un.Unstructured),
+	}
+}
+
+// WithInitialize sets the Initialize behavior.
+func (b *MockDefinitionClientBuilder) WithInitialize(fn func(context.Context) error) *MockDefinitionClientBuilder {
+	b.mock.InitializeFn = fn
+	return b
+}
+
+// WithSuccessfulInitialize mocks a successful call to Initialize.
+func (b *MockDefinitionClientBuilder) WithSuccessfulInitialize() *MockDefinitionClientBuilder {
+	b.mock.InitializeFn = func(context.Context) error {
+		return nil
+	}
+
+	return b
+}
+
+// WithFailedInitialize mocks a failed call to Initialize.
+func (b *MockDefinitionClientBuilder) WithFailedInitialize(errMsg string) *MockDefinitionClientBuilder {
+	b.mock.InitializeFn = func(context.Context) error {
+		return errors.New(errMsg)
+	}
+
+	return b
+}
+
+// WithGetXRDForClaim sets the GetXRDForClaim behavior.
+func (b *MockDefinitionClientBuilder) WithGetXRDForClaim(fn func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error)) *MockDefinitionClientBuilder {
+	b.mock.GetXRDForClaimFn = fn
+	return b
+}
+
+// WithGetXRDForXR sets the GetXRDForXR behavior.
+func (b *MockDefinitionClientBuilder) WithGetXRDForXR(fn func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error)) *MockDefinitionClientBuilder {
+	b.mock.GetXRDForXRFn = fn
+	return b
+}
+
+// WithV1XRDForXR sets the GetXRDForXR behavior to return a v1 XRD.
+func (b *MockDefinitionClientBuilder) WithV1XRDForXR() *MockDefinitionClientBuilder {
+	return b.WithGetXRDForXR(func(_ context.Context, _ schema.GroupVersionKind) (*un.Unstructured, error) {
+		return &un.Unstructured{
+			Object: map[string]any{
+				"apiVersion": "apiextensions.crossplane.io/v1",
+			},
+		}, nil
+	})
+}
+
+// WithV2XRDForXR sets the GetXRDForXR behavior to return a v1 XRD.
+func (b *MockDefinitionClientBuilder) WithV2XRDForXR() *MockDefinitionClientBuilder {
+	return b.WithGetXRDForXR(func(_ context.Context, _ schema.GroupVersionKind) (*un.Unstructured, error) {
+		return &un.Unstructured{
+			Object: map[string]any{
+				"apiVersion": "apiextensions.crossplane.io/v2",
+			},
+		}, nil
+	})
+}
+
+// WithXRDForXR sets the GetXRDForXR behavior to return the specified XR.
+func (b *MockDefinitionClientBuilder) WithXRDForXR(unstructured *un.Unstructured) *MockDefinitionClientBuilder {
+	return b.WithGetXRDForXR(func(_ context.Context, _ schema.GroupVersionKind) (*un.Unstructured, error) {
+		return unstructured, nil
+	})
+}
+
+// WithXRDForGVK adds an XRD to be returned for a specific GVK.
+// This method can be called multiple times to add different XRDs for different GVKs.
+// When Build() is called, GetXRDForXR will use the accumulated XRD mappings.
+func (b *MockDefinitionClientBuilder) WithXRDForGVK(gvk schema.GroupVersionKind, xrd *un.Unstructured) *MockDefinitionClientBuilder {
+	b.xrdMap[gvk] = xrd
+	return b
+}
+
+// WithXRDForClaim sets the GetXRDForXR behavior to return the specified XR.
+func (b *MockDefinitionClientBuilder) WithXRDForClaim(unstructured *un.Unstructured) *MockDefinitionClientBuilder {
+	return b.WithGetXRDForClaim(func(_ context.Context, _ schema.GroupVersionKind) (*un.Unstructured, error) {
+		return unstructured, nil
+	})
+}
+
+// WithIsClaimResource sets the IsClaimResource behavior.
+func (b *MockDefinitionClientBuilder) WithIsClaimResource(fn func(context.Context, *un.Unstructured) bool) *MockDefinitionClientBuilder {
+	b.mock.IsClaimResourceFn = fn
+	return b
+}
+
+// WithXRD sets the GetXRDForXR behavior to return the specified XRD for any GVK matching its group/kind.
+func (b *MockDefinitionClientBuilder) WithXRD(xrd *xpextv1.CompositeResourceDefinition) *MockDefinitionClientBuilder {
+	// Convert the typed XRD to unstructured
+	xrdUnstructured, err := runtime.DefaultUnstructuredConverter.ToUnstructured(xrd)
+	if err != nil {
+		// This should never happen in tests, but if it does, we'll panic to make it obvious
+		panic(fmt.Sprintf("failed to convert XRD to unstructured: %v", err))
+	}
+
+	xrdObj := &un.Unstructured{Object: xrdUnstructured}
+
+	return b.WithGetXRDForXR(func(_ context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
+		// Check if the GVK matches this XRD
+		xrdGroup, _, _ := un.NestedString(xrdObj.Object, fieldSpec, "group")
+		xrdKind, _, _ := un.NestedString(xrdObj.Object, fieldSpec, "names", "kind")
+
+		if xrdGroup == gvk.Group && xrdKind == gvk.Kind {
+			return xrdObj, nil
+		}
+
+		return nil, errors.Errorf("no XRD found that defines XR type %s", gvk.String())
+	})
+}
+
+// WithXRDForXRNotFound sets GetXRDForXR to return not found error for any GVK.
+func (b *MockDefinitionClientBuilder) WithXRDForXRNotFound() *MockDefinitionClientBuilder {
+	return b.WithGetXRDForXR(func(_ context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
+		return nil, errors.Errorf("no XRD found that defines XR type %s", gvk.String())
+	})
+}
+
+// WithXRDForXRNotFoundForGVK sets GetXRDForXR to return not found for a specific GVK.
+func (b *MockDefinitionClientBuilder) WithXRDForXRNotFoundForGVK(notFoundGVK schema.GroupVersionKind) *MockDefinitionClientBuilder {
+	existingFn := b.mock.GetXRDForXRFn
+
+	return b.WithGetXRDForXR(func(ctx context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
+		if gvk.Group == notFoundGVK.Group && gvk.Kind == notFoundGVK.Kind {
+			return nil, errors.Errorf("no XRD found that defines XR type %s", gvk.String())
+		}
+
+		// Fall through to existing function if set
+		if existingFn != nil {
+			return existingFn(ctx, gvk)
+		}
+
+		return nil, errors.Errorf("no XRD found that defines XR type %s", gvk.String())
+	})
+}
+
+// WithXRDForXRError sets GetXRDForXR to return the specified error.
+func (b *MockDefinitionClientBuilder) WithXRDForXRError(err error) *MockDefinitionClientBuilder {
+	return b.WithGetXRDForXR(func(_ context.Context, _ schema.GroupVersionKind) (*un.Unstructured, error) {
+		return nil, err
+	})
+}
+
+// Build returns the built mock.
+// If WithXRDForGVK was used to add XRD mappings, this will configure GetXRDForXR
+// to use those mappings.
+func (b *MockDefinitionClientBuilder) Build() *MockDefinitionClient {
+	// If there are XRDs in the map and GetXRDForXR hasn't been explicitly set,
+	// configure it to use the map
+	if len(b.xrdMap) > 0 && b.mock.GetXRDForXRFn == nil {
+		// Capture the map in the closure
+		xrdMap := b.xrdMap
+		b.mock.GetXRDForXRFn = func(_ context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
+			if xrd, found := xrdMap[gvk]; found {
+				return xrd, nil
+			}
+
+			return nil, errors.Errorf("no XRD found that defines XR type %s", gvk.String())
+		}
+	}
+
+	return b.mock
+}
+
+// MockResourceTreeClientBuilder helps build crossplane.ResourceTreeClient mocks.
+type MockResourceTreeClientBuilder struct {
+	mock *MockResourceTreeClient
+}
+
+// NewMockResourceTreeClient creates a new MockResourceTreeClientBuilder.
+func NewMockResourceTreeClient() *MockResourceTreeClientBuilder {
+	return &MockResourceTreeClientBuilder{
+		mock: &MockResourceTreeClient{},
+	}
+}
+
+// WithInitialize sets the Initialize behavior.
+func (b *MockResourceTreeClientBuilder) WithInitialize(fn func(context.Context) error) *MockResourceTreeClientBuilder {
+	b.mock.InitializeFn = fn
+	return b
+}
+
+// WithSuccessfulInitialize mocks a successful call to Initialize.
+func (b *MockResourceTreeClientBuilder) WithSuccessfulInitialize() *MockResourceTreeClientBuilder {
+	b.mock.InitializeFn = func(context.Context) error {
+		return nil
+	}
+
+	return b
+}
+
+// WithFailedInitialize mocks a failed call to Initialize.
+func (b *MockResourceTreeClientBuilder) WithFailedInitialize(errMsg string) *MockResourceTreeClientBuilder {
+	b.mock.InitializeFn = func(context.Context) error {
+		return errors.New(errMsg)
+	}
+
+	return b
+}
+
+// WithGetResourceTree sets the GetResourceTree behavior.
+func (b *MockResourceTreeClientBuilder) WithGetResourceTree(fn func(context.Context, *un.Unstructured) (*resource.Resource, error)) *MockResourceTreeClientBuilder {
+	b.mock.GetResourceTreeFn = fn
+	return b
+}
+
+// WithSuccessfulResourceTreeFetch sets GetResourceTree to return a specific tree.
+func (b *MockResourceTreeClientBuilder) WithSuccessfulResourceTreeFetch(resourceTree *resource.Resource) *MockResourceTreeClientBuilder {
+	return b.WithGetResourceTree(func(context.Context, *un.Unstructured) (*resource.Resource, error) {
+		return resourceTree, nil
+	})
+}
+
+// WithEmptyResourceTree sets GetResourceTree to return just the root with no children.
+func (b *MockResourceTreeClientBuilder) WithEmptyResourceTree() *MockResourceTreeClientBuilder {
+	return b.WithGetResourceTree(func(_ context.Context, root *un.Unstructured) (*resource.Resource, error) {
+		return NewTreeNode(root).Build(), nil
+	})
+}
+
+// WithFailedResourceTreeFetch sets GetResourceTree to return an error.
+func (b *MockResourceTreeClientBuilder) WithFailedResourceTreeFetch(errMsg string) *MockResourceTreeClientBuilder {
+	return b.WithGetResourceTree(func(context.Context, *un.Unstructured) (*resource.Resource, error) {
+		return nil, errors.New(errMsg)
+	})
+}
+
+// WithResourceTreeFromXRAndComposed creates a basic resource tree from an XR and composed resources.
+func (b *MockResourceTreeClientBuilder) WithResourceTreeFromXRAndComposed(xr *un.Unstructured, composed []*un.Unstructured) *MockResourceTreeClientBuilder {
+	return b.WithGetResourceTree(func(_ context.Context, root *un.Unstructured) (*resource.Resource, error) {
+		// Make sure we're looking for the right XR
+		if root.GetName() != xr.GetName() || root.GetKind() != xr.GetKind() {
+			return nil, errors.Errorf("unexpected resource %s/%s", root.GetKind(), root.GetName())
+		}
+
+		// Create the resource tree with the XR as root and the composed resources as its children
+		children := make([]*TreeNodeBuilder, 0, len(composed))
+		for _, comp := range composed {
+			children = append(children, NewTreeNode(comp))
+		}
+
+		return NewTreeNode(xr).WithChildren(children...).Build(), nil
+	})
+}
+
+// Build returns the built mock.
+func (b *MockResourceTreeClientBuilder) Build() *MockResourceTreeClient {
+	return b.mock
+}
+
+// TreeNodeBuilder builds a resource-tree node, the shape a ResourceTreeClient returns.
+type TreeNodeBuilder struct {
+	node *resource.Resource
+}
+
+// NewTreeNode starts a tree node holding a deep copy of obj, so the caller's object is never shared
+// with, or mutated through, the tree.
+func NewTreeNode(obj *un.Unstructured) *TreeNodeBuilder {
+	return &TreeNodeBuilder{node: &resource.Resource{Unstructured: *obj.DeepCopy()}}
+}
+
+// WithChildren appends the given nodes as children of this one.
+func (b *TreeNodeBuilder) WithChildren(children ...*TreeNodeBuilder) *TreeNodeBuilder {
+	for _, c := range children {
+		b.node.Children = append(b.node.Children, c.Build())
+	}
+
+	return b
+}
+
+// WithError records err on the node, as upstream's tree client does for a node it could not fetch.
+func (b *TreeNodeBuilder) WithError(err error) *TreeNodeBuilder {
+	b.node.Error = err
+	return b
+}
+
+// Build returns the built node.
+func (b *TreeNodeBuilder) Build() *resource.Resource {
+	return b.node
+}
+
+// endregion
+
+// region DiffProcessor mock builder
+
+// ======================================================================================
+// DiffProcessor Mock Builder
+// ======================================================================================
+
+// DiffProcessorBuilder helps build mock DiffProcessor instances.
+type DiffProcessorBuilder struct {
+	mock *MockDiffProcessor
+}
+
+// NewMockDiffProcessor creates a new DiffProcessorBuilder.
+func NewMockDiffProcessor() *DiffProcessorBuilder {
+	return &DiffProcessorBuilder{
+		mock: &MockDiffProcessor{},
+	}
+}
+
+// WithInitialize adds an implementation for the Initialize method.
+func (b *DiffProcessorBuilder) WithInitialize(fn func(context.Context) error) *DiffProcessorBuilder {
+	b.mock.InitializeFn = fn
+	return b
+}
+
+// WithSuccessfulInitialize sets a successful Initialize implementation.
+func (b *DiffProcessorBuilder) WithSuccessfulInitialize() *DiffProcessorBuilder {
+	return b.WithInitialize(func(context.Context) error {
+		return nil
+	})
+}
+
+// WithFailedInitialize sets a failing Initialize implementation.
+func (b *DiffProcessorBuilder) WithFailedInitialize(errMsg string) *DiffProcessorBuilder {
+	return b.WithInitialize(func(context.Context) error {
+		return errors.New(errMsg)
+	})
+}
+
+// WithPerformDiff adds an implementation for the PerformDiff method.
+func (b *DiffProcessorBuilder) WithPerformDiff(fn func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error)) *DiffProcessorBuilder {
+	b.mock.PerformDiffFn = fn
+	return b
+}
+
+// WithSuccessfulPerformDiff sets a successful PerformDiff implementation with no diffs.
+func (b *DiffProcessorBuilder) WithSuccessfulPerformDiff() *DiffProcessorBuilder {
+	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error) {
+		return &dt.XRReport{}, nil
+	})
+}
+
+// WithSuccessfulPerformDiffWithChanges sets a successful PerformDiff implementation whose report
+// has one added resource.
+func (b *DiffProcessorBuilder) WithSuccessfulPerformDiffWithChanges() *DiffProcessorBuilder {
+	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error) {
+		added := &dt.ResourceDiff{
+			Gvk:          schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XDownstreamResource"},
+			ResourceName: "added-resource",
+			DiffType:     dt.DiffTypeAdded,
+		}
+
+		return &dt.XRReport{Groups: []dt.XRDiffGroup{{Diffs: map[string]*dt.ResourceDiff{added.GetDiffKey(): added}}}}, nil
+	})
+}
+
+// WithFailedPerformDiff sets a failing PerformDiff implementation, whose report holds the error.
+func (b *DiffProcessorBuilder) WithFailedPerformDiff(errMsg string) *DiffProcessorBuilder {
+	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error) {
+		return &dt.XRReport{Errors: []dt.OutputError{{Message: errMsg}}}, errors.New(errMsg)
+	})
+}
+
+// Build creates and returns the configured mock DiffProcessor.
+func (b *DiffProcessorBuilder) Build() *MockDiffProcessor {
+	return b.mock
+}
+
+// endregion
+
+// region Resource builders
+
+// ======================================================================================
+// Resource Building Helpers
+// ======================================================================================
+
+// ResourceBuilder helps construct unstructured resources for testing.
+type ResourceBuilder struct {
+	resource *un.Unstructured
+}
+
+// NewResource creates a new ResourceBuilder.
+func NewResource(apiVersion, kind, name string) *ResourceBuilder {
+	return &ResourceBuilder{
+		resource: &un.Unstructured{
+			Object: map[string]any{
+				"apiVersion": apiVersion,
+				"kind":       kind,
+				"metadata": map[string]any{
+					"name": name,
+				},
+			},
+		},
+	}
+}
+
+// InNamespace sets the namespace for the resource.
+func (b *ResourceBuilder) InNamespace(namespace string) *ResourceBuilder {
+	if namespace != "" {
+		b.resource.SetNamespace(namespace)
+	}
+
+	return b
+}
+
+// WithGenerateName sets the namespace for the resource.
+func (b *ResourceBuilder) WithGenerateName(generateName string) *ResourceBuilder {
+	if generateName != "" {
+		b.resource.SetGenerateName(generateName)
+	}
+
+	return b
+}
+
+// WithLabels adds labels to the resource.
+func (b *ResourceBuilder) WithLabels(labels map[string]string) *ResourceBuilder {
+	if len(labels) > 0 {
+		b.resource.SetLabels(labels)
+	}
+
+	return b
+}
+
+// WithAnnotations adds annotations to the resource.
+func (b *ResourceBuilder) WithAnnotations(annotations map[string]string) *ResourceBuilder {
+	if len(annotations) > 0 {
+		b.resource.SetAnnotations(annotations)
+	}
+
+	return b
+}
+
+// WithSpec sets the spec field of the resource.
+func (b *ResourceBuilder) WithSpec(spec map[string]any) *ResourceBuilder {
+	if len(spec) > 0 {
+		_ = un.SetNestedMap(b.resource.Object, spec, fieldSpec)
+	}
+
+	return b
+}
+
+// WithSpecField sets a specific field in the spec.
+func (b *ResourceBuilder) WithSpecField(name string, value any) *ResourceBuilder {
+	spec, _, _ := un.NestedMap(b.resource.Object, fieldSpec)
+	if spec == nil {
+		spec = map[string]any{}
+	}
+
+	spec[name] = value
+	_ = un.SetNestedMap(b.resource.Object, spec, fieldSpec)
+
+	return b
+}
+
+// WithStatus sets the status field of the resource.
+func (b *ResourceBuilder) WithStatus(status map[string]any) *ResourceBuilder {
+	if len(status) > 0 {
+		_ = un.SetNestedMap(b.resource.Object, status, "status")
+	}
+
+	return b
+}
+
+// WithStatusField sets a specific field in the status.
+func (b *ResourceBuilder) WithStatusField(name string, value any) *ResourceBuilder {
+	status, _, _ := un.NestedMap(b.resource.Object, "status")
+	if status == nil {
+		status = map[string]any{}
+	}
+
+	status[name] = value
+	_ = un.SetNestedMap(b.resource.Object, status, "status")
+
+	return b
+}
+
+// WithCondition appends a status condition of the given type and status (e.g. "Ready", "False")
+// to status.conditions, with the given reason.
+func (b *ResourceBuilder) WithCondition(condType, status, reason string) *ResourceBuilder {
+	conditions, _, _ := un.NestedSlice(b.resource.Object, "status", "conditions")
+	conditions = append(conditions, map[string]any{
+		"type":               condType,
+		"status":             status,
+		"reason":             reason,
+		"lastTransitionTime": "2024-01-01T00:00:00Z",
+	})
+	_ = un.SetNestedSlice(b.resource.Object, conditions, "status", "conditions")
+
+	return b
+}
+
+// WithData sets the data field for Secret resources.
+// The byte slices are base64-encoded as they would be in Kubernetes.
+func (b *ResourceBuilder) WithData(data map[string][]byte) *ResourceBuilder {
+	if data == nil {
+		return b
+	}
+
+	encoded := make(map[string]any, len(data))
+	for k, v := range data {
+		encoded[k] = base64.StdEncoding.EncodeToString(v)
+	}
+
+	b.resource.Object["data"] = encoded
+
+	return b
+}
+
+// WithOwnerReference appends an owner ref to a resource.
+func (b *ResourceBuilder) WithOwnerReference(kind, name, apiVersion, uid string) *ResourceBuilder {
+	// Get existing owner references, or create an empty slice if none exist
+	ownerRefs := b.resource.GetOwnerReferences()
+
+	// Create the new owner reference
+	newOwnerRef := metav1.OwnerReference{
+		APIVersion: apiVersion,
+		Kind:       kind,
+		Name:       name,
+		UID:        k8stypes.UID(uid),
+	}
+
+	// Append the new owner reference
+	ownerRefs = append(ownerRefs, newOwnerRef)
+
+	// Set the updated owner references on the resource
+	b.resource.SetOwnerReferences(ownerRefs)
+
+	return b
+}
+
+// WithControllerReference adds a controller owner reference (Controller=true,
+// BlockOwnerDeletion=true) to the resource. This mirrors how Crossplane sets
+// the controlling XR on a composed resource, so tests that exercise
+// controller-ref-based logic (e.g. observed-resource scoping in
+// FetchObservedResources) can build realistic fixtures.
+func (b *ResourceBuilder) WithControllerReference(kind, name, apiVersion, uid string) *ResourceBuilder {
+	ownerRefs := b.resource.GetOwnerReferences()
+
+	controller := true
+	newOwnerRef := metav1.OwnerReference{
+		APIVersion:         apiVersion,
+		Kind:               kind,
+		Name:               name,
+		UID:                k8stypes.UID(uid),
+		Controller:         &controller,
+		BlockOwnerDeletion: &controller,
+	}
+
+	ownerRefs = append(ownerRefs, newOwnerRef)
+	b.resource.SetOwnerReferences(ownerRefs)
+
+	return b
+}
+
+// ControlledBy adds a controller owner reference to owner, by its apiVersion, kind, name and UID: what
+// Crossplane sets on every resource a composite composes.
+func (b *ResourceBuilder) ControlledBy(owner *un.Unstructured) *ResourceBuilder {
+	return b.WithControllerReference(owner.GetKind(), owner.GetName(), owner.GetAPIVersion(), string(owner.GetUID()))
+}
+
+// WithUID sets the resource's metadata.uid.
+func (b *ResourceBuilder) WithUID(uid string) *ResourceBuilder {
+	b.resource.SetUID(k8stypes.UID(uid))
+	return b
+}
+
+// WithDeletionTimestamp sets metadata.deletionTimestamp to the supplied raw value, marking the
+// resource as being deleted. The value is set verbatim, and typed any rather than string, so tests can
+// pass an explicit nil — which is how round-tripped Kubernetes YAML spells "unset" for timestamp
+// fields, and therefore a case worth asserting is not mistaken for a deleting resource.
+func (b *ResourceBuilder) WithDeletionTimestamp(timestamp any) *ResourceBuilder {
+	un.SetNestedField(b.resource.Object, timestamp, "metadata", "deletionTimestamp") //nolint:errcheck // test builder; a bad value is the point of some cases.
+	return b
+}
+
+// WithCompositeOwner sets up the resource as a cpd resource with the given composite owner.
+func (b *ResourceBuilder) WithCompositeOwner(owner string) *ResourceBuilder {
+	// Add standard Crossplane labels and annotations for a cpd resource
+	labels := b.resource.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+
+	labels["crossplane.io/composite"] = owner
+	b.resource.SetLabels(labels)
+
+	return b
+}
+
+// WithCompositionResourceName sets the composition resource name annotation.
+func (b *ResourceBuilder) WithCompositionResourceName(name string) *ResourceBuilder {
+	annotations := b.resource.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+
+	annotations["crossplane.io/composition-resource-name"] = name
+	b.resource.SetAnnotations(annotations)
+
+	return b
+}
+
+// WithNamespace sets the namespace for the resource.
+func (b *ResourceBuilder) WithNamespace(namespace string) *ResourceBuilder {
+	b.resource.SetNamespace(namespace)
+	return b
+}
+
+// WithNestedField sets a field at an arbitrary nested path in the resource.
+// The path is a sequence of field names to traverse (e.g., "spec", "crossplane", "compositionUpdatePolicy").
+func (b *ResourceBuilder) WithNestedField(value any, fields ...string) *ResourceBuilder {
+	_ = un.SetNestedField(b.resource.Object, value, fields...)
+	return b
+}
+
+// WithCompositionRevisionSelector sets spec[.crossplane].compositionRevisionSelector on the
+// resource. Pass CrossplaneAPIExtGroupV2 ("apiextensions.crossplane.io/v2") to use the v2 path
+// (spec.crossplane.compositionRevisionSelector) or CrossplaneAPIExtGroupV1 for the legacy v1 path
+// (spec.compositionRevisionSelector). matchLabels and matchExpressions are omitted when nil, so a
+// selector with only expressions (or only labels) can be built. matchExpressions entries use the
+// standard LabelSelectorRequirement shape: {"key": string, "operator": string, "values": []any}.
+func (b *ResourceBuilder) WithCompositionRevisionSelector(apiGroup string, matchLabels map[string]string, matchExpressions []map[string]any) *ResourceBuilder {
+	selector := map[string]any{}
+
+	if matchLabels != nil {
+		ml := make(map[string]any, len(matchLabels))
+		for k, v := range matchLabels {
+			ml[k] = v
+		}
+
+		selector["matchLabels"] = ml
+	}
+
+	if matchExpressions != nil {
+		exprs := make([]any, len(matchExpressions))
+		for i, e := range matchExpressions {
+			exprs[i] = e
+		}
+
+		selector["matchExpressions"] = exprs
+	}
+
+	// v2 XRs nest crossplane spec fields under spec.crossplane; v1 keeps them under spec.
+	path := []string{fieldSpec, "compositionRevisionSelector"}
+	if apiGroup != "apiextensions.crossplane.io/v1" {
+		path = []string{fieldSpec, "crossplane", "compositionRevisionSelector"}
+	}
+
+	_ = un.SetNestedField(b.resource.Object, selector, path...)
+
+	return b
+}
+
+// WithFieldManagers sets the managed fields on the resource using the provided manager names.
+func (b *ResourceBuilder) WithFieldManagers(managers ...string) *ResourceBuilder {
+	entries := make([]metav1.ManagedFieldsEntry, len(managers))
+	for i, manager := range managers {
+		entries[i] = metav1.ManagedFieldsEntry{Manager: manager}
+	}
+
+	b.resource.SetManagedFields(entries)
+
+	return b
+}
+
+// WithServerMetadata stamps the server-populated identity and versioning
+// metadata fields (resourceVersion, uid, generation, creationTimestamp) that
+// Kubernetes adds to a persisted object. Values are deterministic placeholders
+// so tests remain stable. Use this to construct a resource that looks like it
+// was fetched from the cluster (e.g. to verify diff cleanup strips these).
+func (b *ResourceBuilder) WithServerMetadata() *ResourceBuilder {
+	b.resource.SetResourceVersion("12345")
+	b.resource.SetUID(k8stypes.UID("00000000-0000-0000-0000-000000000000"))
+	b.resource.SetGeneration(1)
+	b.resource.SetCreationTimestamp(metav1.NewTime(time.Unix(0, 0).UTC()))
+
+	return b
+}
+
+// Build returns the built unstructured resource.
+func (b *ResourceBuilder) Build() *un.Unstructured {
+	return b.resource.DeepCopy()
+}
+
+// BuildUComposite returns the built unstructured resource as a *cmp.Unstructured.
+func (b *ResourceBuilder) BuildUComposite() *cmp.Unstructured {
+	built := &cmp.Unstructured{}
+	built.SetUnstructuredContent(b.Build().UnstructuredContent())
+
+	return built
+}
+
+// BuildUComposed returns the built unstructured resource as a *cpd.Unstructured.
+func (b *ResourceBuilder) BuildUComposed() *cpd.Unstructured {
+	built := &cpd.Unstructured{}
+	built.SetUnstructuredContent(b.Build().UnstructuredContent())
+
+	return built
+}
+
+// BuildTyped converts the built unstructured resource into a typed Kubernetes object.
+// The 'into' parameter should be a pointer to the target type (e.g., &corev1.Secret{}).
+func (b *ResourceBuilder) BuildTyped(into runtime.Object) {
+	_ = runtime.DefaultUnstructuredConverter.FromUnstructured(b.Build().Object, into)
+}
+
+// endregion
+
+// region CRD builders
+
+// ======================================================================================
+// CRD Building Helpers
+// ======================================================================================
+
+// CRDBuilder helps construct CRD resources for testing.
+type CRDBuilder struct {
+	crd *extv1.CustomResourceDefinition
+}
+
+// NewCRD creates a new CRDBuilder.
+func NewCRD(name, group, kind string) *CRDBuilder {
+	return &CRDBuilder{
+		crd: &extv1.CustomResourceDefinition{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "CustomResourceDefinition",
+				APIVersion: "apiextensions.k8s.io/v1",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+			},
+			Spec: extv1.CustomResourceDefinitionSpec{
+				Group: group,
+				Names: extv1.CustomResourceDefinitionNames{
+					Kind: kind,
+				},
+				Scope:    extv1.NamespaceScoped,
+				Versions: []extv1.CustomResourceDefinitionVersion{},
+			},
+		},
+	}
+}
+
+// WithPlural sets the plural name for the CRD.
+func (b *CRDBuilder) WithPlural(plural string) *CRDBuilder {
+	b.crd.Spec.Names.Plural = plural
+	return b
+}
+
+// WithSingular sets the singular name for the CRD.
+func (b *CRDBuilder) WithSingular(singular string) *CRDBuilder {
+	b.crd.Spec.Names.Singular = singular
+	return b
+}
+
+// WithScope sets the scope (Namespaced or Cluster) for the CRD.
+func (b *CRDBuilder) WithScope(scope extv1.ResourceScope) *CRDBuilder {
+	b.crd.Spec.Scope = scope
+	return b
+}
+
+// WithClusterScope sets the CRD to be cluster-scoped.
+func (b *CRDBuilder) WithClusterScope() *CRDBuilder {
+	return b.WithScope(extv1.ClusterScoped)
+}
+
+// WithNamespaceScope sets the CRD to be namespace-scoped.
+func (b *CRDBuilder) WithNamespaceScope() *CRDBuilder {
+	return b.WithScope(extv1.NamespaceScoped)
+}
+
+// WithDefaultVersion adds a default "v1" version to the CRD.
+func (b *CRDBuilder) WithDefaultVersion() *CRDBuilder {
+	return b.WithVersion("v1", true, true)
+}
+
+// WithVersion adds a version to the CRD.
+func (b *CRDBuilder) WithVersion(name string, served, storage bool) *CRDBuilder {
+	version := extv1.CustomResourceDefinitionVersion{
+		Name:    name,
+		Served:  served,
+		Storage: storage,
+	}
+	b.crd.Spec.Versions = append(b.crd.Spec.Versions, version)
+
+	return b
+}
+
+// WithSchema adds an OpenAPI v3 schema to the last added version.
+func (b *CRDBuilder) WithSchema(schema *extv1.JSONSchemaProps) *CRDBuilder {
+	if len(b.crd.Spec.Versions) > 0 {
+		lastIdx := len(b.crd.Spec.Versions) - 1
+		b.crd.Spec.Versions[lastIdx].Schema = &extv1.CustomResourceValidation{
+			OpenAPIV3Schema: schema,
+		}
+	}
+
+	return b
+}
+
+// WithStringFieldSchema adds a simple string field schema to the CRD.
+func (b *CRDBuilder) WithStringFieldSchema(fieldName string) *CRDBuilder {
+	schema := &extv1.JSONSchemaProps{
+		Type: jsonTypeObject,
+		Properties: map[string]extv1.JSONSchemaProps{
+			"spec": {
+				Type: jsonTypeObject,
+				Properties: map[string]extv1.JSONSchemaProps{
+					fieldName: {
+						Type: jsonTypeString,
+					},
+				},
+			},
+			"status": {
+				Type: jsonTypeObject,
+			},
+		},
+	}
+
+	return b.WithSchema(schema)
+}
+
+// WithDefaultedStringFieldSchema adds a schema whose spec has a single string field carrying a
+// `default:` value, for exercising CRD defaulting.
+func (b *CRDBuilder) WithDefaultedStringFieldSchema(fieldName, defaultValue string) *CRDBuilder {
+	schema := &extv1.JSONSchemaProps{
+		Type: jsonTypeObject,
+		Properties: map[string]extv1.JSONSchemaProps{
+			"spec": {
+				Type: jsonTypeObject,
+				Properties: map[string]extv1.JSONSchemaProps{
+					fieldName: {
+						Type:    jsonTypeString,
+						Default: &extv1.JSON{Raw: []byte(strconv.Quote(defaultValue))},
+					},
+				},
+			},
+		},
+	}
+
+	return b.WithSchema(schema)
+}
+
+// WithStandardSchema adds a standard schema with common Kubernetes fields and a spec field.
+func (b *CRDBuilder) WithStandardSchema(specFieldName string) *CRDBuilder {
+	schema := &extv1.JSONSchemaProps{
+		Type: jsonTypeObject,
+		Properties: map[string]extv1.JSONSchemaProps{
+			"apiVersion": {Type: jsonTypeString},
+			"kind":       {Type: jsonTypeString},
+			"metadata":   {Type: jsonTypeObject},
+			"spec": {
+				Type: jsonTypeObject,
+				Properties: map[string]extv1.JSONSchemaProps{
+					specFieldName: {Type: jsonTypeString},
+				},
+			},
+			"status": {Type: jsonTypeObject},
+		},
+	}
+
+	return b.WithSchema(schema)
+}
+
+// WithListKind sets the ListKind name for the CRD.
+func (b *CRDBuilder) WithListKind(listKind string) *CRDBuilder {
+	b.crd.Spec.Names.ListKind = listKind
+	return b
+}
+
+// Build returns the built CRD.
+func (b *CRDBuilder) Build() *extv1.CustomResourceDefinition {
+	return b.crd.DeepCopy()
+}
+
+// endregion
+
+// region XRD builders
+
+// ======================================================================================
+// XRD Building Helpers
+// ======================================================================================
+
+// XRDBuilder helps construct XRD resources for testing.
+type XRDBuilder struct {
+	xrd *xpextv1.CompositeResourceDefinition
+}
+
+// NewXRD creates a new XRDBuilder.
+func NewXRD(name, group, kind string) *XRDBuilder {
+	return &XRDBuilder{
+		xrd: &xpextv1.CompositeResourceDefinition{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "CompositeResourceDefinition",
+				APIVersion: "apiextensions.crossplane.io/v1",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+			},
+			Spec: xpextv1.CompositeResourceDefinitionSpec{
+				Group: group,
+				Names: extv1.CustomResourceDefinitionNames{
+					Kind: kind,
+				},
+				Versions: []xpextv1.CompositeResourceDefinitionVersion{},
+			},
+		},
+	}
+}
+
+// WithPlural sets the plural name for the XRD.
+func (b *XRDBuilder) WithPlural(plural string) *XRDBuilder {
+	b.xrd.Spec.Names.Plural = plural
+	return b
+}
+
+// WithSingular sets the singular name for the XRD.
+func (b *XRDBuilder) WithSingular(singular string) *XRDBuilder {
+	b.xrd.Spec.Names.Singular = singular
+	return b
+}
+
+// WithClaimNames sets the claim names for the XRD.
+func (b *XRDBuilder) WithClaimNames(kind, plural string) *XRDBuilder {
+	b.xrd.Spec.ClaimNames = &extv1.CustomResourceDefinitionNames{
+		Kind:   kind,
+		Plural: plural,
+	}
+
+	return b
+}
+
+// WithDefaultVersion adds a default "v1" version to the XRD.
+func (b *XRDBuilder) WithDefaultVersion() *XRDBuilder {
+	return b.WithVersion("v1", true, true)
+}
+
+// WithVersion adds a version to the XRD.
+func (b *XRDBuilder) WithVersion(name string, served, referenceable bool) *XRDBuilder {
+	version := xpextv1.CompositeResourceDefinitionVersion{
+		Name:          name,
+		Served:        served,
+		Referenceable: referenceable,
+	}
+	b.xrd.Spec.Versions = append(b.xrd.Spec.Versions, version)
+
+	return b
+}
+
+// WithSchema adds an OpenAPI v3 schema to the last added version.
+func (b *XRDBuilder) WithSchema(schema *extv1.JSONSchemaProps) *XRDBuilder {
+	if len(b.xrd.Spec.Versions) > 0 {
+		// Convert JSONSchemaProps to RawExtension
+		rawBytes, err := json.Marshal(schema)
+		if err != nil {
+			// In tests, this should not happen, but if it does, we'll just skip the schema
+			return b
+		}
+
+		lastIdx := len(b.xrd.Spec.Versions) - 1
+		b.xrd.Spec.Versions[lastIdx].Schema = &xpextv1.CompositeResourceValidation{
+			OpenAPIV3Schema: runtime.RawExtension{
+				Raw: rawBytes,
+			},
+		}
+	}
+
+	return b
+}
+
+// WithRawSchema adds a raw JSON schema to the last added version.
+func (b *XRDBuilder) WithRawSchema(rawJSON []byte) *XRDBuilder {
+	if len(b.xrd.Spec.Versions) > 0 {
+		lastIdx := len(b.xrd.Spec.Versions) - 1
+		b.xrd.Spec.Versions[lastIdx].Schema = &xpextv1.CompositeResourceValidation{
+			OpenAPIV3Schema: runtime.RawExtension{
+				Raw: rawJSON,
+			},
+		}
+	}
+
+	return b
+}
+
+// Build returns the built XRD.
+func (b *XRDBuilder) Build() *xpextv1.CompositeResourceDefinition {
+	return b.xrd.DeepCopy()
+}
+
+// BuildAsUnstructured returns the built XRD as an unstructured object.
+func (b *XRDBuilder) BuildAsUnstructured() *un.Unstructured {
+	xrd := b.Build()
+
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(xrd)
+	if err != nil {
+		// This should not happen in tests, but if it does, we'll return an empty unstructured
+		return &un.Unstructured{}
+	}
+
+	return &un.Unstructured{Object: obj}
+}
+
+// endregion
+
+// region Composition builders
+
+// ======================================================================================
+// Composition Building Helpers
+// ======================================================================================
+
+// CompositionBuilder helps construct Composition objects for testing.
+type CompositionBuilder struct {
+	composition *xpextv1.Composition
+}
+
+// NewComposition creates a new CompositionBuilder.
+func NewComposition(name string) *CompositionBuilder {
+	return &CompositionBuilder{
+		composition: &xpextv1.Composition{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "apiextensions.crossplane.io/v1",
+				Kind:       "Composition",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+			},
+			Spec: xpextv1.CompositionSpec{},
+		},
+	}
+}
+
+// WithCompositeTypeRef sets the composite type reference.
+func (b *CompositionBuilder) WithCompositeTypeRef(apiVersion, kind string) *CompositionBuilder {
+	b.composition.Spec.CompositeTypeRef = xpextv1.TypeReference{
+		APIVersion: apiVersion,
+		Kind:       kind,
+	}
+
+	return b
+}
+
+// WithLabels sets metadata.labels on the composition. CompositionRevisions inherit these labels, so
+// they drive compositionRevisionSelector matching in comp-diff tests.
+func (b *CompositionBuilder) WithLabels(labels map[string]string) *CompositionBuilder {
+	b.composition.SetLabels(labels)
+	return b
+}
+
+// WithAnnotations sets metadata.annotations on the composition. Useful for modelling the
+// tooling-applied annotations a cluster copy carries but a file copy does not (notably
+// kubectl.kubernetes.io/last-applied-configuration).
+func (b *CompositionBuilder) WithAnnotations(annotations map[string]string) *CompositionBuilder {
+	b.composition.SetAnnotations(annotations)
+	return b
+}
+
+// WithPipelineMode sets the composition mode to pipeline.
+func (b *CompositionBuilder) WithPipelineMode() *CompositionBuilder {
+	b.composition.Spec.Mode = xpextv1.CompositionModePipeline
+	return b
+}
+
+// PipelineStepOption is a functional option for configuring a pipeline step.
+type PipelineStepOption func(*xpextv1.PipelineStep)
+
+// WithCredentials adds credentials to a pipeline step.
+func WithCredentials(name, namespace, secretName string) PipelineStepOption {
+	return func(step *xpextv1.PipelineStep) {
+		step.Credentials = append(step.Credentials, xpextv1.FunctionCredentials{
+			Name:   name,
+			Source: xpextv1.FunctionCredentialsSourceSecret,
+			SecretRef: &xpv2.SecretReference{
+				Namespace: namespace,
+				Name:      secretName,
+			},
+		})
+	}
+}
+
+// WithPipelineStep adds a pipeline step to the composition.
+func (b *CompositionBuilder) WithPipelineStep(step, functionName string, input map[string]any, opts ...PipelineStepOption) *CompositionBuilder {
+	var rawInput *runtime.RawExtension
+
+	if input != nil {
+		// Properly serialize the map to JSON bytes
+		jsonBytes, err := json.Marshal(input)
+		if err == nil {
+			rawInput = &runtime.RawExtension{
+				Raw: jsonBytes,
+			}
+		}
+	}
+
+	pipelineStep := xpextv1.PipelineStep{
+		Step:        step,
+		FunctionRef: xpextv1.FunctionReference{Name: functionName},
+		Input:       rawInput,
+	}
+
+	for _, opt := range opts {
+		opt(&pipelineStep)
+	}
+
+	b.composition.Spec.Pipeline = append(b.composition.Spec.Pipeline, pipelineStep)
+
+	return b
+}
+
+// Build returns the built Composition.
+func (b *CompositionBuilder) Build() *xpextv1.Composition {
+	return b.composition.DeepCopy()
+}
+
+// BuildAsUnstructured returns the built Composition as an unstructured object.
+func (b *CompositionBuilder) BuildAsUnstructured() *un.Unstructured {
+	comp := b.Build()
+
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(comp)
+	if err != nil {
+		// This should not happen in tests, but if it does, we'll return an empty unstructured
+		return &un.Unstructured{}
+	}
+
+	return &un.Unstructured{Object: obj}
+}
+
+// endregion

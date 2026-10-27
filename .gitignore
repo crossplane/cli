@@ -13,8 +13,8 @@ Zone.Identifier
 build/
 
 # Nix build output symlinks
-result
-result-*
+/result
+/result-*
 
 # Exclude the ko data dir
 kodata/
@@ -45,3 +45,5 @@ AGENTS.md
 
 # Ignore local dev environment variables
 .env
+/coverage-integration.txt
+/coverage-merged.txt

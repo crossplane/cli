@@ -11,8 +11,14 @@
 #   ''${SOME_VAR}        -> ${SOME_VAR}             (shell variable, escaped)
 #
 # Each app declares its tool dependencies via runtimeInputs, with inheritPath
-# set to false. This ensures apps only use explicitly declared tools.
+# set to false. This ensures apps only use explicitly declared tools. The
+# exception is integration-test, which keeps the host PATH for Docker.
 { pkgs }:
+let
+  # envtest binaries for the integration tests; null only on systems
+  # without an envtest build, where the tests skip through their env: guards.
+  envtestAssets = import ./envtest-assets.nix { inherit pkgs; };
+in
 {
   # Run Go unit tests.
   test = _: {
@@ -25,7 +31,42 @@
         inheritPath = false;
         text = ''
           export CGO_ENABLED=0
+          export CROSSPLANE_CRDS_DIR="''${CROSSPLANE_CRDS_DIR:-${
+            import ./crossplane-crds.nix { inherit pkgs; }
+          }}"
           go test -covermode=count ./... "$@"
+        '';
+      }
+    );
+  };
+
+  # Run the diff integration tests. Unlike the sandboxed `test` check, this app
+  # runs outside the Nix sandbox so it can reach a Docker daemon for the
+  # render engine; envtest binaries and Crossplane CRDs come from the Nix
+  # store. CI runs it on GitHub runners, where a host Docker daemon is
+  # available (see the integration-tests job in .github/workflows/ci.yml).
+  # It keeps the host PATH (Nix inputs first) because Docker and its credential
+  # helpers (docker-credential-*) come from the host, not from Nix.
+  integration-test = _: {
+    type = "app";
+    meta.description = "Run the diff integration tests (needs Docker)";
+    program = pkgs.lib.getExe (
+      pkgs.writeShellApplication {
+        name = "crossplane-cli-integration-test";
+        runtimeInputs = [ pkgs.unstable.go_1_26 ];
+        inheritPath = true;
+        text = ''
+          export CGO_ENABLED=0
+          export CROSSPLANE_CRDS_DIR="''${CROSSPLANE_CRDS_DIR:-${
+            import ./crossplane-crds.nix { inherit pkgs; }
+          }}"
+          ${pkgs.lib.optionalString (
+            envtestAssets != null
+          ) ''export KUBEBUILDER_ASSETS="''${KUBEBUILDER_ASSETS:-${envtestAssets}}"''}
+          # -coverpkg credits the tests' coverage to the packages they exercise;
+          # without it the profile only covers the test package itself.
+          go test -tags integration -covermode=count -coverpkg=./... \
+            -coverprofile=coverage-integration.txt ./cmd/crossplane/project/ "$@"
         '';
       }
     );

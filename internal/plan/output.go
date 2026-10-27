@@ -156,20 +156,34 @@ type planRenderer struct{}
 // Render writes the plans to w in the human-readable plan format.
 func (planRenderer) Render(w io.Writer, plans []*ResourcePlan) error {
 	for _, p := range plans {
-		_, _ = fmt.Fprintln(w, header(p))
-		if p.Error != "" {
-			_, _ = fmt.Fprintf(w, "    cannot plan: %s\n", p.Error)
-			_, _ = fmt.Fprintln(w)
-			continue
-		}
-		if p.Approximate {
-			_, _ = fmt.Fprintf(w, "    (approximate: %s)\n", p.FallbackReason)
-		}
-		renderChangeTree(w, p.Changes)
-		_, _ = fmt.Fprintln(w)
+		RenderPlan(w, p, "")
 	}
-	renderSummary(w, plans)
+	s := Summarize(plans)
+	RenderSummaryLine(w, s)
+	RenderSummaryWarnings(w, plans, s)
 	return nil
+}
+
+// RenderPlan prints one resource's header, note when not empty, and change
+// tree. A delete prints only its header and note, Terraform-style, though it
+// carries actual-only changes.
+func RenderPlan(w io.Writer, p *ResourcePlan, note string) {
+	_, _ = fmt.Fprintln(w, header(p))
+	if note != "" {
+		_, _ = fmt.Fprintf(w, "    %s\n", note)
+	}
+	if p.Error != "" {
+		_, _ = fmt.Fprintf(w, "    cannot plan: %s\n", p.Error)
+		_, _ = fmt.Fprintln(w)
+		return
+	}
+	if p.Approximate {
+		_, _ = fmt.Fprintf(w, "    (approximate: %s)\n", p.FallbackReason)
+	}
+	if p.Action != ActionDelete {
+		renderChangeTree(w, p.Changes)
+	}
+	_, _ = fmt.Fprintln(w)
 }
 
 // header returns the per-resource line, e.g.
@@ -221,7 +235,7 @@ func renderChangeTree(w io.Writer, changes []FieldChange) {
 			// leave a replace with nothing that explains it.
 			continue
 		}
-		segs := strings.Split(c.Path, ".")
+		segs := DisplayLevels(c.Path)
 		if len(segs) == 0 {
 			continue
 		}
@@ -244,20 +258,19 @@ func renderChangeTree(w io.Writer, changes []FieldChange) {
 		}
 		switch {
 		case c.Actual != nil && c.Planned != nil:
-			_, _ = fmt.Fprintf(w, "%s~ %s: %s -> %s%s\n", indent, leaf, formatValue(c.Actual), formatValue(c.Planned), note)
+			_, _ = fmt.Fprintf(w, "%s~ %s: %s -> %s%s\n", indent, leaf, FormatValue(c.Actual), FormatValue(c.Planned), note)
 		case c.Planned != nil:
-			_, _ = fmt.Fprintf(w, "%s+ %s: %s%s\n", indent, leaf, formatValue(c.Planned), note)
+			_, _ = fmt.Fprintf(w, "%s+ %s: %s%s\n", indent, leaf, FormatValue(c.Planned), note)
 		case c.Actual != nil:
-			_, _ = fmt.Fprintf(w, "%s- %s: %s%s\n", indent, leaf, formatValue(c.Actual), note)
+			_, _ = fmt.Fprintf(w, "%s- %s: %s%s\n", indent, leaf, FormatValue(c.Actual), note)
 		default:
 			_, _ = fmt.Fprintf(w, "%s! %s: (value not reported)%s\n", indent, leaf, note)
 		}
 	}
 }
 
-func renderSummary(w io.Writer, plans []*ResourcePlan) {
-	s := Summarize(plans)
-
+// RenderSummaryLine prints the "Plan: ..." line counting s.
+func RenderSummaryLine(w io.Writer, s Summary) {
 	line := fmt.Sprintf("Plan: %d to add, %d to change, %d to destroy", s.Create, s.Update, s.Destroy)
 	if s.Replace > 0 {
 		verb := "requires"
@@ -267,7 +280,11 @@ func renderSummary(w io.Writer, plans []*ResourcePlan) {
 		line += fmt.Sprintf(", %d %s replacement", s.Replace, verb)
 	}
 	_, _ = fmt.Fprintln(w, line+".")
+}
 
+// RenderSummaryWarnings prints the warnings that follow the summary line:
+// replacements, approximate results and resources that could not be planned.
+func RenderSummaryWarnings(w io.Writer, plans []*ResourcePlan, s Summary) {
 	if s.Replace > 0 {
 		named := 0
 		for _, p := range plans {
@@ -325,7 +342,10 @@ func replaceFields(plans []*ResourcePlan) []string {
 func lastSegments(paths []string) []string {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
-		segs := strings.Split(p, ".")
+		segs := DisplayLevels(p)
+		if len(segs) == 0 {
+			continue
+		}
 		out = append(out, segs[len(segs)-1])
 	}
 	return out
@@ -338,8 +358,8 @@ func sortedChanges(changes []FieldChange) []FieldChange {
 	return out
 }
 
-// formatValue renders one side of a change for humans.
-func formatValue(v *Value) string {
+// FormatValue renders one side of a change for humans.
+func FormatValue(v *Value) string {
 	switch {
 	case v == nil:
 		return "(none)"

@@ -111,6 +111,45 @@ jobs:
           file: result/coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  # The diff integration tests run the render engine's functions as Docker
+  # containers, so they cannot run in the Nix sandbox like the unit tests.
+  # The app runs outside the sandbox against the runner's Docker daemon.
+  integration-tests:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: crossplane
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-integration-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-integration-
+
+      - name: Run Integration Tests
+        run: nix run .#integration-test --option warn-dirty false
+
+      - name: Publish Integration Test Coverage
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          flags: integration
+          file: coverage-integration.txt
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   # Build all artifacts
   build-artifacts:
     permissions:

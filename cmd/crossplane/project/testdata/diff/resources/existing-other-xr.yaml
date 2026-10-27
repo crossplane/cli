@@ -1,0 +1,13 @@
+# A second XR, reconciled by composition.yaml, which controls the composed resource in
+# existing-other-xr-downstream.yaml.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: other-resource
+  namespace: default
+spec:
+  coolField: "other-value"
+  crossplane:
+    compositionRef:
+      name: xnopresources.diff.example.org
+    compositionUpdatePolicy: Automatic

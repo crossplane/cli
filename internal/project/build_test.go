@@ -20,10 +20,12 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -36,6 +38,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
+
+	xpv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/project/functions"
@@ -297,6 +301,43 @@ func TestBuilderDependsOn(t *testing.T) {
 	}
 }
 
+// TestBuilderZeroConcurrency verifies a max concurrency of 0 still builds:
+// an unbuffered semaphore would block every function build forever.
+func TestBuilderZeroConcurrency(t *testing.T) {
+	t.Parallel()
+
+	projFS := afero.NewMemMapFs()
+	writeProject(t, projFS,
+		map[string]string{"db.yaml": xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase")},
+		[]string{"fn-one"},
+	)
+	proj := &devv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+		Spec:       devv1alpha1.ProjectSpec{Repository: "xpkg.crossplane.io/example/test"},
+	}
+	proj.Default()
+
+	b := NewBuilder(
+		BuildWithFunctionIdentifier(functions.FakeIdentifier),
+		BuildWithMaxConcurrency(0),
+	)
+
+	// The semaphore send ignores ctx, so time the build out from here.
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Build(t.Context(), proj, projFS)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Build with max concurrency 0 didn't finish")
+	}
+}
+
 func constructTag(repo, tag string) (name.Tag, error) {
 	return name.NewTag(fmt.Sprintf("%s:%s", repo, tag))
 }
@@ -385,7 +426,7 @@ func TestResolveFunctions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolveFunctions: %v", err)
 			}
-			if diff := cmp.Diff(tc.want, got); diff != "" {
+			if diff := cmp.Diff(tc.want, got, cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("resolveFunctions(...): -want, +got:\n%s", diff)
 			}
 		})
@@ -745,5 +786,109 @@ func writeRuntimeTarImage(t *testing.T, fsys afero.Fs, path, arch string, img v1
 	}
 	if err := gz.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCollectResourcesRootExcludes(t *testing.T) {
+	t.Parallel()
+
+	comp := compositionYAML("c", "acme.example.com", "XDatabase")
+	projFS := afero.NewMemMapFs()
+	for _, path := range []string{
+		"/db/comp.yaml",
+		"/examples/comp.yaml",
+		"/examples-foo/comp.yaml",
+		"/functions/fn/comp.yaml",
+		"/operations/comp.yaml",
+	} {
+		if err := afero.WriteFile(projFS, path, []byte(comp), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// These are the excludes project build uses when the APIs path is "/".
+	pkgFS := afero.NewMemMapFs()
+	gvks := []string{xpv1.CompositionGroupVersionKind.String()}
+	if err := collectResources(pkgFS, projFS, gvks, []string{"examples", "functions", "operations"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	if err := afero.Walk(pkgFS, "/", func(path string, info fs.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			got = append(got, path)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/db/comp.yaml", "/examples-foo/comp.yaml"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("collectResources(): -want, +got:\n%s", diff)
+	}
+}
+
+func TestLoadCompositions(t *testing.T) {
+	t.Parallel()
+
+	comp := compositionYAML("xdatabase-comp", "acme.example.com", "XDatabase")
+	xrd := xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase")
+
+	tcs := map[string]struct {
+		apisPath string
+		files    map[string]string
+		want     []string
+	}{
+		"DefaultAPIsPath": {
+			files: map[string]string{
+				"apis/db/comp.yaml":  comp,
+				"apis/db/xrd.yaml":   xrd,
+				"apis/db/notes.txt":  comp,
+				"examples/comp.yaml": compositionYAML("example-comp", "acme.example.com", "XDatabase"),
+				"other/comp.yaml":    compositionYAML("other-comp", "acme.example.com", "XDatabase"),
+			},
+			want: []string{"xdatabase-comp"},
+		},
+		"RootAPIsPathExcludesExamplesFunctionsOperations": {
+			apisPath: "/",
+			files: map[string]string{
+				"/db/comp.yaml":         comp,
+				"/db/xrd.yaml":          xrd,
+				"/examples/comp.yaml":   compositionYAML("example-comp", "acme.example.com", "XDatabase"),
+				"/functions/fn/c.yaml":  compositionYAML("fn-comp", "acme.example.com", "XDatabase"),
+				"/operations/comp.yaml": compositionYAML("op-comp", "acme.example.com", "XDatabase"),
+			},
+			want: []string{"xdatabase-comp"},
+		},
+		"NoCompositions": {
+			files: map[string]string{"apis/xrd.yaml": xrd},
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			projFS := afero.NewMemMapFs()
+			for path, content := range tc.files {
+				if err := afero.WriteFile(projFS, path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			proj := &devv1alpha1.Project{Spec: devv1alpha1.ProjectSpec{Paths: &devv1alpha1.ProjectPaths{APIs: tc.apisPath}}}
+			proj.Default()
+
+			comps, err := LoadCompositions(proj, projFS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, 0, len(comps))
+			for _, c := range comps {
+				got = append(got, c.GetName())
+			}
+			if diff := cmp.Diff(tc.want, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("LoadCompositions(): -want, +got:\n%s", diff)
+			}
+		})
 	}
 }

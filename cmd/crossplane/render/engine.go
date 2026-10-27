@@ -17,9 +17,11 @@ limitations under the License.
 package render
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
@@ -29,6 +31,33 @@ import (
 
 // DefaultCrossplaneImage is the default Crossplane image used for rendering.
 const DefaultCrossplaneImage = "xpkg.crossplane.io/crossplane/crossplane"
+
+// ErrStaleRenderBackend reports that the render backend is a crossplane binary
+// or image that predates `crossplane internal render`. Render errors carrying
+// this condition match it with errors.Is.
+var ErrStaleRenderBackend = errors.New("render backend predates `crossplane internal render`")
+
+// staleRenderBackendSignature is the kong usage error a crossplane CLI that
+// lacks the `internal` command prints when asked to run `internal render`. It
+// cannot come from a pipeline or connectivity failure on a current backend.
+const staleRenderBackendSignature = "unexpected argument internal"
+
+// staleRenderBackendError marks err as ErrStaleRenderBackend without changing
+// its message.
+type staleRenderBackendError struct{ err error }
+
+func (e *staleRenderBackendError) Error() string        { return e.err.Error() }
+func (e *staleRenderBackendError) Unwrap() error        { return e.err }
+func (e *staleRenderBackendError) Is(target error) bool { return target == ErrStaleRenderBackend }
+
+// classifyRenderError marks err as ErrStaleRenderBackend when the backend's
+// stderr carries the stale-backend signature, and otherwise returns it as is.
+func classifyRenderError(err error, stderr []byte) error {
+	if err == nil || !bytes.Contains(stderr, []byte(staleRenderBackendSignature)) {
+		return err
+	}
+	return &staleRenderBackendError{err: err}
+}
 
 // An Engine executes a crossplane internal render request and returns the
 // response.
@@ -68,11 +97,11 @@ type Engine interface {
 // EngineFlags contains flags for configuring the render engine. It is embedded
 // by render command structs to provide shared engine configuration.
 type EngineFlags struct {
-	CrossplaneVersion       string `help:"Version of the Crossplane image to use for rendering. Defaults to the latest stable version."                                                              placeholder:"VERSION"   xor:"crossplane-selector"`
-	CrossplaneImage         string `help:"Override the full Crossplane Docker image reference for rendering."                                                                                        placeholder:"IMAGE"     xor:"crossplane-selector"`
-	CrossplaneBinary        string `help:"Path to a local crossplane binary to use instead of Docker."                                                                                               placeholder:"PATH"      type:"existingfile"       xor:"crossplane-selector,crossplane-docker"`
-	CrossplaneDockerNetwork string `help:"The docker network to start the crossplane container in"                                                                                                   xor:"crossplane-docker"`
-	SessionID               string `help:"Session ID to apply as the render.crossplane.io/session label on Docker containers and networks that render creates. Defaults to a random per-process ID." placeholder:"ID"`
+	CrossplaneVersion       string `help:"Version of the Crossplane image to use for rendering. Defaults to the latest stable version."                                                                                 placeholder:"VERSION"   xor:"crossplane-selector"`
+	CrossplaneImage         string `help:"Override the full Crossplane Docker image reference for rendering."                                                                                                           placeholder:"IMAGE"     xor:"crossplane-selector"`
+	CrossplaneBinary        string `help:"Path to a local crossplane binary to use instead of Docker."                                                                                                                  placeholder:"PATH"      type:"existingfile"       xor:"crossplane-selector,crossplane-docker"`
+	CrossplaneDockerNetwork string `help:"The docker network to start the crossplane container in"                                                                                                                      xor:"crossplane-docker"`
+	SessionID               string `help:"${session_id_help=Session ID to apply as the render.crossplane.io/session label on Docker containers and networks that render creates. Defaults to a random per-process ID.}" placeholder:"ID"`
 }
 
 // NewEngineFromFlags creates an Engine from the flag configuration. If a binary

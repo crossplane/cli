@@ -54,6 +54,21 @@ run reuses it. The containers have names like `crossplane-diff-server-DIGEST`
 and carry `simulate.crossplane.io/managed-by` and session labels; any later
 run without the annotation cleans them up, or remove them with docker rm.
 
+Provider packages are cached in `--cache-dir`, which defaults to
+`$CROSSPLANE_XPKG_CACHE` or the same xpkg cache directory as
+`project simulate` and `render`.
+
+The command exits with one of these statuses, so a CI pipeline can gate on
+the result:
+
+- 0: the simulation found no changes.
+- 1: the simulation failed, including when any resource couldn't be planned
+  (its error is in the output).
+- 3: the simulation found changes: a plan would create, update, destroy or
+  replace a resource.
+- 80: the flags were invalid, so nothing was simulated.
+- 130: the simulation was interrupted.
+
 ## Examples
 
 Preview what applying resources.yaml would do:
@@ -86,7 +101,10 @@ repository, then simulate with a Provider manifest annotated with
 crossplane resource simulate -f resources.yaml --providers providers.yaml
 ```
 
-Emit machine-readable results for CI gating:
+Emit machine-readable results for CI gating. Each plan carries the live
+object as `before` (absent for a create) and the desired manifest as `after`,
+both without status, server-managed metadata and ignored paths, and with
+Secret values redacted:
 
 ```shell
 crossplane resource simulate -f resources.yaml -o json

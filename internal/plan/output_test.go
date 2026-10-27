@@ -226,3 +226,25 @@ func TestSummarize(t *testing.T) {
 		t.Errorf("Summarize(...): -want, +got:\n%s", diff)
 	}
 }
+
+func TestRenderPlanEmptyReplacePath(t *testing.T) {
+	plans := []*ResourcePlan{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: ActionReplace, ReplacePaths: []string{"", "..", "spec.x"}}}
+	var buf bytes.Buffer
+	r, _ := NewRenderer(FormatPlan)
+	if err := r.Render(&buf, plans); err != nil {
+		t.Fatalf("Render(plan): unexpected error: %v", err)
+	}
+}
+
+func TestRenderJSONOmitsProjectFields(t *testing.T) {
+	var buf bytes.Buffer
+	r, _ := NewRenderer(FormatJSON)
+	if err := r.Render(&buf, testPlans()); err != nil {
+		t.Fatalf("Render(json): unexpected error: %v", err)
+	}
+	for _, k := range []string{`"composites"`, `"compositions"`, `"errors"`, `"warnings"`, `"notes"`, `"deferred"`, `"composite"`, `"dryRun"`} {
+		if bytes.Contains(buf.Bytes(), []byte(k)) {
+			t.Errorf("Render(json): resource simulate output should omit %s", k)
+		}
+	}
+}

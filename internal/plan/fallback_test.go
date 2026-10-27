@@ -276,3 +276,149 @@ func TestFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestFieldChanges(t *testing.T) {
+	cases := map[string]struct {
+		actual, planned map[string]any
+		want            []FieldChange
+	}{
+		"DeleteIsActualOnly": {
+			actual: map[string]any{"metadata": map[string]any{"labels": map[string]any{"team": "a"}}, "spec": map[string]any{"size": 1}},
+			want: []FieldChange{
+				{Path: "metadata.labels.team", Actual: &Value{Value: "a"}},
+				{Path: "spec.size", Actual: &Value{Value: 1}},
+			},
+		},
+		"CreateIsPlannedOnly": {
+			planned: map[string]any{"spec": map[string]any{"size": 1}},
+			want:    []FieldChange{{Path: "spec.size", Planned: &Value{Value: 1}}},
+		},
+		"Update": {
+			actual:  map[string]any{"spec": map[string]any{"size": 1}},
+			planned: map[string]any{"spec": map[string]any{"size": 2}},
+			want:    []FieldChange{{Path: "spec.size", Actual: &Value{Value: 1}, Planned: &Value{Value: 2}}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if diff := cmp.Diff(tc.want, FieldChanges(tc.actual, tc.planned)); diff != "" {
+				t.Errorf("FieldChanges(...): -want, +got:\n%s", diff)
+			}
+		})
+	}
+}
+
+// served returns spec as a resource carrying the status and server-managed
+// metadata a live object has, alongside the identity a plan keeps.
+func served(spec map[string]any) *unstructured.Unstructured {
+	u := mr(spec)
+	u.Object["metadata"] = map[string]any{
+		"name":              "my-vpc",
+		"namespace":         "default",
+		"labels":            map[string]any{"team": "net"},
+		"annotations":       map[string]any{"note": "kept"},
+		"uid":               "1234",
+		"resourceVersion":   "42",
+		"generation":        int64(3),
+		"creationTimestamp": "2026-01-01T00:00:00Z",
+		"managedFields":     []any{map[string]any{"manager": "kubectl"}},
+		"selfLink":          "/apis/x",
+		"ownerReferences":   []any{map[string]any{"name": "owner"}},
+	}
+	u.Object["status"] = map[string]any{"atProvider": map[string]any{"id": "vpc-1"}}
+	return u
+}
+
+// cleaned is what a plan should carry for a served object: spec and identity
+// metadata only.
+func cleaned(u *unstructured.Unstructured) *unstructured.Unstructured {
+	out := u.DeepCopy()
+	delete(out.Object, "status")
+	md, _ := out.Object["metadata"].(map[string]any)
+	for _, f := range []string{"uid", "resourceVersion", "generation", "creationTimestamp", "managedFields", "selfLink", "ownerReferences"} {
+		delete(md, f)
+	}
+	return out
+}
+
+func TestFallbackObjects(t *testing.T) {
+	desired := served(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.1.0.0/16"}})
+	live := served(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}})
+	desiredIn, liveIn := desired.DeepCopy(), live.DeepCopy()
+
+	t.Run("Update", func(t *testing.T) {
+		got := Fallback(desired, live, "test")
+		if diff := cmp.Diff(cleaned(live), got.Before); diff != "" {
+			t.Errorf("Fallback(...).Before: -want cleaned live, +got:\n%s", diff)
+		}
+		if diff := cmp.Diff(cleaned(desired), got.After); diff != "" {
+			t.Errorf("Fallback(...).After: -want cleaned desired, +got:\n%s", diff)
+		}
+		if diff := cmp.Diff(liveIn, live); diff != "" {
+			t.Errorf("Fallback(...) mutated live: -want, +got:\n%s", diff)
+		}
+		if diff := cmp.Diff(desiredIn, desired); diff != "" {
+			t.Errorf("Fallback(...) mutated desired: -want, +got:\n%s", diff)
+		}
+	})
+
+	t.Run("Create", func(t *testing.T) {
+		if got := Fallback(desired, nil, "test"); got.Before != nil {
+			t.Errorf("Fallback(...).Before: want nil for a create, got %v", got.Before)
+		}
+	})
+}
+
+func TestRedactSecret(t *testing.T) {
+	secret := func(data, stringData any) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "s"}}}
+		if data != nil {
+			u.Object["data"] = data
+		}
+		if stringData != nil {
+			u.Object["stringData"] = stringData
+		}
+		return u
+	}
+
+	cases := map[string]struct {
+		reason string
+		in     *unstructured.Unstructured
+		want   *unstructured.Unstructured
+	}{
+		"Nil": {
+			reason: "Nil stays nil.",
+		},
+		"NotASecret": {
+			reason: "Any other kind is returned as is.",
+			in:     mr(map[string]any{"data": map[string]any{"k": "v"}}),
+			want:   mr(map[string]any{"data": map[string]any{"k": "v"}}),
+		},
+		"Secret": {
+			reason: "Each data and stringData value is redacted; keys and other fields stay.",
+			in:     secret(map[string]any{"a": "x", "b": "y"}, map[string]any{"c": "z"}),
+			want:   secret(map[string]any{"a": "(sensitive value)", "b": "(sensitive value)"}, map[string]any{"c": "(sensitive value)"}),
+		},
+		"MalformedData": {
+			reason: "A data field that is not a map is redacted whole.",
+			in:     secret("raw", nil),
+			want:   secret("(sensitive value)", nil),
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var before *unstructured.Unstructured
+			if tc.in != nil {
+				before = tc.in.DeepCopy()
+			}
+			got := RedactSecret(tc.in)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("\n%s\nRedactSecret(...): -want, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(before, tc.in); diff != "" {
+				t.Errorf("\n%s\nRedactSecret(...): must not modify its input: -before, +after:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

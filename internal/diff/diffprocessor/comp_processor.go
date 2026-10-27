@@ -1,0 +1,1367 @@
+/*
+Copyright 2025 The Crossplane Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package diffprocessor
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+
+	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
+	"github.com/crossplane/cli/v2/internal/diff/compare"
+	"github.com/crossplane/cli/v2/internal/diff/ref"
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	dtypes "github.com/crossplane/cli/v2/internal/diff/types"
+)
+
+// XRDiffResult captures the result of processing a single XR against a composition.
+type XRDiffResult struct {
+	// Diffs contains the downstream resource diffs for this XR (keyed by resource ID).
+	// Empty map means no changes detected.
+	Diffs map[string]*dt.ResourceDiff
+	// Error contains any error that occurred while processing this XR.
+	// nil means processing was successful.
+	Error error
+}
+
+// HasChanges returns true if this XR has downstream resource changes.
+func (r *XRDiffResult) HasChanges() bool {
+	// Count only non-equal diffs as "having changes".
+	// The diffs map may contain DiffTypeEqual entries (e.g., XR stored for removal detection).
+	for _, diff := range r.Diffs {
+		if diff.DiffType != dt.DiffTypeEqual {
+			return true
+		}
+	}
+
+	return false
+}
+
+// HasError returns true if this XR encountered a processing error.
+func (r *XRDiffResult) HasError() bool {
+	return r.Error != nil
+}
+
+// CompDiffProcessor defines the interface for composition diffing.
+type CompDiffProcessor interface {
+	// DiffComposition processes composition changes and their impact on existing XRs, and returns
+	// the report for the caller to render. The report is non-nil whenever compositions were
+	// processed, even with an error, so it can still be rendered.
+	// When `resources` is non-empty, impact analysis is restricted to the named composites:
+	// each ref is resolved against every supplied composition's (XR GVK, claim GVK) pair via a
+	// preflight pass. If any ref is relevant to no supplied composition, the call fails before
+	// processing any composition, with a nil report (CLI input error). When `resources` is empty,
+	// behavior is unchanged.
+	DiffComposition(ctx context.Context, compositions []*un.Unstructured, namespace string, resources []k8stypes.NamespacedName) (*dt.CompDiffOutput, error)
+	Initialize(ctx context.Context) error
+	// Cleaner releases any resources held by the processor (e.g., Docker containers).
+	Cleaner
+}
+
+// DefaultCompDiffProcessor implements CompDiffProcessor.
+type DefaultCompDiffProcessor struct {
+	compositionClient xp.CompositionClient
+	config            ProcessorConfig
+	xrProc            DiffProcessor
+}
+
+// NewCompDiffProcessor creates a new DefaultCompDiffProcessor.
+func NewCompDiffProcessor(xrProc DiffProcessor, compositionClient xp.CompositionClient, opts ...ProcessorOption) CompDiffProcessor {
+	// Create default configuration
+	config := ProcessorConfig{
+		MaxNestedDepth:      DefaultMaxNestedDepth,
+		MaxRenderIterations: DefaultMaxRenderIterations,
+		Logger:              logging.NewNopLogger(),
+	}
+
+	// Apply all provided options
+	for _, option := range opts {
+		option(&config)
+	}
+
+	// Unset, advisories are only collected into the report; see NewDiffProcessor.
+	if config.Advisories == nil {
+		config.Advisories = NewAdvisoryCollector(nil)
+	}
+
+	// NOTE: We intentionally do NOT default config.RenderFunc here.
+	//
+	// WithRenderFunc is operation-scoped: the same opts slice flows into
+	// NewDiffProcessor for our embedded xrProc, so a caller-supplied renderer is
+	// already honored at the layer that actually drives rendering. Comp's copy of
+	// config.RenderFunc just rides along unused, which is fine.
+	//
+	// What we must NOT do is *default* one here. NewEngineRenderFn allocates a
+	// Docker bridge network and reserves function-runtime addresses on first use,
+	// and DefaultCompDiffProcessor.Cleanup delegates to xrProc.Cleanup — it has no
+	// hook for tearing down a comp-side engineRenderFn. Defaulting one would leak
+	// the network for the lifetime of the process. The xr processor handles its
+	// own default + cleanup in NewDiffProcessor, so comp piggybacking on
+	// xrProc.Render is the correct (and only) path.
+
+	// Set default factories if not provided
+	config.SetDefaultFactories()
+
+	return &DefaultCompDiffProcessor{
+		compositionClient: compositionClient,
+		config:            config,
+		xrProc:            xrProc,
+	}
+}
+
+// Initialize loads required resources.
+func (p *DefaultCompDiffProcessor) Initialize(ctx context.Context) error {
+	p.config.Logger.Debug("Initializing composition diff processor")
+
+	// Initialize the injected XR processor
+	if err := p.xrProc.Initialize(ctx); err != nil {
+		return errors.Wrap(err, "cannot initialize XR diff processor")
+	}
+
+	p.config.Logger.Debug("Composition diff processor initialized")
+
+	return nil
+}
+
+// Cleanup releases any resources held by the processor.
+// Delegates to the underlying XR processor for cleanup.
+func (p *DefaultCompDiffProcessor) Cleanup(ctx context.Context) error {
+	return p.xrProc.Cleanup(ctx)
+}
+
+// DiffComposition processes composition changes and their impact on existing XRs, and returns the
+// report for the caller to render. The report is non-nil whenever compositions were processed, even
+// with an error.
+func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, compositions []*un.Unstructured, namespace string, resources []k8stypes.NamespacedName) (*dt.CompDiffOutput, error) {
+	p.config.Logger.Debug("Processing composition diff",
+		"compositionCount", len(compositions),
+		"namespace", namespace,
+		"resourceCount", len(resources))
+
+	if len(compositions) == 0 {
+		return nil, errors.New("no compositions provided")
+	}
+
+	// When --resource is set, run a preflight pass that resolves every ref against every supplied
+	// composition. If any ref is relevant to no supplied composition, fail loudly BEFORE processing
+	// any composition (this is a CLI input error, not a downstream processing failure).
+	preflightMatches, err := p.preflightResourceRefs(ctx, compositions, resources)
+	if err != nil {
+		return nil, err
+	}
+
+	output := &dt.CompDiffOutput{
+		Compositions: make([]dt.CompositionDiff, 0, len(compositions)),
+		Errors:       []dt.OutputError{},
+	}
+
+	var compositionErrors int
+
+	// Process each composition, filtering out non-Composition objects
+	for _, comp := range compositions {
+		// Skip non-Composition objects (e.g., GoTemplate objects extracted from pipeline steps)
+		if comp.GetKind() != "Composition" {
+			p.config.Logger.Debug("Skipping non-Composition object", "kind", comp.GetKind(), "apiVersion", comp.GetAPIVersion())
+			continue
+		}
+
+		compositionID := comp.GetName() // Use actual name from unstructured
+		p.config.Logger.Debug("Processing composition", "name", compositionID)
+
+		// Resolve the affected XR set up-front. In --resource mode the preflight already produced it;
+		// in default-discovery mode we query the cluster (best-effort: net-new compositions yield empty).
+		// Either way the filtered XRs are recorded in ImpactAnalysis; scoped records which mode produced
+		// the set, so the renderer can decide how to present them.
+		scoped := len(resources) > 0
+
+		var affectedXRs []*un.Unstructured
+
+		switch {
+		case scoped:
+			affectedXRs = preflightMatches[compositionID]
+		default:
+			// Default-discovery only needs comp.GetName() — pass the unstructured directly.
+			// FindComposites converts to typed internally only in refs mode (which we're not in here).
+			discovered, findErr := p.compositionClient.FindComposites(ctx, comp, dtypes.FindCompositesOptions{Namespace: namespace})
+
+			switch {
+			case findErr != nil:
+				// Net-new composition (won't exist in cluster) → graceful empty result, same as before.
+				p.config.Logger.Debug("Cannot find composites using composition (likely net-new composition)",
+					"composition", compositionID, "error", findErr)
+
+				affectedXRs = nil
+			default:
+				affectedXRs = discovered
+			}
+		}
+
+		// Process this single composition and build the result
+		compResult, err := p.processSingleComposition(ctx, comp, affectedXRs, scoped)
+		if err != nil {
+			p.config.Logger.Debug("Failed to process composition", "composition", compositionID, "error", err)
+
+			compositionErrors++
+
+			// Include failed composition with error instead of skipping
+			output.Compositions = append(output.Compositions, dt.CompositionDiff{
+				Name:   compositionID,
+				Scoped: scoped,
+				Error:  new(NewOutputError(fmt.Sprintf("Composition/%s", compositionID), err)),
+				AffectedResources: dt.AffectedResourcesSummary{
+					Total:       0,
+					WithChanges: 0,
+					Unchanged:   0,
+					WithErrors:  0,
+				},
+				ImpactAnalysis: []dt.XRImpact{},
+			})
+		} else {
+			output.Compositions = append(output.Compositions, *compResult)
+		}
+	}
+
+	// Collect XR errors with their resource IDs for top-level errors
+	for _, comp := range output.Compositions {
+		for _, impact := range comp.ImpactAnalysis {
+			// The impact carries the OutputError built when it was created (see buildImpactAnalysis), so the
+			// per-XR entry and this list hold the same error.
+			if impact.Status == dt.XRStatusError && impact.Error != nil {
+				output.Errors = append(output.Errors, *impact.Error)
+			}
+		}
+	}
+
+	// Release resources before draining advisories, so one raised during teardown (leftover function
+	// containers) is collected rather than arriving after the report has been returned and rendered.
+	CleanupDetached(ctx, p, p.config.Logger)
+
+	// Attach any advisories raised during the run. An injected collector has already echoed them to
+	// stderr when raised; this carries them into structured output.
+	output.Warnings = p.config.Advisories.Advisories()
+
+	// Counted before the interruption entry is added: it is not an XR failure.
+	totalXRErrors := len(output.Errors)
+	output.Errors = withInterruption(ctx, output.Errors)
+
+	// Return an error so CI/CD pipelines get a non-zero exit code. The report is returned with it, so
+	// the caller still renders it (structured output stays valid). The renderer does not print errors,
+	// so the returned error names each failing resource. A run in which only some compositions failed
+	// still succeeds: each failure is in the report, under its composition.
+	var errs []error
+
+	if totalXRErrors > 0 {
+		errs = append(errs, errors.Wrapf(outputErrorsJoined(output.Errors[:totalXRErrors]), "impact analysis failed for %d XR(s)", totalXRErrors))
+	}
+
+	if compositionErrors > 0 && compositionErrors == len(output.Compositions) {
+		failed := make([]dt.OutputError, 0, compositionErrors)
+		for _, comp := range output.Compositions {
+			failed = append(failed, *comp.Error)
+		}
+
+		errs = append(errs, errors.Wrap(outputErrorsJoined(failed), "failed to process all compositions"))
+	}
+
+	return output, errors.Join(errs...)
+}
+
+// outputErrorsJoined returns errs as one error that names each one's resource, the way PerformDiff
+// names the resources it failed to process.
+func outputErrorsJoined(errs []dt.OutputError) error {
+	joined := make([]error, 0, len(errs))
+	for _, e := range errs {
+		joined = append(joined, errors.Errorf("unable to process resource %s: %s", e.ResourceID, e.Message))
+	}
+
+	return errors.Join(joined...)
+}
+
+// preflightResourceRefs resolves user --resource refs against every supplied composition before
+// any rendering happens. Returns the per-composition matched set keyed by composition name.
+// If any ref is relevant to no supplied composition, it returns an error naming the unmatched
+// refs (CLI input error). When `refs` is empty, returns (nil, nil) and the caller falls back to
+// default-discovery mode.
+func (p *DefaultCompDiffProcessor) preflightResourceRefs(ctx context.Context, compositions []*un.Unstructured, refs []k8stypes.NamespacedName) (map[string][]*un.Unstructured, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+
+	perComp := make(map[string][]*un.Unstructured, len(compositions))
+	matchedAtLeastOnce := make(map[string]bool, len(refs))
+
+	for _, comp := range compositions {
+		if comp.GetKind() != "Composition" {
+			continue
+		}
+
+		// FindComposites takes the unstructured composition; it converts to typed internally
+		// in refs mode (resolveCompositeTypes needs spec.compositeTypeRef).
+		matched, err := p.compositionClient.FindComposites(ctx, comp, dtypes.FindCompositesOptions{Refs: refs})
+		if err != nil {
+			return nil, errors.Wrapf(err, "preflight: cannot resolve resource refs for composition %s", comp.GetName())
+		}
+
+		perComp[comp.GetName()] = matched
+
+		// A ref is matched globally if any composition's matched-set contains a composite whose
+		// (namespace, name) equals the ref.
+		for _, m := range matched {
+			for _, ref := range refs {
+				if m.GetName() == ref.Name && m.GetNamespace() == ref.Namespace {
+					matchedAtLeastOnce[ref.String()] = true
+				}
+			}
+		}
+	}
+
+	var globallyUnmatched []k8stypes.NamespacedName
+
+	for _, ref := range refs {
+		if !matchedAtLeastOnce[ref.String()] {
+			globallyUnmatched = append(globallyUnmatched, ref)
+		}
+	}
+
+	if len(globallyUnmatched) > 0 {
+		names := make([]string, 0, len(globallyUnmatched))
+		for _, r := range globallyUnmatched {
+			names = append(names, ref.Format(r))
+		}
+
+		return nil, errors.Errorf("resource ref(s) not relevant to any supplied composition: %v (resource not found, or it doesn't reference one of the supplied compositions)", names)
+	}
+
+	return perComp, nil
+}
+
+// processSingleComposition processes a single composition and builds the result.
+// `affectedXRs` is the pre-resolved set of XRs to evaluate (caller decides via DiffComposition's
+// switch whether this comes from the --resource preflight or default-discovery via FindComposites).
+// `scoped` records that the set came from --resource rather than discovery (see CompositionDiff.Scoped).
+func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context, newComp *un.Unstructured, affectedXRs []*un.Unstructured, scoped bool) (*dt.CompositionDiff, error) {
+	result := &dt.CompositionDiff{
+		Name:           newComp.GetName(),
+		Scoped:         scoped,
+		ImpactAnalysis: []dt.XRImpact{},
+		AffectedResources: dt.AffectedResourcesSummary{
+			Total:            0,
+			WithChanges:      0,
+			Unchanged:        0,
+			WithErrors:       0,
+			FilteredByPolicy: 0,
+		},
+	}
+
+	// First, calculate the composition diff itself
+	comparison, err := p.calculateCompositionDiff(ctx, newComp)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot calculate composition diff")
+	}
+
+	result.CompositionDiff = comparison.diff
+	result.MaskedChangesOnly = comparison.diff == nil && comparison.changed()
+
+	// Predict the identity of the revision this composition would produce. Needed twice below: to
+	// evaluate compositionRevisionSelectors against the label set the revision would carry, and to seed
+	// the composites so a template observing the revision name renders the value it would really get.
+	pred, err := predictRevision(newComp)
+	if err != nil {
+		return nil, err
+	}
+
+	// Report what applying this composition does to CompositionRevisions regardless of whether the
+	// composites are evaluated below. This is the mutative consequence of the apply, and it is
+	// independent of whether anything renders differently — so it is reported at every --analyze-on
+	// setting, and carried as a typed per-composition field rather than a warning, because a CI
+	// consumer may want to gate on it.
+	result.RevisionImpact = dt.RevisionImpact{
+		ChangeScope:     string(comparison.scope),
+		CreatesRevision: comparison.changed(),
+	}
+
+	if comparison.revisionNamePredictable {
+		result.RevisionImpact.PredictedRevisionName = pred.name
+	}
+
+	// Partition XRs by whether they would adopt the diffed composition's resulting revision. This is
+	// local (no renders), and every path below needs it: the composites that would adopt the new
+	// revision are exactly the ones that would re-point at it, and the ones that would not are a
+	// consequence of applying this composition in their own right. The same classification decides, in
+	// cliCompositionRevision, which composites are rendered with the new revision's name: a Manual
+	// composite kept by --include-manual stays pinned, so it never is.
+	keptXRs, droppedXRs, repointingXRs, err := p.partitionXRsByUpdatePolicy(affectedXRs, newComp, pred)
+	if err != nil {
+		return nil, err
+	}
+
+	if comparison.changed() {
+		result.RevisionImpact.RepointedComposites = len(repointingXRs)
+	}
+
+	// A composition whose pipeline calls a changed function renders differently without creating a
+	// revision, so it is analysed as at least a metadata-scope change: any-change analyses it,
+	// spec-change still skips it. Only the decision is raised; RevisionImpact still reports the real scope.
+	analysisScope := comparison.scope
+	if analysisScope == ChangeScopeNone && callsChangedFunction(newComp, p.config.ChangedFunctions) {
+		analysisScope = ChangeScopeMetadata
+	}
+
+	// A Manual XR pinned to a revision that calls a changed function is not deferred when the analysis
+	// runs: it is rendered against that revision. See pinnedFunctionChangeXRs.
+	// This holds even when the diffed composition itself calls no changed function and matches the
+	// cluster: an XR pinned to an older revision that does is analysed as a metadata-scope change.
+	pinnedXRs, pinnedKept, pinnedDropped := p.pinnedFunctionChangeXRs(ctx, keptXRs, droppedXRs)
+	if len(pinnedXRs) > 0 && analysisScope == ChangeScopeNone {
+		analysisScope = ChangeScopeMetadata
+	}
+
+	if analysisScope.triggersAnalysis(p.config.AnalyzeOn) {
+		keptXRs, droppedXRs = pinnedKept, pinnedDropped
+	} else {
+		pinnedXRs = nil
+	}
+
+	counts := countFilterReasons(droppedXRs)
+
+	p.config.Logger.Debug("Filtered XRs by deletion state, update policy, and revision selector",
+		"composition", newComp.GetName(),
+		"originalCount", len(affectedXRs),
+		"keptCount", len(keptXRs),
+		"repointingCount", len(repointingXRs),
+		"droppedCount", len(droppedXRs),
+		"filteredByPolicy", counts.byPolicy,
+		"filteredBySelector", counts.bySelector,
+		"filteredByDeletion", counts.byDeletion,
+		"includeManual", p.config.IncludeManual)
+
+	// Record every filtered composite as XRStatusFiltered, with its reason, in either mode. Whether to
+	// list them or only count them is the renderer's decision (see CompositionDiff.Scoped).
+	for _, d := range droppedXRs {
+		result.ImpactAnalysis = append(result.ImpactAnalysis, dt.XRImpact{
+			ObjectReference: corev1.ObjectReference{
+				APIVersion: d.xr.GetAPIVersion(),
+				Kind:       d.xr.GetKind(),
+				Name:       d.xr.GetName(),
+				Namespace:  d.xr.GetNamespace(),
+			},
+			Status:       dt.XRStatusFiltered,
+			FilterReason: d.reason,
+			FilterDetail: d.detail,
+		})
+	}
+
+	// Which composites were discovered, and which of them would not adopt the resulting revision, is
+	// settled above without rendering anything. So it is recorded before the skip below, which
+	// suppresses only the per-XR renders: --analyze-on is a cost knob, and a flag may change how much
+	// work is done but never whether a real consequence is reported. Reporting a total of 0 here while
+	// RevisionImpact.RepointedComposites said otherwise was issue #478.
+	result.AffectedResources.Total = len(affectedXRs)
+	counts.applyTo(&result.AffectedResources)
+
+	// Skip the per-XR work — one function render per XR, the dominant cost of comp — when the change
+	// is smaller than the user asked to analyse.
+	//
+	// At the default (any-change) this skips only a composition identical in everything Crossplane
+	// hashes: no new CompositionRevision is created, so no XR adopts anything it hasn't already, and
+	// any downstream delta computed here would be caused by something else — drift, convergence lag,
+	// or a modeling artifact of this tool — which we cannot tell apart, so reporting it as this
+	// composition's "impact" would attribute cluster state to a change that does not exist.
+	// See issues #453 and #472.
+	if !analysisScope.triggersAnalysis(p.config.AnalyzeOn) {
+		p.config.Logger.Debug("Skipping impact analysis",
+			"composition", newComp.GetName(),
+			"changeScope", string(analysisScope),
+			"analyzeOn", string(p.config.AnalyzeOn),
+			"affectedXRCount", len(affectedXRs))
+
+		result.ImpactAnalysisSkipped = true
+
+		return result, nil
+	}
+
+	p.config.Logger.Debug("Processing affected XRs", "composition", newComp.GetName(), "count", len(affectedXRs), "scoped", scoped)
+
+	if len(keptXRs) == 0 {
+		// All XRs were filtered; the summary recorded above is already complete.
+		return result, nil
+	}
+
+	// Render the composites with the revision they would actually be pointing at. Without this the
+	// render sees each composite's *existing* compositionRevisionRef, so a composition template reading
+	// the revision name produces the stale one and a real change goes unreported. See issue #474.
+	//
+	// When the name is not predictable we render with the refs the composites have — the pre-#474
+	// behaviour — and say so, rather than guess one. Rendering with a name we invented would manufacture
+	// a downstream diff on a converged cluster for exactly the compositions this feature exists to serve.
+	revisionName := ""
+
+	switch {
+	case comparison.revisionNamePredictable:
+		revisionName = pred.name
+	case comparison.changed():
+		p.config.Advisories.Raise(dt.OutputWarning{
+			Message: "Could not predict the name of the CompositionRevision this composition would create, because it differs from the cluster's only by the annotation a client-side `kubectl apply` writes — whose post-apply value depends on how you apply, not on the file. Composites were rendered with their existing compositionRevisionRef, so if any of your composition templates read the revision name, a resulting change was not detected. Apply with `--server-side` (or via Argo/Flux) to make it predictable.",
+			Context: map[string]string{"composition": newComp.GetName()},
+		})
+	}
+
+	// Process kept XRs and collect diffs to determine which ones have changes
+	p.config.Logger.Debug("Processing XRs to collect diff information", "count", len(keptXRs))
+
+	xrResults := p.collectXRDiffs(ctx, keptXRs, newComp, revisionName, predictedRevisionLabels(newComp, pred), pinnedXRs)
+
+	// Build impact analysis and counts from results for the kept set, then merge in any
+	// already-appended filtered entries.
+	keptImpacts, keptSummary := p.buildImpactAnalysis(keptXRs, xrResults)
+	// buildImpactAnalysis keeps keptXRs' order. A kept composite that does not re-point is one
+	// --include-manual kept although its Manual policy pins it.
+	for i, xr := range keptXRs {
+		key := dt.MakeDiffKeyFromResource(xr)
+		keptImpacts[i].Pinned = !repointingXRs[key]
+
+		if pinned, ok := pinnedXRs[key]; ok && pinned.err == nil {
+			keptImpacts[i].RenderedRevision = pinned.resolved.RevisionName
+		}
+	}
+
+	result.ImpactAnalysis = append(result.ImpactAnalysis, keptImpacts...)
+	// keptSummary.Total counts only kept; widen to include filtered so totals stay consistent.
+	keptSummary.Total = len(affectedXRs)
+	counts.applyTo(&keptSummary)
+	result.AffectedResources = keptSummary
+
+	return result, nil
+}
+
+// collectXRDiffs processes XRs and collects their diffs, returning results for each XR.
+//
+// revisionName is the name of the CompositionRevision applying newComp would leave its composites on,
+// or empty when that is not predictable; revisionLabels is the label set that revision would carry. See
+// cliCompositionRevision for which composites are rendered with that name.
+//
+// pinned, keyed by dt.MakeDiffKeyFromResource, holds the composites rendered against their own pinned
+// revision instead of newComp; see pinnedFunctionChangeXRs.
+func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un.Unstructured, newComp *un.Unstructured, revisionName string, revisionLabels map[string]string, pinned map[string]pinnedResolution) map[string]*XRDiffResult {
+	// Convert the CLI composition to typed once for reuse
+	cliComp := &apiextensionsv1.Composition{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(newComp.Object, cliComp); err != nil {
+		// If we can't convert, return an error result for all XRs
+		results := make(map[string]*XRDiffResult)
+
+		for _, xr := range xrs {
+			resourceID := dt.MakeDiffKeyFromResource(xr)
+			results[resourceID] = &XRDiffResult{
+				Diffs: make(map[string]*dt.ResourceDiff),
+				Error: errors.Wrap(err, "cannot convert CLI composition to typed"),
+			}
+		}
+
+		return results
+	}
+
+	// Extract the target GVK from the CLI composition's compositeTypeRef
+	cliCompTargetAPIVersion := cliComp.Spec.CompositeTypeRef.APIVersion
+	cliCompTargetKind := cliComp.Spec.CompositeTypeRef.Kind
+
+	p.config.Logger.Debug("CLI composition targets",
+		"apiVersion", cliCompTargetAPIVersion,
+		"kind", cliCompTargetKind)
+
+	// Build a set of root-level resource keys (apiVersion/kind/namespace/name) for quick lookup.
+	// Root-level resources are XRs and Claims supplied as `affectedXRs` to processSingleComposition
+	// (resolved by DiffComposition via either preflight or FindComposites default-discovery).
+	// These should always use the CLI composition. Namespace is included in the key to avoid
+	// collisions between resources with the same name in different namespaces.
+	rootResourceKeys := make(map[string]bool)
+
+	for _, xr := range xrs {
+		key := dt.MakeDiffKeyFromResource(xr)
+		rootResourceKeys[key] = true
+	}
+
+	// Composition provider that returns CLI composition for:
+	// 1. Root-level resources (XRs and Claims that use this composition)
+	// 2. XRs whose type matches the CLI composition's compositeTypeRef
+	//
+	// For nested XRs with different types, looks up from the cluster.
+	//
+	// The provider is handed the effective composite (see CompositeResolver), so a root claim reaches it
+	// as its backing XR, whose key is not in rootResourceKeys: Check 2 matches it by type instead.
+	compositionProvider := func(ctx context.Context, res *un.Unstructured) (dtypes.ResolvedComposition, error) {
+		resGVK := res.GroupVersionKind()
+		resAPIVersion := resGVK.GroupVersion().String()
+		resKind := resGVK.Kind
+		resourceID := fmt.Sprintf("%s/%s", res.GetKind(), res.GetName())
+
+		// Check 1: Is this a root-level resource (XR or Claim supplied as affectedXRs to this composition)?
+		// Root-level resources always use the CLI composition, even claims whose GVK differs from the XR type.
+		key := dt.MakeDiffKeyFromResource(res)
+		if pin, ok := pinned[key]; ok {
+			p.config.Logger.Debug("Resource is pinned to a revision calling a changed function, using that revision",
+				"resource", resourceID,
+				"revision", pin.resolved.RevisionName)
+
+			return pin.resolved, nil
+		}
+
+		if rootResourceKeys[key] {
+			p.config.Logger.Debug("Resource is root-level (uses this composition), using CLI composition",
+				"resource", resourceID,
+				"composition", cliComp.GetName())
+
+			return p.cliCompositionRevision(res, cliComp, revisionName, revisionLabels)
+		}
+
+		// Check 2: Does this resource's type match the CLI composition's target type?
+		// This handles XRs encountered during rendering that match the composition's type.
+		if resAPIVersion == cliCompTargetAPIVersion && resKind == cliCompTargetKind {
+			p.config.Logger.Debug("Resource matches CLI composition type, using CLI composition",
+				"resource", resourceID,
+				"composition", cliComp.GetName())
+
+			return p.cliCompositionRevision(res, cliComp, revisionName, revisionLabels)
+		}
+
+		// This is a nested XR with a different type - look up its composition from the cluster
+		p.config.Logger.Debug("Resource does not match CLI composition type, looking up from cluster",
+			"resource", resourceID,
+			"resourceAPIVersion", resAPIVersion,
+			"resourceKind", resKind,
+			"cliCompTargetAPIVersion", cliCompTargetAPIVersion,
+			"cliCompTargetKind", cliCompTargetKind)
+
+		return p.compositionClient.FindMatchingComposition(ctx, res)
+	}
+
+	results := make(map[string]*XRDiffResult)
+
+	for _, xr := range xrs {
+		resourceID := dt.MakeDiffKeyFromResource(xr)
+
+		if pin, ok := pinned[resourceID]; ok && pin.err != nil {
+			results[resourceID] = &XRDiffResult{
+				Diffs: make(map[string]*dt.ResourceDiff),
+				Error: errors.Wrapf(pin.err, "unable to process resource %s", resourceID),
+			}
+
+			continue
+		}
+
+		xrCtx, cancel := p.config.xrContext(ctx)
+		diffs, err := p.xrProc.DiffSingleResource(xrCtx, xr, compositionProvider)
+		err = p.config.afterXR(ctx, xrCtx, diffs, err)
+		cancel()
+		if err != nil {
+			p.config.Logger.Debug("Failed to process resource", "resource", resourceID, "error", err)
+
+			// Store the error in the result
+			results[resourceID] = &XRDiffResult{
+				Diffs: make(map[string]*dt.ResourceDiff),
+				Error: errors.Wrapf(err, "unable to process resource %s", resourceID),
+			}
+		} else {
+			// Store successful result with diffs
+			results[resourceID] = &XRDiffResult{
+				Diffs: diffs,
+				Error: nil,
+			}
+		}
+	}
+
+	return results
+}
+
+// pinnedResolution is the composition a Manual XR is pinned to, or why it could not be resolved.
+type pinnedResolution struct {
+	resolved dtypes.ResolvedComposition
+	err      error
+}
+
+// pinnedFunctionChangeXRs moves out of dropped the Manual XRs that stay pinned to a revision whose
+// pipeline calls a changed function. Such an XR is not unaffected by applying the project: the revision
+// it runs is unchanged, but the function it calls is not, so it is kept and rendered against that
+// revision instead of the diffed composition. It returns those XRs' resolutions (keyed by
+// dt.MakeDiffKeyFromResource), kept with the moved XRs appended, and dropped without them.
+//
+// It does nothing when no function changed or under IncludeManual, which keeps Manual XRs and renders
+// them against the diffed composition. A Manual XR whose revision calls no changed function stays dropped.
+// A failed lookup is that XR's own error (a kept XR whose result is the error), not the run's. So with
+// changed functions set, a failed revision lookup makes every Manual XR, claims included, a per-XR error
+// where upstream would filter it.
+func (p *DefaultCompDiffProcessor) pinnedFunctionChangeXRs(ctx context.Context, kept []*un.Unstructured, dropped []filteredXR) (map[string]pinnedResolution, []*un.Unstructured, []filteredXR) {
+	if len(p.config.ChangedFunctions) == 0 || p.config.IncludeManual {
+		return nil, kept, dropped
+	}
+
+	var (
+		pinned    map[string]pinnedResolution
+		remaining []filteredXR
+	)
+
+	for _, d := range dropped {
+		if d.reason != dt.FilterReasonManualPolicy {
+			remaining = append(remaining, d)
+			continue
+		}
+
+		resolved, err := p.compositionClient.FindMatchingComposition(ctx, d.xr)
+		if err == nil && !pinnedRevisionCallsChangedFunction(d.xr, resolved, p.config.ChangedFunctions) {
+			remaining = append(remaining, d)
+			continue
+		}
+
+		if pinned == nil {
+			pinned = make(map[string]pinnedResolution)
+		}
+
+		pinned[dt.MakeDiffKeyFromResource(d.xr)] = pinnedResolution{resolved: resolved, err: errors.Wrapf(err, "cannot resolve the revision %s is pinned to", d.xr.GetName())}
+		kept = append(kept, d.xr)
+	}
+
+	return pinned, kept, remaining
+}
+
+// pinnedRevisionCallsChangedFunction reports whether resolved is the pinned revision of xr and calls a
+// changed function. A resolution with no revision name (the composition itself) or for another type
+// (a claim, whose backing XR the render looks up under a different key) is not.
+// ponytail: a pinned claim stays deferred; route the backing XR's key to support it.
+func pinnedRevisionCallsChangedFunction(xr *un.Unstructured, resolved dtypes.ResolvedComposition, changed map[string]bool) bool {
+	if resolved.Composition == nil || resolved.RevisionName == "" {
+		return false
+	}
+
+	// Group and kind only: the XR may use a served version that is not the referenceable one.
+	ref := resolved.Composition.Spec.CompositeTypeRef
+
+	refGV, err := schema.ParseGroupVersion(ref.APIVersion)
+	if err != nil || refGV.Group != xr.GroupVersionKind().Group || ref.Kind != xr.GetKind() {
+		return false
+	}
+
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(resolved.Composition)
+
+	return err == nil && callsChangedFunction(&un.Unstructured{Object: obj}, changed)
+}
+
+// cliCompositionRevision resolves a composite that is rendered against cliComp, the diffed composition.
+// Its revision is the one applying that composition leaves it on, named revisionName, for a composite
+// that would re-point at it as classifyXR decides; revisionLabels is the label set that revision would
+// carry, which a compositionRevisionSelector is matched against. For any other composite the revision
+// is left unknown, so it keeps the ref it has: one that is Manual (#479), being deleted, or whose
+// compositionRevisionSelector rejects that revision. So does every composite when revisionName is
+// empty, i.e. not predictable (#474).
+func (p *DefaultCompDiffProcessor) cliCompositionRevision(res *un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string) (dtypes.ResolvedComposition, error) {
+	resolved := dtypes.ResolvedComposition{Composition: cliComp}
+	if revisionName == "" {
+		return resolved, nil
+	}
+
+	disposition, err := p.classifyXR(res, revisionLabels, cliComp.GetLabels())
+	if err != nil {
+		return dtypes.ResolvedComposition{}, err
+	}
+
+	if disposition.filtered == nil && !disposition.pinnedToRevision {
+		resolved.RevisionName = revisionName
+	}
+
+	return resolved, nil
+}
+
+// compositionComparison is the result of comparing a proposed composition against its in-cluster
+// version.
+//
+// The two fields come apart whenever a mask hides the only difference: `diff` is what the user is
+// shown (nil when the compositions are equal after masking), while `changed` records whether the
+// composition differs at all. Impact analysis gates on `changed`, never on `diff`.
+//
+// Both kinds of mask can hide a real difference, so neither may gate the analysis:
+//   - the user's --ignore-paths, which could cover something load-bearing for rendering (anything
+//     under spec.pipeline[].input, say);
+//   - the comparison's display-only suppressions, which cover fields Crossplane nonetheless hashes
+//     into a composition's identity, and so into whether a new CompositionRevision is created.
+//
+// `scope` is therefore computed with every mask lifted. See issue #453.
+//
+// `revisionNamePredictable` is separate from both, and answers a third question: can we say what the
+// resulting CompositionRevision will be *called*? See the field comment.
+type compositionComparison struct {
+	diff  *dt.ResourceDiff
+	scope ChangeScope
+
+	// revisionNamePredictable reports whether the resulting revision's name can be derived from the
+	// composition as supplied. It is false in exactly one situation: the composition differs from the
+	// cluster's *only* by kubectl's last-applied-configuration annotation.
+	//
+	// The name is "<composition>-<hash[:7]>" and Composition.Hash() covers annotations, so the name
+	// depends on that annotation's post-apply value — which a client-side `kubectl apply` derives from
+	// the file being applied (see kubectl's GetModifiedConfiguration), not from what is in the file's
+	// own annotations. So the value the cluster will end up holding is a function of the user's apply
+	// mode, and this tool cannot know it: under server-side apply the annotation is left alone, under
+	// client-side apply it is rewritten. Predicting from the file as supplied would be a guess.
+	//
+	// Note what is NOT claimed when this is false. The delta is real, so the composition may well
+	// produce a revision and CreatesRevision stays true; a stale annotation genuinely would be
+	// rewritten, minting one. What is unknowable is the identity, so we decline to seed it and say so
+	// rather than seed a name we invented — which, for a template reading the name, would manufacture
+	// a downstream diff on a converged cluster. See issue #474.
+	//
+	// The exception is a live annotation that already describes the file: applying it then writes
+	// nothing, so the composition is reported unchanged rather than unpredictable. See
+	// lastAppliedDescribes and issue #500.
+	revisionNamePredictable bool
+}
+
+// changed reports whether the composition differs at all in the fields Crossplane hashes.
+func (c compositionComparison) changed() bool {
+	return c.scope != ChangeScopeNone
+}
+
+// calculateCompositionDiff calculates the diff between the cluster composition and the file composition.
+func (p *DefaultCompDiffProcessor) calculateCompositionDiff(ctx context.Context, newComp *un.Unstructured) (compositionComparison, error) {
+	p.config.Logger.Debug("Calculating composition diff", "composition", newComp.GetName())
+
+	var originalCompUnstructured *un.Unstructured
+
+	// Get the original composition from the cluster
+	originalComp, err := p.compositionClient.GetComposition(ctx, newComp.GetName())
+	if err != nil {
+		p.config.Logger.Debug("Original composition not found in cluster, treating as new composition",
+			"composition", newComp.GetName(), "error", err)
+		// originalCompUnstructured remains nil for new compositions
+	} else {
+		p.config.Logger.Debug("Retrieved original composition from cluster", "name", originalComp.GetName(), "composition", originalComp)
+
+		// Convert original composition to unstructured for comparison
+		unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(originalComp)
+		if err != nil {
+			return compositionComparison{}, errors.Wrap(err, "cannot convert original composition to unstructured")
+		}
+
+		originalCompUnstructured = &un.Unstructured{Object: unstructuredObj}
+	}
+
+	newCompUnstructured := newComp
+
+	// Clean up managed fields and other cluster metadata before diff calculation
+	cleanupClusterMetadata := func(obj *un.Unstructured) {
+		if obj == nil {
+			return
+		}
+
+		obj.SetManagedFields(nil)
+		obj.SetResourceVersion("")
+		obj.SetUID("")
+		obj.SetGeneration(0)
+		obj.SetCreationTimestamp(metav1.Time{})
+	}
+
+	cleanupClusterMetadata(originalCompUnstructured)
+	cleanupClusterMetadata(newCompUnstructured)
+
+	// Calculate the composition diff directly without dry-run apply
+	// (compositions are static YAML documents that don't need server-side processing)
+	diffOptions := p.config.GetCompareOptions()
+
+	compDiff, err := compare.GenerateDiff(ctx, originalCompUnstructured, newCompUnstructured, p.config.Logger, diffOptions)
+	if err != nil {
+		return compositionComparison{}, errors.Wrap(err, "cannot calculate composition diff")
+	}
+
+	p.config.Logger.Debug("Calculated composition diff",
+		"composition", newComp.GetName(),
+		"hasChanges", compDiff.DiffType != dt.DiffTypeEqual,
+		"isNewComposition", originalCompUnstructured == nil)
+
+	if compDiff.DiffType != dt.DiffTypeEqual {
+		// A displayable difference means the compositions differ in something other than the annotation
+		// (which is never displayed), so the hash difference is driven by real content and the resulting
+		// revision's name follows from the composition as supplied.
+		return compositionComparison{
+			diff:                    compDiff,
+			scope:                   compositionChangeScope(originalCompUnstructured, newCompUnstructured, true),
+			revisionNamePredictable: true,
+		}, nil
+	}
+
+	// Nothing to display. That is not the same as unchanged: both the user's --ignore-paths and the
+	// comparison's display-only suppressions could be hiding a real difference. Re-compare with every
+	// mask lifted (ForVerdict) to find out.
+	//
+	// The masks are display preferences; whether the composition changed is a fact about the object.
+	// Crossplane's own answer to that question is Composition.Hash(), which covers labels,
+	// annotations and spec — so a metadata-only difference genuinely produces a new
+	// CompositionRevision that composites re-point to, and that a template can observe through the
+	// XR's compositionRevisionRef. This comparison mirrors that scope. It is local (no API calls).
+	diffOptions.IgnorePaths = nil
+	diffOptions.ForVerdict = true
+
+	unmasked, err := compare.GenerateDiff(ctx, originalCompUnstructured, newCompUnstructured, p.config.Logger, diffOptions)
+	if err != nil {
+		return compositionComparison{}, errors.Wrap(err, "cannot calculate composition diff with masks lifted")
+	}
+
+	anyChange := unmasked.DiffType != dt.DiffTypeEqual
+	scope := compositionChangeScope(originalCompUnstructured, newCompUnstructured, anyChange)
+
+	// One more local comparison, to find out whether the difference just detected is *only* kubectl's
+	// last-applied-configuration annotation: same mask-lifted view, but with that one path ignored. If
+	// the objects become equal, it was the sole delta, and the resulting revision's name is not
+	// predictable — see compositionComparison.revisionNamePredictable. Ordering matters: the annotation
+	// must stay in the comparison that decides `scope` (a real difference, and Crossplane hashes it) and
+	// be excluded only from this narrower question about identity.
+	revisionNamePredictable := true
+
+	if anyChange {
+		diffOptions.IgnorePaths = []string{compare.PathLastAppliedConfiguration}
+
+		withoutLastApplied, err := compare.GenerateDiff(ctx, originalCompUnstructured, newCompUnstructured, p.config.Logger, diffOptions)
+		if err != nil {
+			return compositionComparison{}, errors.Wrap(err, "cannot calculate composition diff excluding last-applied-configuration")
+		}
+
+		revisionNamePredictable = withoutLastApplied.DiffType != dt.DiffTypeEqual
+
+		// The annotation is the sole delta. If the cluster's copy of it already describes this exact
+		// file, applying the file is a no-op under either apply mode, so it is not a change at all. See
+		// lastAppliedDescribes.
+		if !revisionNamePredictable && lastAppliedDescribes(originalCompUnstructured, newCompUnstructured) {
+			scope = ChangeScopeNone
+			revisionNamePredictable = true
+		}
+	}
+
+	p.config.Logger.Debug("No displayable changes in composition",
+		"composition", newComp.GetName(),
+		"changeScope", string(scope),
+		"revisionNamePredictable", revisionNamePredictable)
+
+	return compositionComparison{diff: nil, scope: scope, revisionNamePredictable: revisionNamePredictable}, nil
+}
+
+// lastAppliedDescribes reports whether the cluster object's kubectl last-applied-configuration is
+// semantically the proposed file, in which case applying the file writes nothing (issue #500).
+//
+// A client-side `kubectl apply` sets that annotation to the file minus the annotation, JSON-encoded
+// (kubectl's GetModifiedConfiguration), so the value is a function of the file alone: if the live value
+// already equals it, the three-way patch is empty and kubectl issues no request. Server-side apply leaves
+// an annotation the file does not mention untouched. Either way nothing changes, so no
+// CompositionRevision is created. Equal maps encode to equal JSON, so semantic equality suffices.
+//
+// Only a file that does not carry the annotation itself qualifies: one that does (say, a fetched object
+// checked into git) would have it written verbatim under server-side apply, so its outcome again depends
+// on the apply mode. kubectl keeps the emptied annotations map in what it encodes, so an empty
+// annotations map is treated as absent on both sides. Neither object is mutated.
+func lastAppliedDescribes(original, proposed *un.Unstructured) bool {
+	if original == nil {
+		return false
+	}
+
+	if _, ok := proposed.GetAnnotations()[corev1.LastAppliedConfigAnnotation]; ok {
+		return false
+	}
+
+	live, ok := original.GetAnnotations()[corev1.LastAppliedConfigAnnotation]
+	if !ok {
+		return false
+	}
+
+	lastApplied := &un.Unstructured{}
+	if err := lastApplied.UnmarshalJSON([]byte(live)); err != nil {
+		// Not something kubectl wrote, so we cannot say what applying would do; keep the difference.
+		return false
+	}
+
+	return equality.Semantic.DeepEqual(withoutLastApplied(lastApplied).Object, withoutLastApplied(proposed).Object)
+}
+
+// withoutLastApplied returns a copy of obj without kubectl's last-applied-configuration annotation,
+// dropping the annotations map entirely if that leaves it empty.
+func withoutLastApplied(obj *un.Unstructured) *un.Unstructured {
+	out := obj.DeepCopy()
+
+	annotations := out.GetAnnotations()
+	delete(annotations, corev1.LastAppliedConfigAnnotation)
+
+	if len(annotations) == 0 {
+		un.RemoveNestedField(out.Object, "metadata", "annotations")
+	} else {
+		out.SetAnnotations(annotations)
+	}
+
+	return out
+}
+
+// callsChangedFunction reports whether comp's pipeline references any function in changed.
+func callsChangedFunction(comp *un.Unstructured, changed map[string]bool) bool {
+	if len(changed) == 0 {
+		return false
+	}
+
+	steps, _, _ := un.NestedSlice(comp.Object, "spec", "pipeline")
+	for _, s := range steps {
+		step, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if name, _, _ := un.NestedString(step, "functionRef", "name"); changed[name] {
+			return true
+		}
+	}
+
+	return false
+}
+
+// compositionChangeScope classifies how much of a composition differs from its in-cluster version,
+// in the terms Crossplane uses to decide whether a new CompositionRevision is needed. `anyChange`
+// says whether the two differ at all with every display mask lifted; this function only has to
+// decide whether the difference reaches the spec.
+//
+// A nil original means the composition does not exist in the cluster yet, which is a spec change by
+// construction — there is no prior spec.
+func compositionChangeScope(original, proposed *un.Unstructured, anyChange bool) ChangeScope {
+	if original == nil {
+		return ChangeScopeSpec
+	}
+
+	if !anyChange {
+		return ChangeScopeNone
+	}
+
+	// NestedMap deep-copies, so the missing-spec case (nil) compares equal on both sides rather than
+	// tripping on one being an empty map and the other nil.
+	originalSpec, _, _ := un.NestedMap(original.Object, "spec")
+	proposedSpec, _, _ := un.NestedMap(proposed.Object, "spec")
+
+	if !equality.Semantic.DeepEqual(originalSpec, proposedSpec) {
+		return ChangeScopeSpec
+	}
+
+	return ChangeScopeMetadata
+}
+
+// predictedRevision is the identity of the CompositionRevision that applying a composition would
+// produce. Both fields derive from Crossplane's own Composition.Hash(), so neither is guessed.
+type predictedRevision struct {
+	// name is what the revision would be called: "<composition>-<hash[:7]>".
+	name string
+	// hash is the value of the crossplane.io/composition-hash label, i.e. the hash truncated to the
+	// 63-character limit on label values.
+	hash string
+}
+
+// revisionIdentity derives a revision's name and hash label from a composition's name and hash.
+//
+// This is the one and only thing this tool mirrors from upstream rather than calling: the derivation
+// lives in NewCompositionRevision, in an internal/ package we cannot import, while the hash itself
+// comes from the exported Composition.Hash(). The two truncations are different and both deliberate —
+// 63 characters for the label value (Kubernetes' limit), 7 for the name suffix — and the >= guards
+// are upstream's, kept verbatim so the degenerate hash Composition.Hash() returns on a marshal error
+// ("unknown", shorter than either bound) produces the same result here as it would in the cluster.
+func revisionIdentity(compName, hash string) predictedRevision {
+	if len(hash) >= 63 {
+		hash = hash[0:63]
+	}
+
+	nameSuffix := hash
+	if len(nameSuffix) >= 7 {
+		nameSuffix = nameSuffix[0:7]
+	}
+
+	return predictedRevision{
+		name: fmt.Sprintf("%s-%s", compName, nameSuffix),
+		hash: hash,
+	}
+}
+
+// predictRevision computes the identity of the CompositionRevision applying newComp would produce, by
+// calling Crossplane's own exported Composition.Hash() on the typed composition. newComp is not
+// mutated.
+func predictRevision(newComp *un.Unstructured) (predictedRevision, error) {
+	comp := &apiextensionsv1.Composition{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(newComp.Object, comp); err != nil {
+		return predictedRevision{}, errors.Wrapf(err, "cannot convert composition %q to typed to predict its revision", newComp.GetName())
+	}
+
+	return revisionIdentity(comp.GetName(), comp.Hash()), nil
+}
+
+// predictedRevisionLabels returns the label set the CompositionRevision resulting from this
+// composition would carry, for evaluating an XR's compositionRevisionSelector. Crossplane stamps
+// every revision with the composition's own metadata.labels plus crossplane.io/composition-name and
+// crossplane.io/composition-hash (and appends them before matching a selector), so we mirror that
+// here — see NewCompositionRevision. Omitting the hash label used to drop an XR whose selector keys on
+// it as a selector mismatch, with a detail message that pointed the user at their own labels instead.
+//
+// The hash label is stamped even when compositionComparison.revisionNamePredictable is false, i.e. when
+// the eventual hash depends on the user's apply mode. That is deliberate, and is why this takes the
+// prediction rather than consulting predictability: withholding it would put us back to failing every
+// selector that merely requires the label to Exist, which is the common shape and is now always answered
+// correctly. A selector matching an exact hash *value* is the only case the caveat reaches, and there the
+// best available prediction beats a guaranteed mismatch. newComp is not mutated.
+func predictedRevisionLabels(newComp *un.Unstructured, pred predictedRevision) map[string]string {
+	compLabels := newComp.GetLabels()
+
+	labels := make(map[string]string, len(compLabels)+2)
+	maps.Copy(labels, compLabels)
+
+	labels[xp.LabelCompositionName] = newComp.GetName()
+	labels[xp.LabelCompositionHash] = pred.hash
+
+	return labels
+}
+
+// filteredXR pairs a dropped XR with the reason it was excluded from impact analysis and an
+// optional human-readable detail (e.g. which selector failed to match which labels).
+type filteredXR struct {
+	xr     *un.Unstructured
+	reason dt.FilterReason
+	detail string
+}
+
+// partitionXRsByUpdatePolicy splits XRs into a kept set and a dropped set, based on whether each XR
+// would adopt the CompositionRevision resulting from newComp. See classifyXR for the per-XR rules,
+// which also cover exclusions unrelated to update policy (e.g. XRs being deleted). A malformed
+// compositionRevisionSelector is a hard error (accuracy over guessing).
+//
+// `repointing` is the set of kept XRs (keyed by dt.MakeDiffKeyFromResource) that would genuinely
+// re-point at the resulting revision, which is not the same as the kept set: --include-manual keeps a Manual-policy XR for analysis even though it
+// stays pinned to whatever compositionRevisionRef already names. See classifyXR and issue #479.
+func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(xrs []*un.Unstructured, newComp *un.Unstructured, pred predictedRevision) (kept []*un.Unstructured, dropped []filteredXR, repointing map[string]bool, err error) {
+	// The selector is matched against the label set the new revision would carry (composition labels
+	// plus the stamped crossplane.io/composition-name and crossplane.io/composition-hash), while
+	// mismatch messages display the user's own composition labels; see predictedRevisionLabels and
+	// xp.XRRevisionSelectorMatch.
+	targetLabels := predictedRevisionLabels(newComp, pred)
+	repointing = make(map[string]bool, len(xrs))
+	compLabels := newComp.GetLabels()
+
+	for _, xr := range xrs {
+		disposition, classifyErr := p.classifyXR(xr, targetLabels, compLabels)
+		if classifyErr != nil {
+			return nil, nil, nil, classifyErr
+		}
+
+		if disposition.filtered != nil {
+			dropped = append(dropped, *disposition.filtered)
+			continue
+		}
+
+		kept = append(kept, xr)
+
+		if !disposition.pinnedToRevision {
+			repointing[dt.MakeDiffKeyFromResource(xr)] = true
+		}
+	}
+
+	return kept, dropped, repointing, nil
+}
+
+// xrDisposition is what classifyXR decided about one XR.
+type xrDisposition struct {
+	// filtered is non-nil when the XR is dropped from impact analysis, carrying the reason.
+	filtered *filteredXR
+
+	// pinnedToRevision marks a *kept* XR that nonetheless would not adopt the CompositionRevision this
+	// composition would produce, because a Manual compositionUpdatePolicy pins it to whatever
+	// compositionRevisionRef already names. Only reachable under --include-manual, which keeps such an
+	// XR so its would-be rendered output can be inspected — without changing the fact that it does not
+	// re-point. Counting it as re-pointing was issue #479.
+	pinnedToRevision bool
+}
+
+// classifyXR decides whether a single XR should be kept for impact analysis or dropped (and why),
+// based on whether it would adopt the CompositionRevision resulting from the diffed composition.
+// targetLabels is the predicted revision label set (used for selector matching); compLabels is the
+// composition's own metadata.labels (used for the user-facing mismatch detail).
+//
+// Rules:
+//   - Being deleted (metadata.deletionTimestamp set): dropped (reason deleting). Checked first,
+//     and NOT overridden by IncludeManual, because deletion supersedes the policy rules entirely.
+//   - Manual compositionUpdatePolicy: dropped (reason manual_policy) — pinned via
+//     compositionRevisionRef — unless IncludeManual is set, in which case it is kept but marked
+//     pinnedToRevision: opting into analysing it does not make it adopt the new revision.
+//   - Automatic policy with a compositionRevisionSelector that does not match: dropped (reason
+//     revision_selector_mismatch). NOT overridden by IncludeManual, since the XR genuinely would
+//     not select the resulting revision.
+//   - Automatic policy with no selector, or a matching selector: kept, and re-points.
+func (p *DefaultCompDiffProcessor) classifyXR(xr *un.Unstructured, targetLabels, compLabels map[string]string) (xrDisposition, error) {
+	// An XR with a deletionTimestamp is on Crossplane's teardown path: the composite reconciler
+	// deletes its composed resources instead of composing them. It will never adopt the revision
+	// this composition would produce, and rendering it yields no composed resources to diff — so
+	// including it produces a meaningless (or outright failing) impact analysis. See issue #452.
+	//
+	// The timestamp is normalized to UTC/RFC3339 for display: the accessor returns a metav1.Time whose
+	// default rendering is machine-local, which would make the surfaced detail differ between runs on
+	// differently-configured machines.
+	if deletedAt := xr.GetDeletionTimestamp(); deletedAt != nil {
+		stamp := deletedAt.UTC().Format(time.RFC3339)
+
+		p.config.Logger.Debug("Excluding XR that is being deleted",
+			"xr", xr.GetName(),
+			"kind", xr.GetKind(),
+			"deletionTimestamp", stamp)
+
+		return xrDisposition{filtered: &filteredXR{
+			xr:     xr,
+			reason: dt.FilterReasonDeleting,
+			detail: fmt.Sprintf("deletionTimestamp: %s", stamp),
+		}}, nil
+	}
+
+	policy, err := xp.XRUpdatePolicy(xr.Object, xr.GetAPIVersion())
+	if err != nil {
+		return xrDisposition{}, errors.Wrapf(err, "cannot read compositionUpdatePolicy for XR %q", xr.GetName())
+	}
+
+	p.config.Logger.Debug("Classifying XR",
+		"xr", xr.GetName(),
+		"kind", xr.GetKind(),
+		"policy", policy)
+
+	// Manual policy: pinned to a specific revision; excluded unless the user opts in. Opting in keeps
+	// it for analysis but does not unpin it, so it is marked as not re-pointing.
+	if policy == compositionUpdatePolicyManual {
+		if p.config.IncludeManual {
+			return xrDisposition{pinnedToRevision: true}, nil
+		}
+
+		// Name the revision it stays pinned to, when it names one.
+		revision, err := xp.XRCompositionRevisionRef(xr.Object, xr.GetAPIVersion())
+		if err != nil {
+			return xrDisposition{}, errors.Wrapf(err, "cannot read compositionRevisionRef for XR %q", xr.GetName())
+		}
+
+		detail := ""
+		if revision != "" {
+			detail = "compositionRevisionRef: " + revision
+		}
+
+		return xrDisposition{filtered: &filteredXR{xr: xr, reason: dt.FilterReasonManualPolicy, detail: detail}}, nil
+	}
+
+	// Automatic (or default) policy: honor compositionRevisionSelector. An XR whose selector does not
+	// match the predicted revision labels would not select the resulting revision, so it is excluded —
+	// regardless of IncludeManual.
+	matches, detail, err := xp.XRRevisionSelectorMatch(xr, targetLabels, compLabels)
+	if err != nil {
+		return xrDisposition{}, errors.Wrapf(err, "cannot evaluate compositionRevisionSelector for XR %q", xr.GetName())
+	}
+
+	if !matches {
+		return xrDisposition{filtered: &filteredXR{xr: xr, reason: dt.FilterReasonRevisionSelectorMismatch, detail: detail}}, nil
+	}
+
+	return xrDisposition{}, nil
+}
+
+// filterCounts tallies dropped XRs by filter reason. A struct rather than a growing list of
+// positional return values, so adding a reason cannot silently transpose a caller's arguments.
+type filterCounts struct {
+	byPolicy   int
+	bySelector int
+	byDeletion int
+}
+
+// countFilterReasons tallies dropped XRs by filter reason for the affected-resources summary.
+func countFilterReasons(dropped []filteredXR) filterCounts {
+	var counts filterCounts
+
+	for _, d := range dropped {
+		switch d.reason {
+		case dt.FilterReasonManualPolicy:
+			counts.byPolicy++
+		case dt.FilterReasonRevisionSelectorMismatch:
+			counts.bySelector++
+		case dt.FilterReasonDeleting:
+			counts.byDeletion++
+		}
+	}
+
+	return counts
+}
+
+// applyTo writes the per-reason tallies onto a summary. Centralized so every code path that builds
+// an AffectedResourcesSummary reports the same set of reasons.
+func (c filterCounts) applyTo(summary *dt.AffectedResourcesSummary) {
+	summary.FilteredByPolicy = c.byPolicy
+	summary.FilteredBySelector = c.bySelector
+	summary.FilteredByDeletion = c.byDeletion
+}
+
+// buildImpactAnalysis builds the impact analysis and summary from XR results.
+func (p *DefaultCompDiffProcessor) buildImpactAnalysis(xrs []*un.Unstructured, results map[string]*XRDiffResult) ([]dt.XRImpact, dt.AffectedResourcesSummary) {
+	impacts := make([]dt.XRImpact, 0, len(xrs))
+	summary := dt.AffectedResourcesSummary{
+		Total: len(xrs),
+	}
+
+	for _, xr := range xrs {
+		resourceID := dt.MakeDiffKeyFromResource(xr)
+		result := results[resourceID]
+
+		impact := dt.XRImpact{
+			ObjectReference: corev1.ObjectReference{
+				APIVersion: xr.GetAPIVersion(),
+				Kind:       xr.GetKind(),
+				Name:       xr.GetName(),
+				Namespace:  xr.GetNamespace(),
+			},
+		}
+
+		switch {
+		case result != nil && result.HasError():
+			impact.Status = dt.XRStatusError
+			// NewOutputError surfaces typed validation failures via OutputError.ValidationFailures
+			// when result.Error wraps a SchemaValidationError carrying a structured Result.
+			impact.Error = new(NewOutputError(fmt.Sprintf("%s/%s", impact.Kind, impact.Name), result.Error))
+			summary.WithErrors++
+		case result != nil && result.HasChanges():
+			impact.Status = dt.XRStatusChanged
+			impact.Diffs = result.Diffs
+			summary.WithChanges++
+		default:
+			impact.Status = dt.XRStatusUnchanged
+			// Renderers ignore an unchanged impact's diffs; they are carried only for a caller that kept
+			// equal diffs to refine them.
+			if result != nil && p.config.KeepEqualDiffs != nil {
+				impact.Diffs = result.Diffs
+			}
+			summary.Unchanged++
+		}
+
+		impacts = append(impacts, impact)
+	}
+
+	return impacts, summary
+}

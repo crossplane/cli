@@ -20,6 +20,7 @@ import (
 	"context"
 
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -53,8 +54,12 @@ func (c *crdDefaults) apply(ctx context.Context, kubeClient client.Client, rmapp
 	gvk := desired.GroupVersionKind()
 	crd, ok := c.cache[gvk.GroupKind()]
 	if !ok {
-		crd = fetchCRD(ctx, kubeClient, rmapper, gvk)
-		c.cache[gvk.GroupKind()] = crd
+		var definite bool
+		crd, definite = fetchCRD(ctx, kubeClient, rmapper, gvk)
+		// A transient failure is not cached, so a later resource retries.
+		if definite {
+			c.cache[gvk.GroupKind()] = crd
+		}
 	}
 	if crd == nil {
 		return desired
@@ -68,21 +73,22 @@ func (c *crdDefaults) apply(ctx context.Context, kubeClient client.Client, rmapp
 }
 
 // fetchCRD fetches the CRD serving gvk. nil means no defaulting is possible:
-// the kind is not served or its CRD is unreadable.
-func fetchCRD(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, gvk schema.GroupVersionKind) *extv1.CustomResourceDefinition {
+// the kind is not served or its CRD is unreadable. definite is false when the
+// fetch failed in a way a retry may fix, so the answer must not be cached.
+func fetchCRD(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, gvk schema.GroupVersionKind) (crd *extv1.CustomResourceDefinition, definite bool) {
 	mapping, err := rmapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
-		return nil
+		return nil, meta.IsNoMatchError(err)
 	}
 
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"})
 	if err := kubeClient.Get(ctx, client.ObjectKey{Name: mapping.Resource.Resource + "." + gvk.Group}, u); err != nil {
-		return nil
+		return nil, apierrors.IsNotFound(err)
 	}
-	crd := &extv1.CustomResourceDefinition{}
+	crd = &extv1.CustomResourceDefinition{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, crd); err != nil {
-		return nil
+		return nil, true
 	}
-	return crd
+	return crd, true
 }

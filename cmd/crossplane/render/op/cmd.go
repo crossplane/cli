@@ -345,20 +345,10 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
 	}
 
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	xpkgClient, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-		clixpkg.WithImageConfigs(proj.Spec.ImageConfigs),
-	)
+	xpkgClient, resolver, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot create xpkg client")
+		return nil, err
 	}
-	resolver := clixpkg.NewResolver(xpkgClient)
 
 	// Built here rather than alongside the schema manager below so the
 	// dependency manager generates dependency schemas the same way.

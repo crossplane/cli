@@ -35,6 +35,7 @@ import (
 	"github.com/spf13/afero"
 	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -79,10 +80,10 @@ func BuildWithFunctionIdentifier(i functions.Identifier) BuilderOption {
 }
 
 // BuildWithMaxConcurrency sets the maximum concurrency for building embedded
-// functions.
+// functions. Zero means 1: a build with no slots would never start.
 func BuildWithMaxConcurrency(n uint) BuilderOption {
 	return func(b *Builder) {
-		b.maxConcurrency = n
+		b.maxConcurrency = max(1, n)
 	}
 }
 
@@ -214,16 +215,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 		return nil, errors.Wrap(err, "failed to resolve functions")
 	}
 
-	apisSource := projectFS
-	apiExcludes := []string{
-		project.Spec.Paths.Examples,
-		project.Spec.Paths.Functions,
-		project.Spec.Paths.Operations,
-	}
-	if project.Spec.Paths.APIs != "/" {
-		apisSource = afero.NewBasePathFs(projectFS, project.Spec.Paths.APIs)
-		apiExcludes = []string{}
-	}
+	apisSource, apiExcludes := apiSource(project, projectFS)
 
 	// Not all projects have operations; ignore them if not present.
 	operationsSource := afero.NewMemMapFs()
@@ -679,6 +671,48 @@ func gzipOpener(fsys afero.Fs, path, tempDir string) (tarball.Opener, error) {
 	}, nil
 }
 
+// apiSource returns the filesystem holding a project's APIs and the paths to
+// exclude when walking it. When APIs is "/", the whole project is walked, minus
+// the examples, functions and operations.
+func apiSource(project *devv1alpha1.Project, projectFS afero.Fs) (afero.Fs, []string) {
+	if project.Spec.Paths.APIs != "/" {
+		return afero.NewBasePathFs(projectFS, project.Spec.Paths.APIs), []string{}
+	}
+	return projectFS, []string{
+		project.Spec.Paths.Examples,
+		project.Spec.Paths.Functions,
+		project.Spec.Paths.Operations,
+	}
+}
+
+// LoadCompositions returns the Compositions under a project's APIs path,
+// discovered the same way project build collects them.
+func LoadCompositions(project *devv1alpha1.Project, projectFS afero.Fs) ([]*unstructured.Unstructured, error) {
+	src, excludes := apiSource(project, projectFS)
+	compFS := afero.NewMemMapFs()
+	if err := collectResources(compFS, src, []string{xpv1.CompositionGroupVersionKind.String()}, excludes); err != nil {
+		return nil, errors.Wrap(err, "failed to collect compositions")
+	}
+
+	var comps []*unstructured.Unstructured
+	err := afero.Walk(compFS, "/", func(path string, info fs.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		bs, err := afero.ReadFile(compFS, path)
+		if err != nil {
+			return errors.Wrapf(err, "failed to read file %q", path)
+		}
+		u := &unstructured.Unstructured{}
+		if err := yaml.Unmarshal(bs, &u.Object); err != nil {
+			return errors.Wrapf(err, "failed to parse file %q", path)
+		}
+		comps = append(comps, u)
+		return nil
+	})
+	return comps, err
+}
+
 func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string, exclude []string) error {
 	return afero.Walk(fromFS, "/", func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
@@ -686,9 +720,20 @@ func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string, exclude []s
 		}
 
 		for _, excl := range exclude {
-			if strings.HasPrefix(path, excl) {
+			if excl == "" {
+				continue
+			}
+			// Walk paths are rooted at "/" while project paths are usually
+			// relative, so anchor each exclude at "/" and match the path
+			// itself or anything beneath it.
+			e := filepath.Join("/", excl)
+			if path != e && !strings.HasPrefix(path, e+"/") {
+				continue
+			}
+			if info.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
 		}
 
 		if info.IsDir() {

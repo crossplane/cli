@@ -21,10 +21,12 @@ import (
 	"testing"
 
 	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // fakePlanClient implements diffv1alpha1.PlanServiceClient in-process,
@@ -41,8 +43,8 @@ func (f *fakePlanClient) Plan(_ context.Context, in *diffv1alpha1.PlanRequest, _
 }
 
 func TestPlan(t *testing.T) {
-	desired := mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.1.0.0/16"}})
-	actual := mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}})
+	desired := served(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.1.0.0/16"}})
+	actual := served(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}})
 	secret, err := structpb.NewStruct(map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Secret",
@@ -76,6 +78,12 @@ func TestPlan(t *testing.T) {
 		if c.got.GetActualResource() == nil {
 			t.Errorf("Plan(...): actual resource not carried in request")
 		}
+		if diff := cmp.Diff(cleaned(actual), got.Before); diff != "" {
+			t.Errorf("Plan(...).Before: -want cleaned actual, +got:\n%s", diff)
+		}
+		if diff := cmp.Diff(cleaned(desired), got.After); diff != "" {
+			t.Errorf("Plan(...).After: -want cleaned desired, +got:\n%s", diff)
+		}
 		if len(c.got.GetKubernetesObjectStore()) != 1 {
 			t.Errorf("Plan(...): want 1 object store entry, got %d", len(c.got.GetKubernetesObjectStore()))
 		}
@@ -94,6 +102,9 @@ func TestPlan(t *testing.T) {
 		if c.got.GetActualResource() != nil {
 			t.Errorf("Plan(...): actual resource should be unset for a create")
 		}
+		if got.Before != nil || cmp.Diff(cleaned(desired), got.After) != "" {
+			t.Errorf("Plan(...): want a create to carry no before and desired as after")
+		}
 	})
 
 	t.Run("ServerErrorsPassThrough", func(t *testing.T) {
@@ -104,4 +115,73 @@ func TestPlan(t *testing.T) {
 			t.Errorf("Plan(...): want NotFound to pass through, got %v", err)
 		}
 	})
+}
+
+func TestCleanView(t *testing.T) {
+	cases := map[string]struct {
+		reason string
+		in     map[string]any
+		want   map[string]any
+	}{
+		"StripsServerFields": {
+			reason: "status, server-managed metadata, last-applied-configuration and composed resource references are dropped, emptied parents with them.",
+			in: map[string]any{
+				"apiVersion": "example.org/v1", "kind": "XNetwork",
+				"metadata": map[string]any{
+					"name": "n", "uid": "u", "resourceVersion": "1", "generation": int64(2), "creationTimestamp": "t",
+					"managedFields": []any{}, "selfLink": "s", "ownerReferences": []any{},
+					"annotations": map[string]any{"kubectl.kubernetes.io/last-applied-configuration": "{}"},
+				},
+				"spec": map[string]any{
+					"region":       "us-east-1",
+					"resourceRefs": []any{"a"},
+					"crossplane":   map[string]any{"resourceRefs": []any{"b"}},
+				},
+				"status": map[string]any{"ready": true},
+			},
+			want: map[string]any{
+				"apiVersion": "example.org/v1", "kind": "XNetwork",
+				"metadata": map[string]any{"name": "n"},
+				"spec":     map[string]any{"region": "us-east-1"},
+			},
+		},
+		"KeepsOtherAnnotationsAndCrossplaneFields": {
+			reason: "Removing one annotation or spec.crossplane.resourceRefs keeps the parent's other keys.",
+			in: map[string]any{
+				"metadata": map[string]any{"annotations": map[string]any{"kubectl.kubernetes.io/last-applied-configuration": "{}", "keep": "me"}},
+				"spec":     map[string]any{"crossplane": map[string]any{"resourceRefs": []any{"b"}, "compositionRef": map[string]any{"name": "c"}}},
+			},
+			want: map[string]any{
+				"metadata": map[string]any{"annotations": map[string]any{"keep": "me"}},
+				"spec":     map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "c"}}},
+			},
+		},
+		"KeepsGeneratedNames": {
+			reason: "A generateName-shaped name and an already empty spec.crossplane are kept: the engine's synthetic-name rule does not apply to resource simulate.",
+			in: map[string]any{
+				"metadata": map[string]any{"name": "net-abcdef012345", "generateName": "net-"},
+				"spec":     map[string]any{"crossplane": map[string]any{}},
+			},
+			want: map[string]any{
+				"metadata": map[string]any{"name": "net-abcdef012345", "generateName": "net-"},
+				"spec":     map[string]any{"crossplane": map[string]any{}},
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			in := &unstructured.Unstructured{Object: tc.in}
+			orig := in.DeepCopy()
+			got := cleanView(in)
+			if diff := cmp.Diff(tc.want, got.Object); diff != "" {
+				t.Errorf("\n%s\ncleanView(...): -want, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(orig, in); diff != "" {
+				t.Errorf("\n%s\ncleanView(...) mutated its input: -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+	if cleanView(nil) != nil {
+		t.Error("cleanView(nil): want nil")
+	}
 }

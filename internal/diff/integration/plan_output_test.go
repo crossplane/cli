@@ -132,7 +132,7 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 			tt:       xrCase,
 			args:     append([]string{"-o", "json"}, xrArgs...),
 			wantResult: &planShape{
-				Summary:    simulate.ProjectSummary{Summary: plan.Summary{Update: 2}},
+				Summary:    plan.Summary{Update: 2},
 				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged}},
 				Plans: []planEntry{
 					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
@@ -178,7 +178,7 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 			tt:       compCase,
 			args:     append([]string{"-o", "json"}, compArgs...),
 			wantResult: &planShape{
-				Summary:    simulate.ProjectSummary{Summary: plan.Summary{Update: 3, NoOp: 2}},
+				Summary:    plan.Summary{Update: 3, NoOp: 2},
 				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
 				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
@@ -199,7 +199,7 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 			tt:       compCase,
 			args:     []string{"-o", "json", "-f", "testdata/comp/updated-composition.yaml", "-n", "default", "--name=another-resource", "--name=test-resource"},
 			wantResult: &planShape{
-				Summary:    simulate.ProjectSummary{Summary: plan.Summary{Update: 3, NoOp: 2}},
+				Summary:    plan.Summary{Update: 3, NoOp: 2},
 				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
 				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
@@ -220,7 +220,7 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 			tt:       compCase,
 			args:     []string{"-o", "json", "-f", "testdata/comp/updated-composition.yaml", "--name=default/test-resource"},
 			wantResult: &planShape{
-				Summary:    simulate.ProjectSummary{Summary: plan.Summary{Update: 2, NoOp: 1}},
+				Summary:    plan.Summary{Update: 2, NoOp: 1},
 				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
 				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
@@ -280,7 +280,7 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 // the field changes, dry-run details and notes, which the plan text cases and
 // the mapper's unit tests cover.
 type planShape struct {
-	Summary      simulate.ProjectSummary
+	Summary      plan.Summary
 	Composites   []simulate.CompositeResult
 	Compositions []simulate.CompositionResult
 	Plans        []planEntry

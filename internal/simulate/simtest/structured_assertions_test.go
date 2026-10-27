@@ -86,7 +86,6 @@ func xrResult() simulate.ProjectResult {
 			Summary: plan.Summarize(plans),
 			Plans:   plans,
 		},
-		Summary: simulate.ProjectSummary{Summary: plan.Summarize(plans)},
 		Composites: []simulate.CompositeResult{
 			{Ref: xrA, Status: simulate.CompositeChanged},
 			{Ref: xrB, Status: simulate.CompositeUnchanged},

@@ -33,16 +33,16 @@ import (
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
-// noteProviderPlanNotRun says the cluster-layer result was not refined by
-// provider plans, so its plans say nothing about the cloud resources.
-const noteProviderPlanNotRun = "Cloud-layer plan not run."
+// noteProviderPlanNotRun says the cluster diff was not refined by provider
+// plans, so its plans say nothing about the cloud resources.
+const noteProviderPlanNotRun = "Provider plan not run."
 
 // Notes a caller sets on ProjectResult.Notes when no provider plans refined the
-// cluster-layer result, saying why. A result built from provider plans
+// cluster diff, saying why. A result built from provider plans
 // carries no note: each approximate plan already says why it is approximate.
 const (
-	NoteProviderPlanSkipped = "Cloud-layer plan skipped (--skip-plan)."
-	NoteNoDiffServers       = "Cloud-layer plan not run: no provider diff servers serve these resources."
+	NoteProviderPlanSkipped = "Provider plan skipped (--skip-plan)."
+	NoteNoDiffServers       = "Provider plan not run: no provider diff servers serve these resources."
 )
 
 // FromXRReport maps an xr or project diff run onto a ProjectResult: one plan per
@@ -275,7 +275,7 @@ func (a *assembler) addDiff(d *dt.ResourceDiff, composite *plan.ResourceRef) boo
 }
 
 // merge returns the plan for d given its engine plan p and its provider plan
-// pp, or nil to drop it. The cluster layer decides what changes in the
+// pp, or nil to drop it. The cluster diff decides what changes in the
 // cluster; the provider refines what that does to the external resource.
 func merge(d *dt.ResourceDiff, p, pp *plan.ResourcePlan) *plan.ResourcePlan {
 	switch {

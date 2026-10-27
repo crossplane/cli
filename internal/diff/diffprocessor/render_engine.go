@@ -140,14 +140,15 @@ type EngineRenderFn struct {
 //
 // The docker engine renders on a Docker network: by default one it creates in
 // its first Setup and removes in that Setup's cleanup, labelled with the run's
-// session. CROSSPLANE_DIFF_DOCKER_NETWORK, read once here, names the user's
-// network instead, passed as render.EngineFlags.CrossplaneDockerNetwork
+// session. network, or when it is empty CROSSPLANE_DIFF_DOCKER_NETWORK, read
+// once here, names the user's network instead, passed as
+// render.EngineFlags.CrossplaneDockerNetwork
 // (crossplane/cli#65): the engine then runs the crossplane-render container on
 // it AND annotates each fn at Setup time so its container joins it too —
 // closing both halves of the "crossplane-diff inside a container" case
 // (crossplane/cli#75). The engine never creates or removes that network, and
 // neither does the run: it carries no session label.
-func NewEngineRenderFn(log logging.Logger, advisories dt.Advisories, binaryPath, version, image string) *EngineRenderFn {
+func NewEngineRenderFn(log logging.Logger, advisories dt.Advisories, binaryPath, version, image, network string) *EngineRenderFn {
 	// Normalize before the value reaches EngineFlags: upstream formats it into
 	// the tag verbatim and only v-prefixed tags are published, so the bare form
 	// ValidateMinRenderVersion accepts would otherwise pass validation and then
@@ -164,6 +165,10 @@ func NewEngineRenderFn(log logging.Logger, advisories dt.Advisories, binaryPath,
 		advisories.Raise(dt.OutputWarning{Message: w})
 	}
 
+	if network == "" {
+		network = os.Getenv(EnvDockerNetwork)
+	}
+
 	run := dockerrun.New(dockerrun.DefaultLeaseDir(), dockerrun.NewDockerClient, log, advisories)
 
 	return &EngineRenderFn{
@@ -171,7 +176,7 @@ func NewEngineRenderFn(log logging.Logger, advisories dt.Advisories, binaryPath,
 			CrossplaneBinary:        binaryPath,
 			CrossplaneVersion:       version,
 			CrossplaneImage:         image,
-			CrossplaneDockerNetwork: os.Getenv(EnvDockerNetwork),
+			CrossplaneDockerNetwork: network,
 			SessionID:               run.ID(),
 		}, log),
 		image:         resolveRenderImage(binaryPath, version, image),

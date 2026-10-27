@@ -167,9 +167,6 @@ type ProcessorConfig struct {
 	// FunctionCredentials holds Secret credentials to pass to Functions during rendering
 	FunctionCredentials []corev1.Secret
 
-	// FunctionRegistryOverride overrides the registry in all function package refs.
-	FunctionRegistryOverride string
-
 	// MaxRecvMessageSize is the max gRPC message size (MB) for render function
 	// containers. Zero leaves the function's own default (function-sdk-go uses
 	// 4MB). When >0 it is injected as the appropriate container env var,
@@ -185,12 +182,16 @@ type ProcessorConfig struct {
 
 	// CrossplaneRenderBinary, when non-empty, causes the default
 	// engine-backed RenderFn to invoke a local `crossplane` binary at the
-	// supplied path instead of the upstream docker engine. This is a test
-	// affordance that gives integration tests a fast in-process render path;
-	// production users should leave it empty so the docker engine pulls
-	// xpkg.crossplane.io/crossplane/crossplane:stable. Ignored when
+	// supplied path instead of the upstream docker engine, which otherwise
+	// pulls xpkg.crossplane.io/crossplane/crossplane:stable. Ignored when
 	// RenderFunc is set explicitly.
 	CrossplaneRenderBinary string
+
+	// CrossplaneDockerNetwork, when non-empty, is the Docker network the
+	// default engine-backed RenderFn runs the render and function containers
+	// on. Empty falls back to the EnvDockerNetwork environment variable.
+	// Ignored when RenderFunc is set explicitly.
+	CrossplaneDockerNetwork string
 
 	// CrossplaneVersion, when non-empty, causes the default engine-backed
 	// RenderFn's docker engine to pull
@@ -347,13 +348,6 @@ func WithFunctionCredentials(creds []corev1.Secret) ProcessorOption {
 	}
 }
 
-// WithFunctionRegistryOverride overrides the registry in all function package refs.
-func WithFunctionRegistryOverride(registry string) ProcessorOption {
-	return func(config *ProcessorConfig) {
-		config.FunctionRegistryOverride = registry
-	}
-}
-
 // WithMaxRecvMessageSize sets the max gRPC message size (MB) injected into
 // render function containers.
 func WithMaxRecvMessageSize(mb int) ProcessorOption {
@@ -378,11 +372,19 @@ func WithRenderFunc(renderFn RenderFn) ProcessorOption {
 
 // WithCrossplaneRenderBinary points the default engine-backed RenderFn at a
 // local `crossplane` binary instead of the upstream docker engine. See
-// ProcessorConfig.CrossplaneRenderBinary for the semantics — production
-// callers should not use this; it exists for fast integration-test iteration.
+// ProcessorConfig.CrossplaneRenderBinary.
 func WithCrossplaneRenderBinary(path string) ProcessorOption {
 	return func(config *ProcessorConfig) {
 		config.CrossplaneRenderBinary = path
+	}
+}
+
+// WithCrossplaneDockerNetwork sets the Docker network the default
+// engine-backed RenderFn runs its containers on. See
+// ProcessorConfig.CrossplaneDockerNetwork.
+func WithCrossplaneDockerNetwork(network string) ProcessorOption {
+	return func(config *ProcessorConfig) {
+		config.CrossplaneDockerNetwork = network
 	}
 }
 

@@ -42,6 +42,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -195,7 +196,7 @@ func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary
 func runSimulateArgvRouted(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, router simulate.Router, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
-	return runSimulateArgvWith(t, cfg, argv, &project.SimulateHooks{RenderBinary: renderBinary, Router: router}, stdout, stderr)
+	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &project.SimulateHooks{Router: router}, stdout, stderr)
 }
 
 // runSimulateArgvHooked is runSimulateArgv with changed marked as changed
@@ -203,7 +204,16 @@ func runSimulateArgvRouted(t *testing.T, cfg *rest.Config, argv []string, render
 func runSimulateArgvHooked(t *testing.T, cfg *rest.Config, argv, changed []string, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
-	return runSimulateArgvWith(t, cfg, argv, &project.SimulateHooks{RenderBinary: localCrossplaneBinary(t), ChangedFunctions: changed}, stdout, stderr)
+	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &project.SimulateHooks{ChangedFunctions: changed}, stdout, stderr)
+}
+
+// withRenderBinary returns argv rendering with the local crossplane binary
+// bin, or argv itself, rendering with the render image, when bin is empty.
+func withRenderBinary(argv []string, bin string) []string {
+	if bin == "" {
+		return argv
+	}
+	return append(slices.Clip(argv), "--crossplane-binary="+bin)
 }
 
 // runSimulateArgvWith runs `crossplane project simulate` with argv against

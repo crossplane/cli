@@ -667,7 +667,7 @@ func TestNewEngineRenderFn_ResolvedRenderImage(t *testing.T) {
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			e := NewEngineRenderFn(logging.NewNopLogger(), NewAdvisoryCollector(nil), tt.binaryPath, tt.version, tt.image)
+			e := NewEngineRenderFn(logging.NewNopLogger(), NewAdvisoryCollector(nil), tt.binaryPath, tt.version, tt.image, "")
 
 			if diff := gcmp.Diff(tt.want, e.RenderImage()); diff != "" {
 				t.Errorf("RenderImage() mismatch (-want +got):\n%s", diff)
@@ -711,7 +711,7 @@ func TestNewEngineRenderFn_UncomparableImageWarns(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			advisories := NewAdvisoryCollector(nil)
 
-			NewEngineRenderFn(logging.NewNopLogger(), advisories, "", tt.version, tt.image)
+			NewEngineRenderFn(logging.NewNopLogger(), advisories, "", tt.version, tt.image, "")
 
 			got := advisories.Advisories()
 

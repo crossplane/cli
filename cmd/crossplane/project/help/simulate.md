@@ -100,12 +100,14 @@ server served the resources.
 Provider plans are controlled by these flags:
 
 - `--skip-plan` doesn't run provider diff servers and shows only the
-  cluster-layer diff. It can't be combined with the three flags below.
+  cluster-layer diff. It can't be combined with `--providers` or
+  `--session-id`.
 - `--providers` takes a YAML file or directory of Provider manifests to run as
   diff servers, instead of discovering providers from the cluster.
 - `--image-configs` takes a YAML file of ImageConfig manifests that rewrite
-  package paths for pulls: provider images, and in project mode the project's
-  function and provider dependencies. It replaces the project's imageConfigs
+  package paths for pulls: the images of the functions the render runs, except
+  the project's embedded functions, provider images, and in project mode the
+  project's function and provider dependencies. It replaces the project's imageConfigs
   for those pulls rather than adding to them; schema generation images still
   use the project's imageConfigs. Without it, the project's imageConfigs apply when
   `-f` names a project file; in Composition and XR modes `simulate` falls back,
@@ -113,11 +115,17 @@ Provider plans are controlled by these flags:
 - `--session-id` sets the `simulate.crossplane.io/session` label on diff server
   containers. It defaults to a random per-process ID.
 
+The render takes the same render engine flags as `crossplane render`:
+`--crossplane-version` and `--crossplane-image`, v2.3.4 or later, or
+`--crossplane-binary`, pick what renders, and `--crossplane-docker-network`
+names the Docker network the render and function containers join. Without
+`--crossplane-docker-network`, the `CROSSPLANE_DIFF_DOCKER_NETWORK` environment
+variable names it.
+
 The command accepts the same diff-tuning flags as `crossplane-diff`:
 
 - `--ignore-paths` leaves paths out of the diff.
-- `--function-credentials` and `--function-registry-override` configure the
-  functions the render runs.
+- `--function-credentials` passes credentials to the functions the render runs.
 - `--max-nested-depth` limits nested composite resource recursion.
 - `--dry-run-on` picks which resources the server-side dry run verifies:
   `existing` or `all`, the default.

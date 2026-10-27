@@ -110,7 +110,7 @@ func NewDiffProcessor(k8cs k8.Clients, xpcs xp.Clients, opts ...ProcessorOption)
 	// function runtimes owned by the engine.
 	var defaultEngineFn *EngineRenderFn
 	if config.RenderFunc == nil {
-		defaultEngineFn = NewEngineRenderFn(config.Logger, config.Advisories, config.CrossplaneRenderBinary, config.CrossplaneVersion, config.CrossplaneImage)
+		defaultEngineFn = NewEngineRenderFn(config.Logger, config.Advisories, config.CrossplaneRenderBinary, config.CrossplaneVersion, config.CrossplaneImage, config.CrossplaneDockerNetwork)
 		config.RenderFunc = defaultEngineFn.Render
 	}
 
@@ -126,9 +126,6 @@ func NewDiffProcessor(k8cs k8.Clients, xpcs xp.Clients, opts ...ProcessorOption)
 	diffCalculator := config.Factories.DiffCalculator(k8cs.Apply, k8cs.Access, xpcs.ResourceTree, resourceManager, config.Logger, config.GetCompareOptions(), config.DryRunOn, predictor)
 
 	functionProvider := config.Factories.FunctionProvider(xpcs.Function, config.Logger)
-	if config.FunctionRegistryOverride != "" {
-		functionProvider = NewRegistryOverrideFunctionProvider(functionProvider, config.FunctionRegistryOverride, config.Logger)
-	}
 
 	if config.MaxRecvMessageSize > 0 {
 		functionProvider = NewEnvInjectingFunctionProvider(functionProvider,

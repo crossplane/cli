@@ -19,12 +19,13 @@ package plan
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"maps"
 	"slices"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
+
+	xpfieldpath "github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 )
 
 // Fallback computes an approximate client-side plan for desired by comparing
@@ -69,24 +70,26 @@ func Fallback(desired, live *unstructured.Unstructured, reason string) *Resource
 	return p
 }
 
-// cursor tracks a position in the diffed object: the rendered path for the
-// plan's output, and the structured field path for ownership lookups in a
-// managedFields set. The two diverge on purpose: the rendered path is lossy
-// (a map key may itself contain dots or brackets) and indexes list elements,
+// cursor tracks a position in the diffed object: the crossplane-runtime field
+// path for the plan's output, and the structured field path for ownership
+// lookups in a managedFields set. The two diverge on purpose: the output path
+// indexes list elements,
 // while FieldsV1 sets never index lists positionally, so below a list the
 // field path freezes at the list itself and ownership is decided there.
 type cursor struct {
-	str    string
+	segs   xpfieldpath.Segments
 	fp     fieldpath.Path
 	inList bool
 }
 
 func newCursor(root string) cursor {
-	return cursor{str: root, fp: fieldpath.MakePathOrDie(root)}
+	return cursor{segs: xpfieldpath.Segments{xpfieldpath.Field(root)}, fp: fieldpath.MakePathOrDie(root)}
 }
 
 func (c cursor) field(k string) cursor {
-	next := cursor{str: JoinKey(c.str, k), fp: c.fp, inList: c.inList}
+	// ponytail: a key containing '[' or ']' has no fieldpath form, so its
+	// path will not parse back; upgrade if a real key needs it.
+	next := cursor{segs: append(slices.Clip(c.segs), xpfieldpath.Field(k)), fp: c.fp, inList: c.inList}
 	if !c.inList {
 		next.fp = append(slices.Clip(c.fp), fieldpath.PathElement{FieldName: &k})
 	}
@@ -94,7 +97,8 @@ func (c cursor) field(k string) cursor {
 }
 
 func (c cursor) index(i int) cursor {
-	return cursor{str: fmt.Sprintf("%s[%d]", c.str, i), fp: c.fp, inList: true}
+	seg := xpfieldpath.Segment{Type: xpfieldpath.SegmentIndex, Index: uint(i)}
+	return cursor{segs: append(slices.Clip(c.segs), seg), fp: c.fp, inList: true}
 }
 
 // removable reports whether a removal at the cursor would really happen on
@@ -144,9 +148,9 @@ func flattenValue(c cursor, v any, removed bool, owned *fieldpath.Set) []FieldCh
 			if !c.removable(owned) {
 				return nil
 			}
-			return []FieldChange{{Path: c.str, Actual: &Value{Value: v}}}
+			return []FieldChange{{Path: c.segs.String(), Actual: &Value{Value: v}}}
 		}
-		return []FieldChange{{Path: c.str, Planned: &Value{Value: v}}}
+		return []FieldChange{{Path: c.segs.String(), Planned: &Value{Value: v}}}
 	}
 }
 
@@ -198,7 +202,7 @@ func diffValues(c cursor, actual, planned any, owned *fieldpath.Set) []FieldChan
 		return nil
 	}
 	return []FieldChange{{
-		Path:    c.str,
+		Path:    c.segs.String(),
 		Actual:  &Value{Value: actual},
 		Planned: &Value{Value: planned},
 	}}

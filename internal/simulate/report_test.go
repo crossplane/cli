@@ -268,8 +268,8 @@ func TestFromXRReport(t *testing.T) {
 					Plans: []*plan.ResourcePlan{{
 						APIVersion: "v1", Kind: "Secret", Name: "creds", Action: plan.ActionUpdate, Composite: &xrPlan,
 						Changes: []plan.FieldChange{
-							{Path: `data[".dockerconfigjson"]`, Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
-							{Path: `data["tls.crt"]`, Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
+							{Path: "data[.dockerconfigjson]", Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
+							{Path: "data[tls.crt]", Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
 						},
 					}},
 				},

@@ -6,11 +6,12 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/plan"
@@ -838,72 +839,10 @@ func warningMatches[W any](ws []W, f func(W) warningMatch) []warningMatch {
 	return out
 }
 
-// pathToken is one step of a field path: a map key, or a list index.
-type pathToken struct {
-	key     string
-	index   int
-	isIndex bool
-}
-
-// parsePath splits a field path into its steps. It reads both simulate.ProjectResult's form (keys joined by ".",
-// other keys as ["key"], indexes as [N]) and the test expectations' ['key'] form.
-func parsePath(path string) ([]pathToken, error) {
-	var toks []pathToken
-
-	for i := 0; i < len(path); {
-		switch {
-		case path[i] == '.':
-			i++
-		case strings.HasPrefix(path[i:], `["`):
-			q, err := strconv.QuotedPrefix(path[i+1:])
-			end := i + 1 + len(q)
-
-			if err != nil || end >= len(path) || path[end] != ']' {
-				return nil, fmt.Errorf("malformed quoted key at %d in %q", i, path)
-			}
-
-			k, _ := strconv.Unquote(q)
-			toks = append(toks, pathToken{key: k})
-			i = end + 1
-		case strings.HasPrefix(path[i:], `['`):
-			j := strings.Index(path[i+2:], `']`)
-			if j < 0 {
-				return nil, fmt.Errorf("unterminated quoted key at %d in %q", i, path)
-			}
-
-			toks = append(toks, pathToken{key: path[i+2 : i+2+j]})
-			i += 2 + j + 2
-		case path[i] == '[':
-			j := strings.IndexByte(path[i:], ']')
-			if j < 0 {
-				return nil, fmt.Errorf("unterminated index at %d in %q", i, path)
-			}
-
-			n, err := strconv.Atoi(path[i+1 : i+j])
-			if err != nil {
-				return nil, fmt.Errorf("bad index at %d in %q: %w", i, path, err)
-			}
-
-			toks = append(toks, pathToken{index: n, isIndex: true})
-			i += j + 1
-		default:
-			j := strings.IndexAny(path[i:], ".[")
-			if j < 0 {
-				j = len(path) - i
-			}
-
-			toks = append(toks, pathToken{key: path[i : i+j]})
-			i += j
-		}
-	}
-
-	return toks, nil
-}
-
-func mustParsePath(t *testing.T, path string) []pathToken {
+func mustParsePath(t *testing.T, path string) fieldpath.Segments {
 	t.Helper()
 
-	toks, err := parsePath(path)
+	toks, err := fieldpath.Parse(path)
 	if err != nil {
 		t.Fatalf("field path: %v", err)
 	}
@@ -912,7 +851,7 @@ func mustParsePath(t *testing.T, path string) []pathToken {
 }
 
 // under returns the steps of toks below prefix, and whether toks is at or under prefix at all.
-func under(toks, prefix []pathToken) ([]pathToken, bool) {
+func under(toks, prefix fieldpath.Segments) (fieldpath.Segments, bool) {
 	if len(toks) < len(prefix) || !slices.Equal(toks[:len(prefix)], prefix) {
 		return nil, false
 	}
@@ -948,13 +887,13 @@ func objectValueAt(t *testing.T, u *unstructured.Unstructured, path string) (any
 	var node any = u.Object
 
 	for _, tok := range mustParsePath(t, path) {
-		if tok.isIndex {
+		if tok.Type == fieldpath.SegmentIndex {
 			l, ok := node.([]any)
-			if !ok || tok.index >= len(l) {
+			if !ok || tok.Index >= uint(len(l)) {
 				return nil, false
 			}
 
-			node = l[tok.index]
+			node = l[tok.Index]
 
 			continue
 		}
@@ -964,7 +903,7 @@ func objectValueAt(t *testing.T, u *unstructured.Unstructured, path string) (any
 			return nil, false
 		}
 
-		if node, ok = m[tok.key]; !ok {
+		if node, ok = m[tok.Field]; !ok {
 			return nil, false
 		}
 	}
@@ -1009,18 +948,18 @@ func valueAt(t *testing.T, changes []plan.FieldChange, planned bool, path string
 
 // insert sets v at toks below node, building maps as it goes. Lists are built as index maps, which
 // assemble turns into slices.
-func insert(node any, toks []pathToken, v any) any {
+func insert(node any, toks fieldpath.Segments, v any) any {
 	if len(toks) == 0 {
 		return v
 	}
 
-	if toks[0].isIndex {
-		m, _ := node.(map[int]any)
+	if toks[0].Type == fieldpath.SegmentIndex {
+		m, _ := node.(map[uint]any)
 		if m == nil {
-			m = map[int]any{}
+			m = map[uint]any{}
 		}
 
-		m[toks[0].index] = insert(m[toks[0].index], toks[1:], v)
+		m[toks[0].Index] = insert(m[toks[0].Index], toks[1:], v)
 
 		return m
 	}
@@ -1030,7 +969,7 @@ func insert(node any, toks []pathToken, v any) any {
 		m = map[string]any{}
 	}
 
-	m[toks[0].key] = insert(m[toks[0].key], toks[1:], v)
+	m[toks[0].Field] = insert(m[toks[0].Field], toks[1:], v)
 
 	return m
 }
@@ -1038,8 +977,8 @@ func insert(node any, toks []pathToken, v any) any {
 // assemble turns insert's index maps into slices.
 func assemble(node any) any {
 	switch n := node.(type) {
-	case map[int]any:
-		size := 0
+	case map[uint]any:
+		size := uint(0)
 		for i := range n {
 			size = max(size, i+1)
 		}

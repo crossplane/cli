@@ -152,15 +152,15 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 		var ok bool
 		switch {
 		case c.Planned != nil && c.Planned.Unknown:
-			lines, ok = markUnknown(lines, plan.PathSegments(c.Path))
+			lines, ok = markUnknown(lines, plan.DisplayLevels(c.Path))
 		case (c.Planned != nil && c.Planned.Sensitive) || (c.Actual != nil && c.Actual.Sensitive):
-			lines, ok = markSensitive(lines, plan.PathSegments(c.Path))
+			lines, ok = markSensitive(lines, plan.DisplayLevels(c.Path))
 		}
 		changed = changed || ok
 	}
 	for _, c := range changes {
 		if c.RequiresReplace {
-			changed = markReplace(lines, plan.PathSegments(c.Path), d.DiffType == dt.DiffTypeAdded) || changed
+			changed = markReplace(lines, plan.DisplayLevels(c.Path), d.DiffType == dt.DiffTypeAdded) || changed
 		}
 	}
 
@@ -219,7 +219,7 @@ func driftDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 type line struct {
 	op   diffmatchpatch.Operation
 	text string
-	// segs is the field path of the line, as plan.PathSegments splits it,
+	// segs is the field path of the line, as plan.DisplayLevels splits it,
 	// on the side the line belongs to: the desired side for an equal line.
 	segs []string
 	// value is the offset in text of the field's scalar value, or -1 when

@@ -18,7 +18,6 @@ package project
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -593,19 +592,15 @@ func loadInputs(paths []string) (*inputs, error) {
 		}
 	}
 
-	loader, err := ld.NewExactCompositeLoader(paths)
+	// Pipeline step inputs are part of their Composition, not resources of
+	// their own.
+	loader, err := ld.NewExactCompositeLoader(paths, ld.WithoutPipelineInputs())
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot load -f inputs")
 	}
 	resources, err := loader.Load()
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot load -f inputs")
-	}
-	// The loader also returns each Composition's pipeline step inputs, which
-	// are part of the Composition rather than resources of their own.
-	stepInputs, err := pipelineInputs(resources)
-	if err != nil {
-		return nil, err
 	}
 
 	var comps, others []*un.Unstructured
@@ -617,14 +612,6 @@ func loadInputs(paths []string) (*inputs, error) {
 		case gvk == apiextensionsv1.CompositionGroupVersionKind:
 			comps = append(comps, r)
 		default:
-			key, err := json.Marshal(r.Object)
-			if err != nil {
-				return nil, errors.Wrapf(err, "cannot compare %s %q to Composition pipeline inputs", gvk.Kind, r.GetName())
-			}
-			if stepInputs[string(key)] > 0 {
-				stepInputs[string(key)]--
-				continue
-			}
 			others = append(others, r)
 		}
 	}
@@ -669,36 +656,6 @@ func isProjectFile(path string) (bool, error) {
 	}
 	isProj, err := projectfile.IsProjectFile(afero.NewOsFs(), path)
 	return isProj, errors.Wrapf(err, "cannot read -f input %q", path)
-}
-
-// pipelineInputs returns the JSON of every pipeline step input of the
-// Compositions in resources, counted, so loadInputs can tell the inputs the
-// loader extracted from those Compositions from resources of their own.
-func pipelineInputs(resources []*un.Unstructured) (map[string]int, error) {
-	inputs := map[string]int{}
-	for _, r := range resources {
-		if r.GroupVersionKind() != apiextensionsv1.CompositionGroupVersionKind {
-			continue
-		}
-		steps, _, _ := un.NestedSlice(r.Object, "spec", "pipeline")
-		for _, step := range steps {
-			m, ok := step.(map[string]any)
-			if !ok {
-				// Let the engine report the malformed Composition.
-				continue
-			}
-			in, ok := m["input"]
-			if !ok || in == nil {
-				continue
-			}
-			key, err := json.Marshal(in)
-			if err != nil {
-				return nil, errors.Wrapf(err, "cannot read the pipeline inputs of Composition %q", r.GetName())
-			}
-			inputs[string(key)]++
-		}
-	}
-	return inputs, nil
 }
 
 // validateModeFlags checks the flags set on the command line against mode.

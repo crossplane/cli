@@ -1132,6 +1132,23 @@ spec:
       kind: GoTemplate
       source: Inline
 `)
+	// A step input that isn't an object is the engine's to report, not the
+	// loader's.
+	listInput := write("listinput.yaml", `apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: l
+spec:
+  compositeTypeRef:
+    apiVersion: example.org/v1
+    kind: XThing
+  mode: Pipeline
+  pipeline:
+  - step: render
+    functionRef:
+      name: function-go-templating
+    input: [1]
+`)
 	xr := write("xr.yaml", "apiVersion: example.org/v1\nkind: XThing\nmetadata:\n  name: x\n")
 	claim := write("claim.yaml", "apiVersion: example.org/v1\nkind: Thing\nmetadata:\n  name: t\n  namespace: default\n")
 	// A GoTemplate of its own is a resource, not a pipeline input.
@@ -1161,6 +1178,11 @@ spec:
 			reason: "A Composition should select composition mode; its pipeline inputs are part of it.",
 			paths:  []string{comp},
 			want:   want{mode: compositionMode, names: []string{"c"}},
+		},
+		"CompositionListInput": {
+			reason: "A Composition should be loaded without parsing its pipeline inputs as resources.",
+			paths:  []string{listInput},
+			want:   want{mode: compositionMode, names: []string{"l"}},
 		},
 		"CompositionDirectory": {
 			reason: "A directory of Compositions should select composition mode.",
@@ -1477,19 +1499,6 @@ func TestSimulateNameFlagParse(t *testing.T) {
 				t.Errorf("Name: -want, +got:\n%s", diff)
 			}
 		})
-	}
-}
-
-func TestPipelineInputsMalformedStep(t *testing.T) {
-	c := &un.Unstructured{Object: map[string]any{
-		"apiVersion": "apiextensions.crossplane.io/v1",
-		"kind":       "Composition",
-		"metadata":   map[string]any{"name": "bad"},
-		"spec":       map[string]any{"pipeline": []any{"foo"}},
-	}}
-	got, err := pipelineInputs([]*un.Unstructured{c})
-	if err != nil || len(got) != 0 {
-		t.Errorf("pipelineInputs(...) = %v, %v; want no inputs and no error", got, err)
 	}
 }
 

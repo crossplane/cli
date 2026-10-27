@@ -84,8 +84,9 @@ func TestSimulateFlags(t *testing.T) {
 	}
 
 	type want struct {
-		cmd *simulateCmd
-		err bool
+		cmd     *simulateCmd
+		secrets []corev1.Secret
+		err     bool
 	}
 
 	cases := map[string]struct {
@@ -155,19 +156,22 @@ func TestSimulateFlags(t *testing.T) {
 		"FunctionCredentials": {
 			reason: "--function-credentials should load the Secrets in the file at parse time.",
 			args:   []string{"--function-credentials", creds},
-			want: want{cmd: &simulateCmd{
-				Input:          []string{"crossplane-project.yaml"},
-				MaxConcurrency: 8,
-				MaxIterations:  dp.DefaultMaxRenderIterations,
-				Timeout:        2 * time.Minute,
-				Output:         "plan",
-				MaxNestedDepth: 10,
-				DryRunOn:       "all",
-				FunctionCredentials: FunctionCredentials{Path: creds, Secrets: []corev1.Secret{{
+			want: want{
+				cmd: &simulateCmd{
+					Input:               []string{"crossplane-project.yaml"},
+					MaxConcurrency:      8,
+					MaxIterations:       dp.DefaultMaxRenderIterations,
+					Timeout:             2 * time.Minute,
+					Output:              "plan",
+					MaxNestedDepth:      10,
+					DryRunOn:            "all",
+					FunctionCredentials: creds,
+				},
+				secrets: []corev1.Secret{{
 					TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 					ObjectMeta: metav1.ObjectMeta{Name: "creds"},
-				}}},
-			}},
+				}},
+			},
 		},
 		"FunctionCredentialsMissing": {
 			reason: "A missing credentials path should be rejected at parse time.",
@@ -380,6 +384,9 @@ func TestSimulateFlags(t *testing.T) {
 			if diff := cmp.Diff(tc.want.cmd, got, cmpopts.IgnoreFields(simulateCmd{}, "Impersonation"), cmpopts.IgnoreUnexported(simulateCmd{})); diff != "" {
 				t.Errorf("\n%s\nParse(%v): -want, +got:\n%s", tc.reason, tc.args, diff)
 			}
+			if diff := cmp.Diff(tc.want.secrets, got.functionCredentials, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nParse(%v): function credentials: -want, +got:\n%s", tc.reason, tc.args, diff)
+			}
 		})
 	}
 }
@@ -473,7 +480,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 
 		MaxNestedDepth:      4,
 		IgnorePaths:         []string{"a.b"},
-		FunctionCredentials: FunctionCredentials{Secrets: []corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "creds"}}}},
+		functionCredentials: []corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "creds"}}},
 		EventualState:       true,
 		MaxRecvMessageSize:  16,
 		AnalyzeOn:           "spec-change",
@@ -510,7 +517,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		HasFunctionProvider: true,
 		MaxNestedDepth:      4,
 		IgnorePaths:         []string{"a.b"},
-		Credentials:         c.FunctionCredentials.Secrets,
+		Credentials:         c.functionCredentials,
 		EventualState:       true,
 		MaxRecvMessageSize:  16,
 		AnalyzeOn:           dp.AnalyzeOnSpecChange,

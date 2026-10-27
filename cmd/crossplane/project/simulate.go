@@ -34,7 +34,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 
@@ -90,6 +89,8 @@ type simulateCmd struct {
 	servers   simulate.Servers
 	// noServersNoted is set once the "no diff servers" line is printed.
 	noServersNoted bool
+	// Validate loads this from --function-credentials.
+	functionCredentials []corev1.Secret
 	// Validate sets these from scope(), so --name is parsed once.
 	ns   string
 	refs []k8stypes.NamespacedName
@@ -98,28 +99,28 @@ type simulateCmd struct {
 	MaxConcurrency uint     `default:"8"                 help:"Max concurrent function builds."`
 	CacheDir       string   `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)."                                                                            name:"cache-dir"`
 
-	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                                                                                                         predictor:"context"                                                                                                                                                                                            short:"c"`
-	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                                                                                                                 predictor:"namespace"                                                                                                                                                                                          short:"n"`
-	Name          []string      `help:"Only simulate the composite resource with this [namespace/]name. Repeatable or comma-separated. A bare name pairs with --namespace, or is cluster scoped without it."                             sep:","`
-	IncludePinned bool          `help:"Render every composite resource with a Manual composition update policy against the new Composition, instead of only those pinned to a changed function, rendered against their pinned revision."`
-	MaxIterations int           `default:"20"                                                                                                                                                                                            help:"Max render iterations per composite resource to resolve requirements."`
-	Timeout       time.Duration `default:"2m"                                                                                                                                                                                            help:"Max time to simulate one composite resource: its render and its resources' provider plans. Function and provider image pulls don't count, but the render image pull counts against the first composite."`
-	Output        string        `default:"plan"                                                                                                                                                                                          enum:"plan,diff,json,yaml"                                                                                                                                                                                     help:"Output format. One of: plan, diff, json, yaml." short:"o"`
+	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                                                                             predictor:"context"                                                          short:"c"`
+	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                                                                                     predictor:"namespace"                                                        short:"n"`
+	Name          []string      `help:"Only simulate the composite resource with this [namespace/]name. Repeatable or comma-separated. A bare name pairs with --namespace, or is cluster scoped without it." sep:","`
+	IncludePinned bool          `help:"Render every composite resource pinned by a Manual update policy against the new Composition."`
+	MaxIterations int           `default:"20"                                                                                                                                                                help:"Max render iterations per composite resource to resolve requirements."`
+	Timeout       time.Duration `default:"2m"                                                                                                                                                                help:"Max time to simulate one composite resource."`
+	Output        string        `default:"plan"                                                                                                                                                              enum:"plan,diff,json,yaml"                                                   help:"Output format. One of: plan, diff, json, yaml." short:"o"`
 
-	NoColor             bool                `help:"Disable colorized output."`
-	Compact             bool                `help:"Show compact diffs with minimal context."`
-	MaxNestedDepth      int                 `default:"10"                                                                                                                                help:"Maximum depth for nested XR recursion."`
-	IgnorePaths         []string            `help:"Paths to ignore in diffs (e.g., 'metadata.annotations[argocd.argoproj.io/tracking-id]')."`
-	FunctionCredentials FunctionCredentials `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."                                           placeholder:"PATH"`
-	EventualState       bool                `help:"Show eventual state after all reconciliation cycles complete (useful with function-sequencer)."`
-	MaxRecvMessageSize  int                 `env:"MAX_RECV_MESSAGE_SIZE"                                                                                                                 help:"Max gRPC message size (MB) for render function containers (4 MB if undefined)."`
-	MinimizeComposition bool                `help:"Collapse each changed composition to a single marker line in -o diff output (errors and no-change compositions still print in full)."`
-	AnalyzeOn           string              `default:""                                                                                                                                  enum:",spec-change,any-change,always"                                                 help:"Smallest composition change that triggers per-composite impact analysis. \"spec-change\": only when the composition spec changes. \"any-change\": also when only its metadata changes, which still creates a new CompositionRevision that composites re-point to. \"always\": even when the composition is identical, for a pre-edit convergence baseline. Defaults to any-change."`
-	DryRunOn            string              `default:"all"                                                                                                                               enum:"existing,all"                                                                   help:"Which resources to verify against the apiserver with a dry run: 'all' also dry-run creates added resources so their diffs include server-side defaulting and admission (needs the 'create' verb; degrades per-resource without it), 'existing' only resources already in the cluster."`
+	NoColor             bool     `help:"Disable colorized output."`
+	Compact             bool     `help:"Show compact diffs with minimal context."`
+	MaxNestedDepth      int      `default:"10"                                                                                          help:"Maximum depth for nested XR recursion."`
+	IgnorePaths         []string `help:"Paths to ignore in diffs (e.g., 'metadata.annotations[argocd.argoproj.io/tracking-id]')."`
+	FunctionCredentials string   `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."     placeholder:"PATH"                                                                    predictor:"yaml_file_or_directory"                                                                             type:"path"`
+	EventualState       bool     `help:"Show eventual state after all reconciliation cycles complete (useful with function-sequencer)."`
+	MaxRecvMessageSize  int      `env:"MAX_RECV_MESSAGE_SIZE"                                                                           help:"Max gRPC message size (MB) for render function containers (4 MB if undefined)."`
+	MinimizeComposition bool     `help:"Collapse each changed Composition to one line in -o diff output."`
+	AnalyzeOn           string   `default:""                                                                                            enum:",spec-change,any-change,always"                                                 help:"Smallest Composition change that triggers impact analysis: spec-change, any-change (default) or always."`
+	DryRunOn            string   `default:"all"                                                                                         enum:"existing,all"                                                                   help:"Which resources to verify with a server-side dry run: existing or all (default)."`
 
 	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster-layer diff."`
-	Providers    string `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                                                                                                                                                                                                                               name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
-	ImageConfigs string `help:"YAML file with ImageConfig manifests that rewrite package paths for pulls: function and provider images, and in project mode the project's dependencies. Replaces the project's imageConfigs for those pulls (schema generation images still use the project's); without it, they are used when -f names a project file, and in Composition and XR modes, best effort, from the project file in the current directory." name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
+	Providers    string `help:"YAML file or directory of Provider manifests to run as diff servers, instead of discovering them from the cluster." name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
+	ImageConfigs string `help:"YAML file of ImageConfig manifests that rewrite package paths for pulls, replacing the project's imageConfigs."     name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 
@@ -161,59 +162,21 @@ func (c *simulateCmd) hookChangedFunctions() []string {
 	return c.Hooks.ChangedFunctions
 }
 
-// FunctionCredentials holds Secret credentials loaded from a file path. It
-// implements kong.MapperValue to load the secrets at parse time, so a bad
-// path fails before any build or cluster connection.
-type FunctionCredentials struct {
-	Path    string
-	Secrets []corev1.Secret
-}
-
-// Decode implements kong.MapperValue.
-func (f *FunctionCredentials) Decode(ctx *kong.DecodeContext) error {
-	var path string
-	if err := ctx.Scan.PopValueInto("path", &path); err != nil {
-		return err
-	}
-	if path == "" {
-		return nil
-	}
-
-	secrets, err := loadFunctionCredentials(path)
+// loadFunctionCredentials loads the v1 Secrets in a YAML file or directory,
+// skipping other resources. A path with no Secrets is an error.
+func loadFunctionCredentials(path string) ([]corev1.Secret, error) {
+	loaded, err := render.LoadCredentials(afero.NewOsFs(), path)
 	if err != nil {
-		return err
+		return nil, errors.Wrapf(err, "cannot load function credentials from %q", path)
+	}
+	secrets := make([]corev1.Secret, 0, len(loaded))
+	for _, s := range loaded {
+		if s.Kind == "Secret" && s.APIVersion == "v1" {
+			secrets = append(secrets, s)
+		}
 	}
 	if len(secrets) == 0 {
-		return errors.Errorf("no Secret resources found in %q: file must contain v1/Secret resources", path)
-	}
-
-	f.Path = path
-	f.Secrets = secrets
-	return nil
-}
-
-// loadFunctionCredentials loads the v1 Secrets in a YAML file or directory.
-// Other resources are skipped.
-func loadFunctionCredentials(path string) ([]corev1.Secret, error) {
-	loader, err := ld.NewLoader(path)
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot create loader for path %q", path)
-	}
-	resources, err := loader.Load()
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot load resources from %q", path)
-	}
-
-	secrets := make([]corev1.Secret, 0, len(resources))
-	for _, res := range resources {
-		if res.GetKind() != "Secret" || res.GetAPIVersion() != "v1" {
-			continue
-		}
-		secret := corev1.Secret{}
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(res.UnstructuredContent(), &secret); err != nil {
-			return nil, errors.Wrapf(err, "cannot convert Secret %q to corev1.Secret", res.GetName())
-		}
-		secrets = append(secrets, secret)
+		return nil, errors.Errorf("no Secret resources found in %q: it must contain v1/Secret resources", path)
 	}
 	return secrets, nil
 }
@@ -240,6 +203,14 @@ func (c *simulateCmd) Validate() error {
 		return err
 	}
 	c.ns, c.refs = ns, refs
+
+	if c.FunctionCredentials != "" {
+		secrets, err := loadFunctionCredentials(c.FunctionCredentials)
+		if err != nil {
+			return err
+		}
+		c.functionCredentials = secrets
+	}
 
 	if c.Timeout <= 0 {
 		return errors.Errorf("--timeout must be greater than 0, got %s", c.Timeout)
@@ -862,8 +833,8 @@ func (c *simulateCmd) processorOptions(k *kong.Context, logger logging.Logger, f
 		opts = append(opts, dp.WithFunctionProviderFactory(functionProviderFactory(fns, embedded, ics)))
 	}
 
-	if len(c.FunctionCredentials.Secrets) > 0 {
-		opts = append(opts, dp.WithFunctionCredentials(c.FunctionCredentials.Secrets))
+	if len(c.functionCredentials) > 0 {
+		opts = append(opts, dp.WithFunctionCredentials(c.functionCredentials))
 	}
 	if c.MaxRecvMessageSize > 0 {
 		opts = append(opts, dp.WithMaxRecvMessageSize(c.MaxRecvMessageSize))

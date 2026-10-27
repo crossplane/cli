@@ -103,7 +103,8 @@ Provider plans are controlled by these flags:
   cluster-layer diff. It can't be combined with `--providers` or
   `--session-id`.
 - `--providers` takes a YAML file or directory of Provider manifests to run as
-  diff servers, instead of discovering providers from the cluster.
+  diff servers, instead of discovering providers from the cluster. The manifests
+  can carry per-provider runtime annotations.
 - `--session-id` sets the `simulate.crossplane.io/session` label on diff server
   containers. It defaults to a random per-process ID.
 
@@ -129,14 +130,22 @@ exist, but a project file there that can't be parsed is an error.
 The command accepts the same diff-tuning flags as `crossplane-diff`:
 
 - `--ignore-paths` leaves paths out of the diff.
-- `--function-credentials` passes credentials to the functions the render runs.
+- `--function-credentials` passes credentials to the functions the render runs:
+  the v1 Secrets in a YAML file or directory, which must hold at least one.
 - `--max-nested-depth` limits nested composite resource recursion.
 - `--dry-run-on` picks which resources the server-side dry run verifies:
-  `existing` or `all`, the default.
+  `existing` only checks resources already in the cluster; `all`, the default,
+  also dry-run creates added resources, so their diffs include server-side
+  defaulting and admission. `all` needs the `create` verb and falls back per
+  resource without it.
 - `--analyze-on` sets the smallest Composition change that triggers impact
-  analysis: `spec-change`, `any-change`, or `always`.
+  analysis: `spec-change` only when the Composition spec changes;
+  `any-change`, the default, also when only its metadata changes, which still
+  creates a new CompositionRevision that composites re-point to; `always` even
+  when the Composition is identical, for a pre-edit convergence baseline.
 - `--minimize-composition` collapses each changed Composition to one line in
-  `-o diff` output.
+  `-o diff` output. Errors and Compositions with no changes still print in
+  full.
 - `--eventual-state` shows the state after all reconciliation cycles complete.
 - `--max-recv-message-size` raises the function gRPC message limit, in MB.
 - `--no-color` and `--compact` change how `-o diff` prints.

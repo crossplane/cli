@@ -24,8 +24,6 @@ import (
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
-
-	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 )
 
 // ProjectFunctionProvider wraps another FunctionProvider and resolves each
@@ -62,15 +60,6 @@ func NewProjectFunctionProvider(inner FunctionProvider, fns []pkgv1.Function, lo
 		inner:   inner,
 		project: project,
 		logger:  logger,
-	}
-}
-
-// NewProjectFunctionProviderFactory returns a factory for
-// WithFunctionProviderFactory that overlays fns on the default
-// CachedFunctionProvider.
-func NewProjectFunctionProviderFactory(fns []pkgv1.Function) func(xp.FunctionClient, logging.Logger) FunctionProvider {
-	return func(fnClient xp.FunctionClient, logger logging.Logger) FunctionProvider {
-		return NewProjectFunctionProvider(NewCachedFunctionProvider(fnClient, logger), fns, logger)
 	}
 }
 

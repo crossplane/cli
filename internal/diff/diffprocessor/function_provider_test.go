@@ -321,11 +321,12 @@ func TestImageConfigFunctionProvider(t *testing.T) {
 		wantErr bool
 	}{
 		"RewritesMatchingPackages": {
-			reason: "A package a rewriting ImageConfig matches should be rewritten; others kept.",
+			reason: "A package a rewriting ImageConfig matches should be rewritten, keeping its tag or digest; others kept.",
 			ics:    []pkgv1beta1.ImageConfig{mirror},
 			want: []string{
 				"registry.example.com/mirror/function-go-templating:v0.11.0",
 				"other.registry.io/crossplane-contrib/function-auto-ready:v1.0.0",
+				"registry.example.com/mirror/function-patch-and-transform@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			},
 		},
 		"NoImageConfigs": {
@@ -333,6 +334,7 @@ func TestImageConfigFunctionProvider(t *testing.T) {
 			want: []string{
 				"xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0",
 				"other.registry.io/crossplane-contrib/function-auto-ready:v1.0.0",
+				"xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			},
 		},
 		"MissingRewritePrefix": {
@@ -354,6 +356,7 @@ func TestImageConfigFunctionProvider(t *testing.T) {
 				WithSuccessfulFunctionsFetch([]pkgv1.Function{
 					fn("function-go-templating", "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0"),
 					fn("function-auto-ready", "other.registry.io/crossplane-contrib/function-auto-ready:v1.0.0"),
+					fn("function-patch-and-transform", "xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
 				}).
 				Build()
 			logger := tu.TestLogger(t, false)

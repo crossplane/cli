@@ -197,7 +197,8 @@ func TestProjectFunctionProvider_GetFunctionsForComposition(t *testing.T) {
 				mu    sync.Mutex
 			)
 
-			p := NewProjectFunctionProviderFactory(tc.project)(clusterFnClient(installed, &asked, &mu), tu.TestLogger(t, false))
+			logger := tu.TestLogger(t, false)
+			p := NewProjectFunctionProvider(NewCachedFunctionProvider(clusterFnClient(installed, &asked, &mu), logger), tc.project, logger)
 
 			got, err := p.GetFunctionsForComposition(t.Context(), tc.comp)
 			if tc.want.errSub != "" {
@@ -305,7 +306,8 @@ func TestProjectFunctionProvider_Concurrent(t *testing.T) {
 		}).
 		Build()
 
-	p := NewProjectFunctionProviderFactory([]pkgv1.Function{testFn("function-a", "xpkg.io/project/function-a:local")})(inner, tu.TestLogger(t, false))
+	logger := tu.TestLogger(t, false)
+	p := NewProjectFunctionProvider(NewCachedFunctionProvider(inner, logger), []pkgv1.Function{testFn("function-a", "xpkg.io/project/function-a:local")}, logger)
 	comp := pipelineComp("comp", "function-a", "function-b")
 	want := []pkgv1.Function{
 		testFn("function-a", "xpkg.io/project/function-a:local"),

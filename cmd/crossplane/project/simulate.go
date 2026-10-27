@@ -83,7 +83,7 @@ type simulateCmd struct {
 	// EngineFlags select the crossplane render backend, as for render. Its
 	// SessionID labels the diff server containers; the render's containers
 	// are labelled with the run's own ID, which reclaims them.
-	render.EngineFlags `prefix:""`
+	render.EngineFlags `prefix:"" set:"session_id_help=Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID. Cannot be used with --skip-plan."`
 
 	// Run sets these; nil with --skip-plan (servers also when Hooks.Router is set).
 	xrPlanner *simulate.XRPlanner

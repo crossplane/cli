@@ -171,6 +171,9 @@ func (p *ImageConfigFunctionProvider) GetFunctionsForComposition(ctx context.Con
 	for i := range fns {
 		ic, rewritten, err := p.store.RewritePath(ctx, fns[i].Spec.Package)
 		if err != nil {
+			if ic == "" {
+				return nil, errors.Wrapf(err, "cannot rewrite the package of function %q", fns[i].GetName())
+			}
 			return nil, errors.Wrapf(err, "cannot rewrite the package of function %q with ImageConfig %q", fns[i].GetName(), ic)
 		}
 

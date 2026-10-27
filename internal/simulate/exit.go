@@ -22,6 +22,10 @@ import "errors"
 // simulation succeeded and found changes.
 const ExitCodeChanges = 3
 
+// ExitCodeUsage is the status kong exits with for parse and Validate errors.
+// Commands return it for invalid flags they can only detect in Run.
+const ExitCodeUsage = 80
+
 // ExitError is an error that sets the command's exit status; it implements
 // kong.ExitCoder. With a nil Err it reports a result that is not an error,
 // such as changes found: main exits with Code without printing anything.

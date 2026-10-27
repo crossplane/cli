@@ -20,10 +20,8 @@ limitations under the License.
 package simulate
 
 import (
+	"cmp"
 	"context"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -34,6 +32,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/kube"
@@ -53,14 +52,14 @@ var helpDetail string
 type Cmd struct {
 	Filename string `help:"YAML files or directory with managed resources, or '-' for stdin (comma-separated)." predictor:"yaml_file_or_directory" required:"" short:"f"`
 
-	Providers    string        `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                  name:"providers"                                         optional:""                                     predictor:"yaml_file_or_directory" type:"path"`
-	ImageConfigs string        `help:"YAML file with ImageConfig manifests that rewrite provider image paths for local pulls. Defaults to the project's imageConfigs when a project file is present."                                            name:"image-configs"                                     optional:""                                     predictor:"yaml_file"              type:"existingfile"`
-	ProjectFile  string        `help:"Path to a project definition file to read imageConfigs from. Defaults to ${project_file} when present."                                                                                                    name:"project-file"                                      optional:""`
-	SessionID    string        `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-run ID. A supplied ID isn't leased, so its containers aren't reclaimed after a crash." placeholder:"ID"`
-	Context      string        `default:""                                                                                                                                                                                                       help:"Kubernetes context."                               name:"context"                                  predictor:"context"                short:"c"`
-	CacheDir     string        `default:"~/.crossplane/cache"                                                                                                                                                                                    help:"Cache directory for downloaded provider packages." name:"cache-dir"                                predictor:"directory"`
-	Timeout      time.Duration `default:"2m"                                                                                                                                                                                                     help:"Per-resource plan timeout."`
-	Output       string        `default:"plan"                                                                                                                                                                                                   enum:"plan,json,yaml"                                    help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
+	Providers    string        `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."       name:"providers"                                         optional:""                                     predictor:"yaml_file_or_directory" type:"path"`
+	ImageConfigs string        `help:"YAML file with ImageConfig manifests that rewrite provider image paths for local pulls. Defaults to the project's imageConfigs when a project file is present." name:"image-configs"                                     optional:""                                     predictor:"yaml_file"              type:"existingfile"`
+	ProjectFile  string        `help:"Path to a project definition file to read imageConfigs from. Defaults to ${project_file} when present."                                                         name:"project-file"                                      optional:""`
+	SessionID    string        `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-run ID. A supplied ID isn't leased, so its containers aren't reclaimed after a crash."                                placeholder:"ID"`
+	Context      string        `default:""                                                                                                                                                            help:"Kubernetes context."                               name:"context"                                  predictor:"context"                short:"c"`
+	CacheDir     string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                                                                           help:"Cache directory for downloaded provider packages." name:"cache-dir"                                predictor:"directory"`
+	Timeout      time.Duration `default:"2m"                                                                                                                                                          help:"Per-resource plan timeout."`
+	Output       string        `default:"plan"                                                                                                                                                        enum:"plan,json,yaml"                                    help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
@@ -68,18 +67,6 @@ type Cmd struct {
 // Help returns the help message for the simulate command.
 func (c *Cmd) Help() string {
 	return helpDetail
-}
-
-// AfterApply expands the cache directory.
-func (c *Cmd) AfterApply() error {
-	if strings.HasPrefix(c.CacheDir, "~/") {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return errors.Wrap(err, "cannot determine home directory for cache dir")
-		}
-		c.CacheDir = filepath.Join(homeDir, c.CacheDir[2:])
-	}
-	return nil
 }
 
 // Run runs the simulate command. ctx is the signal-bound command context from
@@ -136,7 +123,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		inputs = diffserver.Images(images)
 	}
 	pkgClient, err := clixpkg.NewClient(
-		clixpkg.WithCacheDir(afero.NewOsFs(), c.CacheDir),
+		clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())),
 		clixpkg.WithImageConfigs(imageConfigs),
 	)
 	if err != nil {

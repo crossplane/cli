@@ -37,7 +37,6 @@ import (
 	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/cluster"
-	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/cmd/crossplane/completion"
 	"github.com/crossplane/cli/v2/cmd/crossplane/composition"
 	configcmd "github.com/crossplane/cli/v2/cmd/crossplane/config"
@@ -133,7 +132,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	status := &common.ExitStatus{}
 	parser := kong.Must(&cli{},
 		kong.Name("crossplane"),
 		// Binding a variable to kong context makes it available to all commands
@@ -142,8 +140,6 @@ func main() {
 		kong.BindTo(configcmd.ConfigPath(cfgPath), (*configcmd.ConfigPath)(nil)),
 		// Bind the loaded config so commands can read feature flags at runtime.
 		kong.Bind(cfg),
-		// Commands set the exit status of a run that returns no error.
-		kong.Bind(status),
 		kongVars,
 		kong.Help(helpPrinter),
 		kong.UsageOnError())
@@ -196,12 +192,8 @@ func main() {
 	if silent {
 		os.Exit(code)
 	}
-	// An error is printed and exits 1, or with its ExitCoder's code;
-	// otherwise the run exits with the status its command set.
+	// An error is printed and exits 1, or with its ExitCoder's code.
 	ctx.FatalIfErrorf(err)
-	if status.Code != 0 {
-		os.Exit(status.Code)
-	}
 }
 
 // exitOnSignal waits for SIGINT or SIGTERM, then exits with status 130

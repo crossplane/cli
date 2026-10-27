@@ -706,10 +706,11 @@ func pipelineInputs(resources []*un.Unstructured) (map[string]int, error) {
 // continues: --skip-plan runs no diff servers, so --providers and
 // --session-id do nothing with it; functions come from the cluster unless -f
 // names a project, so --max-concurrency applies only to a project; and
-// --cache-dir caches nothing with --skip-plan and no project. A flag that would mislead is a
-// usage error that exits 80: composite resource files name the composite
-// resources to simulate, so the flags that pick which ones a Composition
-// change reaches would look like they scope the run when they don't.
+// --cache-dir caches nothing with --skip-plan and no project. A flag that
+// would mislead is a usage error that exits 80: composite resource files name
+// the composite resources to simulate, so the flags that pick which ones a
+// Composition change reaches would look like they scope the run when they
+// don't.
 func validateModeFlags(stderr io.Writer, mode inputMode, set map[string]bool, skipPlan bool) error {
 	for _, f := range []string{"providers", "session-id"} {
 		if skipPlan && set[f] {

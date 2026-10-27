@@ -21,12 +21,15 @@ permissions:
 
 env:
   AWS_USR: ${{ secrets.AWS_USR }}
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  CLOUDFRONT_DISTRIBUTION_IDS: ${{ secrets.CLOUDFRONT_DISTRIBUTION_IDS }}
 
 jobs:
   promote:
     permissions:
       contents: read
       packages: write  # for pushing to ghcr.io
+      id-token: write  # for assuming the CloudFront invalidation role via OIDC
     runs-on: ubuntu-24.04
 
     steps:
@@ -57,3 +60,41 @@ jobs:
             PRERELEASE_FLAG="--prerelease"
           fi
           nix run .#promote-artifacts -- "${GITHUB_REF##*/}" "$VERSION" "$CHANNEL" $PRERELEASE_FLAG
+
+      - name: Configure AWS credentials (OIDC)
+        if: env.AWS_ROLE_ARN != '' && env.CLOUDFRONT_DISTRIBUTION_IDS != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: us-east-1
+
+      - name: Invalidate CloudFront cache
+        if: env.AWS_ROLE_ARN != '' && env.CLOUDFRONT_DISTRIBUTION_IDS != ''
+        env:
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          echo "$CHANNEL" | grep -Eq '^[A-Za-z0-9._-]+$' || {
+            echo "::error::channel contains unexpected characters"
+            exit 1
+          }
+          echo "### CloudFront invalidations (/$CHANNEL/*)" >> "$GITHUB_STEP_SUMMARY"
+          : > invalidations.txt
+          for DIST in $CLOUDFRONT_DISTRIBUTION_IDS; do
+            echo "$DIST" | grep -Eq '^E[A-Z0-9]{8,20}$' || {
+              echo "::error::CLOUDFRONT_DISTRIBUTION_IDS must be a whitespace-separated list of distribution IDs"
+              exit 1
+            }
+            echo "::add-mask::$DIST"
+            ID=$(aws cloudfront create-invalidation \
+              --distribution-id "$DIST" \
+              --paths "/$CHANNEL/*" \
+              --query 'Invalidation.Id' \
+              --output text)
+            echo "$DIST $ID" >> invalidations.txt
+            echo "Created $ID"
+          done
+          while read -r DIST ID; do
+            aws cloudfront wait invalidation-completed --distribution-id "$DIST" --id "$ID"
+            echo "- \`$ID\` OK" >> "$GITHUB_STEP_SUMMARY"
+          done < invalidations.txt

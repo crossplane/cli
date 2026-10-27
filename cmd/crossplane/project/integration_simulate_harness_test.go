@@ -35,7 +35,8 @@ limitations under the License.
 //     The render engine runs functions as Docker containers, so without
 //     a Docker daemon no rendering case can run; cases that would not
 //     render cannot be told apart upfront, so they skip too.
-package integration
+
+package project
 
 import (
 	"context"
@@ -53,7 +54,6 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/project"
 	"github.com/crossplane/cli/v2/internal/config"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/ref"
@@ -195,7 +195,7 @@ func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary
 func runSimulateArgvRouted(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, router simulate.Router, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
-	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &project.SimulateHooks{Router: router}, stdout, stderr)
+	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &simulateHooks{Router: router}, stdout, stderr)
 }
 
 // runSimulateArgvHooked is runSimulateArgv with changed marked as changed
@@ -203,7 +203,7 @@ func runSimulateArgvRouted(t *testing.T, cfg *rest.Config, argv []string, render
 func runSimulateArgvHooked(t *testing.T, cfg *rest.Config, argv, changed []string, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
-	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &project.SimulateHooks{ChangedFunctions: changed}, stdout, stderr)
+	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulateHooks{ChangedFunctions: changed}, stdout, stderr)
 }
 
 // withRenderBinary returns argv rendering with the local crossplane binary
@@ -217,11 +217,11 @@ func withRenderBinary(argv []string, bin string) []string {
 
 // runSimulateArgvWith runs `crossplane project simulate` with argv against
 // cfg and hooks, whose RESTConfig and Terminal it sets.
-func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *project.SimulateHooks, stdout, stderr io.Writer) (int, error) {
+func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *simulateHooks, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
 	var cli struct {
-		Project project.Cmd `cmd:""`
+		Project Cmd `cmd:""`
 	}
 	parser, err := kong.New(&cli,
 		kong.Name("crossplane"),
@@ -255,7 +255,7 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *p
 	// when there is one, and colorized unless --no-color.
 	hooks.RESTConfig = cfg
 	hooks.Terminal = true
-	cli.Project.Simulate.Hooks = hooks
+	cli.Project.Simulate.hooks = hooks
 
 	err = kctx.Run()
 	// Exit as main does: a silent ExitError, such as changes found, exits

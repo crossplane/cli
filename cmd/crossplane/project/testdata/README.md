@@ -1,6 +1,6 @@
-# crossplane-diff integration tests, ported
+# Simulate integration tests (crossplane-diff port)
 
-This package ports crossplane-diff's integration tests (origin/main 6a140b6:
+The `integration_*_test.go` files in `cmd/crossplane/project` port crossplane-diff's integration tests (origin/main 6a140b6:
 `cmd/diff/diff_integration_test.go`, `diff_it_utils_test.go`, `main_test.go`
 and the `testdata` tree) case for case. The case tables are verbatim; only
 the harness wiring differs.
@@ -9,11 +9,11 @@ the harness wiring differs.
 
 Every case is crossplane-diff CLI-style arguments plus an expected exit
 code and expected output, funneled through one function: `runSimulate` in
-`simulate_harness_test.go`. It translates the arguments into
+`integration_simulate_harness_test.go`. It translates the arguments into
 `crossplane project simulate` arguments (input files as `-f`, a single
 `--resource` as `--name`, `--include-manual` as `--include-pinned`,
 `--analyze-unchanged` as `--analyze-on=always`) and runs the real command
-through kong. `project.SimulateHooks` points the command at the case's
+through kong. `simulateHooks` points the command at the case's
 envtest cluster in place of a kubeconfig, so the cases run in parallel. Composition cases run simulate's Composition-file
 mode, XR cases its composite resource mode.
 
@@ -39,10 +39,10 @@ in the source tables, with the upstream reason carried verbatim).
 # Full suite (Docker + envtest assets required):
 CROSSPLANE_CRDS_DIR=<crossplane v2.4.1 cluster/crds> \
 KUBEBUILDER_ASSETS=$(setup-envtest use -p path) \
-go test -tags integration -v ./internal/diff/integration/
+go test -tags integration -v ./cmd/crossplane/project/
 
 # One case:
-go test -tags integration -run 'TestCompDiffIntegration/CompositionChangeImpactsXRs' ./internal/diff/integration/
+go test -tags integration -run 'TestCompDiffIntegration/CompositionChangeImpactsXRs' ./cmd/crossplane/project/
 ```
 
 The suite is behind the `integration` build tag, so `go test ./...` and

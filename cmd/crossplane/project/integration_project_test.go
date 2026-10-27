@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package integration
+package project
 
 import (
 	"bytes"
@@ -27,7 +27,6 @@ import (
 
 	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/project"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/simulate"
@@ -196,7 +195,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			}
 
 			var stdout, stderr bytes.Buffer
-			code, err := runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &project.SimulateHooks{Servers: tc.servers}, &stdout, &stderr)
+			code, err := runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulateHooks{Servers: tc.servers}, &stdout, &stderr)
 
 			if tc.expectedErrorContains != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.expectedErrorContains) {

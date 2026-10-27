@@ -44,7 +44,7 @@ type FilterReason string
 
 const (
 	// FilterReasonManualPolicy indicates the XR was excluded because it has a Manual
-	// compositionUpdatePolicy and --include-manual was not set. Such XRs are pinned to a specific
+	// compositionUpdatePolicy and --include-pinned was not set. Such XRs are pinned to a specific
 	// revision and would not adopt the composition change automatically.
 	FilterReasonManualPolicy FilterReason = "manual_policy"
 	// FilterReasonRevisionSelectorMismatch indicates the XR was excluded because it has an Automatic
@@ -132,7 +132,7 @@ type RevisionImpact struct {
 	// result: those with an Automatic (or defaulted) compositionUpdatePolicy whose
 	// compositionRevisionSelector, if any, selects the resulting revision, and which are not being
 	// deleted. A Manual-policy composite is never counted — it is pinned by compositionRevisionRef, so
-	// --include-manual keeping it for analysis does not make it re-point (issue #479).
+	// --include-pinned keeping it for analysis does not make it re-point (issue #479).
 	//
 	// Note this counts composites that re-point, which is not the same as composites whose rendered
 	// output changes; re-pointing alone usually renders identically.
@@ -235,7 +235,7 @@ type XRImpact struct {
 	FilterDetail string
 	// Pinned marks an evaluated composite that would not adopt the composition's resulting revision,
 	// because its Manual compositionUpdatePolicy pins it to its compositionRevisionRef. Only
-	// --include-manual evaluates such a composite; without it, the composite is XRStatusFiltered.
+	// --include-pinned evaluates such a composite; without it, the composite is XRStatusFiltered.
 	Pinned bool
 	// RenderedRevision names the CompositionRevision a Pinned composite was rendered against, when that
 	// is its own pinned revision rather than the diffed composition: the revision calls a function that

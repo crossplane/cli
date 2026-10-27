@@ -426,7 +426,7 @@ func TestFromCompReport(t *testing.T) {
 			},
 		},
 		"Pinned": {
-			reason: "A pinned XR simulated with --include-manual keeps its status and is marked pinned.",
+			reason: "A pinned XR simulated with --include-pinned keeps its status and is marked pinned.",
 			in: composition(dt.CompositionDiff{
 				ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: dt.XRStatusUnchanged, Pinned: true}},
 			}),

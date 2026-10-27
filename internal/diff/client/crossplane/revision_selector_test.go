@@ -105,7 +105,7 @@ func TestXRRevisionSelectorMatch_Matches(t *testing.T) {
 			want:         true,
 		},
 		// Manual policy => selector not applied by this predicate (returns matches=true
-		// so Manual XRs are governed only by the policy filter / --include-manual).
+		// so Manual XRs are governed only by the policy filter / --include-pinned).
 		"Manual_MismatchingSelector_StillMatches": {
 			xr: tu.NewResource("example.org/v1", "XResource", "manual-mismatch").
 				WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").

@@ -622,9 +622,9 @@ func equalStartCall(a, b struct {
 
 // TestNewEngineRenderFn_ResolvedRenderImage asserts that the render-backend
 // selector arguments reach the engine, and reach it in a form that is actually
-// pullable. Before RenderImage() existed there was nothing to assert against:
+// pullable. Before the image field existed there was nothing to assert against:
 // the selected image disappeared into upstream's unexported
-// crossplaneImageFromFlags, so a caller that dropped the pin entirely looked
+// CrossplaneImageFromFlags, so a caller that dropped the pin entirely looked
 // identical to one that honoured it (crossplane-diff#488).
 func TestNewEngineRenderFn_ResolvedRenderImage(t *testing.T) {
 	stable := render.DefaultCrossplaneImage + ":stable"
@@ -669,8 +669,8 @@ func TestNewEngineRenderFn_ResolvedRenderImage(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e := NewEngineRenderFn(logging.NewNopLogger(), NewAdvisoryCollector(nil), tt.binaryPath, tt.version, tt.image, "")
 
-			if diff := gcmp.Diff(tt.want, e.RenderImage()); diff != "" {
-				t.Errorf("RenderImage() mismatch (-want +got):\n%s", diff)
+			if diff := gcmp.Diff(tt.want, e.image); diff != "" {
+				t.Errorf("image mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

@@ -764,12 +764,12 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 		wantDropped   []droppedWant
 		// wantRepointing names which of wantKept would actually adopt the resulting revision, and so
 		// are counted in RepointedComposites and seeded with its predicted name. It equals wantKept
-		// except where --include-manual keeps a Manual-policy XR, which stays pinned by its
+		// except where --include-pinned keeps a Manual-policy XR, which stays pinned by its
 		// compositionRevisionRef (issue #479).
 		wantRepointing []string
 		wantErr        bool
 	}{
-		// Manual side: --include-manual keeps Manual XRs...
+		// Manual side: --include-pinned keeps Manual XRs...
 		"IncludeManualTrue_KeepsManualXRs": {
 			includeManual: true,
 			compLabels:    map[string]string{"version": "0.0.2"},
@@ -784,7 +784,7 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			wantDropped:    nil,
 			// ...but keeping the Manual XR for analysis does not unpin it: only auto-xr re-points.
 		},
-		// A Manual XR kept only by --include-manual re-points not at all, so a run whose entire kept set
+		// A Manual XR kept only by --include-pinned re-points not at all, so a run whose entire kept set
 		// is Manual reports zero repointed composites even though it renders one composite.
 		"IncludeManualTrue_OnlyManualXR_NoneRepoint": {
 			includeManual: true,
@@ -797,7 +797,7 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			wantRepointing: nil,
 			wantDropped:    nil,
 		},
-		// Selector side: ...but --include-manual does NOT re-include selector-mismatched
+		// Selector side: ...but --include-pinned does NOT re-include selector-mismatched
 		// Automatic XRs — they would never adopt the new revision.
 		"IncludeManualTrue_StillDropsSelectorMismatchedAutomaticXRs": {
 			includeManual: true,
@@ -941,7 +941,7 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			wantRepointing: []string{"live-xr"},
 			wantDropped:    []droppedWant{{name: "deleting-xr", reason: dt.FilterReasonDeleting}},
 		},
-		// Deletion is evaluated before the policy rules and is not rescued by --include-manual: a
+		// Deletion is evaluated before the policy rules and is not rescued by --include-pinned: a
 		// deleting Manual XR is reported as deleting, not as manual_policy.
 		"DeletingManualXR_DroppedAsDeletingEvenWithIncludeManual": {
 			includeManual: true,
@@ -1072,7 +1072,7 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 
 // TestDefaultCompDiffProcessor_collectXRDiffs_RevisionName pins which composites comp's composition
 // provider resolves to the predicted revision: only the ones that would re-point at it, and none when the
-// name is unpredictable. A Manual composite kept by --include-manual stays pinned, so rendering it with
+// name is unpredictable. A Manual composite kept by --include-pinned stays pinned, so rendering it with
 // the new name would render it against a revision it never uses. A claim reaches the provider as its
 // backing XR, which is what gets the name. The supplied composites are passed through unmodified: the
 // name is applied to what render consumes, never to the cluster's objects.
@@ -2014,7 +2014,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 	// the local filter pass already determined — how many composites were discovered, which of them
 	// would not adopt the resulting revision, and how many would re-point — is reported either way, so
 	// a run can never report zero affected composites beside a non-zero repointedComposites (issue
-	// #478). The same table pins that a Manual composite kept by --include-manual does not count as
+	// #478). The same table pins that a Manual composite kept by --include-pinned does not count as
 	// re-pointing, whether or not the analysis runs (issue #479).
 	t.Run("SkipReportsFilterConsequences", func(t *testing.T) {
 		// A metadata-only edit: the same spec as the cluster copy plus one label. That is the only scope
@@ -2069,7 +2069,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 					Impacts:        []string{"filtered manual-xr"},
 				},
 			},
-			// --include-manual keeps the Manual composite, so nothing is filtered — but it stays pinned by
+			// --include-pinned keeps the Manual composite, so nothing is filtered — but it stays pinned by
 			// compositionRevisionRef, so only the Automatic composite re-points.
 			"Skipped_IncludeManual_ManualCompositeDoesNotRepoint": {
 				analyzeOn:     AnalyzeOnSpecChange,

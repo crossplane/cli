@@ -162,7 +162,7 @@ func TestNewDiffProcessorThreadsRenderBackendToEngine(t *testing.T) {
 				t.Fatal("NewDiffProcessor() left engineFn nil; the default engine-backed RenderFn was not built")
 			}
 
-			if diff := gcmp.Diff(tt.want, p.engineFn.RenderImage()); diff != "" {
+			if diff := gcmp.Diff(tt.want, p.engineFn.image); diff != "" {
 				t.Errorf("engine render image mismatch (-want +got):\n%s", diff)
 			}
 		})

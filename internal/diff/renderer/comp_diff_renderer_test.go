@@ -74,7 +74,7 @@ func TestDefaultCompDiffRenderer_RenderCompDiff(t *testing.T) {
 			validate: func(t *testing.T, result string) {
 				t.Helper()
 
-				if !strings.Contains(result, "All 1 XR(s) using composition test-comp have Manual update policy (use --include-manual to see them)") {
+				if !strings.Contains(result, "All 1 XR(s) using composition test-comp have Manual update policy (use --include-pinned to see them)") {
 					t.Errorf("Expected Manual update policy message, got:\n%s", result)
 				}
 
@@ -259,7 +259,7 @@ func TestDefaultCompDiffRenderer_RenderCompDiff(t *testing.T) {
 				for _, want := range []string{
 					"Impact analysis skipped",
 					"2 of 3 XR(s) using composition test-comp would not adopt this revision",
-					"1 with Manual update policy (use --include-manual to see them)",
+					"1 with Manual update policy (use --include-pinned to see them)",
 					"1 being deleted",
 				} {
 					if !strings.Contains(result, want) {
@@ -497,7 +497,7 @@ func TestXRStatusFiltered_TextRenderer(t *testing.T) {
 
 	// Manual-policy exclusion must mention the policy and the escape hatch, and nothing more: the
 	// revision it stays pinned to is data for structured output, not part of the human line.
-	if !strings.Contains(got, "manual-xr (namespace: ns) — filtered: Manual update policy (use --include-manual to evaluate)\x1b[0m\n") {
+	if !strings.Contains(got, "manual-xr (namespace: ns) — filtered: Manual update policy (use --include-pinned to evaluate)\x1b[0m\n") {
 		t.Errorf("expected the Manual-policy line unchanged, got %q", got)
 	}
 
@@ -536,7 +536,7 @@ func Test_allFilteredMessage(t *testing.T) {
 	}{
 		"PolicyOnly": {
 			summary: dt.AffectedResourcesSummary{FilteredByPolicy: 2},
-			want:    "All 2 XR(s) using composition test-comp have Manual update policy (use --include-manual to see them)",
+			want:    "All 2 XR(s) using composition test-comp have Manual update policy (use --include-pinned to see them)",
 		},
 		"SelectorOnly": {
 			summary: dt.AffectedResourcesSummary{FilteredBySelector: 3},
@@ -548,11 +548,11 @@ func Test_allFilteredMessage(t *testing.T) {
 		},
 		"PolicyAndSelector": {
 			summary: dt.AffectedResourcesSummary{FilteredByPolicy: 1, FilteredBySelector: 2},
-			want:    "All 3 XR(s) using composition test-comp were filtered: 1 with Manual update policy (use --include-manual to see them), 2 with a compositionRevisionSelector that does not match the composition's labels",
+			want:    "All 3 XR(s) using composition test-comp were filtered: 1 with Manual update policy (use --include-pinned to see them), 2 with a compositionRevisionSelector that does not match the composition's labels",
 		},
 		"PolicyAndDeletion": {
 			summary: dt.AffectedResourcesSummary{FilteredByPolicy: 1, FilteredByDeletion: 1},
-			want:    "All 2 XR(s) using composition test-comp were filtered: 1 with Manual update policy (use --include-manual to see them), 1 being deleted",
+			want:    "All 2 XR(s) using composition test-comp were filtered: 1 with Manual update policy (use --include-pinned to see them), 1 being deleted",
 		},
 		"SelectorAndDeletion": {
 			summary: dt.AffectedResourcesSummary{FilteredBySelector: 1, FilteredByDeletion: 2},
@@ -560,7 +560,7 @@ func Test_allFilteredMessage(t *testing.T) {
 		},
 		"AllThreeReasons": {
 			summary: dt.AffectedResourcesSummary{FilteredByPolicy: 1, FilteredBySelector: 2, FilteredByDeletion: 3},
-			want:    "All 6 XR(s) using composition test-comp were filtered: 1 with Manual update policy (use --include-manual to see them), 2 with a compositionRevisionSelector that does not match the composition's labels, 3 being deleted",
+			want:    "All 6 XR(s) using composition test-comp were filtered: 1 with Manual update policy (use --include-pinned to see them), 2 with a compositionRevisionSelector that does not match the composition's labels, 3 being deleted",
 		},
 	}
 

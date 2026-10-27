@@ -165,48 +165,32 @@ func NewEngineRenderFn(log logging.Logger, advisories dt.Advisories, binaryPath,
 		advisories.Raise(dt.OutputWarning{Message: w})
 	}
 
+	flags := render.EngineFlags{
+		CrossplaneBinary:        binaryPath,
+		CrossplaneVersion:       version,
+		CrossplaneImage:         image,
+		CrossplaneDockerNetwork: network,
+	}
+
+	// The local engine runs a binary and pulls nothing; otherwise record the
+	// reference render's own resolver picks, so staleRenderBackendHint reports
+	// what actually ran.
+	resolvedImage := ""
+	if binaryPath == "" {
+		resolvedImage = render.CrossplaneImageFromFlags(&flags)
+	}
+
 	run := dockerrun.New(dockerrun.DefaultLeaseDir(), dockerrun.NewDockerClient, log, advisories)
 
+	flags.SessionID = run.ID()
+
 	return &EngineRenderFn{
-		engine: render.NewEngineFromFlags(&render.EngineFlags{
-			CrossplaneBinary:        binaryPath,
-			CrossplaneVersion:       version,
-			CrossplaneImage:         image,
-			CrossplaneDockerNetwork: network,
-			SessionID:               run.ID(),
-		}, log),
-		image:         resolveRenderImage(binaryPath, version, image),
+		engine:        render.NewEngineFromFlags(&flags, log),
+		image:         resolvedImage,
 		log:           log,
 		startRuntimes: render.StartFunctionRuntimes,
 		stopRuntimes:  render.StopFunctionRuntimes,
 		run:           run,
-	}
-}
-
-// RenderImage returns the fully-resolved render image reference the engine will
-// pull, or "" when a local crossplane binary was selected instead. It exists so
-// callers — and tests — can observe which backend a processor actually ended up
-// with; the upstream Engine interface exposes no accessor for it, so before this
-// the selector arguments vanished at the boundary and dropping them entirely was
-// undetectable (crossplane-diff#488).
-func (e *EngineRenderFn) RenderImage() string {
-	return e.image
-}
-
-// resolveRenderImage mirrors the upstream render package's unexported
-// crossplaneImageFromFlags. Keep the two in sync: the same inputs must produce
-// the same reference, or RenderImage() misreports what actually ran.
-func resolveRenderImage(binaryPath, version, image string) string {
-	switch {
-	case binaryPath != "":
-		// The local engine runs a binary; it pulls nothing.
-		return ""
-	case image != "":
-		return image
-	case version != "":
-		return render.DefaultCrossplaneImage + ":" + version
-	default:
-		return render.DefaultCrossplaneImage + ":stable"
 	}
 }
 
@@ -395,7 +379,7 @@ func (e *EngineRenderFn) staleRenderBackendHint(err error) string {
 	}
 
 	if e.image == "" {
-		return fmt.Sprintf("the crossplane render binary does not support `crossplane internal render`, so it predates %s, the minimum this tool supports; point --crossplane-render-binary at a newer binary",
+		return fmt.Sprintf("the crossplane render binary does not support `crossplane internal render`, so it predates %s, the minimum this tool supports; point --crossplane-binary at a newer binary",
 			MinCrossplaneRenderVersion)
 	}
 

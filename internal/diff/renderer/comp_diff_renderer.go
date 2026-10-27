@@ -458,7 +458,7 @@ func allFilteredMessage(compName string, summary dt.AffectedResourcesSummary) st
 
 	switch {
 	case bySelector == 0 && byDeletion == 0:
-		return fmt.Sprintf("All %d XR(s) using composition %s have Manual update policy (use --include-manual to see them)",
+		return fmt.Sprintf("All %d XR(s) using composition %s have Manual update policy (use --include-pinned to see them)",
 			total, compName)
 	case byPolicy == 0 && byDeletion == 0:
 		return fmt.Sprintf("All %d XR(s) using composition %s have a compositionRevisionSelector that does not match the composition's labels, so they would not adopt this revision",
@@ -473,7 +473,7 @@ func allFilteredMessage(compName string, summary dt.AffectedResourcesSummary) st
 }
 
 // filteredClauses enumerates the per-reason filter counters as a comma-separated breakdown (e.g.
-// "1 with Manual update policy (use --include-manual to see them), 2 being deleted"), omitting reasons
+// "1 with Manual update policy (use --include-pinned to see them), 2 being deleted"), omitting reasons
 // with no XRs. Shared by allFilteredMessage's mixed-reason case and renderFilteredUnderSkip so a newly
 // added reason is described identically in both.
 func filteredClauses(summary dt.AffectedResourcesSummary) string {
@@ -483,7 +483,7 @@ func filteredClauses(summary dt.AffectedResourcesSummary) string {
 		count int
 		text  string
 	}{
-		{summary.FilteredByPolicy, "with Manual update policy (use --include-manual to see them)"},
+		{summary.FilteredByPolicy, "with Manual update policy (use --include-pinned to see them)"},
 		{summary.FilteredBySelector, "with a compositionRevisionSelector that does not match the composition's labels"},
 		{summary.FilteredByDeletion, "being deleted"},
 	} {
@@ -501,7 +501,7 @@ func filteredClauses(summary dt.AffectedResourcesSummary) string {
 func filteredSuffix(impact dt.XRImpact) string {
 	switch impact.FilterReason {
 	case dt.FilterReasonManualPolicy:
-		return " — filtered: Manual update policy (use --include-manual to evaluate)"
+		return " — filtered: Manual update policy (use --include-pinned to evaluate)"
 	case dt.FilterReasonRevisionSelectorMismatch:
 		if impact.FilterDetail != "" {
 			return fmt.Sprintf(" — filtered: revision selector mismatch (%s)", impact.FilterDetail)

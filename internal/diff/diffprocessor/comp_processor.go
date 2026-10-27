@@ -417,7 +417,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// revision are exactly the ones that would re-point at it, and the ones that would not are a
 	// consequence of applying this composition in their own right. The same classification decides, in
 	// cliCompositionRevision, which composites are rendered with the new revision's name: a Manual
-	// composite kept by --include-manual stays pinned, so it never is.
+	// composite kept by --include-pinned stays pinned, so it never is.
 	keptXRs, droppedXRs, repointingXRs, err := p.partitionXRsByUpdatePolicy(affectedXRs, newComp, pred)
 	if err != nil {
 		return nil, err
@@ -543,7 +543,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// already-appended filtered entries.
 	keptImpacts, keptSummary := p.buildImpactAnalysis(keptXRs, xrResults)
 	// buildImpactAnalysis keeps keptXRs' order. A kept composite that does not re-point is one
-	// --include-manual kept although its Manual policy pins it.
+	// --include-pinned kept although its Manual policy pins it.
 	for i, xr := range keptXRs {
 		key := dt.MakeDiffKeyFromResource(xr)
 		keptImpacts[i].Pinned = !repointingXRs[key]
@@ -1155,7 +1155,7 @@ type filteredXR struct {
 // compositionRevisionSelector is a hard error (accuracy over guessing).
 //
 // `repointing` is the set of kept XRs (keyed by dt.MakeDiffKeyFromResource) that would genuinely
-// re-point at the resulting revision, which is not the same as the kept set: --include-manual keeps a Manual-policy XR for analysis even though it
+// re-point at the resulting revision, which is not the same as the kept set: --include-pinned keeps a Manual-policy XR for analysis even though it
 // stays pinned to whatever compositionRevisionRef already names. See classifyXR and issue #479.
 func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(xrs []*un.Unstructured, newComp *un.Unstructured, pred predictedRevision) (kept []*un.Unstructured, dropped []filteredXR, repointing map[string]bool, err error) {
 	// The selector is matched against the label set the new revision would carry (composition labels
@@ -1194,7 +1194,7 @@ type xrDisposition struct {
 
 	// pinnedToRevision marks a *kept* XR that nonetheless would not adopt the CompositionRevision this
 	// composition would produce, because a Manual compositionUpdatePolicy pins it to whatever
-	// compositionRevisionRef already names. Only reachable under --include-manual, which keeps such an
+	// compositionRevisionRef already names. Only reachable under --include-pinned, which keeps such an
 	// XR so its would-be rendered output can be inspected — without changing the fact that it does not
 	// re-point. Counting it as re-pointing was issue #479.
 	pinnedToRevision bool

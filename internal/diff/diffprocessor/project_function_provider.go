@@ -86,9 +86,9 @@ func (p *ProjectFunctionProvider) GetFunctionsForComposition(ctx context.Context
 	clusterFns := map[string]pkgv1.Function{}
 
 	if len(clusterSteps) > 0 {
-		// Same name, fewer steps: the wrapped provider caches by composition
-		// name, and for a given project set a composition always narrows to
-		// the same steps.
+		// Same name, fewer steps: the wrapped provider keys its cache by
+		// composition name plus pipeline, so the narrowed pipeline gets its own
+		// entry rather than colliding with the full one.
 		narrowed := comp.DeepCopy()
 		narrowed.Spec.Pipeline = clusterSteps
 

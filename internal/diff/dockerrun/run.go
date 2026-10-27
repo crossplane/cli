@@ -14,13 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package dockerrun ties the Docker resources a crossplane-diff run creates — function containers, the
+// Package dockerrun ties the Docker resources a simulate run creates — function containers, the
 // render container and the render network — to that run, and reclaims the ones left behind by runs that
 // died without cleaning up (SIGKILL, OOM, a second Ctrl+C, a CI runner tearing down the job).
 //
 // Ownership is carried by labels. A run's ID is the session ID it hands the upstream render engine
 // (render.EngineFlags.SessionID), which labels every container and network the engine creates
-// render.crossplane.io/session=<run ID>, alongside render.crossplane.io/managed-by=crossplane-cli. A
+// render.crossplane.io/session=<run ID>, alongside render.crossplane.io/managed-by=crossplane-cli: the
+// same labels render's own container runtime applies. A
 // run's resources are exactly the ones carrying both labels with its ID, so a container or network that
 // lacks either, such as one created before session labels existed, is never touched.
 //

@@ -235,7 +235,7 @@ func renderChangeTree(w io.Writer, changes []FieldChange) {
 			// leave a replace with nothing that explains it.
 			continue
 		}
-		segs := PathSegments(c.Path)
+		segs := DisplayLevels(c.Path)
 		if len(segs) == 0 {
 			continue
 		}
@@ -342,7 +342,7 @@ func replaceFields(plans []*ResourcePlan) []string {
 func lastSegments(paths []string) []string {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
-		segs := PathSegments(p)
+		segs := DisplayLevels(p)
 		if len(segs) == 0 {
 			continue
 		}

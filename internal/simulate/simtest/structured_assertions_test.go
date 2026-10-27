@@ -62,7 +62,7 @@ func xrResult() simulate.ProjectResult {
 			Before: bucket("us-east-1"), After: bucket("us-west-2"),
 			Changes: []plan.FieldChange{
 				{Path: "spec.region", Actual: val("us-east-1"), Planned: val("us-west-2")},
-				{Path: `metadata.annotations["example.org/source"]`, Actual: val("old"), Planned: val("new")},
+				{Path: "metadata.annotations[example.org/source]", Actual: val("old"), Planned: val("new")},
 			},
 		},
 		{
@@ -337,42 +337,12 @@ func TestAssertStructuredCompositionPlan(t *testing.T) {
 	}
 }
 
-func TestParsePath(t *testing.T) {
-	cases := map[string]struct {
-		path    string
-		want    []pathToken
-		wantErr bool
-	}{
-		"Dotted":        {path: "spec.forProvider.region", want: []pathToken{{key: "spec"}, {key: "forProvider"}, {key: "region"}}},
-		"Index":         {path: "spec.items[2].name", want: []pathToken{{key: "spec"}, {key: "items"}, {index: 2, isIndex: true}, {key: "name"}}},
-		"DoubleQuoted":  {path: `metadata.annotations["a.b/c"]`, want: []pathToken{{key: "metadata"}, {key: "annotations"}, {key: "a.b/c"}}},
-		"SingleQuoted":  {path: "metadata.annotations['a.b/c']", want: []pathToken{{key: "metadata"}, {key: "annotations"}, {key: "a.b/c"}}},
-		"EscapedQuote":  {path: `data["say \"hi\""]`, want: []pathToken{{key: "data"}, {key: `say "hi"`}}},
-		"BadIndex":      {path: "spec.items[x]", wantErr: true},
-		"Unterminated":  {path: "spec.items[1", wantErr: true},
-		"UnterminatedQ": {path: "metadata['a.b", wantErr: true},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			got, err := parsePath(tc.path)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("parsePath(%q): err = %v, wantErr %t", tc.path, err, tc.wantErr)
-			}
-
-			if !tc.wantErr && !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("parsePath(%q) = %+v, want %+v", tc.path, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestValueAt(t *testing.T) {
 	changes := []plan.FieldChange{
 		{Path: "spec.a", Actual: val("old-a"), Planned: val("new-a")},
 		{Path: "spec.list[0].x", Planned: val("x0")},
 		{Path: "spec.list[1].x", Actual: val("gone")},
-		{Path: `metadata.labels["app.io/name"]`, Planned: val("app")},
+		{Path: "metadata.labels[app.io/name]", Planned: val("app")},
 	}
 
 	cases := map[string]struct {

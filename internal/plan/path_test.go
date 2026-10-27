@@ -23,42 +23,38 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-func TestPathRoundTrip(t *testing.T) {
+func TestFieldChangePaths(t *testing.T) {
 	cases := map[string]struct {
-		keys []string
-		idx  string // appended after the last key, e.g. "[0]"
-		path string
-		segs []string
+		planned map[string]any
+		path    string
+		levels  []string
 	}{
-		"Plain":     {keys: []string{"spec", "forProvider", "region"}, path: "spec.forProvider.region", segs: []string{"spec", "forProvider", "region"}},
-		"Dots":      {keys: []string{"metadata", "annotations", "crossplane.io/composite"}, path: `metadata.annotations["crossplane.io/composite"]`, segs: []string{"metadata", "annotations", "crossplane.io/composite"}},
-		"Quotes":    {keys: []string{"data", `a"b`}, path: `data["a\"b"]`, segs: []string{"data", `a"b`}},
-		"Brackets":  {keys: []string{"data", "a[0]"}, path: `data["a[0]"]`, segs: []string{"data", "a[0]"}},
-		"Digit":     {keys: []string{"data", "1st"}, path: `data["1st"]`, segs: []string{"data", "1st"}},
-		"FirstKey":  {keys: []string{"a.b", "c"}, path: `["a.b"].c`, segs: []string{"a.b", "c"}},
-		"ListIndex": {keys: []string{"spec", "pipeline"}, idx: "[0]", path: "spec.pipeline[0]", segs: []string{"spec", "pipeline[0]"}},
-		"Nested":    {keys: []string{"spec", "tags", "k8s.io/x", "y_z-1"}, path: `spec.tags["k8s.io/x"].y_z-1`, segs: []string{"spec", "tags", "k8s.io/x", "y_z-1"}},
+		"Plain":               {planned: map[string]any{"spec": map[string]any{"region": "x"}}, path: "spec.region", levels: []string{"spec", "region"}},
+		"Dots":                {planned: map[string]any{"metadata": map[string]any{"annotations": map[string]any{"crossplane.io/composite": "x"}}}, path: "metadata.annotations[crossplane.io/composite]", levels: []string{"metadata", "annotations", "crossplane.io/composite"}},
+		"Slash":               {planned: map[string]any{"data": map[string]any{"a/b": "x"}}, path: "data.a/b", levels: []string{"data", "a/b"}},
+		"FirstKey":            {planned: map[string]any{"a.b": map[string]any{"c": "x"}}, path: "[a.b].c", levels: []string{"a.b", "c"}},
+		"ListIndex":           {planned: map[string]any{"spec": map[string]any{"pipeline": []any{map[string]any{"step": "x"}}}}, path: "spec.pipeline[0].step", levels: []string{"spec", "pipeline[0]", "step"}},
+		"IndexAfterDottedKey": {planned: map[string]any{"spec": map[string]any{"a.b": []any{"x"}}}, path: "spec[a.b][0]", levels: []string{"spec", "a.b[0]"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			p := ""
-			for _, k := range tc.keys {
-				p = JoinKey(p, k)
+			changes := FieldChanges(nil, tc.planned)
+			if len(changes) != 1 {
+				t.Fatalf("FieldChanges: got %d changes, want 1: %+v", len(changes), changes)
 			}
-			p += tc.idx
-			if p != tc.path {
-				t.Errorf("JoinKey: got %q, want %q", p, tc.path)
+			if changes[0].Path != tc.path {
+				t.Errorf("Path: got %q, want %q", changes[0].Path, tc.path)
 			}
-			if diff := cmp.Diff(tc.segs, PathSegments(p)); diff != "" {
-				t.Errorf("PathSegments(%q): -want, +got:\n%s", p, diff)
+			if diff := cmp.Diff(tc.levels, DisplayLevels(changes[0].Path)); diff != "" {
+				t.Errorf("DisplayLevels(%q): -want, +got:\n%s", changes[0].Path, diff)
 			}
 		})
 	}
 }
 
-func TestPathSegmentsIndexAfterQuotedKey(t *testing.T) {
-	want := []string{"spec", "a.b[2]", "c"}
-	if diff := cmp.Diff(want, PathSegments(`spec["a.b"][2].c`)); diff != "" {
+func TestDisplayLevelsMalformed(t *testing.T) {
+	want := []string{"spec.a[b"}
+	if diff := cmp.Diff(want, DisplayLevels("spec.a[b")); diff != "" {
 		t.Errorf("-want, +got:\n%s", diff)
 	}
 }

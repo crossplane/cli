@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,9 +53,11 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
+	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/simulate"
+	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
 // parseSimulate parses args as `simulate` flags, running kong's validation.
@@ -1536,5 +1539,43 @@ func TestNoteNoServers(t *testing.T) {
 				t.Errorf("noteNoServers(): -want, +got:\n%s", diff)
 			}
 		})
+	}
+}
+
+// ensureRecorder records what Ensure is asked to start.
+type ensureRecorder struct {
+	simulate.Router
+
+	ensured []diffserver.Input
+}
+
+func (s *ensureRecorder) Ensure(_ context.Context, in []diffserver.Input) error {
+	s.ensured = append(s.ensured, in...)
+	return nil
+}
+
+func (s *ensureRecorder) Stop(context.Context) {}
+
+func TestPlanOptionsProvidersOverProjectDeps(t *testing.T) {
+	dir := t.TempDir()
+	providers := filepath.Join(dir, "providers.yaml")
+	img := "xpkg.crossplane.io/crossplane-contrib/provider-nop:v0.4.0"
+	if err := os.WriteFile(providers, []byte("apiVersion: pkg.crossplane.io/v1\nkind: Provider\nmetadata:\n  name: nop\nspec:\n  package: "+img+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	servers := &ensureRecorder{}
+	c := &simulateCmd{Providers: providers, CacheDir: dir, hooks: &simulateHooks{Servers: servers}}
+	k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
+
+	// In project mode with --providers, the project's provider dependencies
+	// must not be read: pkgs carries no project or dependency manager, so
+	// reading them would fail.
+	_, err := c.planOptions(context.Background(), k, logging.NewNopLogger(), terminal.NewNopSpinnerPrinter(), &rest.Config{Host: "https://127.0.0.1:1"}, "default", &inputs{mode: projectMode}, &packages{})
+	if err != nil {
+		t.Fatalf("planOptions(...): %v", err)
+	}
+	if diff := cmp.Diff([]diffserver.Input{{Image: img}}, servers.ensured, cmpopts.EquateComparable(netip.Addr{})); diff != "" {
+		t.Errorf("planOptions(...) with --providers in project mode: -want ensured, +got:\n%s", diff)
 	}
 }

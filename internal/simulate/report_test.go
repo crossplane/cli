@@ -250,7 +250,7 @@ func TestFromXRReport(t *testing.T) {
 			},
 		},
 		"SecretRedactionDottedKeys": {
-			reason: "Keys containing dots are written data[\"k\"] and are redacted too, in changes, before and after.",
+			reason: "Keys containing dots are written data[k] and are redacted too, in changes, before and after.",
 			in: &dt.XRReport{Groups: []dt.XRDiffGroup{{
 				XR: xrRef,
 				Diffs: diffs(func() *dt.ResourceDiff {

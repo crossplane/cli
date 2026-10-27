@@ -109,7 +109,7 @@ func TestSimulateProviderPlan(t *testing.T) {
 			args:       []string{"-o", "json"},
 			fn:         update(region),
 			wantCode:   dp.ExitCodeDiffDetected,
-			wantNotOut: []string{"Cloud-layer plan not run"},
+			wantNotOut: []string{"Provider plan not run"},
 			check: func(t *testing.T, res simulate.ProjectResult) {
 				t.Helper()
 				for _, p := range res.Plans {

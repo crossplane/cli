@@ -31,7 +31,7 @@ XR using a changed Composition and diff them all). It is good, proven work. It
 is also a separate binary in crossplane-contrib, with its own release train and
 CI, that most Crossplane users never discover.
 
-The second layer is **what changes in the cloud**. A cluster-layer diff shows
+The second layer is **what changes in the cloud**. A cluster diff shows
 that `spec.forProvider.engineVersion` changed; it cannot show that Terraform
 could only make that change by *destroying and recreating the database*. In
 Crossplane that case is worse than it sounds: providers never destroy an
@@ -294,7 +294,7 @@ type simulateCmd struct {
 	Name           string        `help:"Simulate only the XR with this name."`
 	Providers      string        `help:"Provider manifests to run as diff servers, overriding cluster discovery."`
 	IncludePinned  bool          `help:"Also simulate XRs pinned to older composition revisions."`
-	SkipPlan        bool         `help:"Skip the cloud-layer plan; show only the cluster-layer diff."`
+	SkipPlan        bool         `help:"Skip the provider plan; show only the cluster diff."`
 	SessionID       string       `help:"Session label for the containers this run creates."`
 	MaxIterations  uint          `default:"10" help:"Cap on requirement resolution passes per XR."`
 	Timeout        time.Duration `default:"2m" help:"Per XR render and plan timeout."`
@@ -486,7 +486,7 @@ standalone packaging forced them to build.
   the client-side diff crossplane-diff computes today ("When There Is No
   Diff Server" above). Run simulate where no provider serves plans and the
   output is today's diff, unchanged. For users who want only the
-  cluster-layer diff, `--skip-plan` makes that explicit: no diff servers
+  cluster diff, `--skip-plan` makes that explicit: no diff servers
   start, no containers run, and the command does exactly what diff does
   today. That keeps "diff without simulation" one flag away instead of a
   second command. Whether thin aliases remain for existing crossplane-diff

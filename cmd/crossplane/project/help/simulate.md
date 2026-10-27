@@ -57,10 +57,8 @@ The `-o` flag picks the output format:
 - `json` and `yaml` print the same plan as a structured result, for CI and
   other tools. Each plan carries the objects it compares, as `before` (the
   live object, absent for a create) and `after` (the rendered object, absent
-  for a delete), with ignored paths, status and server-managed metadata
-  removed and Secret values redacted. A provider-planned resource's `after`
-  is the manifest sent to the provider, not the provider's view.
-- `diff` prints the line diff `crossplane-diff` prints.
+  for a delete), with Secret values redacted.
+- `diff` prints a line diff of each changed resource's manifest.
 
 For example, a changed Composition run with `--skip-plan` prints a plan like this:
 
@@ -80,29 +78,31 @@ XR: XNetwork.example.org team-a/prod-network
 
 Plan: 0 to add, 2 to change, 0 to destroy.
 
-Note: Cloud-layer plan skipped (--skip-plan).
+Note: Provider plan skipped (--skip-plan).
 ```
 
-The `--timeout` flag, 2m by default, bounds the time to simulate one composite
-resource: its render and its resources' provider plans. Function and provider
-image pulls don't count, but the render image pull counts against the first
-composite resource's budget.
+The `--timeout` flag, 2m by default, bounds the time spent simulating one
+composite resource.
+
+`simulate` first computes the cluster diff: it renders each composite resource
+and compares the result with the cluster through a server-side dry run, like
+`kubectl diff`.
 
 By default `simulate` also runs provider plans: it asks each provider's diff
 server to plan the managed resources, so the plan shows changes the cluster
 can't see. The diff servers come from `--providers` when set, otherwise from
 the project's provider dependencies in project mode, otherwise from the
 providers installed on the cluster that own the rendered resources, started on
-demand. A resource no diff server serves keeps its cluster-layer diff. In `json`
+demand. A resource no diff server serves keeps its cluster diff. In `json`
 and `yaml` output, `approximate: true` on a plan means it was computed
 client-side, without a provider diff, because the provider couldn't diff that
 resource. The result's `notes` say when provider plans were skipped or no diff
-server served the resources.
+server served the resources; `-o diff` prints that note to stderr.
 
 Provider plans are controlled by these flags:
 
 - `--skip-plan` doesn't run provider diff servers and shows only the
-  cluster-layer diff. `--providers` and `--session-id` do nothing with it, so
+  cluster diff. `--providers` and `--session-id` do nothing with it, so
   they print a warning and are ignored.
 - `--providers` takes a YAML file or directory of Provider manifests to run as
   diff servers, instead of discovering providers from the cluster. The manifests
@@ -129,7 +129,7 @@ project file; in Composition and XR modes `simulate` falls back to the project
 file in the current directory. That fallback is skipped when the file doesn't
 exist, but a project file there that can't be parsed is an error.
 
-The command accepts the same diff-tuning flags as `crossplane-diff`:
+These flags tune the diff:
 
 - `--ignore-paths` leaves paths out of the diff.
 - `--function-credentials` passes credentials to the functions the render runs:
@@ -204,7 +204,7 @@ Print the plan as JSON:
 crossplane project simulate -o json
 ```
 
-Print the line diff `crossplane-diff` prints:
+Print a line diff of each changed resource:
 
 ```shell
 crossplane project simulate -o diff

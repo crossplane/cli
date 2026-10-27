@@ -140,7 +140,7 @@ func TestRenderPlanCompositions(t *testing.T) {
 			// No determined impact prints no line.
 			{Ref: unknown},
 		},
-		Notes: []string{"Cloud-layer plan not run."},
+		Notes: []string{"Provider plan not run."},
 	}
 	want := `[~] Composition.apiextensions.crossplane.io net (update)
     Applying this creates a new CompositionRevision, which 1 composite would adopt.
@@ -160,7 +160,7 @@ XR: XNetwork.example.org prod-network
 
 Plan: 0 to add, 2 to change, 0 to destroy.
 
-Note: Cloud-layer plan not run.
+Note: Provider plan not run.
 `
 	var buf bytes.Buffer
 	pr, _ := NewRenderer(plan.FormatPlan)

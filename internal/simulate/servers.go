@@ -99,7 +99,6 @@ const (
 type Servers interface {
 	Router
 	Ensure(ctx context.Context, inputs []diffserver.Input) error
-	Ran() bool
 	// Stop must stop the servers even when ctx is already cancelled.
 	Stop(ctx context.Context)
 }
@@ -168,11 +167,6 @@ func (s *ServerSet) Ensure(ctx context.Context, inputs []diffserver.Input) error
 // Route implements Router.
 func (s *ServerSet) Route(gk schema.GroupKind) (diffv1alpha1.PlanServiceClient, bool) {
 	return s.mgr.Route(gk)
-}
-
-// Ran reports whether any server is running.
-func (s *ServerSet) Ran() bool {
-	return len(s.mgr.Servers()) > 0
 }
 
 // Stop stops every server; it runs even when ctx was cancelled, so an

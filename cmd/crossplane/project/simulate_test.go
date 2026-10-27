@@ -1503,3 +1503,29 @@ func TestExitCodesMatchEngine(t *testing.T) {
 		t.Errorf("common.ExitCodeSchemaValidation: -engine, +cli:\n%s", diff)
 	}
 }
+
+func TestNoteNoServers(t *testing.T) {
+	none := []string{simulate.NoteNoDiffServers}
+	cases := map[string]struct {
+		output string
+		notes  []string
+		want   string
+	}{
+		"DiffPrintsNote": {output: "diff", notes: none, want: simulate.NoteNoDiffServers + "\n"},
+		"PlanUsesNotes":  {output: "plan", notes: none},
+		"DiffOtherNote":  {output: "diff", notes: []string{simulate.NoteProviderPlanSkipped}},
+		"DiffNoNotes":    {output: "diff"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			stderr := &bytes.Buffer{}
+			k := &kong.Context{Kong: &kong.Kong{Stderr: stderr}}
+			c := &simulateCmd{Output: tc.output}
+			c.noteNoServers(k, tc.notes)
+			c.noteNoServers(k, tc.notes)
+			if diff := cmp.Diff(tc.want, stderr.String()); diff != "" {
+				t.Errorf("noteNoServers(): -want, +got:\n%s", diff)
+			}
+		})
+	}
+}

@@ -269,8 +269,8 @@ func TestServerSetEnsure(t *testing.T) {
 	if got := strings.Count(out.String(), "Not running a diff server for xpkg.example/p:v1: "); got != 1 {
 		t.Errorf("skip message printed %d times, want 1: %q", got, out.String())
 	}
-	if s.Ran() {
-		t.Error("Ran() = true, want false")
+	if n := len(s.mgr.Servers()); n != 0 {
+		t.Errorf("%d servers running, want 0", n)
 	}
 }
 

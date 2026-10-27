@@ -64,6 +64,4 @@ func (r *recordingServers) Route(gk schema.GroupKind) (diffv1alpha1.PlanServiceC
 	return nil, false
 }
 
-func (r *recordingServers) Ran() bool { return true }
-
 func (r *recordingServers) Stop(context.Context) {}

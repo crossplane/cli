@@ -120,7 +120,7 @@ type simulateCmd struct {
 	AnalyzeOn           string   `default:""                                                                                            enum:",spec-change,any-change,always"                                                 help:"Smallest Composition change that triggers impact analysis: spec-change, any-change (default) or always."`
 	DryRunOn            string   `default:"all"                                                                                         enum:"existing,all"                                                                   help:"Which resources to verify with a server-side dry run: existing or all (default)."`
 
-	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster-layer diff."`
+	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster diff."`
 	Providers    string `help:"YAML file or directory of Provider manifests to run as diff servers, instead of discovering them from the cluster." name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
 	ImageConfigs string `help:"YAML file of ImageConfig manifests that rewrite package paths for pulls, replacing the project's imageConfigs."     name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
 
@@ -413,14 +413,14 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 	return []dp.ProcessorOption{dp.WithAfterXRDiff(c.xrPlanner.AfterXRDiff), dp.WithKeepEqualDiffs(keep)}, nil
 }
 
-// noteNoServers prints once, when planning is on and no diff server ever
-// ran, that the diff shows only the cluster layer. -o diff has no notes.
-func (c *simulateCmd) noteNoServers(k *kong.Context) {
-	if c.servers == nil || c.servers.Ran() || c.noServersNoted || c.xrPlanner == nil || c.xrPlanner.Considered() == 0 {
+// noteNoServers prints simulate.NoteNoDiffServers to stderr once, for -o
+// diff, which has no notes; the other formats carry it in their notes.
+func (c *simulateCmd) noteNoServers(k *kong.Context, notes []string) {
+	if c.noServersNoted || c.Output != string(renderer.OutputFormatDiff) || !slices.Contains(notes, simulate.NoteNoDiffServers) {
 		return
 	}
 	c.noServersNoted = true
-	_, _ = fmt.Fprintln(k.Stderr, "No provider diff servers to run; showing the cluster-layer diff.")
+	_, _ = fmt.Fprintln(k.Stderr, simulate.NoteNoDiffServers)
 }
 
 // restConfig returns the cluster to simulate against and the namespace for
@@ -972,15 +972,16 @@ func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o
 // with any render failure joined to it, so neither is lost. changed is
 // whether the report itself has changes.
 func (c *simulateCmd) renderReport(k *kong.Context, logger logging.Logger, runErr error, res simulate.ProjectResult, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (bool, error) {
-	c.noteNoServers(k)
 	opts := c.diffOptions(k)
 	plans := c.providerPlans()
 	if plans != nil {
 		opts.Replaced = simulate.ReplacedBy(plans)
 	}
-	if n := c.notes(); n != nil {
+	n := c.notes()
+	if n != nil {
 		res.Notes = n
 	}
+	c.noteNoServers(k, n)
 	changed = changed || (plans != nil && simulate.Changed(res))
 
 	var err error

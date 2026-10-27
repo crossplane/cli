@@ -73,9 +73,9 @@ func Fallback(desired, live *unstructured.Unstructured, reason string) *Resource
 // cursor tracks a position in the diffed object: the crossplane-runtime field
 // path for the plan's output, and the structured field path for ownership
 // lookups in a managedFields set. The two diverge on purpose: the output path
-// indexes list elements,
-// while FieldsV1 sets never index lists positionally, so below a list the
-// field path freezes at the list itself and ownership is decided there.
+// indexes list elements, while FieldsV1 sets never index lists positionally,
+// so below a list the field path freezes at the list itself and ownership is
+// decided there.
 type cursor struct {
 	segs   xpfieldpath.Segments
 	fp     fieldpath.Path
@@ -87,13 +87,18 @@ func newCursor(root string) cursor {
 }
 
 func (c cursor) field(k string) cursor {
-	// The segment is built directly: xpfieldpath.Field would trim quotes
-	// from the key and rename it.
+	// The segment is built directly so the JSON path keeps the key verbatim:
+	// xpfieldpath.Field would trim its quotes. Parsing the path back
+	// (DisplayLevels) still trims them; see below.
 	//
-	// ponytail: fieldpath has no escaping, so a key with unbalanced or nested
-	// brackets (e.g. "a[b", "a[b]c") yields a path that does not parse back.
-	// Such a change shows as one display level and misses its annotate
-	// marker; its values are still printed. Upgrade if a real key needs it.
+	// ponytail: fieldpath has no escaping, so some keys do not round-trip:
+	//   - unbalanced or nested brackets (e.g. "a[b", "a[b]c"): the path does
+	//     not parse, so the change shows as one display level;
+	//   - a leading or trailing quote, or an empty key: the path parses with
+	//     the quotes trimmed or the key lost, so its display level and tree
+	//     label differ from the key.
+	// Either way the annotate marker for the change is missed; its values are
+	// still printed. Upgrade if a real key needs it.
 	seg := xpfieldpath.Segment{Type: xpfieldpath.SegmentField, Field: k}
 	next := cursor{segs: append(slices.Clip(c.segs), seg), fp: c.fp, inList: c.inList}
 	if !c.inList {

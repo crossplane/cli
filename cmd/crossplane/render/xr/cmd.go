@@ -422,6 +422,8 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 }
 
 func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config, projFS afero.Fs, projFilePath, projFileName string) ([]pkgv1.Function, error) {
+	log.Debug("Loading functions from project", "project-file", projFilePath)
+
 	proj, err := projectfile.Parse(projFS, projFileName)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)

@@ -54,7 +54,8 @@ func (f *fakeXpkgClient) ListVersions(context.Context, string, ...runtimexpkg.Ge
 }
 
 // TestLoadFunctions verifies LoadFunctions resolves function dependencies
-// through the dependency manager it is given.
+// through the dependency manager it is given, and computes embedded function
+// digests only when asked.
 func TestLoadFunctions(t *testing.T) {
 	t.Parallel()
 
@@ -77,37 +78,61 @@ func TestLoadFunctions(t *testing.T) {
 		tags: []string{"v1.0.0", "v1.2.0", "v2.0.0"},
 	}
 
-	projFS := afero.NewMemMapFs()
-	writeProject(t, projFS, map[string]string{"db.yaml": xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase")}, nil)
-	dep := xpkgDep("Function", src, false)
-	dep.Xpkg.Version = "<v2.0.0"
-	proj := &devv1alpha1.Project{Spec: devv1alpha1.ProjectSpec{
-		Repository:   "xpkg.example.com/acme/test",
-		Dependencies: []devv1alpha1.Dependency{dep},
-	}}
-	proj.Default()
-
-	depMgr := dependency.NewManager(proj, projFS,
-		dependency.WithXpkgClient(fc),
-		dependency.WithResolver(clixpkg.NewResolver(fc)),
-	)
-
-	fns, digests, err := LoadFunctions(t.Context(), proj, projFS, depMgr, LoadFunctionsOptions{
-		Logger:  logging.NewNopLogger(),
-		Spinner: terminal.NewNopSpinnerPrinter(),
-	})
-	if err != nil {
-		t.Fatalf("LoadFunctions(...): %v", err)
+	cases := map[string]struct {
+		reason     string
+		repository string
+		digests    bool
+	}{
+		"DigestsRequested": {
+			reason:     "Function dependencies should resolve through the given manager, and digests should be computed.",
+			repository: "xpkg.example.com/acme/test",
+			digests:    true,
+		},
+		"RepositoryWithoutRegistry": {
+			reason:     "Render xr doesn't ask for digests, so a repository without an explicit registry, which digests reject, should load.",
+			repository: "acme/test",
+		},
 	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	got := make([]string, 0, len(fns))
-	for _, fn := range fns {
-		got = append(got, fn.Spec.Package)
-	}
-	if diff := cmp.Diff([]string{src + ":v1.2.0"}, got); diff != "" {
-		t.Errorf("LoadFunctions(...): function packages -want, +got:\n%s", diff)
-	}
-	if len(digests) != 0 {
-		t.Errorf("LoadFunctions(...): want no embedded function digests, got %v", digests)
+			projFS := afero.NewMemMapFs()
+			writeProject(t, projFS, map[string]string{"db.yaml": xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase")}, nil)
+			dep := xpkgDep("Function", src, false)
+			dep.Xpkg.Version = "<v2.0.0"
+			proj := &devv1alpha1.Project{Spec: devv1alpha1.ProjectSpec{
+				Repository:   tc.repository,
+				Dependencies: []devv1alpha1.Dependency{dep},
+			}}
+			proj.Default()
+
+			depMgr := dependency.NewManager(proj, projFS,
+				dependency.WithXpkgClient(fc),
+				dependency.WithResolver(clixpkg.NewResolver(fc)),
+			)
+
+			fns, digests, err := LoadFunctions(t.Context(), proj, projFS, depMgr, LoadFunctionsOptions{
+				Logger:  logging.NewNopLogger(),
+				Spinner: terminal.NewNopSpinnerPrinter(),
+				Digests: tc.digests,
+			})
+			if err != nil {
+				t.Fatalf("\n%s\nLoadFunctions(...): %v", tc.reason, err)
+			}
+
+			got := make([]string, 0, len(fns))
+			for _, fn := range fns {
+				got = append(got, fn.Spec.Package)
+			}
+			if diff := cmp.Diff([]string{src + ":v1.2.0"}, got); diff != "" {
+				t.Errorf("\n%s\nLoadFunctions(...): function packages -want, +got:\n%s", tc.reason, diff)
+			}
+			// The project has no embedded functions, so digests is empty
+			// when requested and nil when not.
+			if tc.digests != (digests != nil) || len(digests) != 0 {
+				t.Errorf("\n%s\nLoadFunctions(...): digests = %v, requested %t", tc.reason, digests, tc.digests)
+			}
+		})
 	}
 }

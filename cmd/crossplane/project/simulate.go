@@ -113,9 +113,9 @@ type simulateCmd struct {
 	DryRunOn                 string              `default:"all"                                                                                                                               enum:"existing,all"                                                                   help:"Which resources to verify against the apiserver with a dry run: 'all' also dry-run creates added resources so their diffs include server-side defaulting and admission (needs the 'create' verb; degrades per-resource without it), 'existing' only resources already in the cluster."`
 
 	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster-layer diff."`
-	Providers    string `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                                                                                                                                               name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
-	ImageConfigs string `help:"YAML file with ImageConfig manifests that rewrite package paths for pulls: provider images, and in project mode the project's dependencies. Replaces the project's imageConfigs; without it, they are used when -f names a project file, and in Composition and XR modes, best effort, from the project file in the current directory." name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
-	SessionID    string `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID."                                                                                                                                                                                                        placeholder:"ID"`
+	Providers    string `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                                                                                                                                                                                                                  name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
+	ImageConfigs string `help:"YAML file with ImageConfig manifests that rewrite package paths for pulls: provider images, and in project mode the project's dependencies. Replaces the project's imageConfigs for those pulls (schema generation images still use the project's); without it, they are used when -f names a project file, and in Composition and XR modes, best effort, from the project file in the current directory." name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
+	SessionID    string `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID."                                                                                                                                                                                                                                                                           placeholder:"ID"`
 
 	// CrossplaneVersion and CrossplaneImage select the crossplane render
 	// backend, as they do for crossplane-diff. When neither is set the render
@@ -517,11 +517,13 @@ func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, s
 		dependency.WithResolver(resolver),
 	)
 
+	logger.Debug("Loading functions from project", "project-file", projFilePath)
 	fns, digests, err := project.LoadFunctions(ctx, proj, projFS, depMgr, project.LoadFunctionsOptions{
 		Logger:         logger,
 		Spinner:        sp,
 		Generators:     generators,
 		MaxConcurrency: c.MaxConcurrency,
+		Digests:        true,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err

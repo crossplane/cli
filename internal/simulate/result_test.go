@@ -48,7 +48,6 @@ func TestRenderPlanGrouped(t *testing.T) {
 				},
 			},
 		},
-		Summary: ProjectSummary{Summary: plan.Summary{Update: 1, Destroy: 1, NoOp: 1}, Deferred: 1},
 		Composites: []CompositeResult{
 			{Ref: xr, Status: CompositeChanged},
 			{Ref: pinned, Status: CompositeDeferred, Reason: "manualPolicy", Detail: "compositionRevisionRef: net-6"},
@@ -134,7 +133,6 @@ func TestRenderPlanCompositions(t *testing.T) {
 				},
 			},
 		},
-		Summary:    ProjectSummary{Summary: plan.Summary{Update: 2, NoOp: 2}},
 		Composites: []CompositeResult{{Ref: xr, Status: CompositeChanged}},
 		Compositions: []CompositionResult{
 			{Ref: comp, RevisionImpact: &RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1}},
@@ -176,10 +174,7 @@ Note: Cloud-layer plan not run.
 
 func TestRenderJSONProjectFields(t *testing.T) {
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
-	// The embedded Result.Summary is left zero: the outer Summary shadows it,
-	// so it is neither written nor read back.
 	in := ProjectResult{
-		Summary:    ProjectSummary{Summary: plan.Summary{Destroy: 1}, Deferred: 1},
 		Composites: []CompositeResult{{Ref: xr, Status: CompositeDeferred, Reason: "manualPolicy"}},
 		Compositions: []CompositionResult{{
 			Ref:            plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "net"},
@@ -198,6 +193,7 @@ func TestRenderJSONProjectFields(t *testing.T) {
 	in.Result = plan.Result{
 		FormatVersion: plan.ResultFormatVersion,
 		Errored:       true,
+		Summary:       plan.Summary{Destroy: 1},
 		Plans: []*plan.ResourcePlan{{
 			APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionDelete, Composite: &xr,
 			Changes: []plan.FieldChange{{Path: "data.k", Actual: &plan.Value{Value: "v"}}},
@@ -216,6 +212,52 @@ func TestRenderJSONProjectFields(t *testing.T) {
 	if diff := cmp.Diff(in, got); diff != "" {
 		t.Errorf("Render(json): -want, +got:\n%s", diff)
 	}
+
+	// The top-level keys keep summary, composites and compositions ahead of
+	// the plans, and summary carries the deferred count.
+	dec := json.NewDecoder(&buf)
+	var keys []string
+	if _, err := dec.Token(); err != nil {
+		t.Fatalf("Render(json): cannot read opening brace: %v", err)
+	}
+	for dec.More() {
+		k, err := dec.Token()
+		if err != nil {
+			t.Fatalf("Render(json): cannot read key: %v", err)
+		}
+		keys = append(keys, k.(string))
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			t.Fatalf("Render(json): cannot read value of %q: %v", k, err)
+		}
+		if k == "summary" {
+			var sum map[string]int
+			if err := json.Unmarshal(v, &sum); err != nil {
+				t.Fatalf("Render(json): summary is not a map of counts: %v", err)
+			}
+			if sum["deferred"] != 1 || sum["destroy"] != 1 {
+				t.Errorf("Render(json): summary: want destroy 1 and deferred 1, got %v", sum)
+			}
+		}
+	}
+	wantKeys := []string{"formatVersion", "errored", "summary", "composites", "compositions", "plans", "errors", "warnings", "notes"}
+	if diff := cmp.Diff(wantKeys, keys); diff != "" {
+		t.Errorf("Render(json): top-level keys: -want, +got:\n%s", diff)
+	}
+}
+
+func TestRenderYAMLSummaryDeferred(t *testing.T) {
+	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
+	in := NewProjectResult(nil, []CompositeResult{{Ref: xr, Status: CompositeDeferred}}, nil)
+	var buf bytes.Buffer
+	r, _ := NewRenderer(plan.FormatYAML)
+	if err := r.Render(&buf, in); err != nil {
+		t.Fatalf("Render(yaml): unexpected error: %v", err)
+	}
+	// YAML goes through MarshalJSON, so deferred sits inside summary.
+	if want := "summary:\n  approximate: 0\n  create: 0\n  deferred: 1\n"; !strings.Contains(buf.String(), want) {
+		t.Errorf("Render(yaml): want %q in:\n%s", want, buf.String())
+	}
 }
 
 func TestNewProjectResult(t *testing.T) {
@@ -230,8 +272,9 @@ func TestNewProjectResult(t *testing.T) {
 	}
 
 	type want struct {
-		summary ProjectSummary
-		errored bool
+		summary  plan.Summary
+		deferred int
+		errored  bool
 	}
 	cases := map[string]struct {
 		reason string
@@ -239,19 +282,19 @@ func TestNewProjectResult(t *testing.T) {
 		want   want
 	}{
 		"CountsDeferred": {
-			reason: "Summary.Deferred should count only deferred composites, and match the embedded plan summary.",
-			want:   want{summary: ProjectSummary{Summary: plan.Summary{Create: 1}, Deferred: 1}},
+			reason: "Deferred should count only deferred composites, and Summary the plans.",
+			want:   want{summary: plan.Summary{Create: 1}, deferred: 1},
 		},
 		"ErrorsMarkErrored": {
 			reason: "A run-level error should mark the result errored even when every plan succeeded.",
 			errs:   []Error{{Ref: &xr, Message: "boom"}},
-			want:   want{summary: ProjectSummary{Summary: plan.Summary{Create: 1}, Deferred: 1}, errored: true},
+			want:   want{summary: plan.Summary{Create: 1}, deferred: 1, errored: true},
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			got := NewProjectResult(plans, composites, tc.errs)
-			if diff := cmp.Diff(tc.want, want{summary: got.Summary, errored: got.Errored}, cmp.AllowUnexported(want{})); diff != "" {
+			if diff := cmp.Diff(tc.want, want{summary: got.Summary, deferred: got.Deferred(), errored: got.Errored}, cmp.AllowUnexported(want{})); diff != "" {
 				t.Errorf("\n%s\nNewProjectResult(...): -want, +got:\n%s", tc.reason, diff)
 			}
 			if got.FormatVersion != plan.ResultFormatVersion {

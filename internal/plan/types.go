@@ -155,7 +155,10 @@ func (p *ResourcePlan) ResourceRef() ResourceRef {
 // cleanView returns the redacted copy of u that a plan carries as before or
 // after: u without status, server-managed metadata, the last-applied
 // configuration annotation or composed resource references, the fields the
-// diff engine also strips. u is not modified; nil stays nil.
+// diff engine also strips. It deliberately skips the engine's synthetic-name
+// rule: resource simulate's objects carry real names, so a generateName-shaped
+// metadata.name is kept, and so is an already empty spec.crossplane. u is not
+// modified; nil stays nil.
 func cleanView(u *unstructured.Unstructured) *unstructured.Unstructured {
 	if u == nil {
 		return nil

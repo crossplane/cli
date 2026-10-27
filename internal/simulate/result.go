@@ -138,25 +138,14 @@ type RevisionImpact struct {
 	PredictedRevision string `json:"predictedRevision,omitempty"`
 }
 
-// ProjectSummary counts a project simulate run's plans, plus its deferred
-// composites.
-type ProjectSummary struct {
-	plan.Summary
-
-	// Deferred counts composites pinned to a composition revision, which
-	// applying changes nothing for. It does not count as a change.
-	Deferred int `json:"deferred"`
-}
-
 // ProjectResult is the serialized form of a project simulate run, for -o
 // json|yaml: resource simulate's plan.Result plus the composites,
 // compositions, errors, warnings and notes only a project run has. Its
-// Summary shadows the embedded Result.Summary when serialized; build it with
-// NewProjectResult so the two agree.
+// summary serializes as Result.Summary plus a deferred count taken from
+// Composites.
 type ProjectResult struct {
 	plan.Result
 
-	Summary      ProjectSummary      `json:"summary"`
 	Composites   []CompositeResult   `json:"composites,omitempty"`
 	Compositions []CompositionResult `json:"compositions,omitempty"`
 	Errors       []Error             `json:"errors,omitempty"`
@@ -167,18 +156,56 @@ type ProjectResult struct {
 }
 
 // NewProjectResult assembles the ProjectResult for the given plans and
-// composites. Summary.Deferred counts the deferred composites, and errs
-// marks the result errored.
+// composites; errs marks the result errored.
 func NewProjectResult(plans []*plan.ResourcePlan, composites []CompositeResult, errs []Error) ProjectResult {
 	res := ProjectResult{Result: plan.NewResult(plans), Composites: composites, Errors: errs}
 	res.Errored = res.Errored || len(errs) > 0
-	res.Summary = ProjectSummary{Summary: res.Result.Summary}
-	for _, c := range composites {
+	return res
+}
+
+// Deferred counts the composites pinned to a composition revision, which
+// applying changes nothing for. It does not count as a change.
+func (r ProjectResult) Deferred() int {
+	n := 0
+	for _, c := range r.Composites {
 		if c.Status == CompositeDeferred {
-			res.Summary.Deferred++
+			n++
 		}
 	}
-	return res
+	return n
+}
+
+// MarshalJSON writes the result with summary, composites and compositions
+// ahead of the plans, which can be long, and with the deferred count inside
+// summary. YAML goes through it too. Decoding needs no counterpart: summary
+// decodes into Result.Summary, and Deferred is counted from Composites.
+func (r ProjectResult) MarshalJSON() ([]byte, error) {
+	type summary struct {
+		plan.Summary
+
+		Deferred int `json:"deferred"`
+	}
+	return json.Marshal(struct {
+		FormatVersion string               `json:"formatVersion"`
+		Errored       bool                 `json:"errored"`
+		Summary       summary              `json:"summary"`
+		Composites    []CompositeResult    `json:"composites,omitempty"`
+		Compositions  []CompositionResult  `json:"compositions,omitempty"`
+		Plans         []*plan.ResourcePlan `json:"plans"`
+		Errors        []Error              `json:"errors,omitempty"`
+		Warnings      []Warning            `json:"warnings,omitempty"`
+		Notes         []string             `json:"notes,omitempty"`
+	}{
+		FormatVersion: r.FormatVersion,
+		Errored:       r.Errored,
+		Summary:       summary{Summary: r.Summary, Deferred: r.Deferred()},
+		Composites:    r.Composites,
+		Compositions:  r.Compositions,
+		Plans:         r.Plans,
+		Errors:        r.Errors,
+		Warnings:      r.Warnings,
+		Notes:         r.Notes,
+	})
 }
 
 // A Renderer writes a project simulate result to w in one output format.
@@ -244,11 +271,11 @@ func (planRenderer) Render(w io.Writer, r ProjectResult) error {
 	} else {
 		renderGrouped(w, r, impacts)
 	}
-	plan.RenderSummaryLine(w, r.Summary.Summary)
-	if r.Summary.Deferred > 0 {
-		_, _ = fmt.Fprintf(w, "%s deferred (pinned to a composition revision).\n", pluralize(r.Summary.Deferred, "composite resource", "composite resources"))
+	plan.RenderSummaryLine(w, r.Summary)
+	if d := r.Deferred(); d > 0 {
+		_, _ = fmt.Fprintf(w, "%s deferred (pinned to a composition revision).\n", pluralize(d, "composite resource", "composite resources"))
 	}
-	plan.RenderSummaryWarnings(w, r.Plans, r.Summary.Summary)
+	plan.RenderSummaryWarnings(w, r.Plans, r.Summary)
 	if len(r.Notes) > 0 {
 		_, _ = fmt.Fprintln(w)
 		for _, n := range r.Notes {

@@ -156,6 +156,17 @@ func TestCleanView(t *testing.T) {
 				"spec":     map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "c"}}},
 			},
 		},
+		"KeepsGeneratedNames": {
+			reason: "A generateName-shaped name and an already empty spec.crossplane are kept: the engine's synthetic-name rule does not apply to resource simulate.",
+			in: map[string]any{
+				"metadata": map[string]any{"name": "net-abcdef012345", "generateName": "net-"},
+				"spec":     map[string]any{"crossplane": map[string]any{}},
+			},
+			want: map[string]any{
+				"metadata": map[string]any{"name": "net-abcdef012345", "generateName": "net-"},
+				"spec":     map[string]any{"crossplane": map[string]any{}},
+			},
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

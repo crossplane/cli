@@ -38,7 +38,6 @@ import (
 
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
-	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
@@ -103,7 +102,7 @@ func TestSimulateProviderPlan(t *testing.T) {
 		wantOut, wantNotOut []string
 		wantErr             []string
 		// check inspects the -o json result, when args ask for it.
-		check func(t *testing.T, res plan.Result)
+		check func(t *testing.T, res simulate.ProjectResult)
 	}{
 		"ProviderUpdate": {
 			reason:     "A provider's extra field change joins the composed resource's plan, and the cloud-layer note is gone.",
@@ -111,7 +110,7 @@ func TestSimulateProviderPlan(t *testing.T) {
 			fn:         update(region),
 			wantCode:   dp.ExitCodeDiffDetected,
 			wantNotOut: []string{"Cloud-layer plan not run"},
-			check: func(t *testing.T, res plan.Result) {
+			check: func(t *testing.T, res simulate.ProjectResult) {
 				t.Helper()
 				for _, p := range res.Plans {
 					if p.Kind != "XDownstreamResource" {
@@ -173,7 +172,7 @@ func TestSimulateProviderPlan(t *testing.T) {
 				return nil, status.Error(codes.Internal, "boom")
 			},
 			wantCode: dp.ExitCodeToolError,
-			check: func(t *testing.T, res plan.Result) {
+			check: func(t *testing.T, res simulate.ProjectResult) {
 				t.Helper()
 				if !res.Errored {
 					t.Errorf("want errored result, got %+v", res)
@@ -201,7 +200,7 @@ func TestSimulateProviderPlan(t *testing.T) {
 				return nil, st.Err()
 			},
 			wantCode: dp.ExitCodeDiffDetected,
-			check: func(t *testing.T, res plan.Result) {
+			check: func(t *testing.T, res simulate.ProjectResult) {
 				t.Helper()
 				if res.Errored || res.Summary.Approximate == 0 {
 					t.Errorf("want non-errored result with approximate plans, got errored=%t summary=%+v", res.Errored, res.Summary)
@@ -267,9 +266,9 @@ func TestSimulateProviderPlan(t *testing.T) {
 				}
 			}
 			if tc.check != nil {
-				var res plan.Result
+				var res simulate.ProjectResult
 				if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-					t.Fatalf("\n%s\nstdout is not a plan.Result: %v\n%s\nstderr:\n%s", tc.reason, err, stdout.String(), stderr.String())
+					t.Fatalf("\n%s\nstdout is not a simulate.ProjectResult: %v\n%s\nstderr:\n%s", tc.reason, err, stdout.String(), stderr.String())
 				}
 				tc.check(t, res)
 			}
@@ -277,7 +276,7 @@ func TestSimulateProviderPlan(t *testing.T) {
 	}
 }
 
-func planJSON(t *testing.T, res plan.Result) string {
+func planJSON(t *testing.T, res simulate.ProjectResult) string {
 	t.Helper()
 	b, err := json.Marshal(res)
 	if err != nil {

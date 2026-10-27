@@ -31,10 +31,11 @@ import (
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/plan"
+	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
 // TestSimulatePlanOutput runs project simulate's own output formats, -o plan
-// and -o json's plan.Result, which crossplane-diff's cases cannot express.
+// and -o json's simulate.ProjectResult, which crossplane-diff's cases cannot express.
 // Each case passes simulate args directly rather than crossplane-diff's.
 func TestSimulatePlanOutput(t *testing.T) {
 	t.Parallel()
@@ -126,13 +127,13 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 `,
 		},
 		"XRPlanJSON": {
-			reason:   "-o json emits plan.Result: the XR as a changed composite, with both its plans grouped under it.",
+			reason:   "-o json emits simulate.ProjectResult: the XR as a changed composite, with both its plans grouped under it.",
 			testType: XRDiffTest,
 			tt:       xrCase,
 			args:     append([]string{"-o", "json"}, xrArgs...),
 			wantResult: &planShape{
-				Summary:    plan.Summary{Update: 2},
-				Composites: []plan.CompositeResult{{Ref: xnop, Status: plan.CompositeChanged}},
+				Summary:    simulate.ProjectSummary{Summary: plan.Summary{Update: 2}},
+				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged}},
 				Plans: []planEntry{
 					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
 					{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
@@ -172,16 +173,16 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 `,
 		},
 		"CompPlanJSON": {
-			reason:   "-o json emits plan.Result: the Composition's revision impact, both affected XRs as changed composites, and their plans.",
+			reason:   "-o json emits simulate.ProjectResult: the Composition's revision impact, both affected XRs as changed composites, and their plans.",
 			testType: CompositionDiffTest,
 			tt:       compCase,
 			args:     append([]string{"-o", "json"}, compArgs...),
 			wantResult: &planShape{
-				Summary:    plan.Summary{Update: 3, NoOp: 2},
-				Composites: []plan.CompositeResult{{Ref: another, Status: plan.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: plan.CompositeChanged, Composition: &comp}},
-				Compositions: []plan.CompositionResult{{
+				Summary:    simulate.ProjectSummary{Summary: plan.Summary{Update: 3, NoOp: 2}},
+				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
+				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
-					RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},
+					RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},
 				}},
 				Plans: []planEntry{
 					{Kind: "Composition", Name: comp.Name, Action: plan.ActionUpdate},
@@ -198,11 +199,11 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 			tt:       compCase,
 			args:     []string{"-o", "json", "-f", "testdata/comp/updated-composition.yaml", "-n", "default", "--name=another-resource", "--name=test-resource"},
 			wantResult: &planShape{
-				Summary:    plan.Summary{Update: 3, NoOp: 2},
-				Composites: []plan.CompositeResult{{Ref: another, Status: plan.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: plan.CompositeChanged, Composition: &comp}},
-				Compositions: []plan.CompositionResult{{
+				Summary:    simulate.ProjectSummary{Summary: plan.Summary{Update: 3, NoOp: 2}},
+				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
+				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
-					RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},
+					RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},
 				}},
 				Plans: []planEntry{
 					{Kind: "Composition", Name: comp.Name, Action: plan.ActionUpdate},
@@ -219,11 +220,11 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 			tt:       compCase,
 			args:     []string{"-o", "json", "-f", "testdata/comp/updated-composition.yaml", "--name=default/test-resource"},
 			wantResult: &planShape{
-				Summary:    plan.Summary{Update: 2, NoOp: 1},
-				Composites: []plan.CompositeResult{{Ref: xnop, Status: plan.CompositeChanged, Composition: &comp}},
-				Compositions: []plan.CompositionResult{{
+				Summary:    simulate.ProjectSummary{Summary: plan.Summary{Update: 2, NoOp: 1}},
+				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
+				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
-					RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1},
+					RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1},
 				}},
 				Plans: []planEntry{
 					{Kind: "Composition", Name: comp.Name, Action: plan.ActionUpdate},
@@ -261,9 +262,9 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 				return
 			}
 
-			var res plan.Result
+			var res simulate.ProjectResult
 			if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-				t.Fatalf("\n%s\nsimulate -o json: output is not a plan.Result: %v\n%s", tc.reason, err, stdout.String())
+				t.Fatalf("\n%s\nsimulate -o json: output is not a simulate.ProjectResult: %v\n%s", tc.reason, err, stdout.String())
 			}
 			if res.FormatVersion != plan.ResultFormatVersion || res.Errored {
 				t.Errorf("\n%s\nsimulate -o json: want formatVersion %q and not errored, got %q, errored %t", tc.reason, plan.ResultFormatVersion, res.FormatVersion, res.Errored)
@@ -275,13 +276,13 @@ Note: Cloud-layer plan not run: no provider diff servers serve these resources.
 	}
 }
 
-// planShape is the part of a plan.Result these cases pin: everything but
+// planShape is the part of a simulate.ProjectResult these cases pin: everything but
 // the field changes, dry-run details and notes, which the plan text cases and
 // the mapper's unit tests cover.
 type planShape struct {
-	Summary      plan.Summary
-	Composites   []plan.CompositeResult
-	Compositions []plan.CompositionResult
+	Summary      simulate.ProjectSummary
+	Composites   []simulate.CompositeResult
+	Compositions []simulate.CompositionResult
 	Plans        []planEntry
 }
 
@@ -292,7 +293,7 @@ type planEntry struct {
 	Composite  string
 }
 
-func summarize(r plan.Result) planShape {
+func summarize(r simulate.ProjectResult) planShape {
 	s := planShape{Summary: r.Summary, Composites: r.Composites, Compositions: r.Compositions}
 	for _, p := range r.Plans {
 		e := planEntry{Kind: p.Kind, Name: p.Name, Action: p.Action}
@@ -389,9 +390,9 @@ func TestSimulatePinnedChangedFunction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
 			}
-			var res plan.Result
+			var res simulate.ProjectResult
 			if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-				t.Fatalf("\n%s\nsimulate -o json: output is not a plan.Result: %v\n%s", tc.reason, err, stdout.String())
+				t.Fatalf("\n%s\nsimulate -o json: output is not a simulate.ProjectResult: %v\n%s", tc.reason, err, stdout.String())
 			}
 			if len(res.Composites) != 1 {
 				t.Fatalf("\n%s\nsimulate -o json: want 1 composite, got %+v", tc.reason, res.Composites)
@@ -399,7 +400,7 @@ func TestSimulatePinnedChangedFunction(t *testing.T) {
 			c := res.Composites[0]
 
 			if tc.wantDeferred {
-				if c.Status != plan.CompositeDeferred || strings.HasPrefix(c.Detail, "rendered against") {
+				if c.Status != simulate.CompositeDeferred || strings.HasPrefix(c.Detail, "rendered against") {
 					t.Errorf("\n%s\nsimulate -o json: want a deferred pinned composite, got %+v", tc.reason, c)
 				}
 				return
@@ -408,7 +409,7 @@ func TestSimulatePinnedChangedFunction(t *testing.T) {
 			if code != dp.ExitCodeDiffDetected {
 				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, dp.ExitCodeDiffDetected, code)
 			}
-			if c.Status != plan.CompositeChanged || !c.Pinned || c.Detail != "rendered against pinned revision "+rev+" with the project's functions" {
+			if c.Status != simulate.CompositeChanged || !c.Pinned || c.Detail != "rendered against pinned revision "+rev+" with the project's functions" {
 				t.Errorf("\n%s\nsimulate -o json: want a changed pinned composite rendered against %s, got %+v", tc.reason, rev, c)
 			}
 			// The plan is rendered from the pinned revision's pipeline: its

@@ -93,15 +93,15 @@ func TestFromXRReport(t *testing.T) {
 	if len(derived) == 0 {
 		t.Fatal("XRDryRunWarnings(...): want a summary of the unverified addition")
 	}
-	dryRunWarnings := make([]plan.Warning, 0, len(derived))
+	dryRunWarnings := make([]Warning, 0, len(derived))
 	for _, w := range derived {
-		dryRunWarnings = append(dryRunWarnings, plan.Warning{Message: w.Message, Context: w.Context})
+		dryRunWarnings = append(dryRunWarnings, Warning{Message: w.Message, Context: w.Context})
 	}
 
 	cases := map[string]struct {
 		reason string
 		in     *dt.XRReport
-		want   plan.Result
+		want   ProjectResult
 	}{
 		"EachDiffType": {
 			reason: "Each DiffType maps to its action; a delete carries actual-only changes; the XR's own equal diff is a no-op plan.",
@@ -116,39 +116,45 @@ func TestFromXRReport(t *testing.T) {
 					rdiff(cmGVK, "removed", dt.DiffTypeRemoved, map[string]any{"data": map[string]any{"k": "gone"}}, nil),
 				),
 			}}},
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{Create: 1, Update: 1, Destroy: 1, NoOp: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeChanged}},
-				Plans: []*plan.ResourcePlan{
-					{
-						APIVersion: "v1", Kind: "ConfigMap", Name: "added", Action: plan.ActionCreate, Composite: &xrPlan,
-						Changes: []plan.FieldChange{{Path: "data.k", Planned: &plan.Value{Value: "v"}}},
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{Create: 1, Update: 1, Destroy: 1, NoOp: 1},
+					Plans: []*plan.ResourcePlan{
+						{
+							APIVersion: "v1", Kind: "ConfigMap", Name: "added", Action: plan.ActionCreate, Composite: &xrPlan,
+							Changes: []plan.FieldChange{{Path: "data.k", Planned: &plan.Value{Value: "v"}}},
+						},
+						{
+							APIVersion: "v1", Kind: "ConfigMap", Name: "modified", Action: plan.ActionUpdate, Composite: &xrPlan,
+							Changes: []plan.FieldChange{{Path: "data.k", Actual: &plan.Value{Value: "old"}, Planned: &plan.Value{Value: "new"}}},
+						},
+						{
+							APIVersion: "v1", Kind: "ConfigMap", Name: "removed", Action: plan.ActionDelete, Composite: &xrPlan,
+							Changes: []plan.FieldChange{{Path: "data.k", Actual: &plan.Value{Value: "gone"}}},
+						},
+						{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan},
 					},
-					{
-						APIVersion: "v1", Kind: "ConfigMap", Name: "modified", Action: plan.ActionUpdate, Composite: &xrPlan,
-						Changes: []plan.FieldChange{{Path: "data.k", Actual: &plan.Value{Value: "old"}, Planned: &plan.Value{Value: "new"}}},
-					},
-					{
-						APIVersion: "v1", Kind: "ConfigMap", Name: "removed", Action: plan.ActionDelete, Composite: &xrPlan,
-						Changes: []plan.FieldChange{{Path: "data.k", Actual: &plan.Value{Value: "gone"}}},
-					},
-					{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan},
 				},
-				Notes: notes(),
+				Summary:    ProjectSummary{Summary: plan.Summary{Create: 1, Update: 1, Destroy: 1, NoOp: 1}},
+				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged}},
+				Notes:      notes(),
 			},
 		},
 		"Unchanged": {
 			reason: "An XR whose only diff is its own equal one is unchanged.",
 			in:     &dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(xrEqual)}}},
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{NoOp: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeUnchanged}},
-				Plans: []*plan.ResourcePlan{
-					{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan},
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{NoOp: 1},
+					Plans: []*plan.ResourcePlan{
+						{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan},
+					},
 				},
-				Notes: notes(),
+				Summary:    ProjectSummary{Summary: plan.Summary{NoOp: 1}},
+				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeUnchanged}},
+				Notes:      notes(),
 			},
 		},
 		"XRErrorWithValidationFailures": {
@@ -157,20 +163,23 @@ func TestFromXRReport(t *testing.T) {
 				Groups: []dt.XRDiffGroup{{XR: xrRef, Err: &validation}},
 				Errors: []dt.OutputError{validation},
 			},
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Errored:       true,
-				Summary:       plan.Summary{Errored: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeError}},
-				Plans: []*plan.ResourcePlan{
-					{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Error: "schema validation failed", Composite: &xrPlan},
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Errored:       true,
+					Summary:       plan.Summary{Errored: 1},
+					Plans: []*plan.ResourcePlan{
+						{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Error: "schema validation failed", Composite: &xrPlan},
+					},
 				},
-				Errors: []plan.Error{{
+				Summary:    ProjectSummary{Summary: plan.Summary{Errored: 1}},
+				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeError}},
+				Errors: []Error{{
 					Ref:     &xrPlan,
 					Message: "schema validation failed",
-					ValidationFailures: []plan.ValidationFailure{{
+					ValidationFailures: []ValidationFailure{{
 						APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Status: "invalid",
-						Errors: []plan.FieldValidationError{{Type: "schema", Field: "data.k", Message: "must be a string", Value: 7.0}},
+						Errors: []FieldValidationError{{Type: "schema", Field: "data.k", Message: "must be a string", Value: 7.0}},
 					}},
 				}},
 				Notes: notes(),
@@ -182,16 +191,19 @@ func TestFromXRReport(t *testing.T) {
 				Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(xrEqual)}},
 				Errors: []dt.OutputError{{Message: "inputs overlap"}, {Message: "interrupted"}},
 			},
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Errored:       true,
-				Summary:       plan.Summary{NoOp: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeUnchanged}},
-				Plans: []*plan.ResourcePlan{
-					{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan},
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Errored:       true,
+					Summary:       plan.Summary{NoOp: 1},
+					Plans: []*plan.ResourcePlan{
+						{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan},
+					},
 				},
-				Errors: []plan.Error{{Message: "inputs overlap"}, {Message: "interrupted"}},
-				Notes:  notes(),
+				Summary:    ProjectSummary{Summary: plan.Summary{NoOp: 1}},
+				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeUnchanged}},
+				Errors:     []Error{{Message: "inputs overlap"}, {Message: "interrupted"}},
+				Notes:      notes(),
 			},
 		},
 		"Claim": {
@@ -200,16 +212,19 @@ func TestFromXRReport(t *testing.T) {
 				XR:    corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "Network", Name: "mine", Namespace: "team"},
 				Diffs: diffs(rdiff(cmGVK, "cm", dt.DiffTypeAdded, nil, map[string]any{})),
 			}}},
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{Create: 1},
-				Composites: []plan.CompositeResult{{
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{Create: 1},
+					Plans: []*plan.ResourcePlan{{
+						APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionCreate,
+						Composite: new(plan.ResourceRef{APIVersion: "example.org/v1", Kind: "Network", Name: "mine", Namespace: "team"}),
+					}},
+				},
+				Summary: ProjectSummary{Summary: plan.Summary{Create: 1}},
+				Composites: []CompositeResult{{
 					Ref:    plan.ResourceRef{APIVersion: "example.org/v1", Kind: "Network", Name: "mine", Namespace: "team"},
-					Status: plan.CompositeChanged,
-				}},
-				Plans: []*plan.ResourcePlan{{
-					APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionCreate,
-					Composite: new(plan.ResourceRef{APIVersion: "example.org/v1", Kind: "Network", Name: "mine", Namespace: "team"}),
+					Status: CompositeChanged,
 				}},
 				Notes: notes(),
 			},
@@ -222,19 +237,22 @@ func TestFromXRReport(t *testing.T) {
 					map[string]any{"data": map[string]any{"pw": "b2xk"}, "type": "Opaque"},
 					map[string]any{"data": map[string]any{"pw": "bmV3"}, "stringData": map[string]any{"u": "me"}, "type": "kv"})),
 			}}},
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{Update: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeChanged}},
-				Plans: []*plan.ResourcePlan{{
-					APIVersion: "v1", Kind: "Secret", Name: "creds", Action: plan.ActionUpdate, Composite: &xrPlan,
-					Changes: []plan.FieldChange{
-						{Path: "data.pw", Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
-						{Path: "stringData.u", Planned: &plan.Value{Sensitive: true}},
-						{Path: "type", Actual: &plan.Value{Value: "Opaque"}, Planned: &plan.Value{Value: "kv"}},
-					},
-				}},
-				Notes: notes(),
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{Update: 1},
+					Plans: []*plan.ResourcePlan{{
+						APIVersion: "v1", Kind: "Secret", Name: "creds", Action: plan.ActionUpdate, Composite: &xrPlan,
+						Changes: []plan.FieldChange{
+							{Path: "data.pw", Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
+							{Path: "stringData.u", Planned: &plan.Value{Sensitive: true}},
+							{Path: "type", Actual: &plan.Value{Value: "Opaque"}, Planned: &plan.Value{Value: "kv"}},
+						},
+					}},
+				},
+				Summary:    ProjectSummary{Summary: plan.Summary{Update: 1}},
+				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged}},
+				Notes:      notes(),
 			},
 		},
 		"SecretRedactionDottedKeys": {
@@ -249,18 +267,21 @@ func TestFromXRReport(t *testing.T) {
 					return d
 				}()),
 			}}},
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{Update: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeChanged}},
-				Plans: []*plan.ResourcePlan{{
-					APIVersion: "v1", Kind: "Secret", Name: "creds", Action: plan.ActionUpdate, Composite: &xrPlan,
-					Changes: []plan.FieldChange{
-						{Path: `data[".dockerconfigjson"]`, Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
-						{Path: `data["tls.crt"]`, Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
-					},
-				}},
-				Notes: notes(),
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{Update: 1},
+					Plans: []*plan.ResourcePlan{{
+						APIVersion: "v1", Kind: "Secret", Name: "creds", Action: plan.ActionUpdate, Composite: &xrPlan,
+						Changes: []plan.FieldChange{
+							{Path: `data[".dockerconfigjson"]`, Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
+							{Path: `data["tls.crt"]`, Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
+						},
+					}},
+				},
+				Summary:    ProjectSummary{Summary: plan.Summary{Update: 1}},
+				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged}},
+				Notes:      notes(),
 			},
 		},
 		"Dedupe": {
@@ -276,24 +297,27 @@ func TestFromXRReport(t *testing.T) {
 					Diffs: diffs(rdiff(cmGVK, "shared", dt.DiffTypeAdded, nil, map[string]any{"data": map[string]any{"k": "other"}})),
 				},
 			}},
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{Create: 2},
-				Composites: []plan.CompositeResult{
-					{Ref: xrPlan, Status: plan.CompositeChanged},
-					{Ref: plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "dev"}, Status: plan.CompositeChanged},
-					{Ref: plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "qa"}, Status: plan.CompositeChanged},
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{Create: 2},
+					Plans: []*plan.ResourcePlan{
+						{
+							APIVersion: "v1", Kind: "ConfigMap", Name: "shared", Action: plan.ActionCreate, Composite: &xrPlan,
+							Changes: []plan.FieldChange{{Path: "data.k", Planned: &plan.Value{Value: "v"}}},
+						},
+						{
+							APIVersion: "v1", Kind: "ConfigMap", Name: "shared", Action: plan.ActionCreate,
+							Composite: new(plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "qa"}),
+							Changes:   []plan.FieldChange{{Path: "data.k", Planned: &plan.Value{Value: "other"}}},
+						},
+					},
 				},
-				Plans: []*plan.ResourcePlan{
-					{
-						APIVersion: "v1", Kind: "ConfigMap", Name: "shared", Action: plan.ActionCreate, Composite: &xrPlan,
-						Changes: []plan.FieldChange{{Path: "data.k", Planned: &plan.Value{Value: "v"}}},
-					},
-					{
-						APIVersion: "v1", Kind: "ConfigMap", Name: "shared", Action: plan.ActionCreate,
-						Composite: new(plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "qa"}),
-						Changes:   []plan.FieldChange{{Path: "data.k", Planned: &plan.Value{Value: "other"}}},
-					},
+				Summary: ProjectSummary{Summary: plan.Summary{Create: 2}},
+				Composites: []CompositeResult{
+					{Ref: xrPlan, Status: CompositeChanged},
+					{Ref: plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "dev"}, Status: CompositeChanged},
+					{Ref: plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "qa"}, Status: CompositeChanged},
 				},
 				Notes: notes(),
 			},
@@ -301,16 +325,19 @@ func TestFromXRReport(t *testing.T) {
 		"DryRunAndWarnings": {
 			reason: "An unverified addition carries its DryRun, and the run's warnings precede the derived dry-run summary.",
 			in:     dryRunReport,
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{Create: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeChanged}},
-				Plans: []*plan.ResourcePlan{{
-					APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionCreate, Composite: &xrPlan,
-					DryRun: &plan.Verification{SkipReason: "forbidden", Detail: "no create"},
-				}},
-				Warnings: append([]plan.Warning{{Message: "heads up", Context: map[string]string{"k": "v"}}}, dryRunWarnings...),
-				Notes:    notes(),
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{Create: 1},
+					Plans: []*plan.ResourcePlan{{
+						APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionCreate, Composite: &xrPlan,
+						DryRun: &plan.Verification{SkipReason: "forbidden", Detail: "no create"},
+					}},
+				},
+				Summary:    ProjectSummary{Summary: plan.Summary{Create: 1}},
+				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged}},
+				Warnings:   append([]Warning{{Message: "heads up", Context: map[string]string{"k": "v"}}}, dryRunWarnings...),
+				Notes:      notes(),
 			},
 		},
 	}
@@ -348,7 +375,7 @@ func TestFromCompReport(t *testing.T) {
 	cases := map[string]struct {
 		reason string
 		in     *dt.CompDiffOutput
-		want   plan.Result
+		want   ProjectResult
 	}{
 		"CompositionAndRevisionImpact": {
 			reason: "A changed Composition is an ungrouped plan with a Compositions entry carrying its revision impact; affected XRs group their plans.",
@@ -362,21 +389,24 @@ func TestFromCompReport(t *testing.T) {
 					Diffs: diffs(rdiff(cmGVK, "cm", dt.DiffTypeRemoved, map[string]any{}, nil)),
 				}},
 			}),
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{Update: 1, Destroy: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeChanged, Composition: &compPlan}},
-				Compositions: []plan.CompositionResult{{
-					Ref:            compPlan,
-					RevisionImpact: &plan.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1, PredictedRevision: "net-abc1234"},
-				}},
-				Plans: []*plan.ResourcePlan{
-					{
-						APIVersion: compPlan.APIVersion, Kind: "Composition", Name: "net", Action: plan.ActionUpdate,
-						Changes: []plan.FieldChange{{Path: "spec.mode", Actual: &plan.Value{Value: "Pipeline"}, Planned: &plan.Value{Value: "Resources"}}},
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{Update: 1, Destroy: 1},
+					Plans: []*plan.ResourcePlan{
+						{
+							APIVersion: compPlan.APIVersion, Kind: "Composition", Name: "net", Action: plan.ActionUpdate,
+							Changes: []plan.FieldChange{{Path: "spec.mode", Actual: &plan.Value{Value: "Pipeline"}, Planned: &plan.Value{Value: "Resources"}}},
+						},
+						{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionDelete, Composite: &xrPlan},
 					},
-					{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionDelete, Composite: &xrPlan},
 				},
+				Summary:    ProjectSummary{Summary: plan.Summary{Update: 1, Destroy: 1}},
+				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged, Composition: &compPlan}},
+				Compositions: []CompositionResult{{
+					Ref:            compPlan,
+					RevisionImpact: &RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1, PredictedRevision: "net-abc1234"},
+				}},
 				Notes: notes(),
 			},
 		},
@@ -390,16 +420,19 @@ func TestFromCompReport(t *testing.T) {
 					filtered("deleting", dt.FilterReasonDeleting, ""),
 				},
 			}),
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{NoOp: 1, Deferred: 1},
-				Composites: []plan.CompositeResult{
-					{Ref: named("pinned"), Status: plan.CompositeDeferred, Composition: &compPlan, Reason: "manualPolicy", Detail: "compositionRevisionRef: net-6", Pinned: true},
-					{Ref: named("selector"), Status: plan.CompositeSkipped, Composition: &compPlan, Reason: "revisionSelectorMismatch", Detail: "channel=stable"},
-					{Ref: named("deleting"), Status: plan.CompositeSkipped, Composition: &compPlan, Reason: "deleting"},
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{NoOp: 1},
+					Plans:         []*plan.ResourcePlan{compNoOp},
 				},
-				Compositions: []plan.CompositionResult{{Ref: compPlan}},
-				Plans:        []*plan.ResourcePlan{compNoOp},
+				Summary: ProjectSummary{Summary: plan.Summary{NoOp: 1}, Deferred: 1},
+				Composites: []CompositeResult{
+					{Ref: named("pinned"), Status: CompositeDeferred, Composition: &compPlan, Reason: "manualPolicy", Detail: "compositionRevisionRef: net-6", Pinned: true},
+					{Ref: named("selector"), Status: CompositeSkipped, Composition: &compPlan, Reason: "revisionSelectorMismatch", Detail: "channel=stable"},
+					{Ref: named("deleting"), Status: CompositeSkipped, Composition: &compPlan, Reason: "deleting"},
+				},
+				Compositions: []CompositionResult{{Ref: compPlan}},
 				Notes:        notes(),
 			},
 		},
@@ -408,13 +441,16 @@ func TestFromCompReport(t *testing.T) {
 			in: composition(dt.CompositionDiff{
 				ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: dt.XRStatusUnchanged, Pinned: true}},
 			}),
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{NoOp: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeUnchanged, Composition: &compPlan, Pinned: true}},
-				Compositions:  []plan.CompositionResult{{Ref: compPlan}},
-				Plans:         []*plan.ResourcePlan{compNoOp},
-				Notes:         notes(),
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{NoOp: 1},
+					Plans:         []*plan.ResourcePlan{compNoOp},
+				},
+				Summary:      ProjectSummary{Summary: plan.Summary{NoOp: 1}},
+				Composites:   []CompositeResult{{Ref: xrPlan, Status: CompositeUnchanged, Composition: &compPlan, Pinned: true}},
+				Compositions: []CompositionResult{{Ref: compPlan}},
+				Notes:        notes(),
 			},
 		},
 		"PinnedRenderedRevision": {
@@ -422,13 +458,16 @@ func TestFromCompReport(t *testing.T) {
 			in: composition(dt.CompositionDiff{
 				ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: dt.XRStatusChanged, Pinned: true, RenderedRevision: "net-6"}},
 			}),
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{NoOp: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeChanged, Composition: &compPlan, Pinned: true, Detail: "rendered against pinned revision net-6 with the project's functions"}},
-				Compositions:  []plan.CompositionResult{{Ref: compPlan}},
-				Plans:         []*plan.ResourcePlan{compNoOp},
-				Notes:         notes(),
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{NoOp: 1},
+					Plans:         []*plan.ResourcePlan{compNoOp},
+				},
+				Summary:      ProjectSummary{Summary: plan.Summary{NoOp: 1}},
+				Composites:   []CompositeResult{{Ref: xrPlan, Status: CompositeChanged, Composition: &compPlan, Pinned: true, Detail: "rendered against pinned revision net-6 with the project's functions"}},
+				Compositions: []CompositionResult{{Ref: compPlan}},
+				Notes:        notes(),
 			},
 		},
 		"AnalysisSkippedMaskedOnly": {
@@ -438,15 +477,18 @@ func TestFromCompReport(t *testing.T) {
 				ImpactAnalysisSkipped: true,
 				RevisionImpact:        dt.RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 3},
 			}),
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{NoOp: 1},
-				Compositions: []plan.CompositionResult{{
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{NoOp: 1},
+					Plans:         []*plan.ResourcePlan{compNoOp},
+				},
+				Summary: ProjectSummary{Summary: plan.Summary{NoOp: 1}},
+				Compositions: []CompositionResult{{
 					Ref:                   compPlan,
-					RevisionImpact:        &plan.RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 3},
+					RevisionImpact:        &RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 3},
 					ImpactAnalysisSkipped: true,
 				}},
-				Plans: []*plan.ResourcePlan{compNoOp},
 				Notes: notes(),
 			},
 		},
@@ -455,16 +497,19 @@ func TestFromCompReport(t *testing.T) {
 			in: composition(dt.CompositionDiff{
 				Error: &dt.OutputError{ResourceID: "Composition/net", Message: "cannot load"},
 			}),
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Errored:       true,
-				Summary:       plan.Summary{Errored: 1},
-				Compositions:  []plan.CompositionResult{{Ref: compPlan}},
-				Plans: []*plan.ResourcePlan{
-					{APIVersion: compPlan.APIVersion, Kind: "Composition", Name: "net", Error: "cannot load"},
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Errored:       true,
+					Summary:       plan.Summary{Errored: 1},
+					Plans: []*plan.ResourcePlan{
+						{APIVersion: compPlan.APIVersion, Kind: "Composition", Name: "net", Error: "cannot load"},
+					},
 				},
-				Errors: []plan.Error{{Ref: &compPlan, Message: "cannot load"}},
-				Notes:  notes(),
+				Summary:      ProjectSummary{Summary: plan.Summary{Errored: 1}},
+				Compositions: []CompositionResult{{Ref: compPlan}},
+				Errors:       []Error{{Ref: &compPlan, Message: "cannot load"}},
+				Notes:        notes(),
 			},
 		},
 		"CompositesNameTheirComposition": {
@@ -473,19 +518,22 @@ func TestFromCompReport(t *testing.T) {
 				{Name: "net", ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: dt.XRStatusUnchanged}}},
 				{Name: "db", ImpactAnalysis: []dt.XRImpact{filtered("qa", dt.FilterReasonDeleting, "")}},
 			}},
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Summary:       plan.Summary{NoOp: 2},
-				Composites: []plan.CompositeResult{
-					{Ref: xrPlan, Status: plan.CompositeUnchanged, Composition: &compPlan},
-					{Ref: named("qa"), Status: plan.CompositeSkipped, Composition: &dbPlan, Reason: "deleting"},
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{NoOp: 2},
+					Plans: []*plan.ResourcePlan{
+						compNoOp,
+						{APIVersion: dbPlan.APIVersion, Kind: dbPlan.Kind, Name: dbPlan.Name, Action: plan.ActionNoOp},
+					},
 				},
-				Compositions: []plan.CompositionResult{{Ref: compPlan}, {Ref: dbPlan}},
-				Plans: []*plan.ResourcePlan{
-					compNoOp,
-					{APIVersion: dbPlan.APIVersion, Kind: dbPlan.Kind, Name: dbPlan.Name, Action: plan.ActionNoOp},
+				Summary: ProjectSummary{Summary: plan.Summary{NoOp: 2}},
+				Composites: []CompositeResult{
+					{Ref: xrPlan, Status: CompositeUnchanged, Composition: &compPlan},
+					{Ref: named("qa"), Status: CompositeSkipped, Composition: &dbPlan, Reason: "deleting"},
 				},
-				Notes: notes(),
+				Compositions: []CompositionResult{{Ref: compPlan}, {Ref: dbPlan}},
+				Notes:        notes(),
 			},
 		},
 		"XRErrorAndRunErrors": {
@@ -497,18 +545,21 @@ func TestFromCompReport(t *testing.T) {
 				}},
 				Errors: []dt.OutputError{xrErr, {Message: "interrupted"}},
 			},
-			want: plan.Result{
-				FormatVersion: plan.ResultFormatVersion,
-				Errored:       true,
-				Summary:       plan.Summary{NoOp: 1, Errored: 1},
-				Composites:    []plan.CompositeResult{{Ref: xrPlan, Status: plan.CompositeError, Composition: &compPlan}},
-				Compositions:  []plan.CompositionResult{{Ref: compPlan}},
-				Plans: []*plan.ResourcePlan{
-					compNoOp,
-					{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Error: "render failed", Composite: &xrPlan},
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Errored:       true,
+					Summary:       plan.Summary{NoOp: 1, Errored: 1},
+					Plans: []*plan.ResourcePlan{
+						compNoOp,
+						{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Error: "render failed", Composite: &xrPlan},
+					},
 				},
-				Errors: []plan.Error{{Ref: &xrPlan, Message: "render failed"}, {Message: "interrupted"}},
-				Notes:  notes(),
+				Summary:      ProjectSummary{Summary: plan.Summary{NoOp: 1, Errored: 1}},
+				Composites:   []CompositeResult{{Ref: xrPlan, Status: CompositeError, Composition: &compPlan}},
+				Compositions: []CompositionResult{{Ref: compPlan}},
+				Errors:       []Error{{Ref: &xrPlan, Message: "render failed"}, {Message: "interrupted"}},
+				Notes:        notes(),
 			},
 		},
 	}
@@ -551,21 +602,21 @@ func TestProviderPlanMerge(t *testing.T) {
 		diff       *dt.ResourceDiff
 		plans      map[string]*plan.ResourcePlan
 		wantPlans  []*plan.ResourcePlan
-		wantStatus plan.CompositeStatus
+		wantStatus CompositeStatus
 	}{
 		"NoProviderEntry": {
 			reason:     "With no provider entry the engine plan stands, and an empty plans map drops the not-run note.",
 			diff:       modified,
 			plans:      map[string]*plan.ResourcePlan{},
 			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionUpdate, Changes: labelChange, DryRun: forbidden})},
-			wantStatus: plan.CompositeChanged,
+			wantStatus: CompositeChanged,
 		},
 		"ProviderError": {
 			reason:     "A provider error is an error plan keeping the engine's identity, composite and DryRun.",
 			diff:       modified,
 			plans:      map[string]*plan.ResourcePlan{key: {Kind: "Other", Name: "x", Error: "diff server cannot plan: boom"}},
 			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Error: "diff server cannot plan: boom", DryRun: forbidden})},
-			wantStatus: plan.CompositeChanged,
+			wantStatus: CompositeChanged,
 		},
 		"ProviderApproximate": {
 			reason: "A NotSupported fallback keeps the engine's diff, marked approximate with the provider's reason.",
@@ -576,14 +627,14 @@ func TestProviderPlanMerge(t *testing.T) {
 			wantPlans: []*plan.ResourcePlan{cm(plan.ResourcePlan{
 				Action: plan.ActionUpdate, Changes: labelChange, DryRun: forbidden, Approximate: true, FallbackReason: "the provider cannot compute a diff",
 			})},
-			wantStatus: plan.CompositeChanged,
+			wantStatus: CompositeChanged,
 		},
 		"AddedProviderCreate": {
 			reason:     "A provider create keeps the engine's changes it does not report.",
 			diff:       added,
 			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionCreate, Changes: providerChange}},
 			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionCreate, Changes: append(slices.Clone(providerChange), plan.FieldChange{Path: "data.k", Planned: &plan.Value{Value: "v"}})})},
-			wantStatus: plan.CompositeChanged,
+			wantStatus: CompositeChanged,
 		},
 		"ModifiedProviderReplace": {
 			reason: "A provider replace takes the action and replace paths, adds the engine's other changes, keeping the engine's DryRun.",
@@ -594,34 +645,34 @@ func TestProviderPlanMerge(t *testing.T) {
 			wantPlans: []*plan.ResourcePlan{cm(plan.ResourcePlan{
 				Action: plan.ActionReplace, Changes: append(slices.Clone(providerChange), labelChange...), ReplacePaths: []string{"spec.forProvider.size"}, DryRun: forbidden,
 			})},
-			wantStatus: plan.CompositeChanged,
+			wantStatus: CompositeChanged,
 		},
 		"ModifiedProviderUpdateKeepsClusterChange": {
 			reason:     "A deletionPolicy change the provider does not report stays beside its update; the forProvider change it does report is listed once.",
 			diff:       policy,
 			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionUpdate, Changes: providerChange}},
 			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionUpdate, Changes: append(slices.Clone(providerChange), policyChange)})},
-			wantStatus: plan.CompositeChanged,
+			wantStatus: CompositeChanged,
 		},
 		"ModifiedProviderNoOp": {
 			reason:     "The cluster object still changes when the provider finds nothing, so the engine's update stands.",
 			diff:       modified,
 			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionNoOp}},
 			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionUpdate, Changes: labelChange, DryRun: forbidden})},
-			wantStatus: plan.CompositeChanged,
+			wantStatus: CompositeChanged,
 		},
 		"EqualProviderUpdateUpgradesComposite": {
 			reason:     "Cloud drift on an MR the cluster finds equal is an update, and makes its unchanged composite changed.",
 			diff:       equal,
 			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionUpdate, Changes: providerChange}},
 			wantPlans:  []*plan.ResourcePlan{cm(plan.ResourcePlan{Action: plan.ActionUpdate, Changes: providerChange})},
-			wantStatus: plan.CompositeChanged,
+			wantStatus: CompositeChanged,
 		},
 		"EqualProviderNoOpDropped": {
 			reason:     "A kept-equal MR the provider finds unchanged is dropped, and its composite stays unchanged.",
 			diff:       equal,
 			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionNoOp}},
-			wantStatus: plan.CompositeUnchanged,
+			wantStatus: CompositeUnchanged,
 		},
 	}
 
@@ -756,12 +807,12 @@ func TestSecretDottedKeysRedactedInObjects(t *testing.T) {
 }
 
 func TestCompositeReason(t *testing.T) {
-	cases := map[dt.FilterReason]plan.CompositeReason{
-		dt.FilterReasonManualPolicy:             plan.CompositeReasonManualPolicy,
-		dt.FilterReasonRevisionSelectorMismatch: plan.CompositeReasonRevisionSelectorMismatch,
-		dt.FilterReasonDeleting:                 plan.CompositeReasonDeleting,
+	cases := map[dt.FilterReason]CompositeReason{
+		dt.FilterReasonManualPolicy:             CompositeReasonManualPolicy,
+		dt.FilterReasonRevisionSelectorMismatch: CompositeReasonRevisionSelectorMismatch,
+		dt.FilterReasonDeleting:                 CompositeReasonDeleting,
 		"":                                      "",
-		"something_new":                         plan.CompositeReasonUnknown,
+		"something_new":                         CompositeReasonUnknown,
 	}
 	for in, want := range cases {
 		if got := compositeReason(in); got != want {

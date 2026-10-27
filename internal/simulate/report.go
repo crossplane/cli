@@ -37,7 +37,7 @@ import (
 // provider plans, so its plans say nothing about the cloud resources.
 const noteProviderPlanNotRun = "Cloud-layer plan not run."
 
-// Notes a caller sets on Result.Notes when no provider plans refined the
+// Notes a caller sets on ProjectResult.Notes when no provider plans refined the
 // cluster-layer result, saying why. A result built from provider plans
 // carries no note: each approximate plan already says why it is approximate.
 const (
@@ -45,12 +45,12 @@ const (
 	NoteNoDiffServers       = "Cloud-layer plan not run: no provider diff servers serve these resources."
 )
 
-// FromXRReport maps an xr or project diff run onto plan.Result: one plan per
+// FromXRReport maps an xr or project diff run onto a ProjectResult: one plan per
 // resource diff (the XR's own included), each grouped under its input XR or
 // claim, and one Composites entry per input. plans are the provider plans
 // PlanDiffs returned, merged into the engine's by diff key; nil means none
 // ran.
-func FromXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan) plan.Result {
+func FromXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan) ProjectResult {
 	if r == nil {
 		r = &dt.XRReport{}
 	}
@@ -62,19 +62,19 @@ func FromXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan) plan.Resu
 		// The group's XR is the input's identity, so a claim input keeps the
 		// claim's kind and name.
 		xr := resourceRef(g.XR)
-		c := plan.CompositeResult{Ref: xr, Status: plan.CompositeUnchanged}
+		c := CompositeResult{Ref: xr, Status: CompositeUnchanged}
 
 		switch {
 		case g.Err != nil:
-			c.Status = plan.CompositeError
+			c.Status = CompositeError
 			a.addError(xr, *g.Err, &xr)
 			owned = append(owned, *g.Err)
 		case hasChanges(g.Diffs):
-			c.Status = plan.CompositeChanged
+			c.Status = CompositeChanged
 		}
 
-		if a.addDiffs(g.Diffs, &xr) && c.Status == plan.CompositeUnchanged {
-			c.Status = plan.CompositeChanged
+		if a.addDiffs(g.Diffs, &xr) && c.Status == CompositeUnchanged {
+			c.Status = CompositeChanged
 		}
 		a.composites = append(a.composites, c)
 	}
@@ -84,18 +84,18 @@ func FromXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan) plan.Resu
 	return a.result(slices.Concat(r.Warnings, dt.XRDryRunWarnings(r.Groups)))
 }
 
-// FromCompReport maps a composition diff run onto plan.Result: a plan and a
+// FromCompReport maps a composition diff run onto a ProjectResult: a plan and a
 // Compositions entry per Composition, and a Composites entry per affected
 // composite, with that composite's downstream plans grouped under it. plans
 // are merged as FromXRReport merges them.
-func FromCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan) plan.Result {
+func FromCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan) ProjectResult {
 	if o == nil {
 		o = &dt.CompDiffOutput{}
 	}
 
 	a := newAssembler(plans)
 	owned := make([]dt.OutputError, 0, len(o.Errors))
-	compositions := make([]plan.CompositionResult, 0, len(o.Compositions))
+	compositions := make([]CompositionResult, 0, len(o.Compositions))
 
 	for i := range o.Compositions {
 		comp := &o.Compositions[i]
@@ -105,11 +105,11 @@ func FromCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan) p
 			Name:       comp.Name,
 		}
 
-		cr := plan.CompositionResult{Ref: ref, ImpactAnalysisSkipped: comp.ImpactAnalysisSkipped}
+		cr := CompositionResult{Ref: ref, ImpactAnalysisSkipped: comp.ImpactAnalysisSkipped}
 		// A zero RevisionImpact means the comparison never ran; reporting
 		// it would claim the composition creates no revision.
 		if ri := comp.RevisionImpact; ri.Determined() {
-			cr.RevisionImpact = &plan.RevisionImpact{
+			cr.RevisionImpact = &RevisionImpact{
 				ChangeScope:         ri.ChangeScope,
 				CreatesRevision:     ri.CreatesRevision,
 				RepointedComposites: ri.RepointedComposites,
@@ -139,12 +139,8 @@ func FromCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan) p
 				a.addError(xr, *impact.Error, &xr)
 				owned = append(owned, *impact.Error)
 			}
-			if c.Status == plan.CompositeDeferred {
-				a.deferred++
-			}
-
-			if a.addDiffs(impact.Diffs, &xr) && c.Status == plan.CompositeUnchanged {
-				c.Status = plan.CompositeChanged
+			if a.addDiffs(impact.Diffs, &xr) && c.Status == CompositeUnchanged {
+				c.Status = CompositeChanged
 			}
 			a.composites = append(a.composites, c)
 		}
@@ -162,8 +158,8 @@ func FromCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan) p
 // Manual-policy composite is deferred: applying changes nothing for it until
 // its revision advances, unless it was rendered against its pinned revision
 // because that calls a changed function. Other filtered composites are skipped.
-func compositeResult(impact dt.XRImpact) plan.CompositeResult {
-	c := plan.CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned || impact.FilterReason == dt.FilterReasonManualPolicy}
+func compositeResult(impact dt.XRImpact) CompositeResult {
+	c := CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned || impact.FilterReason == dt.FilterReasonManualPolicy}
 
 	if impact.Pinned && impact.RenderedRevision != "" {
 		c.Detail = "rendered against pinned revision " + impact.RenderedRevision + " with the project's functions"
@@ -171,20 +167,20 @@ func compositeResult(impact dt.XRImpact) plan.CompositeResult {
 
 	switch impact.Status {
 	case dt.XRStatusChanged:
-		c.Status = plan.CompositeChanged
+		c.Status = CompositeChanged
 	case dt.XRStatusUnchanged:
-		c.Status = plan.CompositeUnchanged
+		c.Status = CompositeUnchanged
 	case dt.XRStatusError:
-		c.Status = plan.CompositeError
+		c.Status = CompositeError
 	case dt.XRStatusFiltered:
-		c.Status = plan.CompositeSkipped
+		c.Status = CompositeSkipped
 		if impact.FilterReason == dt.FilterReasonManualPolicy {
-			c.Status = plan.CompositeDeferred
+			c.Status = CompositeDeferred
 		}
 		c.Reason = compositeReason(impact.FilterReason)
 		c.Detail = impact.FilterDetail
 	default:
-		c.Status = plan.CompositeStatus(impact.Status)
+		c.Status = CompositeStatus(impact.Status)
 	}
 
 	return c
@@ -192,20 +188,20 @@ func compositeResult(impact dt.XRImpact) plan.CompositeResult {
 
 // compositeReason converts the engine's filter reason to the public enum. An
 // empty reason stays empty.
-func compositeReason(r dt.FilterReason) plan.CompositeReason {
+func compositeReason(r dt.FilterReason) CompositeReason {
 	if r == "" {
 		return ""
 	}
 
 	switch r {
 	case dt.FilterReasonManualPolicy:
-		return plan.CompositeReasonManualPolicy
+		return CompositeReasonManualPolicy
 	case dt.FilterReasonRevisionSelectorMismatch:
-		return plan.CompositeReasonRevisionSelectorMismatch
+		return CompositeReasonRevisionSelectorMismatch
 	case dt.FilterReasonDeleting:
-		return plan.CompositeReasonDeleting
+		return CompositeReasonDeleting
 	default:
-		return plan.CompositeReasonUnknown
+		return CompositeReasonUnknown
 	}
 }
 
@@ -215,9 +211,8 @@ type assembler struct {
 	// ran.
 	provider   map[string]*plan.ResourcePlan
 	plans      []*plan.ResourcePlan
-	composites []plan.CompositeResult
-	errors     []plan.Error
-	deferred   int
+	composites []CompositeResult
+	errors     []Error
 	// listed holds, per resource, the unredacted changes already planned,
 	// so a change two inputs reach identically is listed once.
 	listed map[string][]listedChange
@@ -358,18 +353,14 @@ func (a *assembler) addRunErrors(all, owned []dt.OutputError) {
 	}
 }
 
-func (a *assembler) result(warnings []dt.OutputWarning) plan.Result {
-	res := plan.NewResult(a.plans)
-	res.Summary.Deferred = a.deferred
-	res.Composites = a.composites
-	res.Errors = a.errors
-	res.Errored = res.Errored || len(a.errors) > 0
+func (a *assembler) result(warnings []dt.OutputWarning) ProjectResult {
+	res := NewProjectResult(a.plans, a.composites, a.errors)
 	if a.provider == nil {
 		res.Notes = []string{noteProviderPlanNotRun}
 	}
 
 	for _, w := range warnings {
-		res.Warnings = append(res.Warnings, plan.Warning{Message: w.Message, Context: w.Context})
+		res.Warnings = append(res.Warnings, Warning{Message: w.Message, Context: w.Context})
 	}
 
 	return res
@@ -502,22 +493,21 @@ func verification(d *dt.DryRunInfo) *plan.Verification {
 	}
 
 	return &plan.Verification{
-		Performed:      d.Performed,
 		SkipReason:     string(d.SkipReason),
 		Detail:         d.Detail,
 		StorageVersion: d.StorageVersion,
 	}
 }
 
-func planError(e dt.OutputError, resource *plan.ResourceRef) plan.Error {
-	out := plan.Error{Ref: resource, Message: e.Message}
+func planError(e dt.OutputError, resource *plan.ResourceRef) Error {
+	out := Error{Ref: resource, Message: e.Message}
 
 	for _, f := range e.ValidationFailures {
-		vf := plan.ValidationFailure{
+		vf := ValidationFailure{
 			APIVersion: f.APIVersion, Kind: f.Kind, Name: f.Name, Namespace: f.Namespace, Status: f.Status,
 		}
 		for _, fe := range f.Errors {
-			vf.Errors = append(vf.Errors, plan.FieldValidationError{Type: fe.Type, Field: fe.Field, Message: fe.Message, Value: fe.Value})
+			vf.Errors = append(vf.Errors, FieldValidationError{Type: fe.Type, Field: fe.Field, Message: fe.Message, Value: fe.Value})
 		}
 		out.ValidationFailures = append(out.ValidationFailures, vf)
 	}

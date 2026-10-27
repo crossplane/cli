@@ -22,10 +22,6 @@ package plan
 import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-
-	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
-
-	"github.com/crossplane/cli/v2/internal/diff/compare"
 )
 
 // Action is what applying a resource would do.
@@ -134,11 +130,9 @@ type ResourceRef struct {
 	Namespace  string `json:"namespace,omitempty"`
 }
 
-// Verification records a server-side dry run that did not happen.
+// Verification records a server-side dry run that did not happen: its presence
+// means the dry run was not performed.
 type Verification struct {
-	// Performed is false whenever a Verification is present; it is kept so
-	// the serialized object is self-describing.
-	Performed bool `json:"performed"`
 	// SkipReason says why the dry run was not performed.
 	SkipReason string `json:"skipReason,omitempty"`
 	// Detail is the underlying cause as reported by the cluster.
@@ -158,14 +152,39 @@ func (p *ResourcePlan) ResourceRef() ResourceRef {
 	return ResourceRef{APIVersion: p.APIVersion, Kind: p.Kind, Name: p.Name, Namespace: p.Namespace}
 }
 
-// cleanView returns the redacted, cleaned copy of u that a plan carries as
-// before or after: the same view project simulate shows, via compare.Clean.
-// u is not modified; nil stays nil.
+// cleanView returns the redacted copy of u that a plan carries as before or
+// after: u without status, server-managed metadata, the last-applied
+// configuration annotation or composed resource references, the fields the
+// diff engine also strips. u is not modified; nil stays nil.
 func cleanView(u *unstructured.Unstructured) *unstructured.Unstructured {
 	if u == nil {
 		return nil
 	}
-	return RedactSecret(compare.Clean(u, logging.NewNopLogger(), compare.Options{}))
+	out := u.DeepCopy()
+	delete(out.Object, "status")
+	for _, f := range []string{"resourceVersion", "uid", "generation", "creationTimestamp", "managedFields", "selfLink", "ownerReferences"} {
+		unstructured.RemoveNestedField(out.Object, "metadata", f)
+	}
+	removeEmptied(out.Object, "metadata", "annotations", "kubectl.kubernetes.io/last-applied-configuration")
+	unstructured.RemoveNestedField(out.Object, "spec", "resourceRefs")
+	removeEmptied(out.Object, "spec", "crossplane", "resourceRefs")
+	return RedactSecret(out)
+}
+
+// removeEmptied removes obj's parent.child.key, then parent.child if that
+// left it empty.
+func removeEmptied(obj map[string]any, parent, child, key string) {
+	m, ok, _ := unstructured.NestedMap(obj, parent, child)
+	if !ok {
+		return
+	}
+	if _, ok := m[key]; !ok {
+		return
+	}
+	unstructured.RemoveNestedField(obj, parent, child, key)
+	if len(m) == 1 {
+		unstructured.RemoveNestedField(obj, parent, child)
+	}
 }
 
 // RedactSecret returns u with each data and stringData value replaced by the

@@ -218,7 +218,7 @@ func TestChanged(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := Changed(plan.Result{Plans: tc.plans}); got != tc.want {
+			if got := Changed(ProjectResult{Result: plan.Result{Plans: tc.plans}}); got != tc.want {
 				t.Errorf("Changed(...): want %t, got %t", tc.want, got)
 			}
 		})

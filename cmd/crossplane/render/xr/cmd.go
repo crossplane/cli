@@ -51,6 +51,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
+	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 	"github.com/crossplane/cli/v2/pkg/render"
@@ -419,12 +420,41 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 	}
 
 	if isProject {
-		return project.LoadFunctions(ctx, log, sp, cfg, fs, filePath, fileName, c.MaxConcurrency, func(opts ...clixpkg.ClientOption) (clixpkg.Client, error) {
-			return clixpkg.NewClient(append([]clixpkg.ClientOption{clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir()))}, opts...)...)
-		})
+		return c.loadFunctionsFromProject(ctx, log, sp, cfg, fs, filePath, fileName)
 	}
 
 	return c.loadFunctionsFromConfiguration(ctx, log, fs, fileName)
+}
+
+func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config, projFS afero.Fs, projFilePath, projFileName string) ([]pkgv1.Function, error) {
+	proj, err := projectfile.Parse(projFS, projFileName)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
+	}
+
+	xpkgClient, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot create xpkg client")
+	}
+
+	generators := generator.AllLanguages(
+		generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+		generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+	)
+
+	depMgr := dependency.NewManager(proj, projFS,
+		dependency.WithProjectFile(projFileName),
+		dependency.WithSchemaGenerators(generators),
+		dependency.WithXpkgClient(xpkgClient),
+	)
+
+	fns, _, err := project.LoadFunctions(ctx, proj, projFS, depMgr, project.LoadFunctionsOptions{
+		Logger:         log,
+		Spinner:        sp,
+		Generators:     generators,
+		MaxConcurrency: c.MaxConcurrency,
+	})
+	return fns, err
 }
 
 // resolveProjectFile returns the absolute path of the project or configuration

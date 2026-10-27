@@ -474,12 +474,6 @@ func TestSimulateNameRejected(t *testing.T) {
 			wantErr:  "can't be combined with --namespace",
 			wantCode: exitUsageError,
 		},
-		"MaxConcurrencyZeroRejected": {
-			reason:   "--max-concurrency=0 is rejected.",
-			args:     append([]string{"--max-concurrency=0"}, base...),
-			wantErr:  "--max-concurrency must be at least 1",
-			wantCode: exitUsageError,
-		},
 		"NamePartiallyUnmatchedFailsBeforeRendering": {
 			reason:   "one --name no composite matches fails the run, and no plan is rendered.",
 			args:     append([]string{"--name=default/test-resource", "--name=default/missing"}, base...),

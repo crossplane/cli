@@ -427,7 +427,7 @@ func TestEngineRenderFn_MultiCompositionFunctionSet(t *testing.T) {
 // TestEngineRenderFn_PreservesExistingNetworkAnnotation asserts that an
 // existing annotation is preserved: when a function arrives with a non-empty
 // runtime-docker-network annotation already set (e.g. via
-// CROSSPLANE_DIFF_DOCKER_NETWORK / a future containerized-job env var path),
+// CROSSPLANE_DOCKER_NETWORK / a future containerized-job env var path),
 // EngineRenderFn must NOT overwrite that value with the captured engine
 // network on the subsequent-render annotate path.
 func TestEngineRenderFn_PreservesExistingNetworkAnnotation(t *testing.T) {

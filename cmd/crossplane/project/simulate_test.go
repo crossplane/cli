@@ -89,6 +89,7 @@ func TestSimulateFlags(t *testing.T) {
 
 	cases := map[string]struct {
 		reason string
+		env    map[string]string
 		args   []string
 		want   want
 	}{
@@ -243,10 +244,48 @@ func TestSimulateFlags(t *testing.T) {
 				EngineFlags:    render.EngineFlags{CrossplaneDockerNetwork: "ci"},
 			}},
 		},
+		"RenderDockerNetworkEnv": {
+			reason: "CROSSPLANE_DOCKER_NETWORK should land on the embedded EngineFlags.",
+			env:    map[string]string{"CROSSPLANE_DOCKER_NETWORK": "env-net"},
+			want: want{cmd: &simulateCmd{
+				Input:          []string{"crossplane-project.yaml"},
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        2 * time.Minute,
+				Output:         "plan",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+				EngineFlags:    render.EngineFlags{CrossplaneDockerNetwork: "env-net"},
+			}},
+		},
+		"RenderDockerNetworkFlagOverEnv": {
+			reason: "--crossplane-docker-network should win over CROSSPLANE_DOCKER_NETWORK.",
+			env:    map[string]string{"CROSSPLANE_DOCKER_NETWORK": "env-net"},
+			args:   []string{"--crossplane-docker-network", "ci"},
+			want: want{cmd: &simulateCmd{
+				Input:          []string{"crossplane-project.yaml"},
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        2 * time.Minute,
+				Output:         "plan",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+				EngineFlags:    render.EngineFlags{CrossplaneDockerNetwork: "ci"},
+			}},
+		},
 		"RenderBinaryWithNetwork": {
-			reason: "A local render binary runs no container, so it can't take a Docker network.",
+			reason: "A local render binary ignores a Docker network rather than rejecting it.",
 			args:   []string{"--crossplane-binary", creds, "--crossplane-docker-network", "ci"},
-			want:   want{err: true},
+			want: want{cmd: &simulateCmd{
+				Input:          []string{"crossplane-project.yaml"},
+				MaxConcurrency: 8,
+				MaxIterations:  dp.DefaultMaxRenderIterations,
+				Timeout:        2 * time.Minute,
+				Output:         "plan",
+				MaxNestedDepth: 10,
+				DryRunOn:       "all",
+				EngineFlags:    render.EngineFlags{CrossplaneBinary: creds, CrossplaneDockerNetwork: "ci"},
+			}},
 		},
 		"SkipPlan": {
 			reason: "--skip-plan alone should be accepted.",
@@ -387,6 +426,9 @@ func TestSimulateFlags(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
 			got, err := parseSimulate(t, tc.args...)
 			if gotErr := err != nil; gotErr != tc.want.err {
 				t.Fatalf("\n%s\nParse(%v): want error %t, got %v", tc.reason, tc.args, tc.want.err, err)

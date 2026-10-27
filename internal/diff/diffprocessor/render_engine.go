@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"sync"
 
@@ -140,8 +139,9 @@ type EngineRenderFn struct {
 //
 // The docker engine renders on a Docker network: by default one it creates in
 // its first Setup and removes in that Setup's cleanup, labelled with the run's
-// session. network, or when it is empty CROSSPLANE_DIFF_DOCKER_NETWORK, read
-// once here, names the user's network instead, passed as
+// session. network, when set (--crossplane-docker-network, then
+// CROSSPLANE_DOCKER_NETWORK, then a function annotation), names the user's
+// network instead, passed as
 // render.EngineFlags.CrossplaneDockerNetwork
 // (crossplane/cli#65): the engine then runs the crossplane-render container on
 // it AND annotates each fn at Setup time so its container joins it too —
@@ -163,10 +163,6 @@ func NewEngineRenderFn(log logging.Logger, advisories dt.Advisories, binaryPath,
 	// enforced. Advisory only — an unverifiable reference is not an invalid one.
 	if w := UncomparableRenderImageWarning(image); w != "" {
 		advisories.Raise(dt.OutputWarning{Message: w})
-	}
-
-	if network == "" {
-		network = os.Getenv(EnvDockerNetwork)
 	}
 
 	run := dockerrun.New(dockerrun.DefaultLeaseDir(), dockerrun.NewDockerClient, log, advisories)
@@ -290,7 +286,7 @@ func (e *EngineRenderFn) Render(ctx context.Context, log logging.Logger, in Rend
 // ponytail: a composition with an empty pipeline starts nothing, so its render
 // is not ordered after the first Setup; rendered concurrently with that Setup,
 // it races on the docker engine's network field. Only the first Setup of a run
-// writes it, and only without CROSSPLANE_DIFF_DOCKER_NETWORK. Upgrade (e.g. a
+// writes it, and only without a user-supplied network. Upgrade (e.g. a
 // once-guarded first Setup) if empty pipelines get diffed concurrently.
 func (e *EngineRenderFn) startFunctions(ctx context.Context, log logging.Logger, fns []pkgv1.Function) (map[string]string, error) {
 	// Starting functions is shared by the run, so a composite's XRTimeout neither bounds nor

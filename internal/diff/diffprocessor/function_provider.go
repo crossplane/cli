@@ -45,16 +45,6 @@ type FunctionProvider interface {
 	Cleaner
 }
 
-// EnvDockerNetwork is the environment variable that specifies which Docker
-// network the crossplane-render container and function containers should
-// join when no network is passed explicitly. NewEngineRenderFn reads this once
-// and routes the value through
-// render.EngineFlags.CrossplaneDockerNetwork; the upstream docker engine
-// then both runs the render container on that network and annotates fns
-// to join it at Setup time. This is needed when crossplane-diff runs
-// inside a Docker container (e.g. a GitHub Actions container job).
-const EnvDockerNetwork = "CROSSPLANE_DIFF_DOCKER_NETWORK"
-
 // CachedFunctionProvider lazy-loads functions and caches them by composition name and pipeline
 // (see functionCacheKey).
 // This is appropriate for the comp command, where many XRs use the same composition:

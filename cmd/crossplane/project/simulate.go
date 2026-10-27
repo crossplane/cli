@@ -257,6 +257,8 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		return err
 	}
 
+	c.SetDefaultCrossplaneDockerNetwork(fns)
+
 	opts := append(c.processorOptions(k, logger, fns, digests, pkgs.ics), dp.WithChangedFunctions(append(changed, c.hookChangedFunctions()...)...), dp.WithXRTimeout(c.Timeout))
 
 	// xrPlanner and servers are for rendering the plans; they stay nil with

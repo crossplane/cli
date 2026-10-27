@@ -82,7 +82,7 @@ var hostNetworks = []network.Summary{
 	tu.DockerNetwork("self-net", tu.DockerSession(selfID)),
 
 	// Not crossplane-diff's to judge: a network from a version that named the network for its run, one the
-	// user supplied with CROSSPLANE_DIFF_DOCKER_NETWORK (render never labels it), and one that claims the
+	// user supplied with CROSSPLANE_DOCKER_NETWORK (render never labels it), and one that claims the
 	// dead run's session but not crossplane's management.
 	tu.DockerNetwork("legacy-net", map[string]string{"crossplane-diff.io/run-id": deadID}),
 	tu.DockerNetwork("user-net", nil),

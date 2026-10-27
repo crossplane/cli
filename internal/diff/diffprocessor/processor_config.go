@@ -189,8 +189,7 @@ type ProcessorConfig struct {
 
 	// CrossplaneDockerNetwork, when non-empty, is the Docker network the
 	// default engine-backed RenderFn runs the render and function containers
-	// on. Empty falls back to the EnvDockerNetwork environment variable.
-	// Ignored when RenderFunc is set explicitly.
+	// on. Empty lets the engine create a network per run. Ignored when RenderFunc is set explicitly.
 	CrossplaneDockerNetwork string
 
 	// CrossplaneVersion, when non-empty, causes the default engine-backed

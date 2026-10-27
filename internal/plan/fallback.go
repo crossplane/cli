@@ -92,11 +92,12 @@ func (c cursor) field(k string) cursor {
 	// (DisplayLevels) still trims them; see below.
 	//
 	// ponytail: fieldpath has no escaping, so some keys do not round-trip:
-	//   - unbalanced or nested brackets (e.g. "a[b", "a[b]c"): the path does
-	//     not parse, so the change shows as one display level;
-	//   - a leading or trailing quote, or an empty key: the path parses with
-	//     the quotes trimmed or the key lost, so its display level and tree
-	//     label differ from the key.
+	//   - the path does not parse, so the change shows as one display level:
+	//     e.g. "a[b", "a]b", "a.b[0]", or the empty key (written "data.");
+	//   - the path parses silently as a different one: "a[b]c" comes back as
+	//     data.a.b.c, so the change shows as several display levels;
+	//   - a leading or trailing quote is trimmed, and a key of only quote
+	//     characters trims to empty, so the key is lost.
 	// Either way the annotate marker for the change is missed; its values are
 	// still printed. Upgrade if a real key needs it.
 	seg := xpfieldpath.Segment{Type: xpfieldpath.SegmentField, Field: k}

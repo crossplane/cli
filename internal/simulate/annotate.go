@@ -37,11 +37,12 @@ const (
 )
 
 // AnnotateXRReport returns r with each resource diff annotated with its
-// provider plan from plans (see annotateDiff), for the -o diff renderer. It
+// provider plan from plans (see ProviderPlans.For and annotateDiff), for the
+// -o diff renderer. It
 // never mutates r: the result is a shallow copy with cloned groups and diff
 // maps, and each annotated diff is a copy with new LineDiffs. Empty plans
 // return an equivalent copy, which renders exactly as r does.
-func AnnotateXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan) *dt.XRReport {
+func AnnotateXRReport(r *dt.XRReport, plans *ProviderPlans) *dt.XRReport {
 	if r == nil {
 		return nil
 	}
@@ -59,7 +60,7 @@ func AnnotateXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan) *dt.X
 // with their provider plans, as AnnotateXRReport does. An unchanged composite
 // whose provider plans find drift becomes changed, so the composition
 // renderer lists and counts it.
-func AnnotateCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan) *dt.CompDiffOutput {
+func AnnotateCompReport(o *dt.CompDiffOutput, plans *ProviderPlans) *dt.CompDiffOutput {
 	if o == nil {
 		return nil
 	}
@@ -85,15 +86,24 @@ func AnnotateCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePla
 }
 
 // ReplacedBy returns the renderer.DiffOptions.Replaced hook for plans: a diff
-// is replaced when its provider plan replaces it. It returns nil for empty
-// plans, so -o diff without provider plans renders as it always has.
-func ReplacedBy(plans map[string]*plan.ResourcePlan) func(*dt.ResourceDiff) bool {
-	if len(plans) == 0 {
+// is replaced when its provider plan (see ProviderPlans.For) replaces it. It
+// returns nil for empty plans, so -o diff without provider plans renders as it
+// always has.
+func ReplacedBy(plans *ProviderPlans) func(*dt.ResourceDiff) bool {
+	if plans == nil || len(plans.Plans) == 0 {
 		return nil
 	}
 
 	return func(d *dt.ResourceDiff) bool {
-		pp := plans[d.GetDiffKey()]
+		pp := plans.For(d)
+		if pp == nil && d.DiffType == dt.DiffTypeModified {
+			// The renderer sees annotated diffs, and annotateDiff turns an
+			// equal diff a provider plan changes into a modified one: its
+			// plan is the one held for the equal diff it was made from.
+			eq := *d
+			eq.DiffType = dt.DiffTypeEqual
+			pp = plans.For(&eq)
+		}
 		return pp != nil && pp.Error == "" && !pp.Approximate && pp.Action == plan.ActionReplace
 	}
 }
@@ -101,7 +111,7 @@ func ReplacedBy(plans map[string]*plan.ResourcePlan) func(*dt.ResourceDiff) bool
 // annotateDiffs returns a copy of diffs with each diff annotated with its
 // provider plan, and whether an equal diff became a change. Unannotated
 // diffs are shared, not copied. A nil map stays nil.
-func annotateDiffs(diffs map[string]*dt.ResourceDiff, plans map[string]*plan.ResourcePlan) (map[string]*dt.ResourceDiff, bool) {
+func annotateDiffs(diffs map[string]*dt.ResourceDiff, plans *ProviderPlans) (map[string]*dt.ResourceDiff, bool) {
 	if diffs == nil {
 		return nil, false
 	}
@@ -109,7 +119,7 @@ func annotateDiffs(diffs map[string]*dt.ResourceDiff, plans map[string]*plan.Res
 	out := maps.Clone(diffs)
 	drifted := false
 	for k, d := range diffs {
-		a := annotateDiff(d, plans[d.GetDiffKey()])
+		a := annotateDiff(d, plans.For(d))
 		out[k] = a
 		drifted = drifted || (d.DiffType == dt.DiffTypeEqual && a.DiffType != dt.DiffTypeEqual)
 	}

@@ -19,6 +19,7 @@ package simulate
 import (
 	"bytes"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -75,8 +76,13 @@ func render(t *testing.T, r *dt.XRReport, plans map[string]*plan.ResourcePlan, o
 
 	var stdout bytes.Buffer
 	opts.Stdout, opts.Stderr = &stdout, &bytes.Buffer{}
-	opts.Replaced = ReplacedBy(plans)
-	if err := renderer.NewDiffRenderer(logging.NewNopLogger(), opts).RenderDiffs(AnnotateXRReport(r, plans).Groups, nil, nil); err != nil {
+	var ds []*dt.ResourceDiff
+	for _, g := range r.Groups {
+		ds = slices.AppendSeq(ds, maps.Values(g.Diffs))
+	}
+	pp := held(plans, ds...)
+	opts.Replaced = ReplacedBy(pp)
+	if err := renderer.NewDiffRenderer(logging.NewNopLogger(), opts).RenderDiffs(AnnotateXRReport(r, pp).Groups, nil, nil); err != nil {
 		t.Fatalf("RenderDiffs(): %v", err)
 	}
 
@@ -330,7 +336,7 @@ func TestAnnotateIdentity(t *testing.T) {
 		})
 	}
 
-	if ReplacedBy(nil) != nil || ReplacedBy(map[string]*plan.ResourcePlan{}) != nil {
+	if ReplacedBy(nil) != nil || ReplacedBy(&ProviderPlans{}) != nil {
 		t.Error("ReplacedBy(empty): want nil, so -o diff takes its unannotated path")
 	}
 }
@@ -353,7 +359,7 @@ func TestAnnotateDoesNotMutate(t *testing.T) {
 	}}}
 	wantXR, wantComp := cloneXR(xr), cloneComp(comp)
 
-	gotXR, gotComp := AnnotateXRReport(xr, plans), AnnotateCompReport(comp, plans)
+	gotXR, gotComp := AnnotateXRReport(xr, held(plans, mod, eq)), AnnotateCompReport(comp, held(plans, mod, eq))
 
 	if diff := cmp.Diff(wantXR, xr); diff != "" {
 		t.Errorf("AnnotateXRReport(...) mutated its input: -want, +got:\n%s", diff)
@@ -386,10 +392,10 @@ func TestAnnotateCompReport(t *testing.T) {
 
 	var stdout bytes.Buffer
 	opts := noColor()
-	opts.Stdout, opts.Stderr, opts.Replaced = &stdout, &bytes.Buffer{}, ReplacedBy(plans)
+	opts.Stdout, opts.Stderr, opts.Replaced = &stdout, &bytes.Buffer{}, ReplacedBy(held(plans, eq))
 	log := logging.NewNopLogger()
 	r := renderer.NewDefaultCompDiffRenderer(log, renderer.NewDiffRenderer(log, opts), opts)
-	if err := r.RenderCompDiff(AnnotateCompReport(comp, plans)); err != nil {
+	if err := r.RenderCompDiff(AnnotateCompReport(comp, held(plans, eq))); err != nil {
 		t.Fatalf("RenderCompDiff(): %v", err)
 	}
 
@@ -453,4 +459,44 @@ func TestAnnotateDiffDriftReplaceNoFields(t *testing.T) {
 	if same := annotateDiff(eq, planFor(eq, plan.ActionUpdate)[eq.GetDiffKey()]); same != eq {
 		t.Error("annotateDiff(...) with an update and no fields changed the diff, want it returned as is")
 	}
+}
+
+// TestAnnotateOnlyItsRendering pins that a provider plan annotates only a
+// diff that renders its resource as the planned diff did, and that a drifted
+// equal diff it annotated is still found replaced.
+func TestAnnotateOnlyItsRendering(t *testing.T) {
+	fp := func(m map[string]any) map[string]any { return map[string]any{"forProvider": m} }
+	planned := lineDiff(t, "db", dt.DiffTypeModified, fp(map[string]any{"region": "a"}), fp(map[string]any{"region": "b"}))
+	other := lineDiff(t, "db", dt.DiffTypeModified, fp(map[string]any{"region": "a"}), fp(map[string]any{"region": "c"}))
+	// The engine compares renderings by their Clean views.
+	for _, d := range []*dt.ResourceDiff{planned, other} {
+		d.Current.Clean, d.Desired.Clean = d.Current.Raw, d.Desired.Raw
+	}
+	region := plan.FieldChange{Path: "spec.forProvider.region", Actual: str("a"), Planned: str("b"), RequiresReplace: true}
+	plans := held(planFor(planned, plan.ActionReplace, region), planned)
+
+	if got := annotateDiffsOf(t, other, plans); got != other {
+		t.Errorf("annotateDiffs(other): want a differing rendering left unannotated, got %+v", got)
+	}
+	if ReplacedBy(plans)(other) {
+		t.Error("ReplacedBy(plans)(other) = true, want false for a differing rendering")
+	}
+	if got := annotateDiffsOf(t, planned, plans); got == planned {
+		t.Error("annotateDiffs(planned): want the planned rendering annotated")
+	}
+	if !ReplacedBy(plans)(planned) {
+		t.Error("ReplacedBy(plans)(planned) = false, want true")
+	}
+
+	eq := lineDiff(t, "eq", dt.DiffTypeEqual, fp(map[string]any{"region": "a"}), fp(map[string]any{"region": "a"}))
+	drift := held(planFor(eq, plan.ActionReplace, region), eq)
+	if got := annotateDiffsOf(t, eq, drift); got.DiffType != dt.DiffTypeModified || !ReplacedBy(drift)(got) {
+		t.Errorf("drifted equal diff: want modified and replaced, got %q replaced=%t", got.DiffType, ReplacedBy(drift)(got))
+	}
+}
+
+func annotateDiffsOf(t *testing.T, d *dt.ResourceDiff, plans *ProviderPlans) *dt.ResourceDiff {
+	t.Helper()
+	out, _ := annotateDiffs(map[string]*dt.ResourceDiff{"k": d}, plans)
+	return out["k"]
 }

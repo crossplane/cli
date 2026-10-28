@@ -151,7 +151,7 @@ func TestXRPlanner(t *testing.T) {
 			if len(tc.wantEnsured) > 0 && (len(ensureCtxs) == 0 || ensureCtxs[0].Err() != nil) {
 				t.Errorf("ensure ctx missing or ended: %v", ensureCtxs)
 			}
-			got := x.Plans()
+			got := x.ProviderPlans().Plans
 			if len(got) != len(tc.wantPlans)+1 || got["earlier"] == nil {
 				t.Errorf("Plans() has %d entries, want %v plus the earlier XR's", len(got), tc.wantPlans)
 			}
@@ -183,8 +183,8 @@ func TestXRPlanner(t *testing.T) {
 		if pc.ctxErr != nil {
 			t.Errorf("plan client saw ctx error %v, want a live context", pc.ctxErr)
 		}
-		if len(x.Plans()) != 1 {
-			t.Errorf("Plans() = %v, want the one plan", x.Plans())
+		if len(x.ProviderPlans().Plans) != 1 {
+			t.Errorf("Plans() = %v, want the one plan", x.ProviderPlans().Plans)
 		}
 	})
 
@@ -194,13 +194,13 @@ func TestXRPlanner(t *testing.T) {
 		if err == nil {
 			t.Fatal("AfterXRDiff(...) = nil, want the plan error")
 		}
-		if x.Routed() != 1 || len(x.Plans()) != 0 {
-			t.Errorf("Routed() = %d, Plans() = %v; want 1 routed and no merged plans", x.Routed(), x.Plans())
+		if x.Routed() != 1 || len(x.ProviderPlans().Plans) != 0 {
+			t.Errorf("Routed() = %d, Plans() = %v; want 1 routed and no merged plans", x.Routed(), x.ProviderPlans().Plans)
 		}
 	})
 
 	t.Run("EmptyPlansNonNil", func(t *testing.T) {
-		if NewXRPlanner(planner, nil, nil).Plans() == nil {
+		if NewXRPlanner(planner, nil, nil).ProviderPlans().Plans == nil {
 			t.Errorf("Plans() = nil, want an empty non-nil map")
 		}
 	})
@@ -222,7 +222,10 @@ func owned(xr, cidr string) *dt.ResourceDiff {
 	r := vpc("shared", cidr)
 	r.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: "example.org/v1", Kind: "XNetwork", Name: xr, Controller: new(true)}})
 	d := added(r)
+	// The engine's Clean view has no ownerReferences (cleanupForDiff), so
+	// two XRs rendering a child alike give equal Clean views.
 	d.Desired.Clean = r.DeepCopy()
+	d.Desired.Clean.SetOwnerReferences(nil)
 	return d
 }
 
@@ -247,31 +250,39 @@ func TestXRPlannerRepeatedKey(t *testing.T) {
 			t.Fatalf("AfterXRDiff(a): %v", err)
 		}
 		// Rendered by another XR, but identically once cleaned.
-		b := owned("a", "10.0.0.0/16")
+		b := owned("b", "10.0.0.0/16")
 		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": b}); err != nil {
 			t.Fatalf("AfterXRDiff(b): %v", err)
 		}
-		if pc.calls != 1 || x.Routed() != 1 || len(x.Plans()) != 1 {
-			t.Errorf("calls = %d, Routed() = %d, Plans() = %v; want 1 call, 1 routed, 1 plan", pc.calls, x.Routed(), x.Plans())
+		if pc.calls != 1 || x.Routed() != 1 || len(x.ProviderPlans().Plans) != 1 {
+			t.Errorf("calls = %d, Routed() = %d, Plans() = %v; want 1 call, 1 routed, 1 plan", pc.calls, x.Routed(), x.ProviderPlans().Plans)
 		}
 	})
 
-	t.Run("DifferentRenderingFails", func(t *testing.T) {
+	t.Run("DifferentRenderingNotPlanned", func(t *testing.T) {
 		x, pc := newPlanner(false)
-		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": owned("a", "10.0.0.0/16")}); err != nil {
+		a, b := owned("a", "10.0.0.0/16"), owned("b", "10.1.0.0/16")
+		k := a.GetDiffKey()
+		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{k: a}); err != nil {
 			t.Fatalf("AfterXRDiff(a): %v", err)
 		}
-		err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": owned("b", "10.1.0.0/16")})
-		if err == nil {
-			t.Fatal("AfterXRDiff(b) = nil, want a conflict error")
+		// The engine's overlap check fails the run for b; the planner only
+		// keeps a's plan from being shown with b's rendering.
+		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{k: b}); err != nil {
+			t.Fatalf("AfterXRDiff(b) = %v, want nil", err)
 		}
-		for _, want := range []string{`"k"`, "XNetwork/a", "XNetwork/b", "simulate them separately"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("AfterXRDiff(b) = %q, want it to name %s", err, want)
-			}
-		}
-		if pc.calls != 1 || x.Plans()["k"].Name != "shared" || x.Routed() != 1 {
+		if pc.calls != 1 || x.Routed() != 1 {
 			t.Errorf("calls = %d, Routed() = %d; want b not planned", pc.calls, x.Routed())
+		}
+		got := x.ProviderPlans()
+		if got.Held[k] != a {
+			t.Errorf("Held[k] = %v, want a's diff", got.Held[k])
+		}
+		if got.For(a) == nil || got.For(a) != got.Plans[k] {
+			t.Errorf("For(a) = %v, want the plan of a's rendering", got.For(a))
+		}
+		if p := got.For(b); p != nil {
+			t.Errorf("For(b) = %v, want no plan for a differing rendering", p)
 		}
 	})
 

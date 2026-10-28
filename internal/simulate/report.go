@@ -48,10 +48,11 @@ const (
 // FromXRReport maps an xr or project diff run onto a ProjectResult: one plan per
 // resource diff (the XR's own included), each grouped under its input XR or
 // claim, and one Composites entry per input. plans are the provider plans
-// PlanDiffs returned, merged into the engine's by diff key; nil means none
-// ran. keep is the filter PlanDiffs used: a kept equal diff no provider
+// the run collected, each merged into the engine's plan of a diff that
+// renders its resource as the planned one did (see ProviderPlans.For); nil
+// means none ran. keep is the filter PlanDiffs used: a kept equal diff no provider
 // planned is dropped, as one whose provider plan is a no-op is. nil keeps none.
-func FromXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan, keep func(*unstructured.Unstructured) bool) ProjectResult {
+func FromXRReport(r *dt.XRReport, plans *ProviderPlans, keep func(*unstructured.Unstructured) bool) ProjectResult {
 	if r == nil {
 		r = &dt.XRReport{}
 	}
@@ -89,7 +90,7 @@ func FromXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan, keep func
 // Compositions entry per Composition, and a Composites entry per affected
 // composite, with that composite's downstream plans grouped under it. plans
 // and keep are used as FromXRReport uses them.
-func FromCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan, keep func(*unstructured.Unstructured) bool) ProjectResult {
+func FromCompReport(o *dt.CompDiffOutput, plans *ProviderPlans, keep func(*unstructured.Unstructured) bool) ProjectResult {
 	if o == nil {
 		o = &dt.CompDiffOutput{}
 	}
@@ -208,9 +209,9 @@ func compositeReason(r dt.FilterReason) CompositeReason {
 
 // assembler accumulates one run's plans, composites and errors.
 type assembler struct {
-	// provider holds the provider plans to merge, by diff key; nil when none
+	// provider holds the provider plans to merge; nil when none
 	// ran.
-	provider map[string]*plan.ResourcePlan
+	provider *ProviderPlans
 	// keep reports the equal diffs kept only for a provider plan.
 	keep       func(*unstructured.Unstructured) bool
 	plans      []*plan.ResourcePlan
@@ -230,7 +231,7 @@ type listedChange struct {
 	replacePaths []string
 }
 
-func newAssembler(provider map[string]*plan.ResourcePlan, keep func(*unstructured.Unstructured) bool) *assembler {
+func newAssembler(provider *ProviderPlans, keep func(*unstructured.Unstructured) bool) *assembler {
 	return &assembler{provider: provider, keep: keep, plans: []*plan.ResourcePlan{}, listed: map[string][]listedChange{}}
 }
 
@@ -253,7 +254,7 @@ func (a *assembler) addDiffs(diffs map[string]*dt.ResourceDiff, composite *plan.
 // whether the merged plan is a change, listed or not.
 func (a *assembler) addDiff(d *dt.ResourceDiff, composite *plan.ResourceRef) bool {
 	key := d.GetDiffKey()
-	p := merge(d, resourcePlan(d), a.provider[key], a.keep)
+	p := merge(d, resourcePlan(d), a.provider.For(d), a.keep)
 	if p == nil {
 		return false
 	}

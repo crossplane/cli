@@ -57,7 +57,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/kube"
-	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
@@ -842,11 +841,11 @@ func (c *simulateCmd) diffOptions(k *kong.Context) renderer.DiffOptions {
 
 // providerPlans returns the provider plans the run collected, or nil when
 // planning was skipped.
-func (c *simulateCmd) providerPlans() map[string]*plan.ResourcePlan {
+func (c *simulateCmd) providerPlans() *simulate.ProviderPlans {
 	if c.xrPlanner == nil {
 		return nil
 	}
-	return c.xrPlanner.Plans()
+	return c.xrPlanner.ProviderPlans()
 }
 
 // planNotes returns the notes that replace the result's own, or nil to keep

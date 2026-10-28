@@ -5293,6 +5293,73 @@ Summary: 2 modified`,
 			expectedExitCode: dp.ExitCodeDiffDetected,
 			noColor:          true,
 		},
+		// Without -n every namespace is listed, so discovery finds each claim and its cluster-scoped
+		// backing XR. The claim renders through that XR, so the XR is dropped: each change is reported
+		// once, under the claim.
+		"CompositionChangeImpactsClaimsAllNamespaces": {
+			reason: "A claim's backing XR discovered alongside it is not reported a second time",
+			setupFiles: []string{
+				"testdata/comp/resources/claim-xrd.yaml",
+				"testdata/comp/resources/claim-composition.yaml",
+				"testdata/comp/resources/functions.yaml",
+				"testdata/comp/resources/test-namespace.yaml",
+				"testdata/comp/resources/existing-claim-1.yaml",
+				"testdata/comp/resources/existing-claim-2.yaml",
+			},
+			crossplaneManagedResources: []HierarchicalOwnershipRelation{
+				composes(
+					"testdata/comp/resources/existing-claim-1-xr.yaml",
+					"testdata/comp/resources/existing-claim-downstream-1.yaml",
+				),
+				composes(
+					"testdata/comp/resources/existing-claim-2-xr.yaml",
+					"testdata/comp/resources/existing-claim-downstream-2.yaml",
+				),
+			},
+			xrdAPIVersion:    V1,
+			inputFiles:       []string{"testdata/comp/updated-claim-composition.yaml"},
+			outputFormat:     "json",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedStructured: simtest.Expect().
+				WithComposition("nopclaims.diff.example.org").
+				WithCompositionModified().
+				WithAffectedResources(2, 2, 0, 0).
+				WithXRImpact("NopClaim", "test-claim-1", "test-namespace", "changed").AndComp().
+				WithXRImpact("NopClaim", "test-claim-2", "test-namespace", "changed"),
+		},
+		// Composition mode checks the composites it renders for overlaps as xr mode checks its inputs:
+		// two XRs on one composition that render one fixed-name child would both control it, however
+		// alike their renderings are, so the run fails rather than report either diff alone.
+		"SharedChildDifferingRendersFail": {
+			reason: "Two XRs a composition change renders one child for, differently, fail the run",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/shared-child-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/comp/resources/shared-child-xrs-differing.yaml",
+			},
+			inputFiles:       []string{"testdata/comp/updated-shared-child-composition.yaml"},
+			namespace:        "default",
+			expectedError:    true,
+			expectedExitCode: dp.ExitCodeToolError,
+			expectedErrorContains: `resource "ns.nop.example.org/v1alpha1/XDownstreamResource/default/shared-child" would be ` +
+				`controlled by more than one XR (XNopResource/shared-child-owner-a, XNopResource/shared-child-owner-b)`,
+		},
+		"SharedChildIdenticalRendersFail": {
+			reason: "Two XRs a composition change renders one child for, identically, still contend for it",
+			setupFiles: []string{
+				"testdata/diff/resources/xrd.yaml",
+				"testdata/diff/resources/shared-child-composition.yaml",
+				"testdata/diff/resources/functions.yaml",
+				"testdata/diff/shared-child-xrs.yaml",
+			},
+			inputFiles:       []string{"testdata/comp/updated-shared-child-composition.yaml"},
+			namespace:        "default",
+			expectedError:    true,
+			expectedExitCode: dp.ExitCodeToolError,
+			expectedErrorContains: `resource "ns.nop.example.org/v1alpha1/XDownstreamResource/default/shared-child" would be ` +
+				`controlled by more than one XR (XNopResource/shared-child-owner-a, XNopResource/shared-child-owner-b)`,
+		},
 		"SSAFieldRemovalDetection": {
 			reason: "Validates that field removals are correctly detected when resources are created via Server-Side Apply with Crossplane's field manager (issue #121)",
 			// Set up XRD, functions, and original composition with the removable field

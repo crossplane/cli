@@ -23,7 +23,6 @@ import (
 	"sort"
 	"strings"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -41,12 +40,13 @@ type EnsureServers func(ctx context.Context, resources []*unstructured.Unstructu
 // provider diff servers as the engine finishes rendering it, so an XR whose
 // plans fail is reported as an error, whole, like a failed render.
 //
-// It keeps one plan per diff key, with the diff it planned. A later XR that
-// renders a held key the same way is not planned again; one that renders it
-// differently fails with a conflict error, since no one plan is correct for
-// both. Plans merge in the AfterXRDiff hook, before schema validation
-// verdicts, so an XR that validation later fails has already contributed its
-// plans.
+// It keeps one plan per diff key, with the diff it planned (see ProviderPlans). A
+// later XR that renders a held key, the same way or not, is not planned
+// again: one plan cannot be right for two renderings, so a report uses a
+// plan only for a diff that matches its held one, and the engine's
+// render-overlap check fails the run for the differing one. Plans merge in
+// the AfterXRDiff hook, before schema validation verdicts, so an XR that
+// validation later fails has already contributed its plans.
 //
 // It is not safe for concurrent use; the engine calls AfterXRDiff
 // sequentially.
@@ -69,27 +69,18 @@ func NewXRPlanner(p *Planner, keep func(*unstructured.Unstructured) bool, ensure
 }
 
 // AfterXRDiff is a diffprocessor.WithAfterXRDiff hook. It fails the XR if any
-// of its resources' plans errors, or if it renders a resource an earlier XR
-// rendered differently, and merges none of its plans then.
+// of its resources' plans errors, and merges none of its plans then. A
+// resource an earlier XR's plan is held for is not planned again.
 func (x *XRPlanner) AfterXRDiff(ctx context.Context, diffs map[string]*dt.ResourceDiff) error {
 	fresh := map[string]*dt.ResourceDiff{}
-	var conflicts []string
 	for key, d := range diffs {
 		if d.DiffType == dt.DiffTypeRemoved || d.Desired.Raw == nil {
 			continue
 		}
 		x.considered++
-		held, ok := x.held[key]
-		switch {
-		case !ok:
+		if _, ok := x.held[key]; !ok {
 			fresh[key] = d
-		case !diffprocessor.SameRendering(held, d):
-			conflicts = append(conflicts, conflict(key, held, d))
 		}
-	}
-	if len(conflicts) > 0 {
-		sort.Strings(conflicts)
-		return errors.New(strings.Join(conflicts, "; "))
 	}
 
 	if x.ensure != nil {
@@ -130,24 +121,10 @@ func (x *XRPlanner) AfterXRDiff(ctx context.Context, diffs map[string]*dt.Resour
 	return nil
 }
 
-// conflict describes why the later diff d of key cannot share held's plan,
-// naming the XRs that control each rendering when they say.
-func conflict(key string, held, d *dt.ResourceDiff) string {
-	return fmt.Sprintf("cannot plan resource %q: %s renders it differently from %s, which rendered it first, so no single "+
-		"provider plan is correct for both — simulate them separately", key, controller(d, "this input"), controller(held, "an earlier input"))
-}
-
-// controller names the XR controlling d's rendered resource, or fallback.
-func controller(d *dt.ResourceDiff, fallback string) string {
-	if ref := metav1.GetControllerOf(d.Desired.Raw); ref != nil {
-		return ref.Kind + "/" + ref.Name
-	}
-	return fallback
-}
-
-// Plans returns a copy of the plans collected so far, never nil.
-func (x *XRPlanner) Plans() map[string]*plan.ResourcePlan {
-	return maps.Clone(x.plans)
+// ProviderPlans returns a copy of the plans collected so far, with the diff
+// each was planned from. Its maps are never nil.
+func (x *XRPlanner) ProviderPlans() *ProviderPlans {
+	return &ProviderPlans{Plans: maps.Clone(x.plans), Held: maps.Clone(x.held)}
 }
 
 // Routed returns how many resources went to a diff server, failed plans included.
@@ -159,4 +136,28 @@ func (x *XRPlanner) Routed() int {
 // run can tell having no diff servers from having nothing to plan.
 func (x *XRPlanner) Considered() int {
 	return x.considered
+}
+
+// ProviderPlans are a run's provider plans by diff key, each with the diff it
+// was planned from. A nil *ProviderPlans means no provider plan ran.
+type ProviderPlans struct {
+	Plans map[string]*plan.ResourcePlan
+	// Held holds the diff each plan was planned from, by the same keys.
+	Held map[string]*dt.ResourceDiff
+}
+
+// For returns d's provider plan: the plan for its diff key when d renders the
+// resource as the diff it was planned from did (diffprocessor.SameRendering),
+// or nil. So a plan of one XR's rendering is never shown with another XR's
+// differing rendering of the same resource, which the engine's render-overlap
+// check reports instead.
+func (p *ProviderPlans) For(d *dt.ResourceDiff) *plan.ResourcePlan {
+	if p == nil {
+		return nil
+	}
+	key := d.GetDiffKey()
+	if !diffprocessor.SameRendering(p.Held[key], d) {
+		return nil
+	}
+	return p.Plans[key]
 }

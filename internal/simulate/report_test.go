@@ -70,6 +70,21 @@ func diffs(ds ...*dt.ResourceDiff) map[string]*dt.ResourceDiff {
 
 func notes() []string { return []string{noteProviderPlanNotRun} }
 
+// held returns plans as a run's ProviderPlans, each planned from the one of
+// ds with its key. nil plans stay nil: no provider plan ran.
+func held(plans map[string]*plan.ResourcePlan, ds ...*dt.ResourceDiff) *ProviderPlans {
+	if plans == nil {
+		return nil
+	}
+	h := map[string]*dt.ResourceDiff{}
+	for _, d := range ds {
+		if _, ok := plans[d.GetDiffKey()]; ok {
+			h[d.GetDiffKey()] = d
+		}
+	}
+	return &ProviderPlans{Plans: plans, Held: h}
+}
+
 func TestFromXRReport(t *testing.T) {
 	xrEqual := rdiff(xnetGVK, "prod", dt.DiffTypeEqual, nil, nil)
 	validation := dt.OutputError{
@@ -675,7 +690,7 @@ func TestProviderPlanMerge(t *testing.T) {
 			// Plans sort by kind, so the XR's own no-op plan comes last.
 			wantPlans := append(slices.Clone(tc.wantPlans), &plan.ResourcePlan{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan})
 
-			gotXR := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(xr, tc.diff)}}}, tc.plans, tc.keep)
+			gotXR := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(xr, tc.diff)}}}, held(tc.plans, tc.diff), tc.keep)
 			if diff := cmp.Diff(wantPlans, gotXR.Plans, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Before", "After"), cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("%s\nFromXRReport(...).Plans: -want, +got:\n%s", tc.reason, diff)
 			}
@@ -695,7 +710,7 @@ func TestProviderPlanMerge(t *testing.T) {
 			gotComp := FromCompReport(&dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
 				Name:           "net",
 				ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: status, Diffs: diffs(tc.diff)}},
-			}}}, tc.plans, tc.keep)
+			}}}, held(tc.plans, tc.diff), tc.keep)
 			if diff := cmp.Diff(tc.wantPlans, gotComp.Plans[1:], cmpopts.IgnoreFields(plan.ResourcePlan{}, "Before", "After"), cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("%s\nFromCompReport(...).Plans: -want, +got:\n%s", tc.reason, diff)
 			}
@@ -756,7 +771,7 @@ func TestPlanObjects(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(tc.diff)}}}, tc.plans, nil)
+			got := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(tc.diff)}}}, held(tc.plans, tc.diff), nil)
 			if len(got.Plans) != 1 {
 				t.Fatalf("%s\nFromXRReport(...): want 1 plan, got %d", tc.reason, len(got.Plans))
 			}
@@ -811,5 +826,42 @@ func TestCompositeReason(t *testing.T) {
 		if got := compositeReason(in); got != want {
 			t.Errorf("compositeReason(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestProviderPlanOnlyForItsRendering pins that a provider plan merges only
+// into a diff that renders its resource as the planned diff did: another XR's
+// differing rendering of the same resource keeps its engine plan.
+func TestProviderPlanOnlyForItsRendering(t *testing.T) {
+	data := func(v string) map[string]any { return map[string]any{"data": map[string]any{"k": v}} }
+	prod := rdiff(cmGVK, "shared", dt.DiffTypeAdded, nil, data("v"))
+	qa := rdiff(cmGVK, "shared", dt.DiffTypeAdded, nil, data("other"))
+	qaRef := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "qa"}
+	provider := []plan.FieldChange{{Path: "spec.forProvider.size", Planned: &plan.Value{Value: "2"}}}
+	plans := held(map[string]*plan.ResourcePlan{prod.GetDiffKey(): {Action: plan.ActionCreate, Changes: provider}}, prod)
+
+	got := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{
+		{XR: xrRef, Diffs: diffs(prod)},
+		{XR: qaRef, Diffs: diffs(qa)},
+	}}, plans, nil)
+
+	want := []*plan.ResourcePlan{
+		{
+			APIVersion: "v1", Kind: "ConfigMap", Name: "shared", Action: plan.ActionCreate, Composite: &xrPlan,
+			Changes: append(slices.Clone(provider), plan.FieldChange{Path: "data.k", Planned: &plan.Value{Value: "v"}}),
+		},
+		{
+			APIVersion: "v1", Kind: "ConfigMap", Name: "shared", Action: plan.ActionCreate,
+			Composite: new(plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "qa"}),
+			Changes:   []plan.FieldChange{{Path: "data.k", Planned: &plan.Value{Value: "other"}}},
+		},
+	}
+	if diff := cmp.Diff(want, got.Plans, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Before", "After")); diff != "" {
+		t.Errorf("FromXRReport(...).Plans: want prod's plan with the provider's change and qa's without: -want, +got:\n%s", diff)
+	}
+
+	// Another XR's removal of the resource is never planned, so never takes prod's create.
+	if p := plans.For(rdiff(cmGVK, "shared", dt.DiffTypeRemoved, data("v"), nil)); p != nil {
+		t.Errorf("For(removal) = %v, want no plan", p)
 	}
 }

@@ -1977,7 +1977,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 
 				proc := newCompProcessorForTest(t, client, false /* IncludeManual */)
 
-				got, err := proc.processSingleComposition(t.Context(), comp, []*un.Unstructured{manualXR, pinnedManualXR}, tt.scoped)
+				got, _, err := proc.processSingleComposition(t.Context(), comp, []*un.Unstructured{manualXR, pinnedManualXR}, tt.scoped)
 				if err != nil {
 					t.Fatalf("processSingleComposition: %v", err)
 				}
@@ -2085,7 +2085,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 				proc := newCompProcessorForTest(t, client, tt.includeManual)
 				proc.config.AnalyzeOn = tt.analyzeOn
 
-				got, err := proc.processSingleComposition(t.Context(), metaOnlyComp, []*un.Unstructured{xr1, manualXR}, tt.scoped)
+				got, _, err := proc.processSingleComposition(t.Context(), metaOnlyComp, []*un.Unstructured{xr1, manualXR}, tt.scoped)
 				if err != nil {
 					t.Fatalf("processSingleComposition: %v", err)
 				}
@@ -2145,7 +2145,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 
 		proc := newCompProcessorForTest(t, client, false /* IncludeManual */)
 
-		got, err := proc.processSingleComposition(t.Context(), labeledComp, []*un.Unstructured{selectorMismatchXR}, true /* scoped */)
+		got, _, err := proc.processSingleComposition(t.Context(), labeledComp, []*un.Unstructured{selectorMismatchXR}, true /* scoped */)
 		if err != nil {
 			t.Fatalf("processSingleComposition: %v", err)
 		}
@@ -2265,7 +2265,7 @@ func TestDefaultCompDiffProcessor_processSingleComposition_ChangedFunctions(t *t
 			proc.config.AnalyzeOn = tt.analyzeOn
 			WithChangedFunctions(tt.changed...)(&proc.config)
 
-			got, err := proc.processSingleComposition(t.Context(), builder().BuildAsUnstructured(), []*un.Unstructured{xr}, false)
+			got, _, err := proc.processSingleComposition(t.Context(), builder().BuildAsUnstructured(), []*un.Unstructured{xr}, false)
 			if err != nil {
 				t.Fatalf("processSingleComposition: %v", err)
 			}
@@ -2397,7 +2397,7 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 				},
 			}
 
-			got, err := proc.processSingleComposition(t.Context(), cliComp.BuildAsUnstructured(), []*un.Unstructured{pinnedXR("pinned")}, false)
+			got, _, err := proc.processSingleComposition(t.Context(), cliComp.BuildAsUnstructured(), []*un.Unstructured{pinnedXR("pinned")}, false)
 			if err != nil {
 				t.Fatalf("processSingleComposition: %v", err)
 			}
@@ -2464,4 +2464,116 @@ func typedComposition(t *testing.T, u *un.Unstructured) *apiextensionsv1.Composi
 	}
 
 	return comp
+}
+
+// TestDefaultCompDiffProcessor_DiffComposition_RenderOverlaps covers the render-overlap check in
+// Composition mode: composites that render one resource differently fail the run, as inputs do in xr
+// mode, while one an in-scope composite composes, or a claim's backing XR, is left out of it.
+func TestDefaultCompDiffProcessor_DiffComposition_RenderOverlaps(t *testing.T) {
+	shared := func(v string) *dt.ResourceDiff {
+		obj := tu.NewResource("example.org/v1", "Bucket", "shared").WithSpecField("v", v).Build()
+		return &dt.ResourceDiff{
+			Gvk: obj.GroupVersionKind(), ResourceName: "shared", DiffType: dt.DiffTypeAdded,
+			Desired: dt.ResourceViews{Raw: obj, Clean: obj},
+		}
+	}
+	xr := func(name string) *un.Unstructured {
+		return tu.NewResource("example.org/v1", "XResource", name).WithNamespace("default").Build()
+	}
+	self := func(res *un.Unstructured) *dt.ResourceDiff {
+		return &dt.ResourceDiff{
+			Gvk: res.GroupVersionKind(), Namespace: res.GetNamespace(), ResourceName: res.GetName(), DiffType: dt.DiffTypeEqual,
+			Current: dt.ResourceViews{Raw: res, Clean: res}, Desired: dt.ResourceViews{Raw: res, Clean: res},
+		}
+	}
+	claim := tu.NewResource("example.org/v1", "Resource", "claim").WithNamespace("default").Build()
+	backing := tu.NewResource("example.org/v1", "XResource", "claim-xyz").WithNamespace("default").
+		WithSpecField("claimRef", map[string]any{"apiVersion": "example.org/v1", "kind": "Resource", "name": "claim", "namespace": "default"}).Build()
+
+	cases := map[string]struct {
+		reason string
+		xrs    []*un.Unstructured
+		// renders maps each composite's name to what its render produces besides its own self-diff.
+		renders      map[string][]*dt.ResourceDiff
+		wantErr      string
+		wantRendered []string
+	}{
+		"DifferingRenderingsFail": {
+			reason:       "Two composites rendering one resource differently fail the run with the engine's overlap error.",
+			xrs:          []*un.Unstructured{xr("a"), xr("b")},
+			renders:      map[string][]*dt.ResourceDiff{"a": {shared("1")}, "b": {shared("2")}},
+			wantErr:      `inputs XResource/a, XResource/b both produce resource "example.org/v1/Bucket//shared", but differently`,
+			wantRendered: []string{"a", "b"},
+		},
+		"IdenticalRenderingsPass": {
+			reason:       "One change two composites reach identically is merged, not reported.",
+			xrs:          []*un.Unstructured{xr("a"), xr("b")},
+			renders:      map[string][]*dt.ResourceDiff{"a": {shared("1")}, "b": {shared("1")}},
+			wantRendered: []string{"a", "b"},
+		},
+		"NestedCompositeExcluded": {
+			reason:       "A composite another in-scope composite composes is left out: the parent's rendering wins.",
+			xrs:          []*un.Unstructured{xr("parent"), xr("child")},
+			renders:      map[string][]*dt.ResourceDiff{"parent": {self(xr("child")), shared("1")}, "child": {shared("2")}},
+			wantRendered: []string{"parent", "child"},
+		},
+		"ClaimedXRNotRendered": {
+			reason:       "A claim's backing XR found with it is dropped before rendering, so its stale rendering raises nothing.",
+			xrs:          []*un.Unstructured{claim, backing},
+			renders:      map[string][]*dt.ResourceDiff{"claim": {shared("1")}, "claim-xyz": {shared("2")}},
+			wantRendered: []string{"claim"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			comp := tu.NewComposition("test-composition").WithCompositeTypeRef("example.org/v1", "XResource").WithPipelineMode().Build()
+
+			var rendered []string
+
+			proc := NewCompDiffProcessor(&tu.MockDiffProcessor{
+				DiffSingleResourceFn: func(_ context.Context, res *un.Unstructured, _ types.CompositionProvider) (map[string]*dt.ResourceDiff, error) {
+					rendered = append(rendered, res.GetName())
+					out := map[string]*dt.ResourceDiff{}
+					for _, d := range append([]*dt.ResourceDiff{self(res)}, tc.renders[res.GetName()]...) {
+						out[d.GetDiffKey()] = d
+					}
+					return out, nil
+				},
+			}, tu.NewMockCompositionClient().
+				WithSuccessfulCompositionFetch(comp).
+				WithResourcesForComposition("test-composition", "default", tc.xrs).
+				Build(), WithLogger(tu.TestLogger(t, false)))
+
+			// The input differs from the cluster's composition (the label), so impact analysis runs.
+			out, err := proc.DiffComposition(t.Context(), []*un.Unstructured{
+				tu.NewComposition("test-composition").WithCompositeTypeRef("example.org/v1", "XResource").WithPipelineMode().
+					WithLabels(map[string]string{"version": "2"}).BuildAsUnstructured(),
+			}, "default", nil)
+
+			if diff := gcmp.Diff(tc.wantRendered, rendered); diff != "" {
+				t.Errorf("%s\nrendered composites: -want, +got:\n%s", tc.reason, diff)
+			}
+
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("%s\nDiffComposition(...): want no error, got %v", tc.reason, err)
+				}
+
+				return
+			}
+
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("%s\nDiffComposition(...): want error containing %q, got %v", tc.reason, tc.wantErr, err)
+			}
+
+			if out == nil || len(out.Errors) != 1 || out.Errors[0].ResourceID != "" || !strings.Contains(out.Errors[0].Message, tc.wantErr) {
+				t.Errorf("%s\nDiffComposition(...): want one run-level report error containing %q, got %+v", tc.reason, tc.wantErr, out)
+			}
+
+			if code := DetermineExitCode(err, true); code != ExitCodeToolError {
+				t.Errorf("%s\nDetermineExitCode(...) = %d, want %d", tc.reason, code, ExitCodeToolError)
+			}
+		})
+	}
 }

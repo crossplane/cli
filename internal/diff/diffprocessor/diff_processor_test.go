@@ -276,12 +276,9 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 
 				// Create Crossplane client mocks
 				xpClients := xp.Clients{
-					Composition: tu.NewMockCompositionClient().Build(),
-					Credential:  &tu.MockCredentialClient{},
-					Definition:  tu.NewMockDefinitionClient().Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
-						Build(),
+					Composition:  tu.NewMockCompositionClient().Build(),
+					Credential:   &tu.MockCredentialClient{},
+					Definition:   tu.NewMockDefinitionClient().Build(),
 					Function:     tu.NewMockFunctionClient().Build(),
 					ResourceTree: tu.NewMockResourceTreeClient().Build(),
 				}
@@ -307,11 +304,8 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 					Composition: tu.NewMockCompositionClient().
 						WithNoMatchingComposition().
 						Build(),
-					Credential: &tu.MockCredentialClient{},
-					Definition: tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
-						Build(),
+					Credential:   &tu.MockCredentialClient{},
+					Definition:   tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
 					Function:     tu.NewMockFunctionClient().Build(),
 					ResourceTree: tu.NewMockResourceTreeClient().Build(),
 				}
@@ -339,11 +333,8 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 					Composition: tu.NewMockCompositionClient().
 						WithNoMatchingComposition().
 						Build(),
-					Credential: &tu.MockCredentialClient{},
-					Definition: tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
-						Build(),
+					Credential:   &tu.MockCredentialClient{},
+					Definition:   tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
 					Function:     tu.NewMockFunctionClient().Build(),
 					ResourceTree: tu.NewMockResourceTreeClient().Build(),
 				}
@@ -372,11 +363,8 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 					Composition: tu.NewMockCompositionClient().
 						WithNoMatchingComposition().
 						Build(),
-					Credential: &tu.MockCredentialClient{},
-					Definition: tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
-						Build(),
+					Credential:   &tu.MockCredentialClient{},
+					Definition:   tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
 					Function:     tu.NewMockFunctionClient().Build(),
 					ResourceTree: tu.NewMockResourceTreeClient().Build(),
 				}
@@ -404,9 +392,6 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 						Build(),
 					Credential: &tu.MockCredentialClient{},
 					Definition: tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
-						Build(),
 					Function: tu.NewMockFunctionClient().
 						WithFailedFunctionsFetch("function not found").
 						Build(),
@@ -519,9 +504,6 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 						WithXRDForGVK(schema.GroupVersionKind{Group: testGroup, Version: "v1", Kind: testKind}, mainXRD).
 						WithXRDForGVK(schema.GroupVersionKind{Group: "cpd.org", Version: "v1", Kind: "ComposedResource"}, composedXRD).
 						Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
-						Build(),
 					Function: tu.NewMockFunctionClient().
 						WithSuccessfulFunctionsFetch(functions).
 						Build(),
@@ -563,7 +545,7 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 					}
 				}),
 				// Override the diff calculator factory to return actual diffs
-				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter) DiffCalculator {
+				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter, func(*un.Unstructured) bool) DiffCalculator {
 					return &tu.MockDiffCalculator{
 						CalculateNonRemovalDiffsFn: func(context.Context, *cmp.Unstructured, render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 							diffs := make(map[string]*dt.ResourceDiff)
@@ -655,9 +637,6 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 							WithPlural(testPlural).
 							WithSingular(testSingular).
 							BuildAsUnstructured()).
-						Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
 						Build(),
 					Function: tu.NewMockFunctionClient().
 						WithSuccessfulFunctionsFetch(functions).
@@ -993,7 +972,6 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 				Composition:  tu.NewMockCompositionClient().WithSuccessfulCompositionMatch(composition).Build(),
 				Credential:   &tu.MockCredentialClient{},
 				Definition:   tu.NewMockDefinitionClient().WithXRDForXR(xrd).Build(),
-				Environment:  tu.NewMockEnvironmentClient().WithNoEnvironmentConfigs().Build(),
 				Function:     tu.NewMockFunctionClient().WithSuccessfulFunctionsFetch(functions).Build(),
 				ResourceTree: tu.NewMockResourceTreeClient().WithEmptyResourceTree().Build(),
 			}
@@ -1008,7 +986,7 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 						},
 					}
 				}),
-				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter) DiffCalculator {
+				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter, func(*un.Unstructured) bool) DiffCalculator {
 					return &tu.MockDiffCalculator{
 						CalculateNonRemovalDiffsFn: func(ctx context.Context, rendered *cmp.Unstructured, _ render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 							if rendered.GetName() == tt.failRender {
@@ -1122,7 +1100,6 @@ func TestDefaultDiffProcessor_PerformDiff_LateWarningsReachStructuredOutput(t *t
 		Composition:  tu.NewMockCompositionClient().WithNoMatchingComposition().Build(),
 		Credential:   &tu.MockCredentialClient{},
 		Definition:   tu.NewMockDefinitionClient().Build(),
-		Environment:  tu.NewMockEnvironmentClient().WithNoEnvironmentConfigs().Build(),
 		Function:     tu.NewMockFunctionClient().Build(),
 		ResourceTree: tu.NewMockResourceTreeClient().Build(),
 	}
@@ -1197,9 +1174,6 @@ func TestDefaultDiffProcessor_PerformDiff_ReportErrorOutput(t *testing.T) {
 		Credential: &tu.MockCredentialClient{},
 		Definition: tu.NewMockDefinitionClient().
 			WithXRDForXR(tu.NewXRD(testXRDName, testGroup, testKind).WithVersion("v1", true, true).BuildAsUnstructured()).
-			Build(),
-		Environment: tu.NewMockEnvironmentClient().
-			WithNoEnvironmentConfigs().
 			Build(),
 		Function:     tu.NewMockFunctionClient().Build(),
 		ResourceTree: tu.NewMockResourceTreeClient().Build(),
@@ -1391,7 +1365,6 @@ func TestDiffFetchesOnlyTheInputsCRD(t *testing.T) {
 				Composition:  tu.NewMockCompositionClient().WithSuccessfulCompositionMatch(composition).Build(),
 				Credential:   &tu.MockCredentialClient{},
 				Definition:   defClient,
-				Environment:  tu.NewMockEnvironmentClient().WithNoEnvironmentConfigs().Build(),
 				Function:     tu.NewMockFunctionClient().WithSuccessfulFunctionsFetch([]pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "function-test"}}}).Build(),
 				ResourceTree: tu.NewMockResourceTreeClient().WithEmptyResourceTree().Build(),
 			}
@@ -1445,12 +1418,9 @@ func TestDefaultDiffProcessor_Initialize(t *testing.T) {
 
 				// Create Crossplane client mocks with successful initialization
 				xpClients := xp.Clients{
-					Composition: tu.NewMockCompositionClient().Build(),
-					Credential:  &tu.MockCredentialClient{},
-					Definition:  tu.NewMockDefinitionClient().Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
-						Build(),
+					Composition:  tu.NewMockCompositionClient().Build(),
+					Credential:   &tu.MockCredentialClient{},
+					Definition:   tu.NewMockDefinitionClient().Build(),
 					Function:     tu.NewMockFunctionClient().Build(),
 					ResourceTree: tu.NewMockResourceTreeClient().Build(),
 				}
@@ -1533,17 +1503,16 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 	secret := tu.NewResource("v1", "Secret", "secret1").Build()
 
 	tests := map[string]struct {
-		xr                     *cmp.Unstructured
-		composition            *apiextensionsv1.Composition
-		functions              []pkgv1.Function
-		resourceID             string
-		observedResources      []cpd.Unstructured
-		setupResourceClient    func() *tu.MockResourceClient
-		setupEnvironmentClient func() *tu.MockEnvironmentClient
-		setupRenderFunc        func() RenderFn
-		wantComposedCount      int
-		wantRenderIterations   int
-		wantErr                bool
+		xr                   *cmp.Unstructured
+		composition          *apiextensionsv1.Composition
+		functions            []pkgv1.Function
+		resourceID           string
+		observedResources    []cpd.Unstructured
+		setupResourceClient  func() *tu.MockResourceClient
+		setupRenderFunc      func() RenderFn
+		wantComposedCount    int
+		wantRenderIterations int
+		wantErr              bool
 	}{
 		"NoRequirements": {
 			xr:          xr,
@@ -1552,11 +1521,6 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 			resourceID:  "XR/test-xr",
 			setupResourceClient: func() *tu.MockResourceClient {
 				return tu.NewMockResourceClient().
-					Build()
-			},
-			setupEnvironmentClient: func() *tu.MockEnvironmentClient {
-				return tu.NewMockEnvironmentClient().
-					WithNoEnvironmentConfigs().
 					Build()
 			},
 			setupRenderFunc: func() RenderFn {
@@ -1600,11 +1564,6 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 
 						return nil, errors.New("resource not found")
 					}).
-					Build()
-			},
-			setupEnvironmentClient: func() *tu.MockEnvironmentClient {
-				return tu.NewMockEnvironmentClient().
-					WithNoEnvironmentConfigs().
 					Build()
 			},
 			setupRenderFunc: func() RenderFn {
@@ -1669,11 +1628,6 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 
 						return nil, errors.New("resource not found")
 					}).
-					Build()
-			},
-			setupEnvironmentClient: func() *tu.MockEnvironmentClient {
-				return tu.NewMockEnvironmentClient().
-					WithNoEnvironmentConfigs().
 					Build()
 			},
 			setupRenderFunc: func() RenderFn {
@@ -1751,11 +1705,6 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 			setupResourceClient: func() *tu.MockResourceClient {
 				return tu.NewMockResourceClient().Build()
 			},
-			setupEnvironmentClient: func() *tu.MockEnvironmentClient {
-				return tu.NewMockEnvironmentClient().
-					WithNoEnvironmentConfigs().
-					Build()
-			},
 			setupRenderFunc: func() RenderFn {
 				return func(context.Context, logging.Logger, RenderInputs) (render.CompositionOutputs, error) {
 					return render.CompositionOutputs{}, errors.New("render error")
@@ -1782,11 +1731,6 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 
 						return nil, errors.New("resource not found")
 					}).
-					Build()
-			},
-			setupEnvironmentClient: func() *tu.MockEnvironmentClient {
-				return tu.NewMockEnvironmentClient().
-					WithNoEnvironmentConfigs().
 					Build()
 			},
 			setupRenderFunc: func() RenderFn {
@@ -1855,11 +1799,6 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 					}).
 					Build()
 			},
-			setupEnvironmentClient: func() *tu.MockEnvironmentClient {
-				return tu.NewMockEnvironmentClient().
-					WithNoEnvironmentConfigs().
-					Build()
-			},
 			setupRenderFunc: func() RenderFn {
 				reqs := []*v1.ResourceSelector{
 					{
@@ -1904,11 +1843,6 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 					WithGetResourceError(errors.New("forbidden: user cannot get configmaps")).
 					Build()
 			},
-			setupEnvironmentClient: func() *tu.MockEnvironmentClient {
-				return tu.NewMockEnvironmentClient().
-					WithNoEnvironmentConfigs().
-					Build()
-			},
 			setupRenderFunc: func() RenderFn {
 				return func(_ context.Context, _ logging.Logger, in RenderInputs) (render.CompositionOutputs, error) {
 					reqs := []*v1.ResourceSelector{
@@ -1948,11 +1882,6 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 						schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"},
 					).
 					WithResourceNotFound().
-					Build()
-			},
-			setupEnvironmentClient: func() *tu.MockEnvironmentClient {
-				return tu.NewMockEnvironmentClient().
-					WithNoEnvironmentConfigs().
 					Build()
 			},
 			setupRenderFunc: func() RenderFn {
@@ -2007,11 +1936,6 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 			setupResourceClient: func() *tu.MockResourceClient {
 				return tu.NewMockResourceClient().Build()
 			},
-			setupEnvironmentClient: func() *tu.MockEnvironmentClient {
-				return tu.NewMockEnvironmentClient().
-					WithNoEnvironmentConfigs().
-					Build()
-			},
 			setupRenderFunc: func() RenderFn {
 				return func(_ context.Context, _ logging.Logger, in RenderInputs) (render.CompositionOutputs, error) {
 					// Verify observed resources were passed through
@@ -2053,7 +1977,6 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			// Set up mock clients
 			resourceClient := tt.setupResourceClient()
-			environmentClient := tt.setupEnvironmentClient()
 
 			// Create a logger
 			logger := tu.TestLogger(t, false)
@@ -2069,7 +1992,6 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 			// Create the requirements provider
 			requirementsProvider := NewRequirementsProvider(
 				resourceClient,
-				environmentClient,
 				logger,
 			)
 
@@ -2078,7 +2000,7 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 			customOpts := []ProcessorOption{
 				WithLogger(logger),
 				WithRenderFunc(countingRenderFunc),
-				WithRequirementsProviderFactory(func(k8.ResourceClient, xp.EnvironmentClient, logging.Logger) *RequirementsProvider {
+				WithRequirementsProviderFactory(func(k8.ResourceClient, logging.Logger) *RequirementsProvider {
 					return requirementsProvider
 				}),
 			}
@@ -2333,15 +2255,14 @@ func TestDefaultDiffProcessor_RenderToStableState_SynthesizeReady(t *testing.T) 
 			}
 
 			resourceClient := tu.NewMockResourceClient().Build()
-			environmentClient := tu.NewMockEnvironmentClient().WithNoEnvironmentConfigs().Build()
 
-			requirementsProvider := NewRequirementsProvider(resourceClient, environmentClient, logger)
+			requirementsProvider := NewRequirementsProvider(resourceClient, logger)
 
 			baseOpts := testProcessorOptions(t)
 			customOpts := []ProcessorOption{
 				WithLogger(logger),
 				WithRenderFunc(countingRenderFunc),
-				WithRequirementsProviderFactory(func(k8.ResourceClient, xp.EnvironmentClient, logging.Logger) *RequirementsProvider {
+				WithRequirementsProviderFactory(func(k8.ResourceClient, logging.Logger) *RequirementsProvider {
 					return requirementsProvider
 				}),
 			}
@@ -2666,9 +2587,6 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 				WithXRDForGVK(cycleAGVK, cycleAXRDUn).
 				WithXRDForGVK(cycleBGVK, cycleBXRDUn).
 				Build(),
-			Environment: tu.NewMockEnvironmentClient().
-				WithNoEnvironmentConfigs().
-				Build(),
 			Function: tu.NewMockFunctionClient().
 				WithSuccessfulFunctionsFetch(functions).
 				Build(),
@@ -2767,9 +2685,6 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 					Credential: &tu.MockCredentialClient{},
 					Definition: tu.NewMockDefinitionClient().
 						WithXRD(childXRD).
-						Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
 						Build(),
 					Function: tu.NewMockFunctionClient().
 						WithSuccessfulFunctionsFetch(functions).
@@ -2917,9 +2832,6 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 							Kind:    "NopResource",
 						}).
 						Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
-						Build(),
 					Function: tu.NewMockFunctionClient().
 						WithSuccessfulFunctionsFetch(functions).
 						Build(),
@@ -3020,9 +2932,6 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 					Definition: tu.NewMockDefinitionClient().
 						WithXRD(childXRD).
 						Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
-						Build(),
 					Function: tu.NewMockFunctionClient().
 						WithSuccessfulFunctionsFetch(functions).
 						Build(),
@@ -3093,7 +3002,7 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 						},
 					}
 				}),
-				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter) DiffCalculator {
+				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter, func(*un.Unstructured) bool) DiffCalculator {
 					return &tu.MockDiffCalculator{
 						CalculateNonRemovalDiffsFn: func(_ context.Context, xr *cmp.Unstructured, _ render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 							// Return a simple diff for the XR to make the test pass
@@ -3279,9 +3188,6 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 					Definition: tu.NewMockDefinitionClient().
 						WithXRDForXR(xrdUnstructured).
 						Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
-						Build(),
 					Function: tu.NewMockFunctionClient().
 						WithSuccessfulFunctionsFetch(functions).
 						Build(),
@@ -3356,9 +3262,6 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 					Definition: tu.NewMockDefinitionClient().
 						WithXRDForXR(xrdUnstructured).
 						Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
-						Build(),
 					Function: tu.NewMockFunctionClient().
 						WithSuccessfulFunctionsFetch(functions).
 						Build(),
@@ -3429,9 +3332,6 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 					Credential: &tu.MockCredentialClient{},
 					Definition: tu.NewMockDefinitionClient().
 						WithXRDForXR(xrdUnstructured).
-						Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
 						Build(),
 					Function: tu.NewMockFunctionClient().
 						WithSuccessfulFunctionsFetch(functions).
@@ -3518,9 +3418,6 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 					Credential: &tu.MockCredentialClient{},
 					Definition: tu.NewMockDefinitionClient().
 						WithXRDForXR(xrdUnstructured).
-						Build(),
-					Environment: tu.NewMockEnvironmentClient().
-						WithNoEnvironmentConfigs().
 						Build(),
 					Function: tu.NewMockFunctionClient().
 						WithSuccessfulFunctionsFetch(functions).
@@ -3731,7 +3628,6 @@ func TestDefaultDiffProcessor_DiffSingleResource_RevisionRef(t *testing.T) {
 				Composition: tu.NewMockCompositionClient().Build(),
 				Credential:  &tu.MockCredentialClient{},
 				Definition:  tu.NewMockDefinitionClient().WithXRDForXR(xrd).Build(),
-				Environment: tu.NewMockEnvironmentClient().WithNoEnvironmentConfigs().Build(),
 				Function:    tu.NewMockFunctionClient().WithSuccessfulFunctionsFetch(functions).Build(),
 				ResourceTree: tu.NewMockResourceTreeClient().
 					WithGetResourceTree(func(context.Context, *un.Unstructured) (*resource.Resource, error) {

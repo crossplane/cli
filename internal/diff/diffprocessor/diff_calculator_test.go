@@ -981,6 +981,7 @@ func TestDefaultDiffCalculator_CalculateDiff(t *testing.T) {
 				compare.Options{},
 				tt.dryRunOn,
 				markerDefaulterStoringAt(tt.storedAt),
+				nil,
 			)
 
 			// Call the function under test
@@ -1498,6 +1499,7 @@ func TestDefaultDiffCalculator_CalculateDiffs(t *testing.T) {
 				compare.Options{},
 				DryRunOnAll,
 				&tu.MockDefaulter{},
+				nil,
 			)
 
 			// Call the function under test
@@ -1744,6 +1746,7 @@ func TestDefaultDiffCalculator_CalculateRemovedResourceDiffs(t *testing.T) {
 				compare.Options{},
 				DryRunOnAll,
 				&tu.MockDefaulter{},
+				nil,
 			)
 
 			diffs, err := calculator.CalculateRemovedResourceDiffs(ctx, xr, tt.rendered)
@@ -2305,6 +2308,7 @@ func TestDefaultDiffCalculator_DegradedDryRunDetail(t *testing.T) {
 				compare.Options{},
 				DryRunOnAll,
 				&tu.MockDefaulter{},
+				nil,
 			)
 
 			gotDetails := make([]string, 0, len(tc.desired))
@@ -2455,6 +2459,7 @@ func TestDefaultDiffCalculator_CalculateNonRemovalDiffsRendered(t *testing.T) {
 				compare.Options{},
 				DryRunOnAll,
 				&tu.MockDefaulter{},
+				nil,
 			)
 
 			_, got, err := calculator.CalculateNonRemovalDiffs(t.Context(), asComposite(tt.payload), tt.desired)
@@ -2518,9 +2523,10 @@ func TestDefaultDiffCalculator_KeepEqualDiffs(t *testing.T) {
 				tu.NewMockResourceTreeClient().WithEmptyResourceTree().Build(),
 				NewResourceManager(resourceClient, tu.NewMockDefinitionClient().Build(), tu.NewMockResourceTreeClient().Build(), logger, NewAdvisoryCollector(nil)),
 				logger,
-				compare.Options{KeepEqualDiffs: tt.keep},
+				compare.Options{},
 				DryRunOnAll,
 				&tu.MockDefaulter{},
+				tt.keep,
 			)
 
 			xr := &cmp.Unstructured{}

@@ -733,40 +733,6 @@ func (m *MockFunctionClient) ListFunctions(ctx context.Context) ([]pkgv1.Functio
 	return nil, errors.New("ListFunctions not implemented")
 }
 
-// MockEnvironmentClient implements the crossplane.EnvironmentClient interface.
-type MockEnvironmentClient struct {
-	InitializeFn            func(ctx context.Context) error
-	GetEnvironmentConfigsFn func(ctx context.Context) ([]*un.Unstructured, error)
-	GetEnvironmentConfigFn  func(ctx context.Context, name string) (*un.Unstructured, error)
-}
-
-// Initialize implements crossplane.EnvironmentClient.
-func (m *MockEnvironmentClient) Initialize(ctx context.Context) error {
-	if m.InitializeFn != nil {
-		return m.InitializeFn(ctx)
-	}
-
-	return nil
-}
-
-// GetEnvironmentConfigs implements crossplane.EnvironmentClient.
-func (m *MockEnvironmentClient) GetEnvironmentConfigs(ctx context.Context) ([]*un.Unstructured, error) {
-	if m.GetEnvironmentConfigsFn != nil {
-		return m.GetEnvironmentConfigsFn(ctx)
-	}
-
-	return nil, errors.New("GetEnvironmentConfigs not implemented")
-}
-
-// GetEnvironmentConfig implements crossplane.EnvironmentClient.
-func (m *MockEnvironmentClient) GetEnvironmentConfig(ctx context.Context, name string) (*un.Unstructured, error) {
-	if m.GetEnvironmentConfigFn != nil {
-		return m.GetEnvironmentConfigFn(ctx, name)
-	}
-
-	return nil, errors.New("GetEnvironmentConfig not implemented")
-}
-
 // MockDefinitionClient implements the crossplane.DefinitionClient interface.
 type MockDefinitionClient struct {
 	InitializeFn         func(ctx context.Context) error

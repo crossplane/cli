@@ -224,10 +224,10 @@ type ComponentFactories struct {
 	Defaulter func(schema k8.SchemaClient, def xp.DefinitionClient, policy DefaultingPolicy) Defaulter
 
 	// DiffCalculator creates a DiffCalculator
-	DiffCalculator func(apply k8.ApplyClient, access k8.AccessChecker, tree xp.ResourceTreeClient, resourceManager ResourceManager, logger logging.Logger, compareOptions compare.Options, dryRunOn DryRunOn, predictor Defaulter) DiffCalculator
+	DiffCalculator func(apply k8.ApplyClient, access k8.AccessChecker, tree xp.ResourceTreeClient, resourceManager ResourceManager, logger logging.Logger, compareOptions compare.Options, dryRunOn DryRunOn, predictor Defaulter, keepEqual func(*un.Unstructured) bool) DiffCalculator
 
 	// RequirementsProvider creates an ExtraResourceProvider
-	RequirementsProvider func(res k8.ResourceClient, def xp.EnvironmentClient, logger logging.Logger) *RequirementsProvider
+	RequirementsProvider func(res k8.ResourceClient, logger logging.Logger) *RequirementsProvider
 
 	// FunctionProvider creates a FunctionProvider
 	FunctionProvider func(fnClient xp.FunctionClient, logger logging.Logger) FunctionProvider
@@ -428,14 +428,14 @@ func WithDefaulterFactory(factory func(k8.SchemaClient, xp.DefinitionClient, Def
 }
 
 // WithDiffCalculatorFactory sets the DiffCalculator factory function.
-func WithDiffCalculatorFactory(factory func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter) DiffCalculator) ProcessorOption {
+func WithDiffCalculatorFactory(factory func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter, func(*un.Unstructured) bool) DiffCalculator) ProcessorOption {
 	return func(config *ProcessorConfig) {
 		config.Factories.DiffCalculator = factory
 	}
 }
 
 // WithRequirementsProviderFactory sets the RequirementsProvider factory function.
-func WithRequirementsProviderFactory(factory func(k8.ResourceClient, xp.EnvironmentClient, logging.Logger) *RequirementsProvider) ProcessorOption {
+func WithRequirementsProviderFactory(factory func(k8.ResourceClient, logging.Logger) *RequirementsProvider) ProcessorOption {
 	return func(config *ProcessorConfig) {
 		config.Factories.RequirementsProvider = factory
 	}
@@ -583,7 +583,7 @@ func (c *ProcessorConfig) afterXR(ctx, xrCtx context.Context, diffs map[string]*
 
 // GetCompareOptions returns the compare.Options based on the ProcessorConfig.
 func (c *ProcessorConfig) GetCompareOptions() compare.Options {
-	return compare.Options{IgnorePaths: c.IgnorePaths, KeepEqualDiffs: c.KeepEqualDiffs}
+	return compare.Options{IgnorePaths: c.IgnorePaths}
 }
 
 // SetDefaultFactories sets default component factory functions if not already set.

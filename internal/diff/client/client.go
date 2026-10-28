@@ -61,7 +61,6 @@ func New(config *rest.Config, logger logging.Logger) (*Clients, error) {
 		Composition:  xp.NewCompositionClient(k8c.Resource, defClient, logger),
 		Credential:   xp.NewCredentialClient(k8c.Resource, logger),
 		Definition:   defClient,
-		Environment:  xp.NewEnvironmentClient(k8c.Resource, logger),
 		Function:     xp.NewFunctionClient(k8c.Resource, logger),
 		ResourceTree: xp.NewResourceTreeClient(coreClients.Tree, logger),
 	}

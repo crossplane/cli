@@ -13,7 +13,6 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
-	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 
@@ -59,12 +58,7 @@ func TestRequirementsWithoutEnvironmentConfigList(t *testing.T) {
 				WithErrorOnListOf(envConfigGVK).
 				Build()
 
-			envClient := xp.NewEnvironmentClient(resourceClient, logger)
-			if err := envClient.Initialize(ctx); err != nil {
-				t.Fatalf("\n%s\nEnvironmentClient.Initialize(): unexpected error: %v", tt.reason, err)
-			}
-
-			provider := NewRequirementsProvider(resourceClient, envClient, logger)
+			provider := NewRequirementsProvider(resourceClient, logger)
 			if err := provider.Initialize(ctx); err != nil {
 				t.Fatalf("\n%s\nInitialize(): unexpected error: %v", tt.reason, err)
 			}
@@ -293,7 +287,6 @@ func TestRequirementsProvider_ResolveSelectors(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			provider := NewRequirementsProvider(
 				tt.setupRes(),
-				tu.NewMockEnvironmentClient().WithNoEnvironmentConfigs().Build(),
 				tu.TestLogger(t, false),
 			)
 			if err := provider.Initialize(ctx); err != nil {
@@ -366,7 +359,6 @@ func TestRequirementsProvider_MatchLabelsCrossNamespace(t *testing.T) {
 
 	provider := NewRequirementsProvider(
 		resourceClient,
-		tu.NewMockEnvironmentClient().WithNoEnvironmentConfigs().Build(),
 		tu.TestLogger(t, false),
 	)
 	if err := provider.Initialize(ctx); err != nil {
@@ -423,7 +415,6 @@ func TestRequirementsProvider_MatchLabelsClusterScoped(t *testing.T) {
 
 	provider := NewRequirementsProvider(
 		resourceClient,
-		tu.NewMockEnvironmentClient().WithNoEnvironmentConfigs().Build(),
 		tu.TestLogger(t, false),
 	)
 	if err := provider.Initialize(ctx); err != nil {
@@ -497,13 +488,8 @@ func TestRequirementsProvider_NamespaceCollision(t *testing.T) {
 		}).
 		Build()
 
-	environmentClient := tu.NewMockEnvironmentClient().
-		WithSuccessfulEnvironmentConfigsFetch([]*un.Unstructured{configInNsA, configInNsB}).
-		Build()
-
 	provider := NewRequirementsProvider(
 		resourceClient,
-		environmentClient,
 		tu.TestLogger(t, true),
 	)
 

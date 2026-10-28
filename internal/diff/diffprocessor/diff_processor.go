@@ -120,10 +120,10 @@ func NewDiffProcessor(k8cs k8.Clients, xpcs xp.Clients, opts ...ProcessorOption)
 	// Create components using factories
 	resourceManager := config.Factories.ResourceManager(k8cs.Resource, xpcs.Definition, xpcs.ResourceTree, config.Logger, config.Advisories)
 	schemaValidator := config.Factories.SchemaValidator(k8cs.Schema, k8cs.Resource, xpcs.Definition, config.Logger)
-	requirementsProvider := config.Factories.RequirementsProvider(k8cs.Resource, xpcs.Environment, config.Logger)
+	requirementsProvider := config.Factories.RequirementsProvider(k8cs.Resource, config.Logger)
 	renderDefaulter := config.Factories.Defaulter(k8cs.Schema, xpcs.Definition, StrictDefaulting)
 	predictor := config.Factories.Defaulter(k8cs.Schema, xpcs.Definition, LenientDefaulting)
-	diffCalculator := config.Factories.DiffCalculator(k8cs.Apply, k8cs.Access, xpcs.ResourceTree, resourceManager, config.Logger, config.GetCompareOptions(), config.DryRunOn, predictor)
+	diffCalculator := config.Factories.DiffCalculator(k8cs.Apply, k8cs.Access, xpcs.ResourceTree, resourceManager, config.Logger, config.GetCompareOptions(), config.DryRunOn, predictor, config.KeepEqualDiffs)
 
 	functionProvider := config.Factories.FunctionProvider(xpcs.Function, config.Logger)
 

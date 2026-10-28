@@ -52,6 +52,7 @@ type DefaultDiffCalculator struct {
 	diffOptions     compare.Options
 	dryRunOn        DryRunOn
 	predictor       Defaulter
+	keepEqual       func(*un.Unstructured) bool
 }
 
 // SetDiffOptions updates the diff options used by the calculator.
@@ -62,7 +63,7 @@ func (c *DefaultDiffCalculator) SetDiffOptions(options compare.Options) {
 // NewDiffCalculator creates a new DefaultDiffCalculator. predictor predicts CRD defaults for the
 // additions that get no apiserver result; see dryRunCreateAddition. It should be lenient
 // (LenientDefaulting): a prediction is best effort, and must not fail an addition for want of a CRD.
-func NewDiffCalculator(apply k8.ApplyClient, access k8.AccessChecker, tree xp.ResourceTreeClient, resourceManager ResourceManager, logger logging.Logger, diffOptions compare.Options, dryRunOn DryRunOn, predictor Defaulter) DiffCalculator {
+func NewDiffCalculator(apply k8.ApplyClient, access k8.AccessChecker, tree xp.ResourceTreeClient, resourceManager ResourceManager, logger logging.Logger, diffOptions compare.Options, dryRunOn DryRunOn, predictor Defaulter, keepEqual func(*un.Unstructured) bool) DiffCalculator {
 	return &DefaultDiffCalculator{
 		treeClient:      tree,
 		applyClient:     apply,
@@ -72,6 +73,7 @@ func NewDiffCalculator(apply k8.ApplyClient, access k8.AccessChecker, tree xp.Re
 		diffOptions:     diffOptions,
 		dryRunOn:        dryRunOn,
 		predictor:       predictor,
+		keepEqual:       keepEqual,
 	}
 }
 
@@ -338,7 +340,7 @@ func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr
 		}
 
 		diffKey := diff.GetDiffKey()
-		if diff.DiffType != dt.DiffTypeEqual || (c.diffOptions.KeepEqualDiffs != nil && c.diffOptions.KeepEqualDiffs(un)) {
+		if diff.DiffType != dt.DiffTypeEqual || (c.keepEqual != nil && c.keepEqual(un)) {
 			diffs[diffKey] = diff
 		}
 

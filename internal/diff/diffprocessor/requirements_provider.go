@@ -15,7 +15,6 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
@@ -40,9 +39,8 @@ func addUniqueResource(m map[string]un.Unstructured, res *un.Unstructured) bool 
 
 // RequirementsProvider consolidates requirement processing with caching.
 type RequirementsProvider struct {
-	client    k8.ResourceClient
-	envClient xp.EnvironmentClient
-	logger    logging.Logger
+	client k8.ResourceClient
+	logger logging.Logger
 
 	// Resource cache by resource key (apiVersion+kind+namespace+name — see
 	// dt.MakeDiffKey). Namespace is required so same-named resources in
@@ -52,10 +50,9 @@ type RequirementsProvider struct {
 }
 
 // NewRequirementsProvider creates a new provider with caching.
-func NewRequirementsProvider(res k8.ResourceClient, env xp.EnvironmentClient, logger logging.Logger) *RequirementsProvider {
+func NewRequirementsProvider(res k8.ResourceClient, logger logging.Logger) *RequirementsProvider {
 	return &RequirementsProvider{
 		client:        res,
-		envClient:     env,
 		logger:        logger,
 		resourceCache: make(map[string]*un.Unstructured),
 	}

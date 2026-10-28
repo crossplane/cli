@@ -185,7 +185,6 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 				WithResourcesForComposition("test-composition", "default", []*un.Unstructured{testXR}).
 				Build(),
 			Definition:   tu.NewMockDefinitionClient().Build(),
-			Environment:  tu.NewMockEnvironmentClient().Build(),
 			Function:     tu.NewMockFunctionClient().Build(),
 			ResourceTree: tu.NewMockResourceTreeClient().Build(),
 		}
@@ -338,7 +337,6 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 						WithResourcesForComposition("test-composition", "default", []*un.Unstructured{testXR, deletingXR}).
 						Build(),
 					Definition:   tu.NewMockDefinitionClient().Build(),
-					Environment:  tu.NewMockEnvironmentClient().Build(),
 					Function:     tu.NewMockFunctionClient().Build(),
 					ResourceTree: tu.NewMockResourceTreeClient().Build(),
 				}
@@ -415,7 +413,6 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 						WithResourcesForComposition("test-composition-2", "default", []*un.Unstructured{xr2}).
 						Build(),
 					Definition:   tu.NewMockDefinitionClient().Build(),
-					Environment:  tu.NewMockEnvironmentClient().Build(),
 					Function:     tu.NewMockFunctionClient().Build(),
 					ResourceTree: tu.NewMockResourceTreeClient().Build(),
 				}
@@ -1685,7 +1682,6 @@ func TestDefaultCompDiffProcessor_DiffComposition_ReportErrorOutput(t *testing.T
 			WithResourcesForComposition("test-composition", "default", []*un.Unstructured{successXR, failXR}).
 			Build(),
 		Definition:   tu.NewMockDefinitionClient().Build(),
-		Environment:  tu.NewMockEnvironmentClient().Build(),
 		Function:     tu.NewMockFunctionClient().Build(),
 		ResourceTree: tu.NewMockResourceTreeClient().Build(),
 	}

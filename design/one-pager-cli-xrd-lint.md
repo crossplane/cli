@@ -54,8 +54,7 @@ equivalent of `require`.
   versions of a single XRD.
 - Be quiet by default. With no config file, only the rules guarding against
   things that actually misbehave in Crossplane fail the run. One design
-  preference, `xrd/no-bools`, and the served-version compatibility check warn
-  without failing.
+  preference, `xrd/no-bools`, warns without failing.
 - Fit CI: machine-readable output, meaningful exit codes, a warning budget.
 
 It is not a goal to lint Compositions, functions, packages or projects; this
@@ -143,6 +142,7 @@ crossplane xrd lint [flags] <files-or-dirs>...
   - warnings exceed `--max-warnings`
   - the config is invalid
   - an input cannot be read
+  - a rule fails to evaluate (see [Runtime errors](#custom-rules-in-cel))
 - Otherwise it exits zero.
 
 ### Configuration
@@ -209,7 +209,7 @@ Every rule walks each served version's `openAPIV3Schema`. The test for "error
 by default" is whether breaking the rule makes something misbehave in
 Crossplane, not merely whether the API is weaker.
 
-**On by default, as `error`.** Three rules guard against real misbehaviour:
+**On by default, as `error`.** Four rules guard against real misbehaviour:
 
 - `xrd/status-fields-optional`: no `required` anywhere under `status`.
   Status is written in pieces, by Crossplane and by functions; a required
@@ -221,22 +221,21 @@ Crossplane, not merely whether the API is weaker.
   `x-kubernetes-list-type`; `atomic`, `set` and `map` all pass. This makes
   merge behaviour under server-side apply a deliberate choice rather than a
   default nobody chose.
+- `xrd/served-versions-compatible`: the served versions of one XRD are
+  compatible with each other. Unless an XRD configures a conversion webhook,
+  Crossplane serves all of its versions from the same stored objects, so an
+  incompatible difference between two served versions, such as a field whose
+  type differs, misbehaves for whoever uses the other version. The rule needs
+  no `--old`. It runs crdify's served-version comparison over the XRD's
+  served versions, oldest first, with the same comparators as the
+  `xrd-diff/` rules below. (proposed)
 
-**On by default, as `warn`.** Two rules surface by default without failing
-the run:
+**On by default, as `warn`.** One design preference is common enough to
+surface by default without failing the run:
 
 | Rule | Checks | Options |
 |---|---|---|
 | `xrd/no-bools` | No `type: boolean`; prefer an enum. | |
-| `xrd/served-versions-compatible` | Served versions of one XRD are compatible. | |
-
-`xrd/served-versions-compatible` needs no `--old`. Unless an XRD configures
-a conversion webhook, Crossplane serves all of its versions from the same
-stored objects, so an incompatible difference between two served versions,
-such as a field whose type differs, misbehaves for whoever uses the other
-version. The rule runs crdify's served-version comparison over the XRD's
-served versions, oldest first, with the same comparators as the `xrd-diff/`
-rules below. (proposed)
 
 **Off by default.** Eight rules are design preferences that teams opt into:
 
@@ -421,7 +420,7 @@ both the old and the new XRD. Its variables:
   know from `x-kubernetes-validations`.
 - Every evaluation runs under a cost limit, as the API server applies to
   validation rules. An expression whose estimated cost exceeds the limit is a
-  config error; an evaluation that exceeds it at runtime is a rule error,
+  config error; an evaluation that exceeds it at runtime is a runtime error,
   below.
 
 **Compilation**
@@ -442,11 +441,17 @@ both the old and the new XRD. Its variables:
 
 **Runtime errors** (proposed)
 - `filter` or `expr` can fail while it is being evaluated, for example on a
-  missing key or by exceeding the cost limit.
-- Lint then reports a finding with rule ID `lint/rule-error` that names the
-  failing rule. It has the failing rule's configured severity, so a rule set
-  to `error` that cannot be evaluated fails the run.
-- The run never crashes, and the rule never passes silently.
+  missing key or by exceeding the cost limit. A built-in rule can fail too,
+  for example if a crdify comparator returns an error.
+- Lint then reports an `error` finding with rule ID `lint/rule-error` that
+  names the failing rule, and the whole run fails with a non-zero exit.
+- This holds whatever the failing rule's own severity: a `warn` rule that
+  cannot be evaluated fails the run just as an `error` rule does. A rule
+  that did not run gives no answer, and lint does not pass on a missing
+  answer.
+- `lint/rule-error` cannot be disabled, lowered or suppressed inline.
+- The run never crashes: lint still evaluates the other rules and reports
+  all their findings alongside the rule errors.
 
 Custom rules share everything else with built-in rules: severity overrides,
 suppression, output and exit codes.
@@ -720,9 +725,8 @@ The first draft of this proposal defined five `xrd-diff/` rules with
 comparators written for lint. crdify already has a larger, tested set, and
 its unhandled-change check catches the changes a fixed list misses. Building
 on it means less code to maintain and one set of answers across CRDs and
-XRDs. The cost is a dependency on a pre-1.0 library, whose comparator names
-and options become part of lint's rule names and options; if crdify's API
-moves, lint follows it or pins it.
+XRDs. crdify is pre-1.0, so lint pins its version, and its comparator names
+and options become lint's rule names and options.
 
 ### Rego Instead of CEL
 

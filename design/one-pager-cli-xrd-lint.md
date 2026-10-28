@@ -24,7 +24,10 @@ practices it draws on are tracked in [crossplane/docs#564][docs-564]:
 
 A follow-up comment on the issue adds a diff mode that flags breaking changes
 between two versions of an XRD, with [openshift/crd-schema-checker][crd-checker]
-as prior art. A maintainer called #301's structural check "a first step"
+as prior art. [kubernetes-sigs/crdify][crdify] is the SIG-owned tool for the
+same job on CRDs. It has per-check severity, reads the old CRD from a file, a
+git ref or a cluster, and ships its comparators as a Go library that this
+proposal builds on. A maintainer called #301's structural check "a first step"
 toward the linter. That sets the split this proposal keeps: hard validity
 problems are errors that validation owns, and best-practice findings are a
 lint layer above them.
@@ -47,10 +50,12 @@ equivalent of `require`.
 - Let users add rules of their own, written as CEL expressions in that config
   file, with no compiling and no plugins.
 - Detect breaking changes between two versions of an XRD, as a category of
-  rules that runs when the old version is supplied.
+  rules that runs when the old version is supplied, and between the served
+  versions of a single XRD.
 - Be quiet by default. With no config file, only the rules guarding against
   things that actually misbehave in Crossplane fail the run. One design
-  preference, `xrd/no-bools`, warns without failing.
+  preference, `xrd/no-bools`, and the served-version compatibility check warn
+  without failing.
 - Fit CI: machine-readable output, meaningful exit codes, a warning budget.
 
 It is not a goal to lint Compositions, functions, packages or projects; this
@@ -85,7 +90,7 @@ apis/network/definition.yaml
 ```
 crossplane xrd lint [flags] <files-or-dirs>...
 
-  --old=PATH            Previous version of the XRD(s). Enables xrd-diff/* rules.
+  --old=SOURCE          Previous version of the XRD(s). Enables xrd-diff/* rules.
   --config=PATH         Lint config file. Default: search upward for .crossplane-lint.yaml.
   -o, --output=FORMAT   text | json | yaml (default text)
   --max-warnings=N      Fail if there are more than N warnings (default -1, unlimited).
@@ -101,6 +106,21 @@ crossplane xrd lint [flags] <files-or-dirs>...
 - Both `apiextensions.crossplane.io/v1` and `v2` XRDs are in scope.
   (proposed)
 
+**Old versions** (proposed)
+- `--old` takes a source, using the URI forms crdify uses, plus one for
+  packages:
+  - a plain path, or `file://<path>`: files and directories, as for inputs
+  - `git://<ref>?path=<path>`: the XRDs at a ref of the current repository,
+    for example the base branch in CI
+  - `kube://`: the XRDs installed in the cluster of the current kubeconfig
+    context
+  - `xpkg://<ref>`: the XRDs in a Configuration package in a registry, fetched
+    the way the CLI already fetches packages
+- crdify's own loaders return CRDs, so lint has its own loaders for these
+  schemes, but keeps crdify's syntax so the two tools read alike.
+- Line numbers are only needed for the new XRDs, which findings point at, so
+  old sources need no position information.
+
 **Validity first**
 - Before any lint rule runs, lint applies the existing structural check from
   [#301][cli-301] to each XRD. (proposed)
@@ -110,6 +130,8 @@ crossplane xrd lint [flags] <files-or-dirs>...
 **Findings**
 - Each finding carries: rule, severity, file, line, XRD name, version, field
   path, message, docs URL, and an optional suggested fix.
+- Built-in rules always have a docs URL. A custom rule has one only if its
+  config sets `docsURL`; otherwise the field is left empty.
 - Text output groups findings by file and XRD.
 - json and yaml output emit `{summary: {errors, warnings}, findings: [...]}`.
   They follow the `Renderer`/`RendererFor(format)` pattern that `resource
@@ -135,7 +157,7 @@ kind: LintConfig
 rules:
   xrd/no-bools: error
   xrd/require-description: error
-  xrd/string-max-length: [warn, { max: 1024 }]
+  xrd/string-max-length: {severity: warn, options: {max: 1024}}
   xrd/status-no-value-validation: off
 customRules:
   local/no-unbounded-strings:
@@ -146,16 +168,15 @@ customRules:
 ```
 
 **Rule values**
-- A rule value is either a severity, or a severity with options.
+- A rule value is either a bare severity, or an object with `severity` and
+  `options` keys: `{severity: warn, options: {max: 1024}}`.
 - Options are validated against a schema that the rule declares.
 
 **Strict parsing**
-- The lint config has its own decoder, which runs in strict mode
-  (`KnownFields` / `UnmarshalStrict`), so an unknown key is an error.
-  (proposed)
-- The strict decoder also rejects a duplicate key within `rules` or
-  `customRules`, so the same rule cannot be configured twice in one file. A
-  test covers this.
+- The lint config is decoded with `yaml.v3`, the same library as the input
+  loader, with `KnownFields(true)`, so an unknown key is an error. (proposed)
+- `yaml.v3` also rejects a duplicate key within `rules` or `customRules`, so
+  the same rule cannot be configured twice in one file. A test covers this.
 
 **Rule names**
 - Custom rule names take the form `<prefix>/<name>`, with both parts in
@@ -178,7 +199,7 @@ customRules:
   (proposed)
 
 There are deliberately no presets. ESLint needs `recommended` and `strict`
-because it has hundreds of rules. With seventeen, a default severity per
+because it has hundreds of rules. With a few dozen, a default severity per
 rule says the same thing more plainly, and a team's config reads as a list of
 the ways it differs from the default.
 
@@ -190,24 +211,38 @@ Crossplane, not merely whether the API is weaker.
 
 **On by default, as `error`.** Three rules guard against real misbehaviour:
 
-| Rule | Checks | Why it matters |
-|---|---|---|
-| `xrd/status-fields-optional` | No `required` anywhere under `status`. | Status is written in pieces, by Crossplane and by functions; a required field can cause those writes to be rejected. |
-| `xrd/status-no-value-validation` | No `minimum`, `maximum`, `pattern`, `enum`, length or item limits under `status`. Types are fine. | Same reason: an observed value should never be rejected. |
-| `xrd/lists-need-list-type` | Every array declares an explicit `x-kubernetes-list-type`. `atomic`, `set` and `map` all pass. | Makes merge behaviour under server-side apply a deliberate choice rather than a default nobody chose. |
+- `xrd/status-fields-optional`: no `required` anywhere under `status`.
+  Status is written in pieces, by Crossplane and by functions; a required
+  field can cause those writes to be rejected.
+- `xrd/status-no-value-validation`: no `minimum`, `maximum`, `pattern`,
+  `enum`, length or item limits under `status`. Types are fine. Same reason:
+  an observed value should never be rejected.
+- `xrd/lists-need-list-type`: every array declares an explicit
+  `x-kubernetes-list-type`; `atomic`, `set` and `map` all pass. This makes
+  merge behaviour under server-side apply a deliberate choice rather than a
+  default nobody chose.
 
-**On by default, as `warn`.** One design preference is common enough to
-surface by default without failing the run:
+**On by default, as `warn`.** Two rules surface by default without failing
+the run:
 
 | Rule | Checks | Options |
 |---|---|---|
 | `xrd/no-bools` | No `type: boolean`; prefer an enum. | |
+| `xrd/served-versions-compatible` | Served versions of one XRD are compatible. | |
+
+`xrd/served-versions-compatible` needs no `--old`. Unless an XRD configures
+a conversion webhook, Crossplane serves all of its versions from the same
+stored objects, so an incompatible difference between two served versions,
+such as a field whose type differs, misbehaves for whoever uses the other
+version. The rule runs crdify's served-version comparison over the XRD's
+served versions, oldest first, with the same comparators as the `xrd-diff/`
+rules below. (proposed)
 
 **Off by default.** Eight rules are design preferences that teams opt into:
 
 | Rule | Checks | Options |
 |---|---|---|
-| `xrd/array-of-objects-needs-key` | Arrays of objects are keyed lists: `x-kubernetes-list-type: map` with `x-kubernetes-list-map-keys`. | |
+| `xrd/array-of-objects-needs-key` | Arrays of objects are keyed (`map` list type with keys). | |
 | `xrd/no-floats` | No `type: number`; use integers or strings. | |
 | `xrd/no-maps` | No open `additionalProperties` maps; prefer keyed lists. | |
 | `xrd/no-preserve-unknown-fields` | No `x-kubernetes-preserve-unknown-fields: true`. | |
@@ -228,24 +263,60 @@ write them as CEL rules.
 
 Breaking-change checks are not a separate mode. They are a category of rules,
 `xrd-diff/`, that runs only when `--old` supplies the previous version of
-each XRD. Old and new XRDs are paired by `metadata.name`, and each served
-version of the new XRD is compared with the version of the same name in the
-old. A new XRD with no old counterpart has no diff rules applied. An old
+each XRD. Old and new XRDs are paired by `metadata.name`. A new XRD with no
+old counterpart has no diff rules applied. An old
 `apiextensions.crossplane.io/v1` XRD may be paired with a new `v2` XRD, so a
 migration between the two can be checked. (proposed)
 
+**Versions**
+- Version-level rules run over the union of version names in the old and new
+  XRD. A version that was served in the old XRD and is missing from the new
+  one, or is no longer served, is reported by `xrd-diff/no-version-removal`.
+  The finding attaches to the new XRD's `spec.versions`.
+- Property-level rules then compare each version served in both the old and
+  the new XRD with the version of the same name.
+
+**Comparators**
+
+The property comparisons are built on [crdify's validations
+package][crdify-validations] rather than comparators of our own. Its
+`CompareProperties` takes two `JSONSchemaProps` directly, so an XRD version's
+`openAPIV3Schema` can be compared without rendering a CRD. (proposed)
+
 | Rule | Checks |
 |---|---|
+| `xrd-diff/no-version-removal` | A served version is gone, or is no longer served. |
 | `xrd-diff/no-field-removal` | A field in the old schema is missing from the new one. |
-| `xrd-diff/no-type-change` | A field's `type` changed. |
-| `xrd-diff/no-enum-removal` | A value was removed from a field's `enum`. |
-| `xrd-diff/no-new-required` | A field became required, or a new field is required. |
-| `xrd-diff/no-version-removal` | A version that was served is gone, or is no longer served. |
+| `xrd-diff/type` | A field's `type` changed. |
+| `xrd-diff/enum` | An `enum` value was removed, or (by option) added. |
+| `xrd-diff/required` | A field became required, or a new field is required. |
+| `xrd-diff/default` | A `default` was added, removed or changed. |
+| `xrd-diff/maximum`, `max-length`, ... | An upper bound was added or tightened. |
+| `xrd-diff/minimum`, `min-length`, ... | A lower bound was added or tightened. |
+| `xrd-diff/pattern` | A `pattern` was added or changed, or (by option) removed. |
+| `xrd-diff/nullable` | `nullable` changed, depending on its options. |
+| `xrd-diff/description` | A `description` changed. Off by default. |
+| `xrd-diff/unhandled` | Any other change that no comparator above understands. |
 
-These default to `error` once `--old` is given, and teams can lower them like
-any other rule. (proposed) Because they share the config, the
-suppression and the output, a CI job can run one command against the base
-branch's XRDs to get both kinds of finding.
+- Each crdify comparator becomes one rule, named after the comparator in
+  kebab case. A comparator's own configuration, such as `enum`'s
+  `additionPolicy`, becomes that rule's options.
+- `xrd-diff/no-field-removal` maps to crdify's `existingFieldRemoval`.
+  `xrd-diff/no-version-removal` is lint's own, because crdify's nearest
+  check covers stored versions, which an XRD file does not record.
+- `xrd-diff/unhandled` uses crdify's unhandled-change detection. Any change
+  that no other comparator handles is flagged, so a kind of change nobody
+  anticipated is reported instead of passing silently. That is safer than a
+  fixed list of forbidden changes.
+- crdify's comparator set also reaches changes that would otherwise need
+  custom rules, such as a changed `default`, a tightened `maxLength` or a new
+  `pattern`.
+
+These default to `error` once `--old` is given, except
+`xrd-diff/description`, which is off. Teams can change them like any other
+rule. (proposed) Because they share the config, the suppression and the
+output, a CI job can run one command against the base branch's XRDs to get
+both kinds of finding.
 
 ### Suppressing Findings
 
@@ -292,6 +363,7 @@ customRules:
     expr: <CEL evaluating to bool; true passes>
     message: <shown when expr is false>
     description: <optional>
+    docsURL: <optional; copied into each finding>
 ```
 
 **Match targets**
@@ -299,11 +371,26 @@ customRules:
 There are three `match` values. The variables in scope depend on which one a
 rule uses. (proposed)
 
-| `match` | Runs on | Variables |
-|---|---|---|
-| `property` | every schema property of every served version | `self`: the property's full schema subtree, including nested properties and items; `path`: its data path; `inStatus`: whether it sits under `status`; `required`: whether its parent lists it as required; `xrd`: the whole XRD |
-| `xrd` | each XRD once | `self`: the whole XRD |
-| `diff` | every property path present in either version, for each version name served in both the old and new XRD; only with `--old` | `old`, `new`: the matching property's schema subtree in each version, either of which may be absent; `path`; `inStatus`; `oldRequired`, `newRequired`; `oldXrd`, `newXrd`: the whole XRDs |
+`property` runs on every schema property of every served version. Its
+variables:
+- `self`: the property's full schema subtree, including nested properties
+  and items
+- `path`: its data path
+- `inStatus`: whether it sits under `status`
+- `required`: whether its parent lists it as required
+- `xrd`: the whole XRD
+
+`xrd` runs on each XRD once. Its only variable is `self`: the whole XRD.
+
+`diff` runs only with `--old`. It runs on every property path present in
+either version, including the schema root, for each version name served in
+both the old and the new XRD. Its variables:
+- `old`, `new`: the matching property's schema subtree in each version,
+  either of which may be absent
+- `path`, `inStatus`: as for `property`
+- `oldRequired`, `newRequired`: whether each side's parent lists it as
+  required
+- `oldXrd`, `newXrd`: the whole XRDs
 
 **Typing** (proposed)
 - `self`, `xrd`, `old`, `new`, `oldXrd` and `newXrd` are dynamic maps decoded
@@ -327,6 +414,16 @@ rule uses. (proposed)
 - Where a value could be absent, guard it in `filter` and keep `expr` to the
   check itself, as the examples below do.
 
+**Environment** (proposed)
+- The CEL environment includes the Kubernetes CEL libraries from
+  [`k8s.io/apiserver/pkg/cel/library`][k8s-cel-lib]: regex, lists, URLs,
+  quantity and the rest. Custom rules get the same functions users already
+  know from `x-kubernetes-validations`.
+- Every evaluation runs under a cost limit, as the API server applies to
+  validation rules. An expression whose estimated cost exceeds the limit is a
+  config error; an evaluation that exceeds it at runtime is a rule error,
+  below.
+
 **Compilation**
 - `filter` and `expr` both compile once, when the config is loaded.
 - A compile error in either, or either one not evaluating to bool, is a
@@ -339,14 +436,16 @@ rule uses. (proposed)
 - A `diff` rule fires once for each paired property path where `filter` is
   true and `expr` is false. It attaches to the property in the new XRD, or
   to its nearest surviving ancestor when the property was removed.
-- XRD-level comparisons can use `filter: "path == ''"` together with
-  `oldXrd` and `newXrd`.
+- The schema root has the path `""` and is one of the paired paths, so
+  XRD-level comparisons can use `filter: "path == ''"` together with
+  `oldXrd` and `newXrd`. Such a rule fires at most once per version pair.
 
 **Runtime errors** (proposed)
 - `filter` or `expr` can fail while it is being evaluated, for example on a
-  missing key.
-- Lint then reports a `warn` finding with rule ID `lint/rule-error` that names
-  the failing rule.
+  missing key or by exceeding the cost limit.
+- Lint then reports a finding with rule ID `lint/rule-error` that names the
+  failing rule. It has the failing rule's configured severity, so a rule set
+  to `error` that cannot be evaluated fails the run.
 - The run never crashes, and the rule never passes silently.
 
 Custom rules share everything else with built-in rules: severity overrides,
@@ -468,79 +567,67 @@ spec:
           type: object
 ```
 
-**f. A field's `default` must not change between versions** (`diff`)
+The built-in `xrd-diff/` rules already cover changes to a field's `default`,
+bounds, `pattern` and other constraints, so the `diff` examples below cover
+what they do not: Crossplane-specific XRD fields, and a narrower policy than a
+built-in rule applies.
+
+**f. An XRD's claim names must not change** (`diff`, XRD-level)
 
 ```yaml
-  acme/default-unchanged:
+  acme/claim-names-unchanged:
     severity: error
     match: diff
     filter: >-
-      old != null && new != null &&
-      (has(old.default) || has(new.default))
+      path == '' && has(oldXrd.spec.claimNames)
     expr: >-
-      has(old.default) && has(new.default) &&
-      old.default == new.default
-    message: "A field's default must not be added, removed or changed."
+      has(newXrd.spec.claimNames) &&
+      newXrd.spec.claimNames.kind == oldXrd.spec.claimNames.kind &&
+      newXrd.spec.claimNames.plural == oldXrd.spec.claimNames.plural
+    message: "Claim names must not be removed or renamed; existing claims would be orphaned."
 ```
 
 ```text
-# old                              # new: flagged at spec.tier
-tier:                              tier:
-  type: string                       type: string
-  default: standard                  default: premium
+# old                              # new: flagged at the document root
+claimNames:                        claimNames:
+  kind: Network                      kind: NetworkClaim
+  plural: networks                   plural: networkclaims
 ```
 
-**g. `maxLength` must not decrease** (`diff`)
+Because the schema root is one of the paired paths, `path == ''` makes the
+rule run once per version pair rather than once per property.
+
+**g. A field's description must not be removed** (`diff`)
+
+`xrd-diff/description` flags any change to a description, which is why it is
+off by default. A team that only minds descriptions disappearing can say so:
 
 ```yaml
-  acme/max-length-not-decreased:
-    severity: error
+  acme/description-not-removed:
+    severity: warn
     match: diff
     filter: >-
       old != null && new != null &&
-      has(old.maxLength) && has(new.maxLength)
-    expr: "new.maxLength >= old.maxLength"
-    message: "maxLength must not decrease; existing values may no longer fit."
+      has(old.description) && old.description != ''
+    expr: "has(new.description) && new.description != ''"
+    message: "A field's description must not be removed."
 ```
 
 ```text
-# old                              # new: flagged at spec.name
-name:                              name:
+# old                              # new: flagged at spec.region
+region:                            region:
   type: string                       type: string
-  maxLength: 63                      maxLength: 32
+  description: The cloud region.
 ```
-
-Removing `maxLength` loosens the field, so the filter skips that case.
-
-**h. An optional field must not gain a `pattern`** (`diff`)
-
-```yaml
-  acme/no-new-pattern-on-optional:
-    severity: error
-    match: diff
-    filter: >-
-      old != null && new != null &&
-      !newRequired && !has(old.pattern)
-    expr: "!has(new.pattern)"
-    message: "Adding a pattern to an optional field can reject existing values."
-```
-
-```text
-# old                              # new: flagged at spec.zone
-zone:                              zone:
-  type: string                       type: string
-                                     pattern: '^[a-z]+-[0-9]$'
-```
-
-Whether a field is optional is recorded on its parent's `required` list, not
-on the field itself. That is why `newRequired` is provided as its own
-variable.
 
 ### Rules in Go
 
-Built-in rules are Go types in an exported package, `pkg/xrdlint`, so that
-someone who needs a rule CEL cannot express can build their own binary. This
-is the pattern golangci-lint uses for module plugins. (proposed)
+Built-in rules are Go types in an internal package, `internal/xrdlint`.
+(proposed) An exported package would be a stability promise made by an alpha
+command, so the API stays internal until the command reaches beta. At that
+point it can move to `pkg/xrdlint`, so that someone who needs a rule CEL
+cannot express can build their own binary, the pattern golangci-lint uses for
+module plugins. Until then, such a rule is contributed as a built-in.
 
 ```go
 type Meta struct {
@@ -584,6 +671,9 @@ func (c *Context) Report(path FieldPath, message string, opts ...ReportOption)
 - Each case is a YAML fixture plus the findings it should produce: rule ID,
   field path and, optionally, the message.
 - Diff rules take a pair of fixtures.
+- The `xrd-diff/` rules backed by crdify are tested on XRD fixtures too, so
+  the mapping from XRD schemas to crdify's comparators is covered, not just
+  crdify itself.
 - Every rule has at least one passing case and one failing case.
 - The command is tested end to end on a small fixture directory, covering
   config discovery, exit codes and each output format.
@@ -606,7 +696,7 @@ problems made per-rule defaults the better choice:
 - The names imply nesting. `strict` reads as a superset of `recommended`,
   but the rules actually split by consequence (breaks Crossplane, or does
   not), not by degree.
-- With seventeen rules, a preset adds a layer of indirection without
+- With a few dozen rules, a preset adds a layer of indirection without
   saving much configuration.
 
 Presets can be added later if the rule count grows or teams want to share
@@ -620,8 +710,19 @@ ESLint loads plugins with `require`. Go's equivalents are each costly:
 - Packaging rules as xpkgs, the way functions are packaged, is the most
   Crossplane-native option, but it is a large surface for a first version.
 
-CEL rules in config cover the common case, and the exported Go package covers
-the rest. A plugin mechanism can follow if real demand appears.
+CEL rules in config cover the common case. Once the Go package is exported
+at beta, it covers the rest. A plugin mechanism can follow if real demand
+appears.
+
+### Our Own Breaking-Change Comparators
+
+The first draft of this proposal defined five `xrd-diff/` rules with
+comparators written for lint. crdify already has a larger, tested set, and
+its unhandled-change check catches the changes a fixed list misses. Building
+on it means less code to maintain and one set of answers across CRDs and
+XRDs. The cost is a dependency on a pre-1.0 library, whose comparator names
+and options become part of lint's rule names and options; if crdify's API
+moves, lint follows it or pins it.
 
 ### Rego Instead of CEL
 
@@ -636,3 +737,6 @@ add a dependency to serve a minority of rules.
 [crd-checker]: https://github.com/openshift/crd-schema-checker
 [ts-eslint]: https://typescript-eslint.io
 [kal]: https://github.com/kubernetes-sigs/kube-api-linter
+[crdify]: https://github.com/kubernetes-sigs/crdify
+[crdify-validations]: https://github.com/kubernetes-sigs/crdify/tree/main/pkg/validations
+[k8s-cel-lib]: https://pkg.go.dev/k8s.io/apiserver/pkg/cel/library

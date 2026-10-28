@@ -335,7 +335,7 @@ func TestFromXRReport(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := FromXRReport(tc.in, nil)
+			got := FromXRReport(tc.in, nil, nil)
 			if diff := cmp.Diff(tc.want, got, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Before", "After"), cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("%s\nFromXRReport(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -549,7 +549,7 @@ func TestFromCompReport(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := FromCompReport(tc.in, nil)
+			got := FromCompReport(tc.in, nil, nil)
 			if diff := cmp.Diff(tc.want, got, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Before", "After"), cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("%s\nFromCompReport(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -566,6 +566,8 @@ func TestProviderPlanMerge(t *testing.T) {
 		map[string]any{"metadata": map[string]any{"labels": map[string]any{"a": "2"}}})
 	modified.DryRun = &dt.DryRunInfo{SkipReason: dt.DryRunSkipForbidden, Detail: "no create"}
 	equal := rdiff(cmGVK, "cm", dt.DiffTypeEqual, nil, nil)
+	keptEqual := rdiff(cmGVK, "cm", dt.DiffTypeEqual, nil, nil)
+	keptEqual.Desired.Raw = obj(cmGVK, "cm", nil)
 	key := added.GetDiffKey()
 
 	policy := rdiff(cmGVK, "cm", dt.DiffTypeModified,
@@ -584,6 +586,7 @@ func TestProviderPlanMerge(t *testing.T) {
 		reason     string
 		diff       *dt.ResourceDiff
 		plans      map[string]*plan.ResourcePlan
+		keep       func(*unstructured.Unstructured) bool
 		wantPlans  []*plan.ResourcePlan
 		wantStatus CompositeStatus
 	}{
@@ -657,6 +660,13 @@ func TestProviderPlanMerge(t *testing.T) {
 			plans:      map[string]*plan.ResourcePlan{key: {Action: plan.ActionNoOp}},
 			wantStatus: CompositeUnchanged,
 		},
+		"KeptEqualWithoutPlanDropped": {
+			reason:     "A kept-equal MR no provider planned is dropped; the XR's own equal diff stays a no-op plan.",
+			diff:       keptEqual,
+			plans:      map[string]*plan.ResourcePlan{},
+			keep:       func(u *unstructured.Unstructured) bool { return u.GetKind() == "ConfigMap" },
+			wantStatus: CompositeUnchanged,
+		},
 	}
 
 	for name, tc := range cases {
@@ -665,7 +675,7 @@ func TestProviderPlanMerge(t *testing.T) {
 			// Plans sort by kind, so the XR's own no-op plan comes last.
 			wantPlans := append(slices.Clone(tc.wantPlans), &plan.ResourcePlan{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan})
 
-			gotXR := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(xr, tc.diff)}}}, tc.plans)
+			gotXR := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(xr, tc.diff)}}}, tc.plans, tc.keep)
 			if diff := cmp.Diff(wantPlans, gotXR.Plans, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Before", "After"), cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("%s\nFromXRReport(...).Plans: -want, +got:\n%s", tc.reason, diff)
 			}
@@ -685,7 +695,7 @@ func TestProviderPlanMerge(t *testing.T) {
 			gotComp := FromCompReport(&dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
 				Name:           "net",
 				ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: status, Diffs: diffs(tc.diff)}},
-			}}}, tc.plans)
+			}}}, tc.plans, tc.keep)
 			if diff := cmp.Diff(tc.wantPlans, gotComp.Plans[1:], cmpopts.IgnoreFields(plan.ResourcePlan{}, "Before", "After"), cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("%s\nFromCompReport(...).Plans: -want, +got:\n%s", tc.reason, diff)
 			}
@@ -746,7 +756,7 @@ func TestPlanObjects(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(tc.diff)}}}, tc.plans)
+			got := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(tc.diff)}}}, tc.plans, nil)
 			if len(got.Plans) != 1 {
 				t.Fatalf("%s\nFromXRReport(...): want 1 plan, got %d", tc.reason, len(got.Plans))
 			}
@@ -761,7 +771,7 @@ func TestPlanObjects(t *testing.T) {
 
 	t.Run("SecretSourceUntouched", func(t *testing.T) {
 		d := rdiff(secGVK, "cm", dt.DiffTypeAdded, nil, data("v"))
-		FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(d)}}}, nil)
+		FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(d)}}}, nil, nil)
 		if diff := cmp.Diff(obj(secGVK, "cm", data("v")), d.Desired.Clean); diff != "" {
 			t.Errorf("FromXRReport(...): redaction must not modify the engine's view: -want, +got:\n%s", diff)
 		}
@@ -774,7 +784,7 @@ func TestSecretDottedKeysRedactedInObjects(t *testing.T) {
 	d := rdiff(secGVK, "creds", dt.DiffTypeModified,
 		map[string]any{"data": map[string]any{"tls.crt": "b2xk", ".dockerconfigjson": "b2xk"}},
 		map[string]any{"data": map[string]any{"tls.crt": "bmV3", ".dockerconfigjson": "bmV3"}})
-	got := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(d)}}}, nil)
+	got := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(d)}}}, nil, nil)
 	for _, p := range got.Plans {
 		if p.Kind != "Secret" {
 			continue

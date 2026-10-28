@@ -388,7 +388,7 @@ func renderOverlapError(groups []dt.XRDiffGroup, producers []overlapProducer) er
 			allEqual = false
 		}
 
-		if !sameRendering(first, d) {
+		if !SameRendering(first, d) {
 			identical = false
 		}
 
@@ -455,9 +455,9 @@ func controllerOf(d *dt.ResourceDiff) (string, string) {
 	return identity(ref.APIVersion, ref.Kind, "", ref.Name), fmt.Sprintf("%s/%s", ref.Kind, ref.Name)
 }
 
-// sameRendering reports whether two diffs describe the same change: the same diff type, and the same
-// cleaned desired and current objects.
-func sameRendering(a, b *dt.ResourceDiff) bool {
+// SameRendering reports whether two diffs describe the same change: the same diff type, and the same
+// cleaned desired and current objects. A nil diff matches nothing.
+func SameRendering(a, b *dt.ResourceDiff) bool {
 	if a == nil || b == nil {
 		return false
 	}

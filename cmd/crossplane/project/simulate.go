@@ -84,7 +84,9 @@ type simulateCmd struct {
 
 	// Run sets these; nil with --skip-plan (servers also when hooks.Router is set).
 	xrPlanner *simulate.XRPlanner
-	servers   simulate.Servers
+	// keep is the equal-diff filter the engine and xrPlanner share.
+	keep    func(*un.Unstructured) bool
+	servers simulate.Servers
 	// noServersNoted is set once the "no diff servers" line is printed.
 	noServersNoted bool
 	// Validate loads this from --function-credentials.
@@ -375,9 +377,9 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 		}
 	}
 
-	keep := simulate.ProviderManaged(sigCtx, kubeClient, rmapper)
-	c.xrPlanner = simulate.NewXRPlanner(simulate.NewPlanner(kubeClient, rmapper, ns, router, c.Timeout), keep, ensure)
-	return []dp.ProcessorOption{dp.WithAfterXRDiff(c.xrPlanner.AfterXRDiff), dp.WithKeepEqualDiffs(keep)}, nil
+	c.keep = simulate.ProviderManaged(sigCtx, kubeClient, rmapper)
+	c.xrPlanner = simulate.NewXRPlanner(simulate.NewPlanner(kubeClient, rmapper, ns, router, c.Timeout), c.keep, ensure)
+	return []dp.ProcessorOption{dp.WithAfterXRDiff(c.xrPlanner.AfterXRDiff), dp.WithKeepEqualDiffs(c.keep)}, nil
 }
 
 // noteNoServers prints simulate.NoteNoDiffServers to stderr once, for -o
@@ -871,7 +873,7 @@ func (c *simulateCmd) notes() []string {
 // selects, as renderReport does.
 func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport, runErr error) (bool, error) {
 	plans := c.providerPlans()
-	return c.renderReport(k, logger, runErr, simulate.FromXRReport(r, plans), r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
+	return c.renderReport(k, logger, runErr, simulate.FromXRReport(r, plans, c.keep), r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
 		if plans != nil {
 			r = simulate.AnnotateXRReport(r, plans)
 		}
@@ -883,7 +885,7 @@ func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *
 // selects, as renderReport does.
 func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput, runErr error) (bool, error) {
 	plans := c.providerPlans()
-	return c.renderReport(k, logger, runErr, simulate.FromCompReport(o, plans), o.HasChanges(), dt.CompDryRunWarnings(o), func(opts renderer.DiffOptions) error {
+	return c.renderReport(k, logger, runErr, simulate.FromCompReport(o, plans, c.keep), o.HasChanges(), dt.CompDryRunWarnings(o), func(opts renderer.DiffOptions) error {
 		opts.MinimizeComposition = c.MinimizeComposition
 		if plans != nil {
 			o = simulate.AnnotateCompReport(o, plans)

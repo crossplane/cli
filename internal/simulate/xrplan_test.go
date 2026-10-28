@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -205,21 +206,98 @@ func TestXRPlanner(t *testing.T) {
 	})
 }
 
-func TestXRPlannerFirstPlanWins(t *testing.T) {
+// countPlanClient counts Plan calls and fails the resource names in fail.
+type countPlanClient struct {
+	funcPlanClient
+	calls int
+}
+
+func (c *countPlanClient) Plan(ctx context.Context, in *diffv1alpha1.PlanRequest, opts ...grpc.CallOption) (*diffv1alpha1.PlanResponse, error) {
+	c.calls++
+	return c.funcPlanClient.Plan(ctx, in, opts...)
+}
+
+// owned returns an added diff of a VPC controlled by the XNetwork xr.
+func owned(xr, cidr string) *dt.ResourceDiff {
+	r := vpc("shared", cidr)
+	r.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: "example.org/v1", Kind: "XNetwork", Name: xr, Controller: new(true)}})
+	d := added(r)
+	d.Desired.Clean = r.DeepCopy()
+	return d
+}
+
+func TestXRPlannerRepeatedKey(t *testing.T) {
 	s := runtime.NewScheme()
 	s.AddKnownTypeWithName(vpcGVK, &unstructured.Unstructured{})
 	s.AddKnownTypeWithName(vpcGVK.GroupVersion().WithKind("VPCList"), &unstructured.UnstructuredList{})
 	rm := meta.NewDefaultRESTMapper([]schema.GroupVersion{vpcGVK.GroupVersion()})
 	rm.Add(vpcGVK, meta.RESTScopeRoot)
-	pc := &funcPlanClient{fakePlanClient: fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}}
-	x := NewXRPlanner(NewPlanner(fake.NewClientBuilder().WithScheme(s).Build(), rm, "default", &fakeRouter{client: pc}, time.Second), nil, nil)
-
-	for _, name := range []string{"first", "second"} {
-		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": added(vpc(name, "10.0.0.0/16"))}); err != nil {
-			t.Fatalf("AfterXRDiff(%s): %v", name, err)
+	newPlanner := func(fail bool) (*XRPlanner, *countPlanClient) {
+		pc := &countPlanClient{funcPlanClient: funcPlanClient{fakePlanClient: fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}}}
+		x := NewXRPlanner(NewPlanner(fake.NewClientBuilder().WithScheme(s).Build(), rm, "default", &fakeRouter{client: pc}, time.Second), nil, nil)
+		if fail {
+			pc.fail = map[string]bool{"shared": true}
 		}
+		return x, pc
 	}
-	if got := x.Plans()["k"]; got == nil || got.Name != "first" {
-		t.Errorf("Plans()[k]: want the first XR's plan, got %+v", got)
-	}
+
+	t.Run("IdenticalRepeatSkipped", func(t *testing.T) {
+		x, pc := newPlanner(false)
+		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": owned("a", "10.0.0.0/16")}); err != nil {
+			t.Fatalf("AfterXRDiff(a): %v", err)
+		}
+		// Rendered by another XR, but identically once cleaned.
+		b := owned("a", "10.0.0.0/16")
+		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": b}); err != nil {
+			t.Fatalf("AfterXRDiff(b): %v", err)
+		}
+		if pc.calls != 1 || x.Routed() != 1 || len(x.Plans()) != 1 {
+			t.Errorf("calls = %d, Routed() = %d, Plans() = %v; want 1 call, 1 routed, 1 plan", pc.calls, x.Routed(), x.Plans())
+		}
+	})
+
+	t.Run("DifferentRenderingFails", func(t *testing.T) {
+		x, pc := newPlanner(false)
+		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": owned("a", "10.0.0.0/16")}); err != nil {
+			t.Fatalf("AfterXRDiff(a): %v", err)
+		}
+		err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": owned("b", "10.1.0.0/16")})
+		if err == nil {
+			t.Fatal("AfterXRDiff(b) = nil, want a conflict error")
+		}
+		for _, want := range []string{`"k"`, "XNetwork/a", "XNetwork/b", "simulate them separately"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("AfterXRDiff(b) = %q, want it to name %s", err, want)
+			}
+		}
+		if pc.calls != 1 || x.Plans()["k"].Name != "shared" || x.Routed() != 1 {
+			t.Errorf("calls = %d, Routed() = %d; want b not planned", pc.calls, x.Routed())
+		}
+	})
+
+	t.Run("RepeatNotReplanned", func(t *testing.T) {
+		x, pc := newPlanner(false)
+		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": owned("a", "10.0.0.0/16")}); err != nil {
+			t.Fatalf("AfterXRDiff(a): %v", err)
+		}
+		// A plan of "shared" now fails, but the held key is not planned again.
+		pc.fail = map[string]bool{"shared": true}
+		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": owned("a", "10.0.0.0/16")}); err != nil {
+			t.Errorf("AfterXRDiff(repeat) = %v, want nil", err)
+		}
+		if pc.calls != 1 {
+			t.Errorf("calls = %d, want 1", pc.calls)
+		}
+	})
+
+	t.Run("FailedPlanNotHeld", func(t *testing.T) {
+		x, pc := newPlanner(true)
+		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": owned("a", "10.0.0.0/16")}); err == nil {
+			t.Fatal("AfterXRDiff(a) = nil, want the plan error")
+		}
+		pc.fail = nil
+		if err := x.AfterXRDiff(context.Background(), map[string]*dt.ResourceDiff{"k": owned("b", "10.1.0.0/16")}); err != nil {
+			t.Errorf("AfterXRDiff(b) = %v, want b planned since a merged nothing", err)
+		}
+	})
 }

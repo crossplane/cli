@@ -92,7 +92,7 @@ func TestPlanDiffs(t *testing.T) {
 		rsp       *diffv1alpha1.PlanResponse
 		err       error
 		keep      func(*unstructured.Unstructured) bool
-		sets      []map[string]*dt.ResourceDiff
+		diffs     map[string]*dt.ResourceDiff
 		want      map[string]plan.Action
 		wantCalls int
 		check     func(t *testing.T, got map[string]*plan.ResourcePlan)
@@ -100,40 +100,40 @@ func TestPlanDiffs(t *testing.T) {
 		"Routed": {
 			reason:    "A routed modified diff is planned by its diff server.",
 			rsp:       update,
-			sets:      []map[string]*dt.ResourceDiff{diffs(vpcDiff(dt.DiffTypeModified, "a"))},
+			diffs:     diffs(vpcDiff(dt.DiffTypeModified, "a")),
 			want:      map[string]plan.Action{vpcDiff(dt.DiffTypeModified, "a").GetDiffKey(): plan.ActionUpdate},
 			wantCalls: 1,
 		},
 		"Unrouted": {
-			reason: "A kind no diff server serves gets no entry, so its engine plan stands; a kept equal one gets a no-op entry.",
+			reason: "A kind no diff server serves gets no entry, kept equal or not, so its engine plan stands.",
 			keep:   keepAll,
-			sets:   []map[string]*dt.ResourceDiff{diffs(cm, cmEqual)},
-			want:   map[string]plan.Action{cmEqual.GetDiffKey(): plan.ActionNoOp},
+			diffs:  diffs(cm, cmEqual),
+			want:   map[string]plan.Action{},
 		},
 		"Removed": {
 			reason: "A removal is not planned: providers plan no deletes.",
 			rsp:    update,
-			sets:   []map[string]*dt.ResourceDiff{diffs(vpcDiff(dt.DiffTypeRemoved, "a"))},
+			diffs:  diffs(vpcDiff(dt.DiffTypeRemoved, "a")),
 			want:   map[string]plan.Action{},
 		},
 		"EqualNotKept": {
 			reason: "An equal diff keep declines, such as the XR's own, is not planned.",
 			rsp:    update,
-			sets:   []map[string]*dt.ResourceDiff{diffs(vpcDiff(dt.DiffTypeEqual, "a"))},
+			diffs:  diffs(vpcDiff(dt.DiffTypeEqual, "a")),
 			want:   map[string]plan.Action{},
 		},
 		"KeptEqualNoOp": {
 			reason:    "A kept equal diff is planned; the provider's no-op is returned for the merge to drop.",
 			rsp:       &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_NO_OP},
 			keep:      keepAll,
-			sets:      []map[string]*dt.ResourceDiff{diffs(vpcDiff(dt.DiffTypeEqual, "a"))},
+			diffs:     diffs(vpcDiff(dt.DiffTypeEqual, "a")),
 			want:      map[string]plan.Action{vpcDiff(dt.DiffTypeEqual, "a").GetDiffKey(): plan.ActionNoOp},
 			wantCalls: 1,
 		},
 		"NotSupported": {
 			reason:    "DIFF_COMPUTATION_NOT_SUPPORTED is an approximate plan, not an error.",
 			err:       notSupportedErr(t),
-			sets:      []map[string]*dt.ResourceDiff{diffs(vpcDiff(dt.DiffTypeModified, "a"))},
+			diffs:     diffs(vpcDiff(dt.DiffTypeModified, "a")),
 			want:      map[string]plan.Action{vpcDiff(dt.DiffTypeModified, "a").GetDiffKey(): plan.ActionUpdate},
 			wantCalls: 1,
 			check: func(t *testing.T, got map[string]*plan.ResourcePlan) {
@@ -146,7 +146,7 @@ func TestPlanDiffs(t *testing.T) {
 		"Error": {
 			reason:    "A diff server error is a per-resource error plan.",
 			err:       status.Error(codes.Internal, "boom"),
-			sets:      []map[string]*dt.ResourceDiff{diffs(vpcDiff(dt.DiffTypeAdded, "a"))},
+			diffs:     diffs(vpcDiff(dt.DiffTypeAdded, "a")),
 			want:      map[string]plan.Action{vpcDiff(dt.DiffTypeAdded, "a").GetDiffKey(): ""},
 			wantCalls: 1,
 			check: func(t *testing.T, got map[string]*plan.ResourcePlan) {
@@ -156,13 +156,10 @@ func TestPlanDiffs(t *testing.T) {
 				}
 			},
 		},
-		"DedupeAcrossGroups": {
-			reason: "One resource reached by two groups is planned once.",
+		"MixedKinds": {
+			reason: "Each routed diff in the map is planned once; an unrouted one alongside gets no entry.",
 			rsp:    update,
-			sets: []map[string]*dt.ResourceDiff{
-				diffs(vpcDiff(dt.DiffTypeModified, "a")),
-				diffs(vpcDiff(dt.DiffTypeModified, "a"), vpcDiff(dt.DiffTypeModified, "b")),
-			},
+			diffs:  diffs(vpcDiff(dt.DiffTypeModified, "a"), vpcDiff(dt.DiffTypeModified, "b"), cm),
 			want: map[string]plan.Action{
 				vpcDiff(dt.DiffTypeModified, "a").GetDiffKey(): plan.ActionUpdate,
 				vpcDiff(dt.DiffTypeModified, "b").GetDiffKey(): plan.ActionUpdate,
@@ -177,7 +174,7 @@ func TestPlanDiffs(t *testing.T) {
 			kube := fake.NewClientBuilder().WithScheme(s).Build()
 			p := NewPlanner(kube, rm, "default", &vpcRouter{client: pc}, time.Second)
 
-			got := PlanDiffs(ctx, p, tc.keep, tc.sets...)
+			got := PlanDiffs(ctx, p, tc.keep, tc.diffs)
 
 			actions := map[string]plan.Action{}
 			for k, rp := range got {

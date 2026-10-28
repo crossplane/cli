@@ -49,13 +49,14 @@ const (
 // resource diff (the XR's own included), each grouped under its input XR or
 // claim, and one Composites entry per input. plans are the provider plans
 // PlanDiffs returned, merged into the engine's by diff key; nil means none
-// ran.
-func FromXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan) ProjectResult {
+// ran. keep is the filter PlanDiffs used: a kept equal diff no provider
+// planned is dropped, as one whose provider plan is a no-op is. nil keeps none.
+func FromXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan, keep func(*unstructured.Unstructured) bool) ProjectResult {
 	if r == nil {
 		r = &dt.XRReport{}
 	}
 
-	a := newAssembler(plans)
+	a := newAssembler(plans, keep)
 	owned := make([]dt.OutputError, 0, len(r.Groups))
 
 	for _, g := range r.Groups {
@@ -87,13 +88,13 @@ func FromXRReport(r *dt.XRReport, plans map[string]*plan.ResourcePlan) ProjectRe
 // FromCompReport maps a composition diff run onto a ProjectResult: a plan and a
 // Compositions entry per Composition, and a Composites entry per affected
 // composite, with that composite's downstream plans grouped under it. plans
-// are merged as FromXRReport merges them.
-func FromCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan) ProjectResult {
+// and keep are used as FromXRReport uses them.
+func FromCompReport(o *dt.CompDiffOutput, plans map[string]*plan.ResourcePlan, keep func(*unstructured.Unstructured) bool) ProjectResult {
 	if o == nil {
 		o = &dt.CompDiffOutput{}
 	}
 
-	a := newAssembler(plans)
+	a := newAssembler(plans, keep)
 	owned := make([]dt.OutputError, 0, len(o.Errors))
 	compositions := make([]CompositionResult, 0, len(o.Compositions))
 
@@ -209,7 +210,9 @@ func compositeReason(r dt.FilterReason) CompositeReason {
 type assembler struct {
 	// provider holds the provider plans to merge, by diff key; nil when none
 	// ran.
-	provider   map[string]*plan.ResourcePlan
+	provider map[string]*plan.ResourcePlan
+	// keep reports the equal diffs kept only for a provider plan.
+	keep       func(*unstructured.Unstructured) bool
 	plans      []*plan.ResourcePlan
 	composites []CompositeResult
 	errors     []Error
@@ -227,8 +230,8 @@ type listedChange struct {
 	replacePaths []string
 }
 
-func newAssembler(provider map[string]*plan.ResourcePlan) *assembler {
-	return &assembler{provider: provider, plans: []*plan.ResourcePlan{}, listed: map[string][]listedChange{}}
+func newAssembler(provider map[string]*plan.ResourcePlan, keep func(*unstructured.Unstructured) bool) *assembler {
+	return &assembler{provider: provider, keep: keep, plans: []*plan.ResourcePlan{}, listed: map[string][]listedChange{}}
 }
 
 // addDiffs adds a plan per diff, in the structured renderer's canonical order.
@@ -250,7 +253,7 @@ func (a *assembler) addDiffs(diffs map[string]*dt.ResourceDiff, composite *plan.
 // whether the merged plan is a change, listed or not.
 func (a *assembler) addDiff(d *dt.ResourceDiff, composite *plan.ResourceRef) bool {
 	key := d.GetDiffKey()
-	p := merge(d, resourcePlan(d), a.provider[key])
+	p := merge(d, resourcePlan(d), a.provider[key], a.keep)
 	if p == nil {
 		return false
 	}
@@ -276,9 +279,13 @@ func (a *assembler) addDiff(d *dt.ResourceDiff, composite *plan.ResourceRef) boo
 
 // merge returns the plan for d given its engine plan p and its provider plan
 // pp, or nil to drop it. The cluster diff decides what changes in the
-// cluster; the provider refines what that does to the external resource.
-func merge(d *dt.ResourceDiff, p, pp *plan.ResourcePlan) *plan.ResourcePlan {
+// cluster; the provider refines what that does to the external resource. An
+// equal diff keep reports true for was kept only for its provider plan, so
+// without one it is dropped.
+func merge(d *dt.ResourceDiff, p, pp *plan.ResourcePlan, keep func(*unstructured.Unstructured) bool) *plan.ResourcePlan {
 	switch {
+	case pp == nil && d.DiffType == dt.DiffTypeEqual && keep != nil && d.Desired.Raw != nil && keep(d.Desired.Raw):
+		return nil
 	case pp == nil:
 		return p
 	case pp.Error != "":

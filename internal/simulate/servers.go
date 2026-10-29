@@ -90,18 +90,22 @@ const (
 )
 
 // EnsureServers starts a diff server for each input mgr has not handled yet,
-// behind the spinner, and prints the inputs it skipped. When mgr has handled
-// every input already, it returns without starting the spinner.
+// behind the spinner, and prints the inputs it skipped. When no input is new,
+// it waits for any still starting without starting the spinner.
 func EnsureServers(ctx context.Context, sp terminal.SpinnerPrinter, stderr io.Writer, mgr *diffserver.Manager, inputs []diffserver.Input) error {
-	if len(mgr.Unclaimed(inputs)) == 0 {
-		return nil
-	}
 	var skipped []diffserver.Skipped
-	if err := sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
+	start := func(ch async.EventChannel) error {
 		var err error
 		skipped, err = mgr.Start(ctx, inputs, ch)
 		return err
-	}); err != nil {
+	}
+	var err error
+	if len(mgr.Unclaimed(inputs)) == 0 {
+		err = start(nil)
+	} else {
+		err = sp.WrapAsyncWithSuccessSpinners(start)
+	}
+	if err != nil {
 		return errors.Wrap(err, "cannot start diff servers")
 	}
 	for _, sk := range skipped {

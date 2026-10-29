@@ -887,6 +887,76 @@ func TestManagerStartIdempotent(t *testing.T) {
 		}
 	})
 
+	t.Run("WaiterRetriesCancelledStart", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		cli := fd.client()
+		create := cli.MockContainerCreate
+		entered, unblock := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		cli.MockContainerCreate = func(ctx context.Context, o client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			first := false
+			once.Do(func() { first = true })
+			if first {
+				close(entered)
+				<-unblock
+			}
+			return create(ctx, o)
+		}
+		m := NewManager(pkgs, log, WithDockerClient(cli))
+		actx, cancel := context.WithCancel(ctx)
+		a := make(chan error, 1)
+		go func() { _, err := m.Start(actx, Images([]string{img}), nil); a <- err }()
+		<-entered
+		b := make(chan error, 1)
+		go func() { _, err := m.Start(ctx, Images([]string{img}), nil); b <- err }()
+		cancel()
+		close(unblock)
+		if err := <-a; !errors.Is(err, context.Canceled) {
+			t.Errorf("cancelled Start: want context.Canceled, got %v", err)
+		}
+		if err := <-b; err != nil {
+			t.Fatalf("waiting Start: %v", err)
+		}
+		if _, ok := m.Route(vpc); !ok || len(fd.created) != 2 {
+			t.Errorf("want the waiter to retry and route the input, got containers %v", fd.created)
+		}
+	})
+
+	t.Run("WaiterHonoursOwnContext", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		cli := fd.client()
+		create := cli.MockContainerCreate
+		entered, unblock := make(chan struct{}), make(chan struct{})
+		cli.MockContainerCreate = func(ctx context.Context, o client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			close(entered)
+			<-unblock
+			return create(ctx, o)
+		}
+		m := NewManager(pkgs, log, WithDockerClient(cli))
+		a := make(chan error, 1)
+		go func() { _, err := m.Start(ctx, Images([]string{img}), nil); a <- err }()
+		<-entered
+		bctx, cancel := context.WithCancel(ctx)
+		b := make(chan error, 1)
+		go func() { _, err := m.Start(bctx, Images([]string{img}), nil); b <- err }()
+		cancel()
+		select {
+		case err := <-b:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("waiting Start: want context.Canceled, got %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("waiting Start did not return after its own ctx ended")
+		}
+		close(unblock)
+		if err := <-a; err != nil {
+			t.Fatalf("first Start: %v", err)
+		}
+		if _, ok := m.Route(vpc); !ok {
+			t.Error("first Start: want the input routed")
+		}
+	})
+
 	t.Run("StopHonoursDeadline", func(t *testing.T) {
 		fd := newFakeDocker(servePlanService(t), nil)
 		cli := fd.client()

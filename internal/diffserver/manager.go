@@ -307,8 +307,9 @@ type sharedRunClient struct {
 // Development provider, so no input is ever started twice and a repeat
 // returns no Skipped for it. An input counts as handled once its start
 // returns, whether it started or was skipped. For an input another Start is
-// still starting, Start waits until that start returns or ctx ends, so Route
-// serves every input this Start was given once it returns nil. An input whose
+// still starting, Start waits until that start returns or ctx ends, so once it
+// returns nil every input this Start was given has been started (and is
+// routed) or skipped. An input whose
 // start ended because ctx ended is released, so a later Start, or one waiting
 // on it, retries it.
 func (m *Manager) Start(ctx context.Context, inputs []Input, events async.EventChannel) ([]Skipped, error) {

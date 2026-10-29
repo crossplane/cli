@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 
@@ -237,7 +238,7 @@ func TestNeedsDocker(t *testing.T) {
 
 func TestEnsureServersDevelopmentKeys(t *testing.T) {
 	var out bytes.Buffer
-	mgr := diffserver.NewManager(nil, logging.NewNopLogger(), diffserver.WithSessionID("s"))
+	mgr := diffserver.NewManager(nil, logging.NewNopLogger(), diffserver.WithSessionID("s"), diffserver.WithReadyTimeout(10*time.Millisecond))
 	sp := terminal.NewNopSpinnerPrinter()
 	// Development inputs have no image, so each is keyed by its own name.
 	inputs := []diffserver.Input{
@@ -270,7 +271,7 @@ func (r *recordingSpinner) WrapAsyncWithSuccessSpinners(f func(ch async.EventCha
 
 func TestEnsureServersSpinner(t *testing.T) {
 	ctx := context.Background()
-	mgr := diffserver.NewManager(nil, logging.NewNopLogger(), diffserver.WithSessionID("s"))
+	mgr := diffserver.NewManager(nil, logging.NewNopLogger(), diffserver.WithSessionID("s"), diffserver.WithReadyTimeout(10*time.Millisecond))
 	sp := &recordingSpinner{SpinnerPrinter: terminal.NewNopSpinnerPrinter()}
 	inputs := []diffserver.Input{
 		{Runtime: diffserver.RuntimeDevelopment, Name: "a", DevelopmentTarget: "localhost:1", APIGroups: []string{"a.example.org"}},
@@ -289,4 +290,35 @@ func TestEnsureServersSpinner(t *testing.T) {
 			t.Errorf("%s: want %d spinner runs in total, got %d", step.name, step.want, sp.runs)
 		}
 	}
+}
+
+func TestEnsureServersWaitsForInFlight(t *testing.T) {
+	ctx := context.Background()
+	// Nothing answers at the target, so the first Start holds the input in
+	// flight for the whole ready timeout.
+	const hold = 500 * time.Millisecond
+	mgr := diffserver.NewManager(nil, logging.NewNopLogger(), diffserver.WithSessionID("s"), diffserver.WithReadyTimeout(hold))
+	inputs := []diffserver.Input{
+		{Runtime: diffserver.RuntimeDevelopment, Name: "a", DevelopmentTarget: "localhost:1", APIGroups: []string{"a.example.org"}},
+	}
+	began := time.Now()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = mgr.Start(ctx, inputs, nil)
+	}()
+	for len(mgr.Unclaimed(inputs)) != 0 {
+		time.Sleep(time.Millisecond)
+	}
+	sp := &recordingSpinner{SpinnerPrinter: terminal.NewNopSpinnerPrinter()}
+	if err := EnsureServers(ctx, sp, io.Discard, mgr, inputs); err != nil {
+		t.Fatalf("EnsureServers(...): %v", err)
+	}
+	if elapsed := time.Since(began); elapsed < hold {
+		t.Errorf("EnsureServers returned after %s, before the in-flight start's %s ready timeout", elapsed, hold)
+	}
+	if sp.runs != 0 {
+		t.Errorf("EnsureServers ran %d spinners for an in-flight input, want 0", sp.runs)
+	}
+	<-done
 }

@@ -128,6 +128,8 @@ func TestRejectManagedInputs(t *testing.T) {
 	const (
 		composedErr = "XR/child is composed by input XR/parent, whose composition writes it; supplying it as an " +
 			"input too gives it a second writer — pass XR/parent only"
+		controlledErr = "XR/child is controlled by input XR/parent; supplying it as an input too gives it a " +
+			"second writer — pass XR/parent only"
 		claimErr = "XR/backing is the XR bound to claim Claim/my-claim, which Crossplane's claim controller writes; " +
 			"supplying it as an input too gives it a second writer — pass the claim, not its XR"
 	)
@@ -159,6 +161,21 @@ func TestRejectManagedInputs(t *testing.T) {
 				{res: xr("child").Build()},
 			},
 			want: map[int]string{1: composedErr},
+		},
+		"ChildControlledByAParentInputIsRejected": {
+			reason: "A child the parent still controls in the cluster is rejected even when the parent's render drops it.",
+			inputs: []input{
+				{res: xr("parent").Build()},
+				{res: xr("child").Build(), cluster: xr("child").WithControllerReference("XR", "parent", "example.org/v1", "uid").Build()},
+			},
+			want: map[int]string{1: controlledErr},
+		},
+		"ControllerOfTheSameNameInAnotherNamespaceDoesNotMatch": {
+			reason: "A namespaced parent controls only objects in its own namespace.",
+			inputs: []input{
+				{res: xr("parent").InNamespace("a").Build()},
+				{res: xr("child").InNamespace("b").WithControllerReference("XR", "parent", "example.org/v1", "uid").Build()},
+			},
 		},
 		"ChildRenderedAtAnotherAPIVersionIsStillRejected": {
 			reason: "The parent may render the child at another version; it is the same object.",

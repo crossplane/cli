@@ -661,7 +661,11 @@ func withoutClaimedXRs(kept []*un.Unstructured, dropped []filteredXR, xrKind str
 // overlapGroups returns the groups of composites for the overlap check, without each composite another
 // one in the run manages (see managedBy): a nested XR, controlled by its parent, is still rendered and
 // reported, but as in xr mode, where such an input is rejected before the check, the parent's rendering
-// of what they share wins.
+// of what they share wins. A kept claim's backing XR is dropped (see withoutClaimedXRs), so it cannot
+// exclude an XR nested under it here. Such a nested XR carries the crossplane.io/claim-name and
+// claim-namespace labels Crossplane copies onto composed resources, so withoutClaimedXRs drops it as bound
+// to the claim (see boundToClaim) before it is rendered; one lacking those labels reaches this check,
+// controlled by no rendered composite.
 func overlapGroups(composites []renderedComposite) []dt.XRDiffGroup {
 	groups := make([]dt.XRDiffGroup, 0, len(composites))
 

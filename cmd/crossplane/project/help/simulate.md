@@ -14,11 +14,16 @@ directory, or pass `-` to read from standard input:
   project's functions in place of the cluster's functions of the same name.
 - Composition files simulate those Compositions without a project. The command
   renders each composite resource in the cluster that uses one of them, with
-  the functions installed in the cluster. When a claim and its composite
-  resource are both in scope, the change is reported once, under the claim.
+  the functions installed in the cluster.
 - Composite resource or claim files simulate those resources. The command
   renders each one with the Composition the cluster selects for it and the
   functions installed in the cluster.
+
+When a project or Composition run reaches both a claim and its composite
+resource, the change is reported under the claim. If the claim is skipped
+because it uses the Manual update policy but its composite resource is
+pinned to a revision that calls a changed function, the change is reported
+under the composite resource.
 
 A project file must be the only `-f` input, and one run can't mix Compositions
 with composite resources. Any other resource, such as package metadata, a

@@ -2584,6 +2584,9 @@ func TestDefaultCompDiffProcessor_DiffComposition_RenderOverlaps(t *testing.T) {
 	claim := tu.NewResource("example.org/v1", "Resource", "claim").WithNamespace("default").Build()
 	backing := tu.NewResource("example.org/v1", "XResource", "claim-xyz").WithNamespace("default").
 		WithSpecField("claimRef", map[string]any{"apiVersion": "example.org/v1", "kind": "Resource", "name": "claim", "namespace": "default"}).Build()
+	// nestedUnderClaim is composed by backing, so it carries the claim labels Crossplane copies down.
+	nestedUnderClaim := tu.NewResource("example.org/v1", "XResource", "nested").WithNamespace("default").ControlledBy(backing).
+		WithLabels(map[string]string{LabelClaimName: "claim", LabelClaimNamespace: "default"}).Build()
 
 	cases := map[string]struct {
 		reason string
@@ -2640,6 +2643,12 @@ func TestDefaultCompDiffProcessor_DiffComposition_RenderOverlaps(t *testing.T) {
 			reason:       "A claim's backing XR found with it is dropped before rendering, so its stale rendering raises nothing.",
 			xrs:          []*un.Unstructured{claim, backing},
 			renders:      map[string][]*dt.ResourceDiff{"claim": {shared("1")}, "claim-xyz": {shared("2")}},
+			wantRendered: []string{"claim"},
+		},
+		"NestedXRUnderKeptClaimExcluded": {
+			reason:       "A nested XR under a kept claim carries the claim labels, so it is dropped with the backing XR and raises nothing.",
+			xrs:          []*un.Unstructured{claim, backing, nestedUnderClaim},
+			renders:      map[string][]*dt.ResourceDiff{"claim": {shared("1")}, "nested": {shared("2")}},
 			wantRendered: []string{"claim"},
 		},
 	}

@@ -212,9 +212,14 @@ func rejectManagedInputs(groups []dt.XRDiffGroup, inputs []inputCheck, rendered 
 			// The manager's rendered keys are checked as well as managedBy's controller reference: a child
 			// the manager would create has no cluster copy yet, so nothing carries that reference.
 			switch {
-			case renderedIDs[a][identityOf(managed)] || relation == composedBy:
+			case renderedIDs[a][identityOf(managed)]:
 				rejected[b] = errors.Errorf("%s is composed by input %s, whose composition writes it; supplying it "+
 					"as an input too gives it a second writer — pass %s only", kindName(managed), kindName(manager), kindName(manager))
+			case relation == composedBy:
+				// The manager's render no longer produces it, but the manager still controls it in the
+				// cluster, so diffing it on its own predicts nothing applying the manager would do.
+				rejected[b] = errors.Errorf("%s is controlled by input %s; supplying it as an input too "+
+					"gives it a second writer — pass %s only", kindName(managed), kindName(manager), kindName(manager))
 			case relation == claimedBy:
 				rejected[b] = errors.Errorf("%s is the XR bound to claim %s, which Crossplane's claim controller writes; "+
 					"supplying it as an input too gives it a second writer — pass the claim, not its XR", kindName(managed), kindName(manager))

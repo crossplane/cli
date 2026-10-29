@@ -172,7 +172,7 @@ func TestPlanDiffs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pc := &countingPlanClient{rsp: tc.rsp, err: tc.err}
 			kube := fake.NewClientBuilder().WithScheme(s).Build()
-			p := NewPlanner(kube, rm, "default", &vpcRouter{client: pc}, time.Second)
+			p := NewPlanner(kube, rm, noCRDs(t), "default", &vpcRouter{client: pc}, time.Second)
 
 			got := PlanDiffs(ctx, p, tc.keep, tc.diffs)
 

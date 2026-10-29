@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"reflect"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
 	kubeclient "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -40,7 +42,10 @@ type Initializable interface {
 type Clients struct {
 	Dynamic   dynamic.Interface
 	Discovery discovery.DiscoveryInterface
-	Tree      *xrm.Client
+	// Mapper is a REST mapper over Discovery's cache, so mapping a kind never
+	// costs a discovery round trip of its own.
+	Mapper meta.RESTMapper
+	Tree   *xrm.Client
 
 	// Kube is the generated, typed clientset. Most of this tool works in
 	// Unstructured because it deals in arbitrary user-defined GVKs, but a few
@@ -64,7 +69,9 @@ func NewClients(config *rest.Config) (*Clients, error) {
 		return nil, errors.Wrap(err, "cannot create discovery client")
 	}
 
-	xrmClient, err := makeXrmClient(config)
+	mapper := restmapper.NewShortcutExpander(restmapper.NewDeferredDiscoveryRESTMapper(disClient), disClient, nil)
+
+	xrmClient, err := makeXrmClient(config, mapper)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create xrm client")
 	}
@@ -77,6 +84,7 @@ func NewClients(config *rest.Config) (*Clients, error) {
 	return &Clients{
 		Dynamic:   dynClient,
 		Discovery: disClient,
+		Mapper:    mapper,
 		Tree:      xrmClient,
 		Kube:      kubeClient,
 	}, nil
@@ -90,9 +98,12 @@ func makeKubeClient(config *rest.Config) (kubeclient.Interface, error) {
 	return kubeclient.NewForConfig(config)
 }
 
-func makeXrmClient(config *rest.Config) (*xrm.Client, error) {
+// makeXrmClient passes mapper to the controller-runtime client, which would
+// otherwise build a REST mapper with a discovery cache of its own.
+func makeXrmClient(config *rest.Config, mapper meta.RESTMapper) (*xrm.Client, error) {
 	c, err := client.New(config, client.Options{
 		Scheme: scheme.Scheme,
+		Mapper: mapper,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create controller runtime client")
@@ -112,7 +123,7 @@ func makeXrmClient(config *rest.Config) (*xrm.Client, error) {
 // serves every later lookup from memory. Every client's Initialize and most lookups consult discovery, so
 // without the cache a run repeats the same discovery requests many times over. The cache lives for the run:
 // a type the server starts serving mid-run is not seen, which a diff of a fixed cluster state never needs.
-func makeDiscoveryClient(config *rest.Config) (discovery.DiscoveryInterface, error) {
+func makeDiscoveryClient(config *rest.Config) (discovery.CachedDiscoveryInterface, error) {
 	d, err := discovery.NewDiscoveryClientForConfig(config)
 	if err != nil {
 		return nil, err

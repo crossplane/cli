@@ -43,7 +43,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/containerruntime"
 	"github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diffserver"
-	"github.com/crossplane/cli/v2/internal/kube"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -317,20 +316,18 @@ var kubeScheme = sync.OnceValues(func() (*runtime.Scheme, error) {
 	return s, nil
 })
 
-// NewKubeClient returns a client and a discovery-backed REST mapper for cfg.
-func NewKubeClient(cfg *rest.Config) (client.Client, meta.RESTMapper, error) {
+// NewKubeClient returns a client for cfg that maps kinds with rmapper. Pass
+// the run's one mapper (the diff engine's core.Clients.Mapper), since
+// controller-runtime otherwise builds a mapper with a discovery cache of its
+// own.
+func NewKubeClient(cfg *rest.Config, rmapper meta.RESTMapper) (client.Client, error) {
 	sch, err := kubeScheme()
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "cannot build scheme")
+		return nil, errors.Wrap(err, "cannot build scheme")
 	}
-	cl, err := client.New(cfg, client.Options{Scheme: sch})
+	cl, err := client.New(cfg, client.Options{Scheme: sch, Mapper: rmapper})
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "cannot init kubeclient")
+		return nil, errors.Wrap(err, "cannot init kubeclient")
 	}
-
-	rmapper, err := kube.NewCachedRESTMapper(cfg)
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "cannot get discovery client")
-	}
-	return cl, rmapper, nil
+	return cl, nil
 }

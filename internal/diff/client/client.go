@@ -33,6 +33,9 @@ import (
 
 // Clients holds the Kubernetes and Crossplane clients used by the diff engine.
 type Clients struct {
+	// Core is the built-in clients the others wrap, for a caller that needs
+	// the run's discovery-backed REST mapper.
+	Core       *core.Clients
 	K8sClients k8.Clients
 	XpClients  xp.Clients
 }
@@ -66,6 +69,7 @@ func New(config *rest.Config, logger logging.Logger) (*Clients, error) {
 	}
 
 	return &Clients{
+		Core:       coreClients,
 		K8sClients: k8c,
 		XpClients:  xpc,
 	}, nil

@@ -254,7 +254,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	// xrPlanner and servers are for rendering the plans; they stay nil with
 	// --skip-plan, and servers also when hooks.Router supplies the router.
 	if !c.SkipPlan {
-		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, ns, in, pkgs)
+		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, clients, ns, in, pkgs)
 		// Stop even on error: upfront Ensure may have started servers.
 		if c.servers != nil {
 			defer simulate.StopServers(sigCtx, k.Stderr, c.servers)
@@ -310,9 +310,12 @@ type packages struct {
 // the processor options that plan each composite resource's composed
 // resources. Namespaced resources without a namespace plan in ns, the
 // kubeconfig's namespace. pkgs is the project's in project mode; otherwise
-// planOptions sets its client. Run stops c.servers when it is set.
-func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, ns string, in *inputs, pkgs *packages) ([]dp.ProcessorOption, error) {
-	kubeClient, rmapper, err := simulate.NewKubeClient(restCfg)
+// planOptions sets its client. Run stops c.servers when it is set. Planning
+// shares the engine's clients' REST mapper and CRD cache, so a run discovers
+// the cluster once and fetches each CRD at most once.
+func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, clients *client.Clients, ns string, in *inputs, pkgs *packages) ([]dp.ProcessorOption, error) {
+	rmapper, crds := clients.Core.Mapper, clients.K8sClients.Schema
+	kubeClient, err := simulate.NewKubeClient(restCfg, rmapper)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +353,7 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 		case providersPerXR:
 			cache := simulate.NewImageCache()
 			ensure = func(ctx context.Context, rs []*un.Unstructured) error {
-				imgs := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, rs, len(pkgs.ics) > 0, cache, k.Stderr)
+				imgs := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, crds, rs, len(pkgs.ics) > 0, cache, k.Stderr)
 				return simulate.EnsureServers(ctx, sp, k.Stderr, c.servers, diffserver.Images(imgs))
 			}
 		}
@@ -361,8 +364,8 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 		}
 	}
 
-	c.keep = simulate.ProviderManaged(sigCtx, kubeClient, rmapper)
-	c.xrPlanner = simulate.NewXRPlanner(simulate.NewPlanner(kubeClient, rmapper, ns, router, c.Timeout), c.keep, ensure)
+	c.keep = simulate.ProviderManaged(sigCtx, rmapper, crds)
+	c.xrPlanner = simulate.NewXRPlanner(simulate.NewPlanner(kubeClient, rmapper, crds, ns, router, c.Timeout), c.keep, ensure)
 	return []dp.ProcessorOption{dp.WithAfterXRDiff(c.xrPlanner.AfterXRDiff), dp.WithKeepEqualDiffs(c.keep)}, nil
 }
 

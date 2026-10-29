@@ -34,6 +34,8 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/internal/dependency"
+	dcore "github.com/crossplane/cli/v2/internal/diff/client/core"
+	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/kube"
@@ -106,7 +108,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		}
 	}
 
-	kubeClient, rmapper, defaultNamespace, err := c.setupKubeClient(logger)
+	kubeClient, rmapper, crds, defaultNamespace, err := c.setupKubeClient(logger)
 	if err != nil {
 		return err
 	}
@@ -120,7 +122,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		// With local ImageConfigs the rewrites apply to original package
 		// references, so discovery must hand those out; without them the
 		// cluster's resolved reference is the exact artifact it runs.
-		images := isimulate.RelevantProviderImages(ctx, kubeClient, rmapper, resources, len(imageConfigs) > 0, isimulate.NewImageCache(), k.Stderr)
+		images := isimulate.RelevantProviderImages(ctx, kubeClient, rmapper, crds, resources, len(imageConfigs) > 0, isimulate.NewImageCache(), k.Stderr)
 		inputs = diffserver.Images(images)
 	}
 	pkgClient, err := clixpkg.NewClient(
@@ -141,7 +143,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 	}
 
 	plans := make([]*plan.ResourcePlan, 0, len(resources))
-	planner := isimulate.NewPlanner(kubeClient, rmapper, defaultNamespace, mgr, c.Timeout)
+	planner := isimulate.NewPlanner(kubeClient, rmapper, crds, defaultNamespace, mgr, c.Timeout)
 	for _, desired := range resources {
 		plans = append(plans, planner.Plan(ctx, desired))
 	}
@@ -166,23 +168,32 @@ func exitStatus(plans []*plan.ResourcePlan) error {
 	return nil
 }
 
-func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMapper, string, error) {
+// setupKubeClient builds the client stack project simulate plans with: the
+// diff engine's core clients, whose REST mapper the kube client shares, and
+// its SchemaClient as the run's one CRD cache.
+func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMapper, isimulate.CRDs, string, error) {
 	kubeconfig, clientconfig, err := kube.RESTConfig(c.Context, c.Impersonation)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, nil, "", err
 	}
 
 	logger.Debug("Found kubeconfig")
 
-	cl, rmapper, err := isimulate.NewKubeClient(kubeconfig)
+	core, err := dcore.NewClients(kubeconfig)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, nil, "", err
+	}
+	crds := k8.NewSchemaClient(core, k8.NewTypeConverter(core, logger), logger)
+
+	cl, err := isimulate.NewKubeClient(kubeconfig, core.Mapper)
+	if err != nil {
+		return nil, nil, nil, "", err
 	}
 
 	namespace, _, err := clientconfig.Namespace()
 	if err != nil {
-		return nil, nil, "", errors.Wrap(err, "failed to get namespace from kubeconfig")
+		return nil, nil, nil, "", errors.Wrap(err, "failed to get namespace from kubeconfig")
 	}
 
-	return cl, rmapper, namespace, nil
+	return cl, core.Mapper, crds, namespace, nil
 }

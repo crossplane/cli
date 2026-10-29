@@ -17,11 +17,8 @@ limitations under the License.
 package simulate
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"io"
-	"strings"
 	"testing"
 	"time"
 
@@ -32,7 +29,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -119,7 +115,7 @@ func TestPlanner(t *testing.T) {
 			}},
 		}}
 
-		got := NewPlanner(kube, rm, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
 
 		if got.Action != plan.ActionUpdate || got.Approximate || got.Error != "" {
 			t.Errorf("Plan(...): want a provider-computed update, got %+v", got)
@@ -133,7 +129,7 @@ func TestPlanner(t *testing.T) {
 		kube := fake.NewClientBuilder().WithScheme(s).Build()
 		pc := &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}
 
-		got := NewPlanner(kube, rm, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("new-vpc", "10.0.0.0/16"))
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("new-vpc", "10.0.0.0/16"))
 
 		if got.Action != plan.ActionCreate || got.Error != "" {
 			t.Errorf("Plan(...): want a create, got %+v", got)
@@ -147,7 +143,7 @@ func TestPlanner(t *testing.T) {
 		live := vpc("my-vpc", "10.0.0.0/16")
 		kube := fake.NewClientBuilder().WithScheme(s).WithObjects(live).Build()
 
-		got := NewPlanner(kube, rm, "default", &fakeRouter{}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
 
 		if !got.Approximate || got.Action != plan.ActionUpdate {
 			t.Errorf("Plan(...): want an approximate update fallback, got %+v", got)
@@ -159,7 +155,7 @@ func TestPlanner(t *testing.T) {
 		kube := fake.NewClientBuilder().WithScheme(s).WithObjects(live).Build()
 		pc := &fakePlanClient{err: notSupportedErr(t)}
 
-		got := NewPlanner(kube, rm, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
 
 		if !got.Approximate || got.Action != plan.ActionUpdate {
 			t.Errorf("Plan(...): want an approximate fallback on DIFF_COMPUTATION_NOT_SUPPORTED, got %+v", got)
@@ -171,14 +167,6 @@ func TestPlanner(t *testing.T) {
 		// admission (deletionPolicy, managementPolicies) that the manifest
 		// omits. Applying the manifest would default them right back, so the
 		// fallback must not plan them as removals.
-		crdGVK := schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"}
-
-		defScheme := runtime.NewScheme()
-		defScheme.AddKnownTypeWithName(vpcGVK, &unstructured.Unstructured{})
-		defScheme.AddKnownTypeWithName(vpcGVK.GroupVersion().WithKind("VPCList"), &unstructured.UnstructuredList{})
-		defScheme.AddKnownTypeWithName(crdGVK, &unstructured.Unstructured{})
-		defScheme.AddKnownTypeWithName(crdGVK.GroupVersion().WithKind("CustomResourceDefinitionList"), &unstructured.UnstructuredList{})
-
 		crd := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "apiextensions.k8s.io/v1",
 			"kind":       "CustomResourceDefinition",
@@ -211,16 +199,11 @@ func TestPlanner(t *testing.T) {
 		_ = unstructured.SetNestedField(live.Object, "Delete", "spec", "deletionPolicy")
 		_ = unstructured.SetNestedStringSlice(live.Object, []string{"*"}, "spec", "managementPolicies")
 
-		crdGets := 0
-		kube := fake.NewClientBuilder().WithScheme(defScheme).WithObjects(live, crd).
-			WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				if obj.GetObjectKind().GroupVersionKind().Kind == "CustomResourceDefinition" {
-					crdGets++
-				}
-				return c.Get(ctx, key, obj, opts...)
-			}}).Build()
+		kube := fake.NewClientBuilder().WithScheme(s).WithObjects(live).Build()
+		crds, dc := newCRDs(t, crd)
+		crdGets := countCRDGets(dc)
 
-		planner := NewPlanner(kube, rm, "default", &fakeRouter{}, time.Second)
+		planner := NewPlanner(kube, rm, crds, "default", &fakeRouter{}, time.Second)
 		got := planner.Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
 
 		if !got.Approximate || got.Action != plan.ActionUpdate {
@@ -240,8 +223,8 @@ func TestPlanner(t *testing.T) {
 		if again := planner.Plan(ctx, vpc("my-vpc", "10.0.0.0/16")); again.Action != plan.ActionNoOp {
 			t.Errorf("Plan(...): want a no-op for a manifest omitting only defaulted fields, got %+v", again)
 		}
-		if crdGets != 1 {
-			t.Errorf("Plan(...): want 1 CRD fetch for 2 resources of the same kind, got %d", crdGets)
+		if *crdGets != 1 {
+			t.Errorf("Plan(...): want 1 CRD fetch for 2 resources of the same kind, got %d", *crdGets)
 		}
 	})
 
@@ -249,7 +232,7 @@ func TestPlanner(t *testing.T) {
 		kube := fake.NewClientBuilder().WithScheme(s).Build()
 		pc := &fakePlanClient{err: status.Error(codes.Internal, "boom")}
 
-		got := NewPlanner(kube, rm, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
 
 		if got.Error == "" {
 			t.Errorf("Plan(...): want a per-resource error, got %+v", got)
@@ -290,7 +273,7 @@ func TestPlanner(t *testing.T) {
 		kube := fake.NewClientBuilder().WithScheme(seedScheme).WithObjects(pc, secret).Build()
 		pc2 := &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}
 
-		got := NewPlanner(kube, seedRM, "default", &fakeRouter{client: pc2}, time.Second).Plan(ctx, vpc("my-vpc", "10.0.0.0/16"))
+		got := NewPlanner(kube, seedRM, noCRDs(t), "default", &fakeRouter{client: pc2}, time.Second).Plan(ctx, vpc("my-vpc", "10.0.0.0/16"))
 
 		if got.Error != "" {
 			t.Fatalf("Plan(...): unexpected error: %s", got.Error)
@@ -389,11 +372,7 @@ func TestPlanner(t *testing.T) {
 	})
 
 	t.Run("DiscoversOnlyRelevantProviders", func(t *testing.T) {
-		crdGVK := schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"}
-
 		discScheme := runtime.NewScheme()
-		discScheme.AddKnownTypeWithName(crdGVK, &unstructured.Unstructured{})
-		discScheme.AddKnownTypeWithName(crdGVK.GroupVersion().WithKind("CustomResourceDefinitionList"), &unstructured.UnstructuredList{})
 		if err := pkg.AddToScheme(discScheme); err != nil {
 			t.Fatalf("cannot add pkg scheme: %v", err)
 		}
@@ -427,7 +406,8 @@ func TestPlanner(t *testing.T) {
 		prv.SetName("provider-aws-ec2-abc123")
 		prv.Status.ResolvedPackage = "xpkg.upbound.io/upbound/provider-aws-ec2:v2.9.0"
 
-		kube := fake.NewClientBuilder().WithScheme(discScheme).WithObjects(crd, prv).Build()
+		kube := fake.NewClientBuilder().WithScheme(discScheme).WithObjects(prv).Build()
+		crds, _ := newCRDs(t, crd)
 
 		// Two VPCs (same kind) plus a kind with no CRD on the cluster: exactly
 		// one provider image, once.
@@ -437,7 +417,7 @@ func TestPlanner(t *testing.T) {
 			"metadata":   map[string]any{"name": "k"},
 		}}
 		cache := NewImageCache()
-		got := RelevantProviderImages(ctx, kube, rm, []*unstructured.Unstructured{vpc("a", "10.0.0.0/16"), vpc("b", "10.1.0.0/16"), unserved}, false, cache, io.Discard)
+		got := RelevantProviderImages(ctx, kube, rm, crds, []*unstructured.Unstructured{vpc("a", "10.0.0.0/16"), vpc("b", "10.1.0.0/16"), unserved}, false, cache, io.Discard)
 		want := []string{"xpkg.upbound.io/upbound/provider-aws-ec2:v2.9.0"}
 		if len(got) != 1 || got[0] != want[0] {
 			t.Errorf("RelevantProviderImages(...): want %v, got %v", want, got)
@@ -447,29 +427,15 @@ func TestPlanner(t *testing.T) {
 		if err := kube.Delete(ctx, prv); err != nil {
 			t.Fatalf("cannot delete revision: %v", err)
 		}
-		if again := RelevantProviderImages(ctx, kube, rm, []*unstructured.Unstructured{vpc("c", "10.2.0.0/16")}, false, cache, io.Discard); len(again) != 1 || again[0] != want[0] {
+		if again := RelevantProviderImages(ctx, kube, rm, crds, []*unstructured.Unstructured{vpc("c", "10.2.0.0/16")}, false, cache, io.Discard); len(again) != 1 || again[0] != want[0] {
 			t.Errorf("RelevantProviderImages(...) repeat: want %v from the cache, got %v", want, again)
 		}
 
-		// A forbidden lookup yields no image, a warning, and no failure.
-		forbidden := fake.NewClientBuilder().WithScheme(discScheme).
-			WithInterceptorFuncs(interceptor.Funcs{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
-				return apierrors.NewForbidden(schema.GroupResource{Resource: "customresourcedefinitions"}, "vpcs.ec2.aws.upbound.io", errors.New("denied"))
-			}}).Build()
-		var warned bytes.Buffer
-		fc := NewImageCache()
-		for range 2 {
-			if imgs := RelevantProviderImages(ctx, forbidden, rm, []*unstructured.Unstructured{vpc("a", "10.0.0.0/16")}, false, fc, &warned); len(imgs) != 0 {
-				t.Errorf("RelevantProviderImages(forbidden): want no images, got %v", imgs)
-			}
-		}
-		if n := strings.Count(warned.String(), "Warning:"); n != 1 {
-			t.Errorf("RelevantProviderImages(forbidden): want 1 warning, got %d: %q", n, warned.String())
-		}
+		// A forbidden lookup is covered by TestTransientCRDErrorRetried.
 
 		// ProviderManaged follows the same chain: a VPC's CRD is controlled
 		// by a ProviderRevision; an unserved kind has no CRD.
-		managed := ProviderManaged(ctx, kube, rm)
+		managed := ProviderManaged(ctx, rm, crds)
 		if !managed(vpc("a", "10.0.0.0/16")) {
 			t.Errorf("ProviderManaged(...)(VPC): want true for a provider-installed kind")
 		}
@@ -484,7 +450,7 @@ func TestPlanner(t *testing.T) {
 		emptyRM := meta.NewDefaultRESTMapper(nil)
 		pc := &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}
 
-		got := NewPlanner(kube, emptyRM, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.0.0.0/16"))
+		got := NewPlanner(kube, emptyRM, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.0.0.0/16"))
 
 		if got.Action != plan.ActionCreate || got.Error != "" {
 			t.Errorf("Plan(...): want a create for an unserved kind, got %+v", got)

@@ -60,13 +60,14 @@ type Planner struct {
 	router           Router
 	timeout          time.Duration
 	stores           *objectStoreCache
-	crds             *crdDefaults
+	crds             CRDs
 }
 
 // NewPlanner returns a Planner that reads live state with kubeClient and
-// rmapper, resolves unset namespaces to defaultNamespace, and bounds each
-// diff server plan by timeout, when positive.
-func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, defaultNamespace string, r Router, timeout time.Duration) *Planner {
+// rmapper, defaults the approximate fallback's desired state from crds,
+// resolves unset namespaces to defaultNamespace, and bounds each diff server
+// plan by timeout, when positive.
+func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, defaultNamespace string, r Router, timeout time.Duration) *Planner {
 	return &Planner{
 		kube:             kubeClient,
 		rmapper:          rmapper,
@@ -74,7 +75,7 @@ func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, defaultNamesp
 		router:           r,
 		timeout:          timeout,
 		stores:           newObjectStoreCache(),
-		crds:             newCRDDefaults(),
+		crds:             crds,
 	}
 }
 
@@ -115,7 +116,7 @@ func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.
 		// defaulted by the API server on admission and applying the manifest
 		// would default it again. Apply the CRD's defaults to desired first,
 		// so defaulted fields the manifest omits do not plan as removals.
-		return plan.Fallback(p.crds.apply(ctx, p.kube, p.rmapper, desired), live, fmt.Sprintf("no diff server for %s", gk))
+		return plan.Fallback(applyCRDDefaults(ctx, p.rmapper, p.crds, desired), live, fmt.Sprintf("no diff server for %s", gk))
 	}
 
 	pctx := ctx
@@ -130,7 +131,7 @@ func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.
 	rp, err := plan.Plan(pctx, planClient, desired, live, store)
 	if err != nil {
 		if plan.IsNotSupported(err) {
-			return plan.Fallback(p.crds.apply(ctx, p.kube, p.rmapper, desired), live, "the provider cannot compute a diff for this resource")
+			return plan.Fallback(applyCRDDefaults(ctx, p.rmapper, p.crds, desired), live, "the provider cannot compute a diff for this resource")
 		}
 		rp := plan.NewResourcePlan(desired)
 		rp.Error = fmt.Sprintf("diff server cannot plan: %s", err)
@@ -285,15 +286,18 @@ func providerConfigMapping(rmapper meta.RESTMapper, group, kind string) *meta.RE
 }
 
 // ImageCache remembers which provider image serves each kind, so a run
-// looks a kind up on the cluster once however many composites use it. The
-// zero value is not usable; use NewImageCache.
+// looks a kind up on the cluster once however many composites use it. It
+// remembers only definite answers; a kind whose lookup failed is retried by
+// the next call, but warned about once. The zero value is not usable; use
+// NewImageCache.
 type ImageCache struct {
 	images map[schema.GroupKind]string
+	warned map[schema.GroupKind]bool
 }
 
 // NewImageCache returns an empty ImageCache.
 func NewImageCache() *ImageCache {
-	return &ImageCache{images: map[schema.GroupKind]string{}}
+	return &ImageCache{images: map[schema.GroupKind]string{}, warned: map[schema.GroupKind]bool{}}
 }
 
 // RelevantProviderImages returns the package images of exactly the providers
@@ -304,8 +308,9 @@ func NewImageCache() *ImageCache {
 // Kinds that resolve to no provider are skipped; their resources degrade to
 // the approximate client-side diff. So are kinds whose lookup fails (such as
 // forbidden): ProviderManaged treats them the same way, and a warning to warn
-// names each such kind once. cache carries answers across calls.
-func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, resources []*unstructured.Unstructured, preferOriginal bool, cache *ImageCache, warn io.Writer) []string {
+// names each such kind once. cache carries answers across calls. CRDs come
+// from crds, the run's one CRD cache.
+func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, resources []*unstructured.Unstructured, preferOriginal bool, cache *ImageCache, warn io.Writer) []string {
 	seenImage := map[string]bool{}
 	var images []string
 
@@ -315,11 +320,14 @@ func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapp
 		img, ok := cache.images[gk]
 		if !ok {
 			var err error
-			img, err = providerImage(ctx, kubeClient, rmapper, gvk, preferOriginal)
-			if err != nil {
+			img, err = providerImage(ctx, kubeClient, rmapper, crds, gvk, preferOriginal)
+			switch {
+			case err == nil:
+				cache.images[gk] = img
+			case !cache.warned[gk]:
+				cache.warned[gk] = true
 				_, _ = fmt.Fprintf(warn, "Warning: cannot look up the provider for %s, so its diff stays client-side only: %s\n", gk, err)
 			}
-			cache.images[gk] = img
 		}
 		if img != "" && !seenImage[img] {
 			seenImage[img] = true
@@ -331,8 +339,8 @@ func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapp
 
 // providerImage returns the package image of the provider serving gvk, or
 // empty when none does.
-func providerImage(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, gvk schema.GroupVersionKind, preferOriginal bool) (string, error) {
-	revision, crdName, err := controllingRevision(ctx, kubeClient, rmapper, gvk)
+func providerImage(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, gvk schema.GroupVersionKind, preferOriginal bool) (string, error) {
+	revision, crdName, err := controllingRevision(ctx, rmapper, crds, gvk)
 	if err != nil || revision == "" {
 		return "", err
 	}
@@ -360,11 +368,13 @@ func providerImage(ctx context.Context, kubeClient client.Client, rmapper meta.R
 
 // ProviderManaged returns a predicate reporting whether a resource's kind is
 // served by a provider: whether its CRD is controlled by a ProviderRevision,
-// as RelevantProviderImages discovers. Answers are cached per group and kind.
-// A lookup that fails answers false, so the resource keeps the engine's
-// verdict alone. XRs are never provider-managed: their CRDs are controlled by
-// their CompositeResourceDefinition.
-func ProviderManaged(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper) func(*unstructured.Unstructured) bool {
+// as RelevantProviderImages discovers. Definite answers are cached per group
+// and kind. A lookup that fails answers false without caching it, so the
+// resource keeps the engine's verdict alone and the next resource of its kind
+// asks again. XRs are never provider-managed: their CRDs are controlled by
+// their CompositeResourceDefinition. CRDs come from crds, the run's one CRD
+// cache.
+func ProviderManaged(ctx context.Context, rmapper meta.RESTMapper, crds CRDs) func(*unstructured.Unstructured) bool {
 	managed := map[schema.GroupKind]bool{}
 
 	// The engine diffs one resource at a time, so the cache needs no lock.
@@ -373,8 +383,11 @@ func ProviderManaged(ctx context.Context, kubeClient client.Client, rmapper meta
 		if m, ok := managed[gvk.GroupKind()]; ok {
 			return m
 		}
-		revision, _, err := controllingRevision(ctx, kubeClient, rmapper, gvk)
-		managed[gvk.GroupKind()] = err == nil && revision != ""
+		revision, _, err := controllingRevision(ctx, rmapper, crds, gvk)
+		if err != nil {
+			return false
+		}
+		managed[gvk.GroupKind()] = revision != ""
 		return managed[gvk.GroupKind()]
 	}
 }
@@ -382,21 +395,10 @@ func ProviderManaged(ctx context.Context, kubeClient client.Client, rmapper meta
 // controllingRevision returns the name of the ProviderRevision controlling the
 // CRD that serves gvk, and that CRD's name. The revision is empty when the
 // kind is not installed or its CRD is not provider-installed.
-func controllingRevision(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, gvk schema.GroupVersionKind) (string, string, error) {
-	gk := gvk.GroupKind()
-	mapping, err := rmapper.RESTMapping(gk, gvk.Version)
-	if err != nil {
-		return "", "", nil //nolint:nilerr // Intentional: the kind is not installed, so nothing serves it.
-	}
-
-	crd := &unstructured.Unstructured{}
-	crd.SetGroupVersionKind(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"})
-	crdName := mapping.Resource.Resource + "." + gk.Group
-	if err := kubeClient.Get(ctx, client.ObjectKey{Name: crdName}, crd); err != nil {
-		if apierrors.IsNotFound(err) {
-			return "", crdName, nil
-		}
-		return "", crdName, errors.Wrapf(err, "cannot get CRD %s", crdName)
+func controllingRevision(ctx context.Context, rmapper meta.RESTMapper, crds CRDs, gvk schema.GroupVersionKind) (string, string, error) {
+	crd, err := lookupCRD(ctx, rmapper, crds, gvk)
+	if err != nil || crd == nil {
+		return "", "", err
 	}
 
 	// After an upgrade every revision of the provider still owns the CRD;
@@ -404,8 +406,8 @@ func controllingRevision(ctx context.Context, kubeClient client.Client, rmapper 
 	// the one serving the resources.
 	for _, ref := range crd.GetOwnerReferences() {
 		if ref.Kind == "ProviderRevision" && strings.HasPrefix(ref.APIVersion, "pkg.crossplane.io/") && ref.Controller != nil && *ref.Controller {
-			return ref.Name, crdName, nil
+			return ref.Name, crd.GetName(), nil
 		}
 	}
-	return "", crdName, nil // Not provider-installed (e.g. a hand-applied CRD).
+	return "", crd.GetName(), nil // Not provider-installed (e.g. a hand-applied CRD).
 }

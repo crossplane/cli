@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -157,7 +158,8 @@ func TestOneCRDFetchPerRun(t *testing.T) {
 	kubeCRDGets := 0
 	kube := fake.NewClientBuilder().WithScheme(s).WithObjects(prv).
 		WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if obj.GetObjectKind().GroupVersionKind().Kind == "CustomResourceDefinition" {
+			// A typed CRD carries no TypeMeta, so match its type too.
+			if _, typed := obj.(*extv1.CustomResourceDefinition); typed || obj.GetObjectKind().GroupVersionKind().Kind == "CustomResourceDefinition" {
 				kubeCRDGets++
 			}
 			return c.Get(ctx, key, obj, opts...)
@@ -254,5 +256,89 @@ func TestTransientCRDErrorRetried(t *testing.T) {
 				t.Errorf("RelevantProviderImages(recovered): want no further warning, got %d: %q", n, warned.String())
 			}
 		})
+	}
+}
+
+// failingMapper fails RESTMapping with a non-NoMatch error while failing is set.
+type failingMapper struct {
+	meta.RESTMapper
+	failing *bool
+}
+
+func (m failingMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*meta.RESTMapping, error) {
+	if *m.failing {
+		return nil, errors.New("discovery unavailable")
+	}
+	return m.RESTMapper.RESTMapping(gk, versions...)
+}
+
+// TestMappingErrorRetried pins the failure rule for the mapper: a RESTMapping
+// error that is not NoMatch is returned, not cached as "not served", retried
+// on the next lookup, and warned about once.
+func TestMappingErrorRetried(t *testing.T) {
+	ctx := context.Background()
+	s := runtime.NewScheme()
+	if err := pkg.AddToScheme(s); err != nil {
+		t.Fatalf("cannot add pkg scheme: %v", err)
+	}
+	base := meta.NewDefaultRESTMapper([]schema.GroupVersion{vpcGVK.GroupVersion()})
+	base.Add(vpcGVK, meta.RESTScopeRoot)
+	failing := true
+	rm := failingMapper{RESTMapper: base, failing: &failing}
+
+	prv := &pkgv1.ProviderRevision{}
+	prv.SetName("provider-aws-ec2-abc123")
+	prv.Status.ResolvedPackage = "xpkg.upbound.io/upbound/provider-aws-ec2:v2.9.0"
+	kube := fake.NewClientBuilder().WithScheme(s).WithObjects(prv).Build()
+	crds, _ := newCRDs(t, vpcCRD(prv.GetName()))
+	rs := []*unstructured.Unstructured{vpc("a", "10.0.0.0/16")}
+
+	var warned bytes.Buffer
+	cache := NewImageCache()
+	for range 2 {
+		if imgs := RelevantProviderImages(ctx, kube, rm, crds, rs, false, cache, &warned); len(imgs) != 0 {
+			t.Errorf("RelevantProviderImages(failing): want no images, got %v", imgs)
+		}
+	}
+	if n := strings.Count(warned.String(), "Warning:"); n != 1 {
+		t.Errorf("RelevantProviderImages(failing): want 1 warning, got %d: %q", n, warned.String())
+	}
+	managed := ProviderManaged(ctx, rm, crds)
+	if managed(rs[0]) {
+		t.Errorf("ProviderManaged(...)(failing): want false")
+	}
+
+	failing = false
+	if imgs := RelevantProviderImages(ctx, kube, rm, crds, rs, false, cache, &warned); len(imgs) != 1 {
+		t.Errorf("RelevantProviderImages(recovered): want the provider image, got %v", imgs)
+	}
+	if !managed(rs[0]) {
+		t.Errorf("ProviderManaged(...)(recovered): want true")
+	}
+	if n := strings.Count(warned.String(), "Warning:"); n != 1 {
+		t.Errorf("RelevantProviderImages(recovered): want no further warning, got %d: %q", n, warned.String())
+	}
+}
+
+// TestFetchLiveMappingError pins that only NoMatch plans as a create: any
+// other mapping failure is a per-resource error, not a silent create.
+func TestFetchLiveMappingError(t *testing.T) {
+	ctx := context.Background()
+	base := meta.NewDefaultRESTMapper([]schema.GroupVersion{vpcGVK.GroupVersion()})
+	base.Add(vpcGVK, meta.RESTScopeRoot)
+	failing := true
+	rm := failingMapper{RESTMapper: base, failing: &failing}
+	crds, _ := newCRDs(t)
+	kube := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()
+
+	rp := NewPlanner(kube, rm, crds, "default", &fakeRouter{}, time.Second).Plan(ctx, vpc("a", "10.0.0.0/16"))
+	if !strings.Contains(rp.Error, "cannot fetch live resource") || !strings.Contains(rp.Error, "discovery unavailable") {
+		t.Errorf("Plan(...): want a per-resource fetch error, got Error=%q", rp.Error)
+	}
+
+	unserved := meta.NewDefaultRESTMapper(nil)
+	rp = NewPlanner(kube, unserved, crds, "default", &fakeRouter{}, time.Second).Plan(ctx, vpc("a", "10.0.0.0/16"))
+	if rp.Error != "" || !rp.Approximate {
+		t.Errorf("Plan(...) with an unserved kind: want an approximate create, got %+v", rp)
 	}
 }

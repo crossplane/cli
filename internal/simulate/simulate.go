@@ -153,10 +153,15 @@ func (p *Planner) fetchLive(ctx context.Context, desired *unstructured.Unstructu
 	gvk := desired.GroupVersionKind()
 
 	mapping, err := p.rmapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-	if err != nil {
+	if meta.IsNoMatchError(err) {
 		// The kind is not served by the cluster: nothing can exist yet. The
 		// diff server can still plan the resource as a create.
-		return nil, nil //nolint:nilerr // Intentional: an unserved kind means no live counterpart, not a failure.
+		return nil, nil
+	}
+	if err != nil {
+		// Any other mapping failure (e.g. discovery) says nothing about
+		// whether the resource exists, so it must not plan as a create.
+		return nil, errors.Wrapf(err, "cannot map %s", gvk)
 	}
 
 	key := client.ObjectKey{Name: desired.GetName()}
@@ -326,7 +331,7 @@ func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapp
 				cache.images[gk] = img
 			case !cache.warned[gk]:
 				cache.warned[gk] = true
-				_, _ = fmt.Fprintf(warn, "Warning: cannot look up the provider for %s, so its diff stays client-side only: %s\n", gk, err)
+				_, _ = fmt.Fprintf(warn, "Warning: cannot look up the provider for %s, so its diff is client-side only until a lookup succeeds: %s\n", gk, err)
 			}
 		}
 		if img != "" && !seenImage[img] {

@@ -22,6 +22,7 @@ package simulate
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -130,12 +131,14 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		return errors.Wrap(err, "cannot create package client")
 	}
 
-	mgr, stop, err := isimulate.StartDiffServers(ctx, sp, logger, k.Stderr, pkgClient, inputs, c.SessionID,
-		"No providers found to run as diff servers; all results will be approximate.")
-	if err != nil {
+	if len(inputs) == 0 {
+		_, _ = fmt.Fprintln(k.Stderr, "No providers found to run as diff servers; all results will be approximate.")
+	}
+	mgr := diffserver.NewManager(pkgClient, logger, diffserver.WithSessionID(c.SessionID))
+	defer isimulate.StopServers(ctx, k.Stderr, mgr)
+	if err := isimulate.EnsureServers(ctx, sp, k.Stderr, mgr, inputs); err != nil {
 		return err
 	}
-	defer stop()
 
 	plans := make([]*plan.ResourcePlan, 0, len(resources))
 	planner := isimulate.NewPlanner(kubeClient, rmapper, defaultNamespace, mgr, c.Timeout)

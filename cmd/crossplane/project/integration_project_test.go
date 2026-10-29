@@ -50,9 +50,9 @@ type projectTestCase struct {
 	expectedExitCode      int
 	expectedErrorContains string
 	expectedStructured    simtest.Expectation
-	// servers, when set, replaces the diff server set and the run does not
-	// pass --skip-plan.
-	servers simulate.Servers
+	// router, when set, routes provider plans instead of diff servers and
+	// the run does not pass --skip-plan.
+	router simulate.Router
 }
 
 func TestProjectSimulateIntegration(t *testing.T) {
@@ -60,7 +60,6 @@ func TestProjectSimulateIntegration(t *testing.T) {
 
 	tu.SetupKubeTestLogger(t)
 
-	providerDigest := "sha256:a52ba8a7a0548d8b709c53462a135affaf5b277c5738053c38d5d7ddfcfb1331"
 	region := &diffv1alpha1.FieldChange{Field: "spec.forProvider.region", Actual: strValue("us-east-1"), Planned: strValue("eu-west-1")}
 
 	cases := map[string]projectTestCase{
@@ -111,8 +110,8 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				AndComp().
 				WithXRImpact("XNopResource", "another-resource", "default", "changed"),
 		},
-		"ProviderDependencyStartsServer": {
-			reason: "A provider dependency of the project is ensured as a diff server, so its plan joins the composed resource's changes.",
+		"ProviderPlanJoinsChanges": {
+			reason: "A provider plan routed for a composed resource joins that resource's changes.",
 			setupFiles: []string{
 				"testdata/comp/resources/xrd.yaml",
 				"testdata/comp/resources/original-composition.yaml",
@@ -127,9 +126,9 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			project:          "providerdep",
 			extraArgs:        []string{"-n", "default"},
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			servers: &recordingServers{wantImage: providerDigest, plans: fakeProviderRouter{fn: func(*diffv1alpha1.PlanRequest) (*diffv1alpha1.PlanResponse, error) {
+			router: fakeProviderRouter{fn: func(*diffv1alpha1.PlanRequest) (*diffv1alpha1.PlanResponse, error) {
 				return &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_UPDATE, Changes: []*diffv1alpha1.FieldChange{region}}, nil
-			}}},
+			}},
 			expectedStructured: simtest.Expect().
 				WithComposition("xnopresources.diff.example.org").
 				WithCompositionModified().
@@ -186,7 +185,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				"-f", filepath.Join(dir, "crossplane-project.yaml"),
 				"--cache-dir=" + t.TempDir(),
 			}
-			if tc.servers == nil {
+			if tc.router == nil {
 				argv = append(argv, "--skip-plan")
 			}
 			argv = append(argv, tc.extraArgs...)
@@ -195,7 +194,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			}
 
 			var stdout, stderr bytes.Buffer
-			code, err := runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulateHooks{Servers: tc.servers}, &stdout, &stderr)
+			code, err := runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulateHooks{Router: tc.router}, &stdout, &stderr)
 
 			if tc.expectedErrorContains != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.expectedErrorContains) {

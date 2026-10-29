@@ -19,19 +19,15 @@ package simulate
 import (
 	"bytes"
 	"context"
-	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"k8s.io/client-go/rest"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
-	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -237,73 +233,24 @@ func TestNeedsDocker(t *testing.T) {
 	}
 }
 
-// failingPkgs fails every Get, so each image is skipped.
-type failingPkgs struct {
-	runtimexpkg.Client
-
-	gets int
-}
-
-func (f *failingPkgs) Get(context.Context, string, ...runtimexpkg.GetOption) (*runtimexpkg.Package, error) {
-	f.gets++
-	return nil, errors.New("boom")
-}
-
-func TestServerSetEnsure(t *testing.T) {
-	pkgs := &failingPkgs{}
+func TestEnsureServersDevelopmentKeys(t *testing.T) {
 	var out bytes.Buffer
-	s := NewServerSet(terminal.NewNopSpinnerPrinter(), logging.NewNopLogger(), &out, pkgs, "s")
-
-	if err := s.Ensure(context.Background(), nil); err != nil || out.Len() != 0 || pkgs.gets != 0 {
-		t.Fatalf("empty Ensure: err=%v out=%q gets=%d", err, out.String(), pkgs.gets)
-	}
-	in := []diffserver.Input{{Image: "xpkg.example/p:v1"}}
-	for range 2 {
-		if err := s.Ensure(context.Background(), in); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if pkgs.gets != 1 {
-		t.Errorf("Get called %d times, want 1", pkgs.gets)
-	}
-	if got := strings.Count(out.String(), "Not running a diff server for xpkg.example/p:v1: "); got != 1 {
-		t.Errorf("skip message printed %d times, want 1: %q", got, out.String())
-	}
-	if n := len(s.mgr.Servers()); n != 0 {
-		t.Errorf("%d servers running, want 0", n)
-	}
-}
-
-func TestServerSetEnsureDevelopmentKeys(t *testing.T) {
-	var out bytes.Buffer
-	s := NewServerSet(terminal.NewNopSpinnerPrinter(), logging.NewNopLogger(), &out, &failingPkgs{}, "s")
+	mgr := diffserver.NewManager(nil, logging.NewNopLogger(), diffserver.WithSessionID("s"))
+	sp := terminal.NewNopSpinnerPrinter()
 	// Development inputs have no image, so each is keyed by its own name.
 	inputs := []diffserver.Input{
 		{Runtime: diffserver.RuntimeDevelopment, Name: "a", DevelopmentTarget: "localhost:1", APIGroups: []string{"a.example.org"}},
 		{Runtime: diffserver.RuntimeDevelopment, Name: "b", DevelopmentTarget: "localhost:2", APIGroups: []string{"b.example.org"}},
 	}
-	_ = s.Ensure(context.Background(), inputs)
+	_ = EnsureServers(context.Background(), sp, &out, mgr, inputs)
 	for _, n := range []string{"a", "b"} {
 		if got := strings.Count(out.String(), "Not running a diff server for "+n+":"); got != 1 {
 			t.Errorf("skip message for %q printed %d times, want 1: %q", n, got, out.String())
 		}
 	}
 	before := out.String()
-	_ = s.Ensure(context.Background(), inputs)
+	_ = EnsureServers(context.Background(), sp, &out, mgr, inputs)
 	if out.String() != before {
-		t.Errorf("second Ensure printed more: %q", out.String())
+		t.Errorf("second EnsureServers printed more: %q", out.String())
 	}
-}
-
-func TestNewKubeClientConcurrent(_ *testing.T) {
-	var wg sync.WaitGroup
-	for range 16 {
-		wg.Go(func() {
-			// A bogus host makes client.New succeed lazily; we only care that
-			// no shared scheme is mutated.
-			_, _, _ = NewKubeClient(&rest.Config{Host: "http://127.0.0.1:1"})
-		})
-	}
-	wg.Wait()
-	// ponytail: no assertion; this test exists for -race, to catch shared scheme mutation.
 }

@@ -211,6 +211,9 @@ type Manager struct {
 	routes     map[schema.GroupKind]*Server
 	groups     map[string]*Server
 	servers    []*Server
+	// claimed holds the key of every input a Start has taken on: false while
+	// its start is in flight, true once it has returned.
+	claimed map[string]bool
 }
 
 // Option configures a Manager.
@@ -263,6 +266,7 @@ func NewManager(pkgs runtimexpkg.Client, log logging.Logger, opts ...Option) *Ma
 		containers:   map[containerKey]string{},
 		routes:       map[schema.GroupKind]*Server{},
 		groups:       map[string]*Server{},
+		claimed:      map[string]bool{},
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -298,6 +302,13 @@ type sharedRunClient struct {
 // client-side diff. Progress is reported per provider on events (nil means no
 // reporting), with the package pull and the server start as separate steps
 // because the pull dominates a cold start.
+//
+// Start is idempotent and safe for concurrent use. It skips every input a
+// previous or concurrent Start has already handled or is still starting,
+// keyed by Image, or by Name for a Development provider, so no input is ever
+// started twice and a repeat returns no Skipped for it. An input counts as
+// handled once its start returns, whether it started or was skipped. An input
+// whose start ended because ctx ended is released, so a later Start retries it.
 func (m *Manager) Start(ctx context.Context, inputs []Input, events async.EventChannel) ([]Skipped, error) {
 	// Only a run that starts containers touches Docker: a Development
 	// provider's server is the user's.
@@ -314,16 +325,18 @@ func (m *Manager) Start(ctx context.Context, inputs []Input, events async.EventC
 		}
 	}
 
+	fresh := m.claim(inputs)
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
 		skipped []Skipped
 	)
-	for _, in := range inputs {
+	for _, in := range fresh {
 		wg.Add(1)
 		go func(in Input) {
 			defer wg.Done()
 			s, skip := m.startOne(ctx, in, events)
+			m.settle(in, skip == nil || ctx.Err() == nil)
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -336,6 +349,43 @@ func (m *Manager) Start(ctx context.Context, inputs []Input, events async.EventC
 	}
 	wg.Wait()
 	return skipped, ctx.Err()
+}
+
+// inputKey identifies an input across Starts. A Development provider has no
+// image; its manifest name identifies it.
+func inputKey(in Input) string {
+	if in.Image != "" {
+		return in.Image
+	}
+	return in.Name
+}
+
+// claim returns the inputs no Start has claimed yet, once each, and claims
+// them.
+func (m *Manager) claim(inputs []Input) []Input {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var fresh []Input
+	for _, in := range inputs {
+		k := inputKey(in)
+		if _, ok := m.claimed[k]; ok {
+			continue
+		}
+		m.claimed[k] = false
+		fresh = append(fresh, in)
+	}
+	return fresh
+}
+
+// settle marks a claimed input handled, or releases it for a later Start.
+func (m *Manager) settle(in Input, handled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if handled {
+		m.claimed[inputKey(in)] = true
+		return
+	}
+	delete(m.claimed, inputKey(in))
 }
 
 // Images wraps plain image references into Inputs with no per-provider
@@ -425,7 +475,7 @@ func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChan
 	// server serves both: a second would only be started and torn down.
 	// Without a digest the packages cannot be told apart, so each starts.
 	if pkg.Digest != "" {
-		if first, ok := m.claim(containerKey{digest: pkg.Digest, cleanup: cleanup, publishAddr: publishAddr, target: in.Target}, image); !ok {
+		if first, ok := m.claimContainer(containerKey{digest: pkg.Digest, cleanup: cleanup, publishAddr: publishAddr, target: in.Target}, image); !ok {
 			m.log.Debug("Sharing the diff server of another provider with the same package", "image", image, "shared-with", first)
 			return nil, nil
 		}
@@ -491,10 +541,10 @@ type containerKey struct {
 	target      string
 }
 
-// claim records that image's input starts the container for k, and reports
+// claimContainer records that image's input starts the container for k, and reports
 // true, unless another input already did, in which case it returns that
 // input's image and false.
-func (m *Manager) claim(k containerKey, image string) (string, bool) {
+func (m *Manager) claimContainer(k containerKey, image string) (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if first, ok := m.containers[k]; ok {

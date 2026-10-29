@@ -85,7 +85,7 @@ type simulateCmd struct {
 	xrPlanner *simulate.XRPlanner
 	// keep is the equal-diff filter the engine and xrPlanner share.
 	keep    func(*un.Unstructured) bool
-	servers simulate.Servers
+	servers *diffserver.Manager
 	// noServersNoted is set once the "no diff servers" line is printed.
 	noServersNoted bool
 	// Validate loads this from --function-credentials.
@@ -142,11 +142,6 @@ type simulateHooks struct {
 	// diff servers.
 	Router simulate.Router
 
-	// Servers, when set, replaces the diff server set that would otherwise
-	// start provider servers; everything else still runs. Test-only. It
-	// can't be combined with Router.
-	Servers simulate.Servers
-
 	// ChangedFunctions marks these functions as changed in any mode, as
 	// project mode's digest detection would. Test-only.
 	ChangedFunctions []string
@@ -169,10 +164,6 @@ func (c *simulateCmd) Help() string {
 // during parsing, so an unsupported render backend fails before any build or
 // cluster connection.
 func (c *simulateCmd) Validate() error {
-	if c.hooks != nil && c.hooks.Router != nil && c.hooks.Servers != nil {
-		return errors.New("hooks Router and Servers are mutually exclusive")
-	}
-
 	if c.MaxIterations < 1 {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
 	}
@@ -266,7 +257,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, ns, in, pkgs)
 		// Stop even on error: upfront Ensure may have started servers.
 		if c.servers != nil {
-			defer c.servers.Stop(sigCtx)
+			defer simulate.StopServers(sigCtx, k.Stderr, c.servers)
 		}
 		if err != nil {
 			return err
@@ -337,40 +328,34 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 			}
 			pkgs.client = client
 		}
-		if c.hooks != nil && c.hooks.Servers != nil {
-			c.servers = c.hooks.Servers
-		} else {
-			c.servers = simulate.NewServerSet(sp, logger, k.Stderr, pkgs.client, c.SessionID)
-		}
+		c.servers = diffserver.NewManager(pkgs.client, logger, diffserver.WithSessionID(c.SessionID))
 		router = c.servers
 	}
 
-	var ensure simulate.EnsureServers
+	var ensure simulate.EnsureFunc
 	if c.servers != nil {
-		// --providers, else the project's provider dependencies, start up
-		// front; otherwise servers start per composite resource.
 		var upfront []diffserver.Input
-		switch {
-		case c.Providers != "":
+		switch providerSource(c.Providers, in.mode) {
+		case providersFlag:
 			upfront, err = simulate.LoadProviderInputs(c.Providers)
 			if err != nil {
 				return nil, errors.Wrapf(err, "cannot load provider manifests from %q", c.Providers)
 			}
-		case in.mode == projectMode:
+		case providersProject:
 			images, err := project.LoadProviderDependencies(pkgs.depMgr, pkgs.proj)
 			if err != nil {
 				return nil, errors.Wrap(err, "cannot load the project's provider dependencies")
 			}
 			upfront = diffserver.Images(images)
-		default:
+		case providersPerXR:
 			cache := simulate.NewImageCache()
 			ensure = func(ctx context.Context, rs []*un.Unstructured) error {
 				imgs := simulate.RelevantProviderImages(ctx, kubeClient, rmapper, rs, len(pkgs.ics) > 0, cache, k.Stderr)
-				return c.servers.Ensure(ctx, diffserver.Images(imgs))
+				return simulate.EnsureServers(ctx, sp, k.Stderr, c.servers, diffserver.Images(imgs))
 			}
 		}
 		if ensure == nil {
-			if err := c.servers.Ensure(sigCtx, upfront); err != nil {
+			if err := simulate.EnsureServers(sigCtx, sp, k.Stderr, c.servers, upfront); err != nil {
 				return nil, err
 			}
 		}
@@ -379,6 +364,33 @@ func (c *simulateCmd) planOptions(sigCtx context.Context, k *kong.Context, logge
 	c.keep = simulate.ProviderManaged(sigCtx, kubeClient, rmapper)
 	c.xrPlanner = simulate.NewXRPlanner(simulate.NewPlanner(kubeClient, rmapper, ns, router, c.Timeout), c.keep, ensure)
 	return []dp.ProcessorOption{dp.WithAfterXRDiff(c.xrPlanner.AfterXRDiff), dp.WithKeepEqualDiffs(c.keep)}, nil
+}
+
+// source is where a simulation's provider diff servers come from.
+type source int
+
+const (
+	// providersFlag starts the --providers manifests up front.
+	providersFlag source = iota
+	// providersProject starts the project's provider dependencies up front.
+	providersProject
+	// providersPerXR starts the providers each composite resource needs as
+	// it is simulated.
+	providersPerXR
+)
+
+// providerSource picks where provider diff servers come from: --providers
+// when set, else the project's provider dependencies in project mode, else
+// per composite resource.
+func providerSource(providers string, mode inputMode) source {
+	switch {
+	case providers != "":
+		return providersFlag
+	case mode == projectMode:
+		return providersProject
+	default:
+		return providersPerXR
+	}
 }
 
 // noteNoServers prints simulate.NoteNoDiffServers to stderr once, for -o

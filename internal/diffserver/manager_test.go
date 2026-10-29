@@ -790,3 +790,86 @@ func TestManagerLease(t *testing.T) {
 		}
 	})
 }
+
+func TestManagerStartIdempotent(t *testing.T) {
+	ctx := context.Background()
+	log := logging.NewNopLogger()
+	const img = "xpkg.example.org/provider-aws-ec2:v2.9.0"
+	pkgs := &fakePkgClient{pkgs: map[string]*runtimexpkg.Package{
+		img: parsePackage(t, pkgWithCapability, "sha256:0123456789abcdef"),
+	}}
+	vpc := schema.GroupKind{Group: "ec2.aws.upbound.io", Kind: "VPC"}
+
+	t.Run("RepeatStartsNothing", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()))
+		for i := range 2 {
+			skipped, err := m.Start(ctx, Images([]string{img, img}), nil)
+			if err != nil || len(skipped) != 0 {
+				t.Fatalf("Start #%d: unexpected error or skips: %v %+v", i, err, skipped)
+			}
+		}
+		if len(fd.created) != 1 || len(m.Servers()) != 1 {
+			t.Errorf("Start twice: want one container and one server, got containers %v servers %d", fd.created, len(m.Servers()))
+		}
+	})
+
+	t.Run("CancelledStartIsRetried", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()))
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := m.Start(cctx, Images([]string{img}), nil); err == nil {
+			t.Fatal("Start(cancelled): want the context error")
+		}
+		skipped, err := m.Start(ctx, Images([]string{img}), nil)
+		if err != nil || len(skipped) != 0 {
+			t.Fatalf("Start(retry): unexpected error or skips: %v %+v", err, skipped)
+		}
+		if _, ok := m.Route(vpc); !ok {
+			t.Errorf("Start(retry): want the input started after a cancelled Start")
+		}
+	})
+
+	t.Run("ConcurrentStartsStartOnce", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()))
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Go(func() {
+				if _, err := m.Start(ctx, Images([]string{img}), nil); err != nil {
+					t.Errorf("Start(...): unexpected error: %v", err)
+				}
+			})
+		}
+		wg.Wait()
+		if len(fd.created) != 1 || len(m.Servers()) != 1 {
+			t.Errorf("concurrent Starts: want one container and one server, got containers %v servers %d", fd.created, len(m.Servers()))
+		}
+	})
+
+	t.Run("StopHonoursDeadline", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		cli := fd.client()
+		cli.MockContainerStop = func(ctx context.Context, _ string, _ client.ContainerStopOptions) (client.ContainerStopResult, error) {
+			<-ctx.Done()
+			return client.ContainerStopResult{}, ctx.Err()
+		}
+		m := NewManager(pkgs, log, WithDockerClient(cli))
+		if _, err := m.Start(ctx, Images([]string{img}), nil); err != nil {
+			t.Fatalf("Start(...): unexpected error: %v", err)
+		}
+		sctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			_ = m.Stop(sctx)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("Stop(...): did not return after its deadline while Docker blocked")
+		}
+	})
+}

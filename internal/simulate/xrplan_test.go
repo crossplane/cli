@@ -105,7 +105,7 @@ func TestXRPlanner(t *testing.T) {
 		"EnsureError": {
 			diffs:       map[string]*dt.ResourceDiff{"a": added(vpc("a", "10.0.0.0/16"))},
 			ensureErr:   errors.New("pull failed"),
-			wantErr:     "cannot start provider diff servers: pull failed",
+			wantErr:     "pull failed",
 			wantEnsured: []string{"a"},
 		},
 		"SkipsRemovedAndNilDesired": {

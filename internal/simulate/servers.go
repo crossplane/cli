@@ -26,25 +26,22 @@ import (
 	"strings"
 	"sync"
 
-	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
 	"github.com/spf13/afero"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
-	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/crossplane/apis/v2/pkg"
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/containerruntime"
+	"github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/kube"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
@@ -92,105 +89,32 @@ const (
 	defaultDevelopmentTarget = "localhost:9099"
 )
 
-// Servers is what a simulation needs from its diff servers: start them,
-// route resources to them, and stop them. *ServerSet implements it.
-type Servers interface {
-	Router
-	Ensure(ctx context.Context, inputs []diffserver.Input) error
-	// Stop must stop the servers even when ctx is already cancelled.
-	Stop(ctx context.Context)
-}
-
-var _ Servers = (*ServerSet)(nil)
-
-// ServerSet runs provider diff servers for a simulation, starting each
-// provider's server the first time it is asked for. It routes resources to
-// the servers it runs.
-type ServerSet struct {
-	sp      terminal.SpinnerPrinter
-	stderr  io.Writer
-	mgr     *diffserver.Manager
-	handled map[string]bool
-	mu      sync.Mutex
-}
-
-// NewServerSet returns a ServerSet that starts no servers until Ensure.
-func NewServerSet(sp terminal.SpinnerPrinter, log logging.Logger, stderr io.Writer, pkgs runtimexpkg.Client, session string) *ServerSet {
-	return &ServerSet{
-		sp:     sp,
-		stderr: stderr,
-		mgr: diffserver.NewManager(pkgs, log, diffserver.WithSessionID(session),
-			diffserver.WithLeaseDir(containerruntime.DefaultLeaseDir())),
-		handled: map[string]bool{},
-	}
-}
-
-// Ensure starts a server for each input whose Image has not been asked for
-// before, and prints the ones it skipped. Inputs it has already handled,
-// whether they started or were skipped, are not retried.
-func (s *ServerSet) Ensure(ctx context.Context, inputs []diffserver.Input) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var fresh []diffserver.Input
-	for _, in := range inputs {
-		// A Development provider has no image; its manifest name identifies it.
-		key := in.Image
-		if key == "" {
-			key = in.Name
-		}
-		if s.handled[key] {
-			continue
-		}
-		s.handled[key] = true
-		fresh = append(fresh, in)
-	}
-	if len(fresh) == 0 {
-		return nil
-	}
-
+// EnsureServers starts a diff server for each input mgr has not handled yet,
+// behind the spinner, and prints the inputs it skipped.
+func EnsureServers(ctx context.Context, sp terminal.SpinnerPrinter, stderr io.Writer, mgr *diffserver.Manager, inputs []diffserver.Input) error {
 	var skipped []diffserver.Skipped
-	if err := s.sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
+	if err := sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
 		var err error
-		skipped, err = s.mgr.Start(ctx, fresh, ch)
+		skipped, err = mgr.Start(ctx, inputs, ch)
 		return err
 	}); err != nil {
 		return errors.Wrap(err, "cannot start diff servers")
 	}
 	for _, sk := range skipped {
-		_, _ = fmt.Fprintf(s.stderr, "Not running a diff server for %s: %s\n", sk.Image, sk.Reason)
+		_, _ = fmt.Fprintf(stderr, "Not running a diff server for %s: %s\n", sk.Image, sk.Reason)
 	}
 	return nil
 }
 
-// Route implements Router.
-func (s *ServerSet) Route(gk schema.GroupKind) (diffv1alpha1.PlanServiceClient, bool) {
-	return s.mgr.Route(gk)
-}
-
-// Stop stops every server; it runs even when ctx was cancelled, so an
-// interrupted run still tears its containers down.
-func (s *ServerSet) Stop(ctx context.Context) {
-	if err := s.mgr.Stop(context.WithoutCancel(ctx)); err != nil {
-		_, _ = fmt.Fprintf(s.stderr, "Warning: cannot clean up diff servers: %s\n", err)
+// StopServers stops every server mgr runs. It runs even when ctx was
+// cancelled, so an interrupted run still tears its containers down, bounded
+// by diffprocessor.CleanupTimeout.
+func StopServers(ctx context.Context, stderr io.Writer, mgr *diffserver.Manager) {
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), diffprocessor.CleanupTimeout)
+	defer cancel()
+	if err := mgr.Stop(sctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "Warning: cannot clean up diff servers: %s\n", err)
 	}
-}
-
-// StartDiffServers starts a diff server for each input and returns the set to
-// plan through and a func that stops the servers. It prints noProviders to
-// stderr when there are no inputs, and the servers it skipped.
-func StartDiffServers(ctx context.Context, sp terminal.SpinnerPrinter, log logging.Logger, stderr io.Writer,
-	pkgs runtimexpkg.Client, inputs []diffserver.Input, session, noProviders string,
-) (*ServerSet, func(), error) {
-	if len(inputs) == 0 {
-		_, _ = fmt.Fprintln(stderr, noProviders)
-	}
-	set := NewServerSet(sp, log, stderr, pkgs, session)
-	if err := set.Ensure(ctx, inputs); err != nil {
-		set.Stop(ctx)
-		return nil, nil, err
-	}
-	return set, func() { set.Stop(ctx) }, nil
 }
 
 // ImageConfigs returns the ImageConfigs to rewrite provider image paths with:

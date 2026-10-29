@@ -32,9 +32,9 @@ import (
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
-// EnsureServers starts diff servers for the given provider images if they
+// EnsureFunc starts diff servers for the given resources' providers if they
 // are not running yet. It is called outside the XR's deadline.
-type EnsureServers func(ctx context.Context, resources []*unstructured.Unstructured) error
+type EnsureFunc func(ctx context.Context, resources []*unstructured.Unstructured) error
 
 // XRPlanner plans each composite resource's composed resources with their
 // provider diff servers as the engine finishes rendering it, so an XR whose
@@ -53,7 +53,7 @@ type EnsureServers func(ctx context.Context, resources []*unstructured.Unstructu
 type XRPlanner struct {
 	planner *Planner
 	keep    func(*unstructured.Unstructured) bool
-	ensure  EnsureServers
+	ensure  EnsureFunc
 
 	plans map[string]*plan.ResourcePlan
 	// held holds the diff each plan was planned from.
@@ -64,7 +64,7 @@ type XRPlanner struct {
 }
 
 // NewXRPlanner returns an XRPlanner that plans with p. keep and ensure may be nil.
-func NewXRPlanner(p *Planner, keep func(*unstructured.Unstructured) bool, ensure EnsureServers) *XRPlanner {
+func NewXRPlanner(p *Planner, keep func(*unstructured.Unstructured) bool, ensure EnsureFunc) *XRPlanner {
 	return &XRPlanner{planner: p, keep: keep, ensure: ensure, plans: map[string]*plan.ResourcePlan{}, held: map[string]*dt.ResourceDiff{}}
 }
 
@@ -90,11 +90,8 @@ func (x *XRPlanner) AfterXRDiff(ctx context.Context, diffs map[string]*dt.Resour
 		}
 		// Server start and image pulls are run-wide work, not the XR's.
 		err := diffprocessor.OutsideXRDeadline(ctx, func(run context.Context) error { return x.ensure(run, resources) })
-		if errors.Is(err, diffprocessor.ErrXRTimedOut) {
-			return err
-		}
 		if err != nil {
-			return errors.Wrap(err, "cannot start provider diff servers")
+			return err
 		}
 	}
 

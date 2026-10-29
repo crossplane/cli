@@ -110,13 +110,17 @@ crossplane xrd lint [flags] <files-or-dirs>...
   packages:
   - a plain path, or `file://<path>`: files and directories, as for inputs
   - `git://<ref>?path=<path>`: the XRDs at a ref of the current repository,
-    for example the base branch in CI
-  - `kube://`: the XRDs installed in the cluster of the current kubeconfig
-    context
+    for example the base branch in CI. `path` may name a file or a directory.
+  - `kube://[<name>][?context=<context>]`: the XRDs installed in a cluster.
+    The kubeconfig is found the way `kubectl` finds it, and `context` picks
+    one of its contexts; without it, the current context is used. With a
+    name, only that XRD is loaded; without one, every XRD in the cluster is.
   - `xpkg://<ref>`: the XRDs in a Configuration package in a registry, fetched
     the way the CLI already fetches packages
-- crdify's own loaders return CRDs, so lint has its own loaders for these
-  schemes, but keeps crdify's syntax so the two tools read alike.
+- crdify's own loaders return CRDs, and its `kube://` loads one CRD by name,
+  so lint has its own loaders for these schemes. It keeps crdify's syntax,
+  so `git://main?path=apis/` and `kube://xnetworks.example.org` mean the same
+  thing in both tools.
 - Line numbers are only needed for the new XRDs, which findings point at, so
   old sources need no position information.
 
@@ -226,9 +230,19 @@ Crossplane, not merely whether the API is weaker.
   Crossplane serves all of its versions from the same stored objects, so an
   incompatible difference between two served versions, such as a field whose
   type differs, misbehaves for whoever uses the other version. The rule needs
-  no `--old`. It runs crdify's served-version comparison over the XRD's
-  served versions, oldest first, with the same comparators as the
-  `xrd-diff/` rules below. (proposed)
+  no `--old`. (proposed)
+  - It uses crdify's served-version validator. Served versions are sorted in
+    Kubernetes version order (`v1alpha1` < `v1beta1` < `v1`), and every pair
+    is compared, older to newer, not just neighbours.
+  - Each pair runs through the same comparators, with the same options, as
+    the `xrd-diff/` rules below, including the unhandled-change check. Each
+    finding names the comparator and the version pair, for example
+    `v1alpha1 -> v1`.
+  - With `--old`, only incompatibilities that the old XRD did not already
+    have are reported, as crdify does, so existing drift does not fail every
+    later change.
+  - Its `conversion` option matches crdify's: `None` (the default) checks
+    every XRD; `Ignore` skips XRDs that configure a conversion webhook.
 
 **On by default, as `warn`.** One design preference is common enough to
 surface by default without failing the run:
@@ -285,6 +299,7 @@ package][crdify-validations] rather than comparators of our own. Its
 | Rule | Checks |
 |---|---|
 | `xrd-diff/no-version-removal` | A served version is gone, or is no longer served. |
+| `xrd-diff/scope` | The XRD's `scope` changed (`v2` XRDs). |
 | `xrd-diff/no-field-removal` | A field in the old schema is missing from the new one. |
 | `xrd-diff/type` | A field's `type` changed. |
 | `xrd-diff/enum` | An `enum` value was removed, or (by option) added. |
@@ -300,7 +315,8 @@ package][crdify-validations] rather than comparators of our own. Its
 - Each crdify comparator becomes one rule, named after the comparator in
   kebab case. A comparator's own configuration, such as `enum`'s
   `additionPolicy`, becomes that rule's options.
-- `xrd-diff/no-field-removal` maps to crdify's `existingFieldRemoval`.
+- `xrd-diff/no-field-removal` maps to crdify's `existingFieldRemoval`, and
+  `xrd-diff/scope` to its `scope` check.
   `xrd-diff/no-version-removal` is lint's own, because crdify's nearest
   check covers stored versions, which an XRD file does not record.
 - `xrd-diff/unhandled` uses crdify's unhandled-change detection. Any change
@@ -418,10 +434,17 @@ both the old and the new XRD. Its variables:
   [`k8s.io/apiserver/pkg/cel/library`][k8s-cel-lib]: regex, lists, URLs,
   quantity and the rest. Custom rules get the same functions users already
   know from `x-kubernetes-validations`.
-- Every evaluation runs under a cost limit, as the API server applies to
-  validation rules. An expression whose estimated cost exceeds the limit is a
-  config error; an evaluation that exceeds it at runtime is a runtime error,
-  below.
+- The environment is built from `k8s.io/apiserver/pkg/cel/environment` at
+  the compatibility version of the Kubernetes libraries the CLI vendors, so
+  the set of functions moves with the API server's, not ahead of it.
+- Every evaluation runs under a cost limit, set with cel-go's `CostLimit`
+  program option to the API server's per-expression limit for validation
+  rules (`PerCallLimit`, 1,000,000). An evaluation that exceeds it stops and
+  is a runtime error, below.
+- The limit is enforced at runtime only. The API server can estimate cost
+  before running a rule because a CRD schema bounds every list and string;
+  `self` here is a dynamic map with no bounds, so an estimate would reject
+  any comprehension, such as `all()` in example e.
 
 **Compilation**
 - `filter` and `expr` both compile once, when the config is loaded.
@@ -672,7 +695,9 @@ func (c *Context) Report(path FieldPath, message string, opts ...ReportOption)
 
 **Testing**
 - Rules are tested table-driven, in the spirit of ESLint's `RuleTester`, with
-  `xrdlinttest.Run(t, rule, cases)`. (proposed)
+  `xrdlinttest.Run(t, rule, cases)`. The helper lives in
+  `internal/xrdlint/xrdlinttest` and moves with the rule package at beta.
+  (proposed)
 - Each case is a YAML fixture plus the findings it should produce: rule ID,
   field path and, optionally, the message.
 - Diff rules take a pair of fixtures.

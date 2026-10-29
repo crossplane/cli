@@ -28,7 +28,6 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -211,9 +210,9 @@ type Manager struct {
 	routes     map[schema.GroupKind]*Server
 	groups     map[string]*Server
 	servers    []*Server
-	// claimed holds the key of every input a Start has taken on: false while
-	// its start is in flight, true once it has returned.
-	claimed map[string]bool
+	// claimed holds the key of every input a Start has taken on. Its channel
+	// is closed once that start has returned, or when it is released.
+	claimed map[string]chan struct{}
 }
 
 // Option configures a Manager.
@@ -266,7 +265,7 @@ func NewManager(pkgs runtimexpkg.Client, log logging.Logger, opts ...Option) *Ma
 		containers:   map[containerKey]string{},
 		routes:       map[schema.GroupKind]*Server{},
 		groups:       map[string]*Server{},
-		claimed:      map[string]bool{},
+		claimed:      map[string]chan struct{}{},
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -304,51 +303,54 @@ type sharedRunClient struct {
 // because the pull dominates a cold start.
 //
 // Start is idempotent and safe for concurrent use. It skips every input a
-// previous or concurrent Start has already handled or is still starting,
-// keyed by Image, or by Name for a Development provider, so no input is ever
-// started twice and a repeat returns no Skipped for it. An input counts as
-// handled once its start returns, whether it started or was skipped. An input
-// whose start ended because ctx ended is released, so a later Start retries it.
+// previous Start has already handled, keyed by Image, or by Name for a
+// Development provider, so no input is ever started twice and a repeat
+// returns no Skipped for it. An input counts as handled once its start
+// returns, whether it started or was skipped. For an input another Start is
+// still starting, Start waits until that start returns or ctx ends, so Route
+// serves every input this Start was given once it returns nil. An input whose
+// start ended because ctx ended is released, so a later Start, or one waiting
+// on it, retries it.
 func (m *Manager) Start(ctx context.Context, inputs []Input, events async.EventChannel) ([]Skipped, error) {
-	// Only a run that starts containers touches Docker: a Development
-	// provider's server is the user's.
-	if slices.ContainsFunc(inputs, func(in Input) bool { return in.Runtime != RuntimeDevelopment }) {
-		// Idempotent: only the first call does anything. Best effort: a
-		// failure only risks leaking this run's containers if it dies. It
-		// holds mu, so Servers and Stop wait for it, up to the reap timeout,
-		// on purpose: reclaiming must finish before any container starts.
-		m.mu.Lock()
-		err := m.run.Acquire(ctx)
-		m.mu.Unlock()
-		if err != nil {
-			m.log.Info("Problem managing this run's diff server containers", "error", err)
-		}
-	}
-
-	fresh := m.claim(inputs)
 	var (
-		wg      sync.WaitGroup
 		mu      sync.Mutex
 		skipped []Skipped
 	)
-	for _, in := range fresh {
-		wg.Add(1)
-		go func(in Input) {
-			defer wg.Done()
-			s, skip := m.startOne(ctx, in, events)
-			m.settle(in, skip == nil || ctx.Err() == nil)
-			mu.Lock()
-			defer mu.Unlock()
-			switch {
-			case skip != nil:
-				skipped = append(skipped, *skip)
-			case s != nil:
-				m.register(s)
+	for {
+		fresh, pending := m.claim(inputs)
+		if len(fresh) == 0 && len(pending) == 0 {
+			return skipped, ctx.Err()
+		}
+		var wg sync.WaitGroup
+		for _, in := range fresh {
+			wg.Add(1)
+			go func(in Input) {
+				defer wg.Done()
+				s, skip := m.startOne(ctx, in, events)
+				mu.Lock()
+				if skip != nil {
+					skipped = append(skipped, *skip)
+				} else {
+					m.register(s)
+				}
+				mu.Unlock()
+				// Settle after register, so a waiter finds the route.
+				m.settle(in, skip == nil || ctx.Err() == nil)
+			}(in)
+		}
+		wg.Wait()
+		for _, ch := range pending {
+			select {
+			case <-ch:
+			case <-ctx.Done():
+				return skipped, ctx.Err()
 			}
-		}(in)
+		}
+		if ctx.Err() != nil {
+			return skipped, ctx.Err()
+		}
+		// Claim again: an input another Start released is now ours to retry.
 	}
-	wg.Wait()
-	return skipped, ctx.Err()
 }
 
 // inputKey identifies an input across Starts. A Development provider has no
@@ -361,31 +363,59 @@ func inputKey(in Input) string {
 }
 
 // claim returns the inputs no Start has claimed yet, once each, and claims
-// them.
-func (m *Manager) claim(inputs []Input) []Input {
+// them, plus the channels of the inputs another Start is still starting.
+func (m *Manager) claim(inputs []Input) ([]Input, []chan struct{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var fresh []Input
+	var (
+		fresh   []Input
+		pending []chan struct{}
+		seen    = map[string]bool{}
+	)
 	for _, in := range inputs {
 		k := inputKey(in)
-		if _, ok := m.claimed[k]; ok {
+		if seen[k] {
 			continue
 		}
-		m.claimed[k] = false
+		seen[k] = true
+		if ch, ok := m.claimed[k]; ok {
+			select {
+			case <-ch: // Handled.
+			default:
+				pending = append(pending, ch)
+			}
+			continue
+		}
+		m.claimed[k] = make(chan struct{})
 		fresh = append(fresh, in)
 	}
-	return fresh
+	return fresh, pending
 }
 
-// settle marks a claimed input handled, or releases it for a later Start.
+// Unclaimed returns the inputs no Start has handled or is starting, without
+// claiming them, so a caller can skip work when Start has nothing to do.
+func (m *Manager) Unclaimed(inputs []Input) []Input {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Input
+	for _, in := range inputs {
+		if _, ok := m.claimed[inputKey(in)]; !ok {
+			out = append(out, in)
+		}
+	}
+	return out
+}
+
+// settle marks a claimed input handled, or releases it for a later Start, and
+// wakes the Starts waiting on it.
 func (m *Manager) settle(in Input, handled bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if handled {
-		m.claimed[inputKey(in)] = true
-		return
+	k := inputKey(in)
+	close(m.claimed[k])
+	if !handled {
+		delete(m.claimed, k)
 	}
-	delete(m.claimed, inputKey(in))
 }
 
 // Images wraps plain image references into Inputs with no per-provider

@@ -19,6 +19,7 @@ package simulate
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
@@ -252,5 +254,39 @@ func TestEnsureServersDevelopmentKeys(t *testing.T) {
 	_ = EnsureServers(context.Background(), sp, &out, mgr, inputs)
 	if out.String() != before {
 		t.Errorf("second EnsureServers printed more: %q", out.String())
+	}
+}
+
+// recordingSpinner counts spinner runs.
+type recordingSpinner struct {
+	terminal.SpinnerPrinter
+	runs int
+}
+
+func (r *recordingSpinner) WrapAsyncWithSuccessSpinners(f func(ch async.EventChannel) error) error {
+	r.runs++
+	return r.SpinnerPrinter.WrapAsyncWithSuccessSpinners(f)
+}
+
+func TestEnsureServersSpinner(t *testing.T) {
+	ctx := context.Background()
+	mgr := diffserver.NewManager(nil, logging.NewNopLogger(), diffserver.WithSessionID("s"))
+	sp := &recordingSpinner{SpinnerPrinter: terminal.NewNopSpinnerPrinter()}
+	inputs := []diffserver.Input{
+		{Runtime: diffserver.RuntimeDevelopment, Name: "a", DevelopmentTarget: "localhost:1", APIGroups: []string{"a.example.org"}},
+	}
+	for _, step := range []struct {
+		name   string
+		inputs []diffserver.Input
+		want   int
+	}{
+		{"Empty", nil, 0},
+		{"New", inputs, 1},
+		{"Repeat", inputs, 1},
+	} {
+		_ = EnsureServers(ctx, sp, io.Discard, mgr, step.inputs)
+		if sp.runs != step.want {
+			t.Errorf("%s: want %d spinner runs in total, got %d", step.name, step.want, sp.runs)
+		}
 	}
 }

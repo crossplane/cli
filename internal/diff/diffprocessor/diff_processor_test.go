@@ -810,6 +810,10 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 			`same placeholder name; the API server would name them differently, so they cannot be told apart here — diff ` +
 			`them separately`
 
+		contendedErr = `cannot combine diffs: resource "example.org/v1/Bucket/default/shared" would be controlled by ` +
+			`more than one XR (XR1/xr-a, XR1/xr-b); Crossplane gives it to whichever of them creates it first, and ` +
+			`the other fails to reconcile it, so no diff predicts applying these inputs together — diff them separately`
+
 		// renderFailedErr is how a render failure reaches RecordRender: wrapped by the render path.
 		renderFailedErr = "cannot calculate diffs for composed resources: render failed"
 	)
@@ -836,7 +840,12 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 		slowRender string
 		xrTimeout  time.Duration
 		afterXR    func(context.Context, map[string]*dt.ResourceDiff) error
-		want       got
+		// equalRender names an input XR whose render leaves the shared resource unchanged: an equal diff,
+		// controlled by that XR, kept among the diffs when keepEqual is set (as provider plans do) and
+		// otherwise recorded only as an unchanged rendering (as with --skip-plan).
+		equalRender string
+		keepEqual   bool
+		want        got
 	}{
 		// An XR that runs out of its own XRTimeout fails alone, as a failed render does; the next
 		// one still renders.
@@ -947,6 +956,27 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 		// PerformDiff marks a group whose name it synthesized, which is the only way the overlap check
 		// can tell two generateName-only inputs apart from one XR reached twice. Without it these
 		// identical renderings would merge, reporting one XR's changes for two.
+		// Two XRs controlling one resource contend for it even when one of them leaves it unchanged, so
+		// the run fails whether that equal diff is kept for a plan or left out of the report.
+		"UnchangedRenderingContendsWithPlans": {
+			resources:   []*un.Unstructured{xr("xr-a"), xr("xr-b")},
+			equalRender: "xr-a",
+			keepEqual:   true,
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("xr-a"), ref("xr-b")},
+				GlobalErrs: []string{contendedErr},
+				Err:        contendedErr,
+			},
+		},
+		"UnchangedRenderingContendsWithSkipPlan": {
+			resources:   []*un.Unstructured{xr("xr-a"), xr("xr-b")},
+			equalRender: "xr-a",
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("xr-a"), ref("xr-b")},
+				GlobalErrs: []string{contendedErr},
+				Err:        contendedErr,
+			},
+		},
 		"SharedGenerateNameReachesTheOverlapCheck": {
 			resources: []*un.Unstructured{genXR, genXR.DeepCopy()},
 			want: got{
@@ -997,12 +1027,28 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 								return nil, types.RenderedResources{}, ctx.Err()
 							}
 
-							diff := bucket("parent", "same", rendered.GetName())
-
 							var keys types.RenderedResources
 							keys.AddKey(sharedKey)
 
-							return map[string]*dt.ResourceDiff{sharedKey: diff}, keys, nil
+							if rendered.GetName() == tt.equalRender {
+								diff := bucket(rendered.GetName(), "same", rendered.GetName())
+								diff.DiffType = dt.DiffTypeEqual
+
+								if tt.keepEqual {
+									return map[string]*dt.ResourceDiff{sharedKey: diff}, keys, nil
+								}
+
+								keys.AddUnchanged(sharedKey, diff)
+
+								return map[string]*dt.ResourceDiff{}, keys, nil
+							}
+
+							controller := "parent"
+							if tt.equalRender != "" {
+								controller = rendered.GetName()
+							}
+
+							return map[string]*dt.ResourceDiff{sharedKey: bucket(controller, "same", rendered.GetName())}, keys, nil
 						},
 					}
 				}),
@@ -3489,7 +3535,7 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 				return xpClients.Composition.FindMatchingComposition(ctx, res)
 			}
 
-			diffs, err := processor.(*DefaultDiffProcessor).DiffSingleResource(ctx, xr, compositionProvider)
+			diffs, _, err := processor.(*DefaultDiffProcessor).DiffSingleResource(ctx, xr, compositionProvider)
 
 			// Check error expectations
 			if (err != nil) != tt.wantErr {
@@ -3660,7 +3706,7 @@ func TestDefaultDiffProcessor_DiffSingleResource_RevisionRef(t *testing.T) {
 				return types.ResolvedComposition{Composition: composition, RevisionName: tt.revisionName}, nil
 			}
 
-			if _, err := processor.DiffSingleResource(t.Context(), xr, provider); err != nil {
+			if _, _, err := processor.DiffSingleResource(t.Context(), xr, provider); err != nil {
 				t.Fatalf("%s\nDiffSingleResource(): unexpected error: %v", tt.reason, err)
 			}
 

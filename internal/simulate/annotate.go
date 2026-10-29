@@ -38,10 +38,10 @@ const (
 
 // AnnotateXRReport returns r with each resource diff annotated with its
 // provider plan from plans (see ProviderPlans.For and annotateDiff), for the
-// -o diff renderer. It
-// never mutates r: the result is a shallow copy with cloned groups and diff
-// maps, and each annotated diff is a copy with new LineDiffs. Empty plans
-// return an equivalent copy, which renders exactly as r does.
+// -o diff renderer. It never mutates r: the result is a shallow copy with
+// cloned groups and diff maps, and each annotated diff is a copy with new
+// LineDiffs. Empty plans return an equivalent copy, which renders exactly as
+// r does.
 func AnnotateXRReport(r *dt.XRReport, plans *ProviderPlans) *dt.XRReport {
 	if r == nil {
 		return nil

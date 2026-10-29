@@ -50,8 +50,9 @@ const (
 // claim, and one Composites entry per input. plans are the provider plans
 // the run collected, each merged into the engine's plan of a diff that
 // renders its resource as the planned one did (see ProviderPlans.For); nil
-// means none ran. keep is the filter PlanDiffs used: a kept equal diff no provider
-// planned is dropped, as one whose provider plan is a no-op is. nil keeps none.
+// means none ran. keep is the filter PlanDiffs used: a kept equal diff no
+// provider planned is dropped, as one whose provider plan is a no-op is. nil
+// keeps none.
 func FromXRReport(r *dt.XRReport, plans *ProviderPlans, keep func(*unstructured.Unstructured) bool) ProjectResult {
 	if r == nil {
 		r = &dt.XRReport{}

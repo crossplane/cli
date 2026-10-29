@@ -25,6 +25,8 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 // Verb is a Kubernetes API verb, as it appears in a SelfSubjectAccessReview's
@@ -137,9 +139,27 @@ type CredentialFetchResult struct {
 //     collector deletes a resource a composite composed exactly when the composite no longer desires a
 //     resource of that name, whatever API version or object the desired one would be applied as, so
 //     removal detection asks this one.
+//
+// It also holds, by diff key, the diff of each unchanged rendering the calculator did not keep among
+// the diffs it returns, so input validation sees every rendering whether or not equal diffs are kept.
 type RenderedResources struct {
-	keys    map[string]bool
-	desired map[string]map[string]bool // composite identity -> composition resource names it desired
+	keys      map[string]bool
+	desired   map[string]map[string]bool // composite identity -> composition resource names it desired
+	unchanged map[string]*dt.ResourceDiff
+}
+
+// AddUnchanged records the diff of an unchanged rendering that is not among the returned diffs.
+func (r *RenderedResources) AddUnchanged(key string, d *dt.ResourceDiff) {
+	if r.unchanged == nil {
+		r.unchanged = make(map[string]*dt.ResourceDiff)
+	}
+
+	r.unchanged[key] = d
+}
+
+// Unchanged returns, by diff key, the diffs AddUnchanged recorded. The caller must not modify it.
+func (r *RenderedResources) Unchanged() map[string]*dt.ResourceDiff {
+	return r.unchanged
 }
 
 // AddKey records the diff key of a rendered composed resource, changed or not.
@@ -176,6 +196,10 @@ func (r *RenderedResources) Merge(other RenderedResources) {
 		for name := range names {
 			r.AddDesired(composite, name)
 		}
+	}
+
+	for key, d := range other.unchanged {
+		r.AddUnchanged(key, d)
 	}
 }
 

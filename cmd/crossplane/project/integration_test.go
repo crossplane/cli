@@ -5328,8 +5328,8 @@ Summary: 2 modified`,
 				WithXRImpact("NopClaim", "test-claim-2", "test-namespace", "changed"),
 		},
 		// Composition mode checks the composites it renders for overlaps as xr mode checks its inputs:
-		// two XRs on one composition that render one fixed-name child would both control it, however
-		// alike their renderings are, so the run fails rather than report either diff alone.
+		// two XRs on one composition that render one fixed-name child differently would both control it.
+		// Contention is checked before differing renderings, so it is the error the run fails with.
 		"SharedChildDifferingRendersFail": {
 			reason: "Two XRs a composition change renders one child for, differently, fail the run",
 			setupFiles: []string{
@@ -5345,7 +5345,7 @@ Summary: 2 modified`,
 			expectedErrorContains: `resource "ns.nop.example.org/v1alpha1/XDownstreamResource/default/shared-child" would be ` +
 				`controlled by more than one XR (XNopResource/shared-child-owner-a, XNopResource/shared-child-owner-b)`,
 		},
-		"SharedChildIdenticalRendersFail": {
+		"SharedChildContendedEvenWhenIdentical": {
 			reason: "Two XRs a composition change renders one child for, identically, still contend for it",
 			setupFiles: []string{
 				"testdata/diff/resources/xrd.yaml",
@@ -6280,7 +6280,7 @@ func TestDiffSingleResourceConcurrent(t *testing.T) {
 
 		got := make([]map[string]lineDiffs, len(inputs))
 		diff := func(i int) {
-			diffs, err := proc.DiffSingleResource(ctx, inputs[i].DeepCopy(), clients.XpClients.Composition.FindMatchingComposition)
+			diffs, _, err := proc.DiffSingleResource(ctx, inputs[i].DeepCopy(), clients.XpClients.Composition.FindMatchingComposition)
 			if err != nil {
 				t.Errorf("DiffSingleResource(%s): %v", inputs[i].GetName(), err)
 				return

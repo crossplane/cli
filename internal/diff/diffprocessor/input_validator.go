@@ -2,6 +2,7 @@ package diffprocessor
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -206,12 +207,15 @@ func rejectManagedInputs(groups []dt.XRDiffGroup, inputs []inputCheck, rendered 
 			}
 
 			manager := inputs[a].res
+			relation := managedBy(groups[b], managed, groups[a], manager)
 
+			// The manager's rendered keys are checked as well as managedBy's controller reference: a child
+			// the manager would create has no cluster copy yet, so nothing carries that reference.
 			switch {
-			case renderedIDs[a][identityOf(managed)]:
+			case renderedIDs[a][identityOf(managed)] || relation == composedBy:
 				rejected[b] = errors.Errorf("%s is composed by input %s, whose composition writes it; supplying it "+
 					"as an input too gives it a second writer — pass %s only", kindName(managed), kindName(manager), kindName(manager))
-			case boundToClaim(groups[b], managed, groups[a], manager):
+			case relation == claimedBy:
 				rejected[b] = errors.Errorf("%s is the XR bound to claim %s, which Crossplane's claim controller writes; "+
 					"supplying it as an input too gives it a second writer — pass the claim, not its XR", kindName(managed), kindName(manager))
 			}
@@ -223,6 +227,48 @@ func rejectManagedInputs(groups []dt.XRDiffGroup, inputs []inputCheck, rendered 
 	}
 
 	return rejected
+}
+
+// management is how one input of a run manages another; see managedBy.
+type management int
+
+const (
+	notManaged management = iota
+	// claimedBy: the managed XR is bound to the manager, a claim, whose controller writes it.
+	claimedBy
+	// composedBy: the managed XR's controller reference names the manager, whose composition writes it.
+	composedBy
+)
+
+// managedBy reports whether the XR xr is managed by manager, another input of the run, and how: bound
+// to it as a claim (see boundToClaim), or controlled by it, per the controller reference on what is known
+// of xr (see knownForms; its cluster copy carries the one Crossplane set). The reference is compared by
+// group, kind and name, and by namespace for a namespaced manager, which can only own objects in its own
+// namespace; never by UID, which a render synthesizes afresh. Each group is the input's diff group, or
+// the zero group when nothing has been rendered.
+func managedBy(xrGroup dt.XRDiffGroup, xr *un.Unstructured, managerGroup dt.XRDiffGroup, manager *un.Unstructured) management {
+	if boundToClaim(xrGroup, xr, managerGroup, manager) {
+		return claimedBy
+	}
+
+	id := identityOf(manager)
+	if id == "" {
+		return notManaged
+	}
+
+	for _, obj := range knownForms(xrGroup, xr) {
+		ref := metav1.GetControllerOf(obj)
+		if ref == nil {
+			continue
+		}
+
+		if identity(ref.APIVersion, ref.Kind, manager.GetNamespace(), ref.Name) == id &&
+			(manager.GetNamespace() == "" || manager.GetNamespace() == obj.GetNamespace()) {
+			return composedBy
+		}
+	}
+
+	return notManaged
 }
 
 // boundToClaim reports whether xr is the XR bound to claim. Either side of the binding is enough, read
@@ -337,6 +383,26 @@ func renderOverlapErrors(groups []dt.XRDiffGroup) []error {
 	}
 
 	return errs
+}
+
+// withUnchanged returns groups with each one's unchanged renderings, indexed like groups (see
+// dtypes.RenderedResources.Unchanged), added to a copy of its diffs. It is what the overlap check is
+// given: those renderings are left out of the report, but two XRs rendering one resource contend for
+// it whether or not either rendering changes it. An errored group (nil diffs) gets none.
+func withUnchanged(groups []dt.XRDiffGroup, unchanged []map[string]*dt.ResourceDiff) []dt.XRDiffGroup {
+	out := make([]dt.XRDiffGroup, 0, len(groups))
+
+	for i, g := range groups {
+		if g.Diffs != nil && i < len(unchanged) && len(unchanged[i]) > 0 {
+			diffs := maps.Clone(unchanged[i])
+			maps.Copy(diffs, g.Diffs)
+			g.Diffs = diffs
+		}
+
+		out = append(out, g)
+	}
+
+	return out
 }
 
 // overlapProducer is one rendering of an overlapping resource: the input group that produced it and the

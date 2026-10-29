@@ -14,7 +14,8 @@ directory, or pass `-` to read from standard input:
   project's functions in place of the cluster's functions of the same name.
 - Composition files simulate those Compositions without a project. The command
   renders each composite resource in the cluster that uses one of them, with
-  the functions installed in the cluster.
+  the functions installed in the cluster. When a claim and its composite
+  resource are both in scope, the change is reported once, under the claim.
 - Composite resource or claim files simulate those resources. The command
   renders each one with the Composition the cluster selects for it and the
   functions installed in the cluster.
@@ -171,8 +172,8 @@ the result:
   composite resource, which then reports an error entry and none of its
   resources' plans. A run also fails, in every mode and with or without
   --skip-plan, when two composite resources it renders would both control
-  one resource, or render it differently, since no one diff or provider
-  plan is correct for both.
+  one resource, even if one of them leaves it unchanged, or render it
+  differently, since no one diff or provider plan is correct for both.
 - 2: only schema validation failed.
 - 3: the simulation succeeded and found changes, including drift a provider
   plan found that the cluster diff didn't.

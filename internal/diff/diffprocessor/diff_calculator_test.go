@@ -2,11 +2,14 @@ package diffprocessor
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 
 	gcmp "github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -2492,18 +2495,22 @@ func TestDefaultDiffCalculator_KeepEqualDiffs(t *testing.T) {
 		reason string
 		keep   func(*un.Unstructured) bool
 		want   map[string]dt.DiffType
+		// wantUnchanged is the keys of the equal diffs recorded as unchanged renderings instead.
+		wantUnchanged []string
 	}{
 		"NilKeepsNone": {
-			reason: "Unset, an equal composed diff is dropped; only the XR's own diff is stored.",
-			want:   map[string]dt.DiffType{xrKey: dt.DiffTypeEqual},
+			reason:        "Unset, an equal composed diff is left out of the diffs, but recorded as an unchanged rendering.",
+			want:          map[string]dt.DiffType{xrKey: dt.DiffTypeEqual},
+			wantUnchanged: []string{composedKey},
 		},
 		"PredicateFalseKeepsNone": {
-			reason: "A predicate that declines the resource drops its equal diff.",
-			keep:   func(*un.Unstructured) bool { return false },
-			want:   map[string]dt.DiffType{xrKey: dt.DiffTypeEqual},
+			reason:        "A predicate that declines the resource leaves its equal diff to the unchanged renderings.",
+			keep:          func(*un.Unstructured) bool { return false },
+			want:          map[string]dt.DiffType{xrKey: dt.DiffTypeEqual},
+			wantUnchanged: []string{composedKey},
 		},
 		"PredicateTrueKeepsEqual": {
-			reason: "A predicate that names the resource keeps its equal diff.",
+			reason: "A predicate that names the resource keeps its equal diff, so it is not recorded twice.",
 			keep:   func(u *un.Unstructured) bool { return u.GetKind() == "Composed" },
 			want:   map[string]dt.DiffType{xrKey: dt.DiffTypeEqual, composedKey: dt.DiffTypeEqual},
 		},
@@ -2538,7 +2545,7 @@ func TestDefaultDiffCalculator_KeepEqualDiffs(t *testing.T) {
 				WithSpecField("field", "value").
 				BuildUComposed()
 
-			diffs, _, err := calculator.CalculateNonRemovalDiffs(t.Context(), xr, render.CompositionOutputs{
+			diffs, renderedResources, err := calculator.CalculateNonRemovalDiffs(t.Context(), xr, render.CompositionOutputs{
 				CompositeResource: xr,
 				ComposedResources: []cpd.Unstructured{*rendered},
 			})
@@ -2553,6 +2560,11 @@ func TestDefaultDiffCalculator_KeepEqualDiffs(t *testing.T) {
 
 			if diff := gcmp.Diff(tt.want, got); diff != "" {
 				t.Errorf("%s\nCalculateNonRemovalDiffs(): -want, +got:\n%s", tt.reason, diff)
+			}
+
+			gotUnchanged := slices.Sorted(maps.Keys(renderedResources.Unchanged()))
+			if diff := gcmp.Diff(tt.wantUnchanged, gotUnchanged, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("%s\nCalculateNonRemovalDiffs(): unchanged renderings -want, +got:\n%s", tt.reason, diff)
 			}
 		})
 	}

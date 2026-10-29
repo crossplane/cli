@@ -230,6 +230,7 @@ func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un
 // What it records as rendered is keyed for both of its consumers; see dtypes.RenderedResources. Each
 // composed resource is recorded as desired by desired.CompositeResource, the composite render consumed
 // (for a claim, its backing XR, not the claim xr is), because that is the composite that composes it.
+// An equal composed diff left out of the diffs (see KeepEqualDiffs) is recorded as unchanged instead.
 //
 // Returns: (diffs map, rendered resources, error).
 func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs) (map[string]*dt.ResourceDiff, dtypes.RenderedResources, error) {
@@ -342,6 +343,9 @@ func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr
 		diffKey := diff.GetDiffKey()
 		if diff.DiffType != dt.DiffTypeEqual || (c.keepEqual != nil && c.keepEqual(un)) {
 			diffs[diffKey] = diff
+		} else {
+			// Not shown, but still a rendering: the overlap check needs it to catch contention.
+			rendered.AddUnchanged(diffKey, diff)
 		}
 
 		rendered.AddKey(diffKey)

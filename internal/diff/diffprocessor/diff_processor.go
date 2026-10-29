@@ -51,8 +51,10 @@ type DiffProcessor interface {
 	// error, so the successful inputs' results and the failures' errors can still be rendered.
 	PerformDiff(ctx context.Context, resources []*un.Unstructured, compositionProvider types.CompositionProvider) (*dt.XRReport, error)
 
-	// DiffSingleResource processes a single resource and returns its diffs.
-	DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, error)
+	// DiffSingleResource processes a single resource and returns its diffs and, by diff key, the
+	// unchanged renderings its diffs leave out (see DefaultDiffCalculator.CalculateNonRemovalDiffs),
+	// which only the render-overlap check consumes.
+	DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error)
 
 	// Initialize loads required resources like CRDs and environment configs
 	Initialize(ctx context.Context) error
@@ -240,6 +242,9 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 	validator := p.config.Factories.InputValidator(p.config.Advisories, resources)
 	toRender := validator.ToRender()
 
+	// unchanged holds, by group, the unchanged renderings its diffs leave out, for the overlap check.
+	unchanged := make([]map[string]*dt.ResourceDiff, len(toRender))
+
 	for i, in := range toRender {
 		res := in.Resource
 
@@ -272,6 +277,7 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 				// We don't emit partial results for a single XR: on success the
 				// whole diff tree is attached, on failure none of it.
 				group.Diffs = diffs
+				unchanged[i] = rendered.Unchanged()
 			}
 		}
 
@@ -312,8 +318,9 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 
 	// Third: renders that reach one resource in ways no single diff can represent. Collected into the
 	// report so they reach errors[] and the returned error like any other error; the report is still
-	// rendered, so structured output stays valid.
-	for _, err := range validator.RenderOverlaps(groups) {
+	// rendered, so structured output stays valid. The check sees every rendering, unchanged ones included,
+	// so contention is caught whether or not equal diffs are kept (with or without --skip-plan).
+	for _, err := range validator.RenderOverlaps(withUnchanged(groups, unchanged)) {
 		errs = append(errs, err)
 		outputErrors = append(outputErrors, dt.OutputError{Message: err.Error()})
 	}
@@ -353,9 +360,9 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 // DiffSingleResource handles one resource at a time and returns its diffs.
 // The compositionProvider function is called to obtain the composition to use for rendering.
 // This is the public method for top-level XR diffing, which enables removal detection.
-func (p *DefaultDiffProcessor) DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, error) {
-	diffs, _, err := p.diffSingleResourceInternal(ctx, res, compositionProvider, nil, nil, true, 0)
-	return diffs, err
+func (p *DefaultDiffProcessor) DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error) {
+	diffs, rendered, err := p.diffSingleResourceInternal(ctx, res, compositionProvider, nil, nil, true, 0)
+	return diffs, rendered.Unchanged(), err
 }
 
 // diffSingleResourceInternal is the internal implementation that allows control over removal detection.

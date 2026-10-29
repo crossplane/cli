@@ -264,7 +264,7 @@ type MockDiffProcessor struct {
 	// Function fields for mocking behavior
 	InitializeFn         func(ctx context.Context) error
 	PerformDiffFn        func(ctx context.Context, resources []*un.Unstructured, compositionProvider types.CompositionProvider) (*dt.XRReport, error)
-	DiffSingleResourceFn func(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, error)
+	DiffSingleResourceFn func(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error)
 	CleanupFn            func(ctx context.Context) error
 }
 
@@ -287,12 +287,12 @@ func (m *MockDiffProcessor) PerformDiff(ctx context.Context, resources []*un.Uns
 }
 
 // DiffSingleResource implements the DiffProcessor.DiffSingleResource method.
-func (m *MockDiffProcessor) DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, error) {
+func (m *MockDiffProcessor) DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error) {
 	if m.DiffSingleResourceFn != nil {
 		return m.DiffSingleResourceFn(ctx, res, compositionProvider)
 	}
 
-	return make(map[string]*dt.ResourceDiff), nil
+	return make(map[string]*dt.ResourceDiff), nil, nil
 }
 
 // Cleanup implements the DiffProcessor.Cleanup method.

@@ -52,6 +52,8 @@ type XRDiffResult struct {
 	// Error contains any error that occurred while processing this XR.
 	// nil means processing was successful.
 	Error error
+	// unchanged holds the unchanged renderings Diffs leaves out, for the overlap check only.
+	unchanged map[string]*dt.ResourceDiff
 }
 
 // HasChanges returns true if this XR has downstream resource changes.
@@ -187,8 +189,8 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 
 	var (
 		compositionErrors int
-		// groups are the successfully rendered composites of every composition, for the overlap check.
-		groups []dt.XRDiffGroup
+		// composites are the successfully rendered composites of every composition, for the overlap check.
+		composites []renderedComposite
 	)
 
 	// Process each composition, filtering out non-Composition objects
@@ -231,8 +233,8 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 		}
 
 		// Process this single composition and build the result
-		compResult, compGroups, err := p.processSingleComposition(ctx, comp, affectedXRs, scoped)
-		groups = append(groups, compGroups...)
+		compResult, rendered, err := p.processSingleComposition(ctx, comp, affectedXRs, scoped)
+		composites = append(composites, rendered...)
 
 		if err != nil {
 			p.config.Logger.Debug("Failed to process composition", "composition", compositionID, "error", err)
@@ -282,7 +284,7 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 	// Renders that reach one resource in ways no single diff (or provider plan) can represent, checked
 	// across every composition's composites as xr mode checks its inputs. A run-level error, as there:
 	// the report is still returned, so structured output stays valid.
-	overlaps := renderOverlapErrors(withoutNestedGroups(groups))
+	overlaps := renderOverlapErrors(overlapGroups(composites))
 	for _, err := range overlaps {
 		output.Errors = append(output.Errors, dt.OutputError{Message: err.Error()})
 	}
@@ -388,9 +390,9 @@ func (p *DefaultCompDiffProcessor) preflightResourceRefs(ctx context.Context, co
 // switch whether this comes from the --resource preflight or default-discovery via FindComposites).
 // `scoped` records that the set came from --resource rather than discovery (see CompositionDiff.Scoped).
 //
-// It also returns a group per composite it rendered without error, with all of its diffs (equal ones
-// included, which the impact analysis drops), for DiffComposition's render-overlap check.
-func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context, newComp *un.Unstructured, affectedXRs []*un.Unstructured, scoped bool) (*dt.CompositionDiff, []dt.XRDiffGroup, error) {
+// It also returns each composite it rendered without error, with its group of diffs and unchanged
+// renderings (which the impact analysis leaves out), for DiffComposition's render-overlap check.
+func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context, newComp *un.Unstructured, affectedXRs []*un.Unstructured, scoped bool) (*dt.CompositionDiff, []renderedComposite, error) {
 	result := &dt.CompositionDiff{
 		Name:           newComp.GetName(),
 		Scoped:         scoped,
@@ -417,11 +419,6 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(newComp.Object, cliComp); err != nil {
 		return nil, nil, errors.Wrapf(err, "cannot convert composition %q to typed", newComp.GetName())
 	}
-
-	// A claim renders through its backing XR, so the claim's entry carries the XR's changes. When both
-	// are in scope, rendering the XR too would report one change twice, and — when the claim is edited,
-	// which Crossplane syncs into the XR — report the XR's stale rendering as a conflict with its claim's.
-	affectedXRs = withoutClaimedXRs(affectedXRs, cliComp.Spec.CompositeTypeRef.Kind)
 
 	// Predict the identity of the revision this composition would produce. Needed twice below: to
 	// evaluate compositionRevisionSelectors against the label set the revision would carry, and to seed
@@ -453,10 +450,6 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 		return nil, nil, err
 	}
 
-	if comparison.changed() {
-		result.RevisionImpact.RepointedComposites = len(repointingXRs)
-	}
-
 	// A composition whose pipeline calls a changed function renders differently without creating a
 	// revision, so it is analysed as at least a metadata-scope change: any-change analyses it,
 	// spec-change still skips it. Only the decision is raised; RevisionImpact still reports the real scope.
@@ -478,6 +471,23 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 		keptXRs, droppedXRs = pinnedKept, pinnedDropped
 	} else {
 		pinnedXRs = nil
+	}
+
+	// A claim renders through its backing XR, so the claim's entry carries the XR's changes. When both
+	// are in scope, rendering the XR too would report one change twice, and — when the claim is edited,
+	// which Crossplane syncs into the XR — report the XR's stale rendering as a conflict with its claim's.
+	// This runs after the pinned step, so a pinned backing XR whose Manual claim stays filtered is kept.
+	keptXRs, droppedXRs = withoutClaimedXRs(keptXRs, droppedXRs, cliComp.Spec.CompositeTypeRef.Kind)
+	inScope := len(keptXRs) + len(droppedXRs)
+
+	// A dropped backing XR is reported under its claim, so it does not re-point on its own. Nor does its
+	// pin apply to the claim's render, which is handed the backing XR (see collectXRDiffs): the claim's
+	// spec, policy included, is what Crossplane syncs into that XR.
+	maps.DeleteFunc(repointingXRs, func(key string, _ bool) bool { return !slices.ContainsFunc(keptXRs, isKey(key)) })
+	maps.DeleteFunc(pinnedXRs, func(key string, _ pinnedResolution) bool { return !slices.ContainsFunc(keptXRs, isKey(key)) })
+
+	if comparison.changed() {
+		result.RevisionImpact.RepointedComposites = len(repointingXRs)
 	}
 
 	counts := countFilterReasons(droppedXRs)
@@ -514,7 +524,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// suppresses only the per-XR renders: --analyze-on is a cost knob, and a flag may change how much
 	// work is done but never whether a real consequence is reported. Reporting a total of 0 here while
 	// RevisionImpact.RepointedComposites said otherwise was issue #478.
-	result.AffectedResources.Total = len(affectedXRs)
+	result.AffectedResources.Total = inScope
 	counts.applyTo(&result.AffectedResources)
 
 	// Skip the per-XR work — one function render per XR, the dominant cost of comp — when the change
@@ -569,10 +579,11 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 
 	xrResults := p.collectXRDiffs(ctx, keptXRs, cliComp, revisionName, predictedRevisionLabels(newComp, pred), pinnedXRs)
 
-	groups := make([]dt.XRDiffGroup, 0, len(keptXRs))
+	composites := make([]renderedComposite, 0, len(keptXRs))
 	for _, xr := range keptXRs {
 		if r := xrResults[dt.MakeDiffKeyFromResource(xr)]; r != nil && !r.HasError() {
-			groups = append(groups, dt.XRDiffGroup{XR: objectRef(xr), Diffs: r.Diffs})
+			group := dt.XRDiffGroup{XR: objectRef(xr), Diffs: r.Diffs}
+			composites = append(composites, renderedComposite{xr: xr, group: withUnchanged([]dt.XRDiffGroup{group}, []map[string]*dt.ResourceDiff{r.unchanged})[0]})
 		}
 	}
 
@@ -592,11 +603,23 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 
 	result.ImpactAnalysis = append(result.ImpactAnalysis, keptImpacts...)
 	// keptSummary.Total counts only kept; widen to include filtered so totals stay consistent.
-	keptSummary.Total = len(affectedXRs)
+	keptSummary.Total = inScope
 	counts.applyTo(&keptSummary)
 	result.AffectedResources = keptSummary
 
-	return result, groups, nil
+	return result, composites, nil
+}
+
+// renderedComposite is one composite a composition run rendered successfully, for the overlap check:
+// the discovered object, and its diff group with its unchanged renderings added (see withUnchanged).
+type renderedComposite struct {
+	xr    *un.Unstructured
+	group dt.XRDiffGroup
+}
+
+// isKey returns a predicate matching the resource whose dt.MakeDiffKeyFromResource is key.
+func isKey(key string) func(*un.Unstructured) bool {
+	return func(res *un.Unstructured) bool { return dt.MakeDiffKeyFromResource(res) == key }
 }
 
 // objectRef is res's object reference, as an impact or group names it.
@@ -609,48 +632,50 @@ func objectRef(res *un.Unstructured) corev1.ObjectReference {
 	}
 }
 
-// withoutClaimedXRs returns xrs without each XR (of kind xrKind) bound to a claim (of another kind)
-// that is in xrs too, read from the binding Crossplane records on either side (see boundToClaim).
-func withoutClaimedXRs(xrs []*un.Unstructured, xrKind string) []*un.Unstructured {
-	return slices.DeleteFunc(slices.Clone(xrs), func(xr *un.Unstructured) bool {
-		return xr.GetKind() == xrKind && slices.ContainsFunc(xrs, func(claim *un.Unstructured) bool {
-			return claim.GetKind() != xrKind && boundToClaim(dt.XRDiffGroup{}, xr, dt.XRDiffGroup{}, claim)
-		})
-	})
+// withoutClaimedXRs returns kept and dropped without each XR (of kind xrKind) bound to a claim (of
+// another kind) in scope, read from the binding Crossplane records on either side (see managedBy), so the
+// change is reported once, under the claim. A filtered XR is removed whenever its claim is in scope. A
+// kept XR is removed only when its claim is kept too: one whose claim is filtered, such as a Manual claim
+// whose backing XR is pinned to a revision calling a changed function, is still rendered, since nothing
+// else reports it.
+func withoutClaimedXRs(kept []*un.Unstructured, dropped []filteredXR, xrKind string) ([]*un.Unstructured, []filteredXR) {
+	boundIn := func(claims []*un.Unstructured) func(*un.Unstructured) bool {
+		return func(xr *un.Unstructured) bool {
+			return xr.GetKind() == xrKind && slices.ContainsFunc(claims, func(claim *un.Unstructured) bool {
+				return claim.GetKind() != xrKind && managedBy(dt.XRDiffGroup{}, xr, dt.XRDiffGroup{}, claim) == claimedBy
+			})
+		}
+	}
+
+	inScope := slices.Clone(kept)
+	for _, d := range dropped {
+		inScope = append(inScope, d.xr)
+	}
+
+	claimedInKept, claimedInScope := boundIn(kept), boundIn(inScope)
+
+	return slices.DeleteFunc(slices.Clone(kept), claimedInKept),
+		slices.DeleteFunc(slices.Clone(dropped), func(d filteredXR) bool { return claimedInScope(d.xr) })
 }
 
-// withoutNestedGroups returns groups without each group whose XR another group's render composes,
-// as its diffs show: the nested XR's own self-diff is among its parent's. As in xr mode, where such
-// an input is rejected before the overlap check, the parent's rendering of what they share wins.
-func withoutNestedGroups(groups []dt.XRDiffGroup) []dt.XRDiffGroup {
-	reached := make([]map[string]bool, len(groups))
-	for i, g := range groups {
-		reached[i] = make(map[string]bool, len(g.Diffs))
-		for key := range g.Diffs {
-			reached[i][diffKeyIdentity(key)] = true
+// overlapGroups returns the groups of composites for the overlap check, without each composite another
+// one in the run manages (see managedBy): a nested XR, controlled by its parent, is still rendered and
+// reported, but as in xr mode, where such an input is rejected before the check, the parent's rendering
+// of what they share wins.
+func overlapGroups(composites []renderedComposite) []dt.XRDiffGroup {
+	groups := make([]dt.XRDiffGroup, 0, len(composites))
+
+	for b, nested := range composites {
+		managed := slices.ContainsFunc(composites, func(parent renderedComposite) bool {
+			return parent.xr != nested.xr && managedBy(nested.group, nested.xr, parent.group, parent.xr) != notManaged
+		})
+
+		if !managed {
+			groups = append(groups, composites[b].group)
 		}
 	}
 
-	kept := make([]dt.XRDiffGroup, 0, len(groups))
-
-	for b, g := range groups {
-		id := identity(g.XR.APIVersion, g.XR.Kind, g.XR.Namespace, g.XR.Name)
-		nested := false
-
-		for a := range groups {
-			// Every group reaches its own XR: its self-diff is always stored.
-			if a != b && reached[a][id] {
-				nested = true
-				break
-			}
-		}
-
-		if !nested {
-			kept = append(kept, g)
-		}
-	}
-
-	return kept
+	return groups
 }
 
 // collectXRDiffs processes XRs and collects their diffs, returning results for each XR.
@@ -751,7 +776,7 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 		}
 
 		xrCtx, cancel := p.config.xrContext(ctx)
-		diffs, err := p.xrProc.DiffSingleResource(xrCtx, xr, compositionProvider)
+		diffs, unchanged, err := p.xrProc.DiffSingleResource(xrCtx, xr, compositionProvider)
 		err = p.config.afterXR(ctx, xrCtx, diffs, err)
 		cancel()
 		if err != nil {
@@ -765,8 +790,8 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 		} else {
 			// Store successful result with diffs
 			results[resourceID] = &XRDiffResult{
-				Diffs: diffs,
-				Error: nil,
+				Diffs:     diffs,
+				unchanged: unchanged,
 			}
 		}
 	}

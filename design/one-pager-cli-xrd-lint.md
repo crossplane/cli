@@ -228,23 +228,21 @@ Crossplane, not merely whether the API is weaker.
   merge behaviour under server-side apply a deliberate choice rather than a
   default nobody chose.
 - `xrd/served-versions-compatible`: the served versions of one XRD are
-  compatible with each other. Unless an XRD configures a conversion webhook,
-  Crossplane serves all of its versions from the same stored objects, so an
-  incompatible difference between two served versions, such as a field whose
-  type differs, misbehaves for whoever uses the other version. The rule needs
-  no `--old`. (proposed)
-  - It uses crdify's served-version validator. Served versions are sorted in
-    Kubernetes version order (`v1alpha1` < `v1beta1` < `v1`), and every pair
-    is compared, older to newer, not just neighbours.
+  compatible with each other. All served versions of an XRD are views of the
+  same stored objects, so an incompatible difference between two served
+  versions, such as a field whose type differs, misbehaves for whoever uses
+  the other version. The rule needs no `--old`. (proposed)
+  - It pairs versions the way crdify's served-version validator does, then
+    compares each pair with crdify's `CompareVersions`. Served versions are
+    sorted in Kubernetes version order (`v1alpha1` < `v1beta1` < `v1`), and
+    every pair is compared, older to newer, not just neighbours.
   - Each pair runs through the same comparators, with the same options, as
     the `xrd-diff/` rules below, including the unhandled-change check. Each
     finding names the comparator and the version pair, for example
     `v1alpha1 -> v1`.
-  - With `--old`, only incompatibilities that the old XRD did not already
-    have are reported, as crdify does, so existing drift does not fail every
-    later change.
-  - Its `conversion` option matches crdify's: `None` (the default) checks
-    every XRD; `Ignore` skips XRDs that configure a conversion webhook.
+  - Every incompatible pair is reported, whether or not `--old` is given and
+    whether or not the XRD configures a conversion webhook. The rule has no
+    options of its own; comparator options come from the `xrd-diff/` rules.
 
 **On by default, as `warn`.** One design preference is common enough to
 surface by default without failing the run:

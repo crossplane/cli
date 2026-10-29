@@ -439,19 +439,21 @@ func TestRedactSecretChanges(t *testing.T) {
 		want   []FieldChange
 	}{
 		"SecretValues": {
-			reason: "Both sides of data and stringData changes become sensitive, keeping nil sides nil.",
+			reason: "Both sides of data and stringData changes, including the whole field, become sensitive, keeping nil sides nil.",
 			gvk:    secret,
 			in: []FieldChange{
 				{Path: "data.k", Actual: val("a"), Planned: val("b")},
 				{Path: "stringData[a.b]", Planned: val("b")},
 				{Path: "metadata.name", Actual: val("a"), Planned: val("b")},
 				{Path: "database", Actual: val("a")},
+				{Path: "data", Planned: val("x")},
 			},
 			want: []FieldChange{
 				{Path: "data.k", Actual: sens, Planned: sens},
 				{Path: "stringData[a.b]", Planned: sens},
 				{Path: "metadata.name", Actual: val("a"), Planned: val("b")},
 				{Path: "database", Actual: val("a")},
+				{Path: "data", Planned: sens},
 			},
 		},
 		"OtherKind": {

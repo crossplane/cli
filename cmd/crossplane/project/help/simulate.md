@@ -69,6 +69,9 @@ The `-o` flag picks the output format:
   redacted. For a resource the provider planned,
   `after` is the manifest sent to it; values the provider computes appear only
   in the changes.
+  Each composite has a `status`: `changed`, `unchanged`, `error`, `deferred`,
+  `skipped`, or `unknown` when the engine reports a status this version
+  doesn't recognize.
 - `diff` prints a line diff of each changed resource's manifest.
 
 For example, a changed Composition run with `--skip-plan` prints a plan like this:
@@ -110,10 +113,6 @@ client-side, without a provider diff, because the provider couldn't diff that
 resource. The result's `notes` say when provider plans were skipped or no diff
 server served the resources; `-o diff` prints the no-diff-server note to
 stderr.
-
-In `json` and `yaml` output each composite has a `status`: `changed`,
-`unchanged`, `error`, `deferred`, `skipped`, or `unknown` when the engine
-reports a status this version doesn't recognize.
 
 Provider plans are controlled by these flags:
 

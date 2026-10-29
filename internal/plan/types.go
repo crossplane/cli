@@ -20,6 +20,9 @@ limitations under the License.
 package plan
 
 import (
+	"slices"
+	"strings"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -190,6 +193,48 @@ func removeEmptied(obj map[string]any, parent, child, key string) {
 	}
 }
 
+// secretFields returns the fields of a core Secret that hold secret values.
+func secretFields() []string { return []string{"data", "stringData"} }
+
+func isCoreSecret(gvk schema.GroupVersionKind) bool {
+	return gvk.Group == "" && gvk.Kind == "Secret"
+}
+
+// RedactSecretChanges returns changes with the values of a core Secret's data
+// and stringData fields marked sensitive, as a copy. Changes to any other kind
+// are returned as is. It works on field changes, not the object, because
+// diffing two redacted Secrets would hide that a value changed.
+func RedactSecretChanges(gvk schema.GroupVersionKind, changes []FieldChange) []FieldChange {
+	if !isCoreSecret(gvk) {
+		return changes
+	}
+
+	out := slices.Clone(changes)
+	for i, c := range out {
+		if !isSecretValue(c.Path) {
+			continue
+		}
+		if c.Actual != nil {
+			out[i].Actual = &Value{Sensitive: true}
+		}
+		if c.Planned != nil {
+			out[i].Planned = &Value{Sensitive: true}
+		}
+	}
+
+	return out
+}
+
+func isSecretValue(path string) bool {
+	for _, field := range secretFields() {
+		if rest, ok := strings.CutPrefix(path, field); ok && (rest == "" || rest[0] == '.' || rest[0] == '[') {
+			return true
+		}
+	}
+
+	return false
+}
+
 // RedactSecret returns u with each data and stringData value replaced by the
 // sensitive-value marker when u is a core Secret, as a copy; any other object
 // is returned as is. Keys are kept, so a consumer still sees which keys exist.
@@ -197,13 +242,13 @@ func RedactSecret(u *unstructured.Unstructured) *unstructured.Unstructured {
 	if u == nil {
 		return nil
 	}
-	if gvk := u.GroupVersionKind(); gvk.Group != "" || gvk.Kind != "Secret" {
+	if !isCoreSecret(u.GroupVersionKind()) {
 		return u
 	}
 
 	sensitive := FormatValue(&Value{Sensitive: true})
 	out := u.DeepCopy()
-	for _, field := range []string{"data", "stringData"} {
+	for _, field := range secretFields() {
 		v, ok := out.Object[field]
 		if !ok {
 			continue

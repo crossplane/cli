@@ -62,10 +62,19 @@ type XRReport struct {
 // (e.g. the XR, stored for removal detection), which are not changes.
 func (r *XRReport) HasChanges() bool {
 	for _, group := range r.Groups {
-		for _, diff := range group.Diffs {
-			if diff.DiffType != DiffTypeEqual {
-				return true
-			}
+		if group.HasChanges() {
+			return true
+		}
+	}
+
+	return false
+}
+
+// HasChanges reports whether any diff in the group is not equal.
+func (g XRDiffGroup) HasChanges() bool {
+	for _, diff := range g.Diffs {
+		if diff.DiffType != DiffTypeEqual {
+			return true
 		}
 	}
 

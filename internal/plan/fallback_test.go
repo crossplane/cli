@@ -17,12 +17,14 @@ limitations under the License.
 package plan
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func mr(spec map[string]any) *unstructured.Unstructured {
@@ -420,6 +422,84 @@ func TestRedactSecret(t *testing.T) {
 			}
 			if diff := cmp.Diff(before, tc.in); diff != "" {
 				t.Errorf("\n%s\nRedactSecret(...): must not modify its input: -before, +after:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestRedactSecretChanges(t *testing.T) {
+	secret := schema.GroupVersionKind{Version: "v1", Kind: "Secret"}
+	sens := &Value{Sensitive: true}
+	val := func(s string) *Value { return &Value{Value: s} }
+
+	cases := map[string]struct {
+		reason string
+		gvk    schema.GroupVersionKind
+		in     []FieldChange
+		want   []FieldChange
+	}{
+		"SecretValues": {
+			reason: "Both sides of data and stringData changes become sensitive, keeping nil sides nil.",
+			gvk:    secret,
+			in: []FieldChange{
+				{Path: "data.k", Actual: val("a"), Planned: val("b")},
+				{Path: "stringData[a.b]", Planned: val("b")},
+				{Path: "metadata.name", Actual: val("a"), Planned: val("b")},
+				{Path: "database", Actual: val("a")},
+			},
+			want: []FieldChange{
+				{Path: "data.k", Actual: sens, Planned: sens},
+				{Path: "stringData[a.b]", Planned: sens},
+				{Path: "metadata.name", Actual: val("a"), Planned: val("b")},
+				{Path: "database", Actual: val("a")},
+			},
+		},
+		"OtherKind": {
+			reason: "Only core Secrets are redacted.",
+			gvk:    schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "Secret"},
+			in:     []FieldChange{{Path: "data.k", Actual: val("a")}},
+			want:   []FieldChange{{Path: "data.k", Actual: val("a")}},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			before := slices.Clone(tc.in)
+			got := RedactSecretChanges(tc.gvk, tc.in)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("\n%s\nRedactSecretChanges(...): -want, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(before, tc.in); diff != "" {
+				t.Errorf("\n%s\nRedactSecretChanges(...): must not modify its input: -before, +after:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestSortedChanges(t *testing.T) {
+	in := []FieldChange{{Path: "b", RequiresReplace: true}, {Path: "a"}, {Path: "b"}}
+	want := []FieldChange{{Path: "a"}, {Path: "b", RequiresReplace: true}, {Path: "b"}}
+	if diff := cmp.Diff(want, SortedChanges(in)); diff != "" {
+		t.Errorf("SortedChanges(...): -want, +got:\n%s", diff)
+	}
+	if in[0].Path != "b" || in[1].Path != "a" {
+		t.Errorf("SortedChanges(...): must not modify its input, got %v", in)
+	}
+}
+
+func TestSummaryChanges(t *testing.T) {
+	cases := map[string]struct {
+		in   Summary
+		want int
+	}{
+		"None":     {in: Summary{NoOp: 2, Approximate: 1, Errored: 1}, want: 0},
+		"Each":     {in: Summary{Create: 1, Update: 2, Destroy: 3, Replace: 4}, want: 10},
+		"Replaced": {in: Summary{Replace: 1}, want: 1},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.in.Changes(); got != tc.want {
+				t.Errorf("Changes(): want %d, got %d", tc.want, got)
 			}
 		})
 	}

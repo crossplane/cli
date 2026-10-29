@@ -22,7 +22,6 @@ import (
 	"io"
 	"maps"
 	"slices"
-	"sort"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -232,7 +231,7 @@ func symbol(p *ResourcePlan) string {
 // field names as YAML-style keys, changed leaves marked inline.
 func renderChangeTree(w io.Writer, changes []FieldChange) {
 	var prev []string
-	for _, c := range sortedChanges(changes) {
+	for _, c := range SortedChanges(changes) {
 		if c.Actual == nil && c.Planned == nil && !c.RequiresReplace {
 			// No value on either side renders no leaf line, so printing its
 			// parent keys would leave them dangling with nothing beneath. A
@@ -356,11 +355,12 @@ func lastSegments(paths []string) []string {
 	return out
 }
 
-func sortedChanges(changes []FieldChange) []FieldChange {
-	out := make([]FieldChange, len(changes))
-	copy(out, changes)
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out
+// SortedChanges returns a copy of changes ordered by path, keeping the
+// original order of changes that share one.
+func SortedChanges(changes []FieldChange) []FieldChange {
+	return slices.SortedStableFunc(slices.Values(changes), func(a, b FieldChange) int {
+		return strings.Compare(a.Path, b.Path)
+	})
 }
 
 // FormatValue renders one side of a change for humans.

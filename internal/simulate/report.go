@@ -25,7 +25,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
@@ -72,7 +71,7 @@ func FromXRReport(r *dt.XRReport, plans *ProviderPlans, keep func(*unstructured.
 			c.Status = CompositeError
 			a.addError(xr, *g.Err, &xr)
 			owned = append(owned, *g.Err)
-		case hasChanges(g.Diffs):
+		case g.HasChanges():
 			c.Status = CompositeChanged
 		}
 
@@ -183,7 +182,7 @@ func compositeResult(impact dt.XRImpact) CompositeResult {
 		c.Reason = compositeReason(impact.FilterReason)
 		c.Detail = impact.FilterDetail
 	default:
-		c.Status = CompositeStatus(impact.Status)
+		c.Status = CompositeUnknown
 	}
 
 	return c
@@ -273,7 +272,7 @@ func (a *assembler) addDiff(d *dt.ResourceDiff, composite *plan.ResourceRef) boo
 
 	// Redacted after the duplicate check, so two Secrets differing only in
 	// their redacted values are not mistaken for one change.
-	p.Changes = redact(d.Gvk, p.Changes)
+	p.Changes = plan.RedactSecretChanges(d.Gvk, p.Changes)
 	a.plans = append(a.plans, p)
 
 	return changed
@@ -438,38 +437,6 @@ func object(u *unstructured.Unstructured) map[string]any {
 	return u.Object
 }
 
-// redact marks a Secret's data and stringData values sensitive.
-func redact(gvk schema.GroupVersionKind, changes []plan.FieldChange) []plan.FieldChange {
-	if gvk.Group != "" || gvk.Kind != "Secret" {
-		return changes
-	}
-
-	out := slices.Clone(changes)
-	for i, c := range out {
-		if !isSecretValue(c.Path) {
-			continue
-		}
-		if c.Actual != nil {
-			out[i].Actual = &plan.Value{Sensitive: true}
-		}
-		if c.Planned != nil {
-			out[i].Planned = &plan.Value{Sensitive: true}
-		}
-	}
-
-	return out
-}
-
-func isSecretValue(path string) bool {
-	for _, field := range []string{"data", "stringData"} {
-		if rest, ok := strings.CutPrefix(path, field); ok && (rest == "" || rest[0] == '.' || rest[0] == '[') {
-			return true
-		}
-	}
-
-	return false
-}
-
 // diffOrder is the structured renderer's canonical order: kind, then name,
 // then the full key.
 func diffOrder(a, b *dt.ResourceDiff) int {
@@ -478,18 +445,6 @@ func diffOrder(a, b *dt.ResourceDiff) int {
 		cmp.Compare(a.ResourceName, b.ResourceName),
 		cmp.Compare(a.GetDiffKey(), b.GetDiffKey()),
 	)
-}
-
-// hasChanges reports whether any diff is not equal, the structured
-// renderer's rule for a changed XR.
-func hasChanges(diffs map[string]*dt.ResourceDiff) bool {
-	for _, d := range diffs {
-		if d.DiffType != dt.DiffTypeEqual {
-			return true
-		}
-	}
-
-	return false
 }
 
 func resourceRef(o corev1.ObjectReference) plan.ResourceRef {

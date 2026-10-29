@@ -197,27 +197,3 @@ func TestPlanDiffs(t *testing.T) {
 		})
 	}
 }
-
-func TestChanged(t *testing.T) {
-	cases := map[string]struct {
-		plans []*plan.ResourcePlan
-		want  bool
-	}{
-		"Empty":         {want: false},
-		"NoOpOnly":      {plans: []*plan.ResourcePlan{{Action: plan.ActionNoOp}}, want: false},
-		"ErrorOnly":     {plans: []*plan.ResourcePlan{{Action: plan.ActionUpdate, Error: "boom"}}, want: false},
-		"Create":        {plans: []*plan.ResourcePlan{{Action: plan.ActionNoOp}, {Action: plan.ActionCreate}}, want: true},
-		"Update":        {plans: []*plan.ResourcePlan{{Action: plan.ActionUpdate}}, want: true},
-		"Replace":       {plans: []*plan.ResourcePlan{{Action: plan.ActionReplace}}, want: true},
-		"Delete":        {plans: []*plan.ResourcePlan{{Action: plan.ActionDelete}}, want: true},
-		"ApproximateUp": {plans: []*plan.ResourcePlan{{Action: plan.ActionUpdate, Approximate: true}}, want: true},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			if got := Changed(ProjectResult{Result: plan.Result{Plans: tc.plans}}); got != tc.want {
-				t.Errorf("Changed(...): want %t, got %t", tc.want, got)
-			}
-		})
-	}
-}

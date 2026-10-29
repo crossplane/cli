@@ -111,6 +111,10 @@ resource. The result's `notes` say when provider plans were skipped or no diff
 server served the resources; `-o diff` prints the no-diff-server note to
 stderr.
 
+In `json` and `yaml` output each composite has a `status`: `changed`,
+`unchanged`, `error`, `deferred`, `skipped`, or `unknown` when the engine
+reports a status this version doesn't recognize.
+
 Provider plans are controlled by these flags:
 
 - `--skip-plan` doesn't run provider diff servers and shows only the

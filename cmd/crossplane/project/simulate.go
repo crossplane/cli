@@ -924,7 +924,7 @@ func (c *simulateCmd) renderReport(k *kong.Context, logger logging.Logger, runEr
 		res.Notes = n
 	}
 	c.noteNoServers(k, n)
-	changed = changed || (plans != nil && simulate.Changed(res))
+	changed = changed || (plans != nil && res.Summary.Changes() > 0)
 
 	var err error
 	if c.Output == string(renderer.OutputFormatDiff) {

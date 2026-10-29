@@ -44,6 +44,9 @@ const (
 	CompositeDeferred CompositeStatus = "deferred"
 	// CompositeSkipped means the composite was not simulated, for Reason.
 	CompositeSkipped CompositeStatus = "skipped"
+	// CompositeUnknown means the engine reported a status this version does
+	// not recognize.
+	CompositeUnknown CompositeStatus = "unknown"
 )
 
 // CompositeReason is why a composite was deferred or skipped.
@@ -354,7 +357,7 @@ func renderComposite(w io.Writer, c CompositeResult, ref plan.ResourceRef, plans
 		}
 		_, _ = fmt.Fprintf(w, "    %s; apply changes nothing until the\n", pinned)
 		_, _ = fmt.Fprintln(w, "    revision advances. Rerun with --include-pinned to preview that moment.")
-	case CompositeSkipped, CompositeChanged, CompositeUnchanged:
+	case CompositeSkipped, CompositeChanged, CompositeUnchanged, CompositeUnknown:
 		if c.Detail != "" {
 			_, _ = fmt.Fprintf(w, "    %s\n", c.Detail)
 		}
@@ -395,7 +398,7 @@ func compositeHeader(c CompositeResult, ref plan.ResourceRef) string {
 			h += ": " + string(c.Reason)
 		}
 		h += ")"
-	case CompositeChanged, CompositeUnchanged, CompositeError:
+	case CompositeChanged, CompositeUnchanged, CompositeError, CompositeUnknown:
 	}
 	if c.Pinned && c.Detail == "" && c.Status != CompositeDeferred {
 		h += " (pinned)"

@@ -535,6 +535,22 @@ func TestFromCompReport(t *testing.T) {
 				Notes:        notes(),
 			},
 		},
+		"UnknownEngineStatus": {
+			reason: "A status the engine adds later is reported as unknown, not passed into the public enum.",
+			in: composition(dt.CompositionDiff{
+				ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: dt.XRStatus("bogus")}},
+			}),
+			want: ProjectResult{
+				Result: plan.Result{
+					FormatVersion: plan.ResultFormatVersion,
+					Summary:       plan.Summary{NoOp: 1},
+					Plans:         []*plan.ResourcePlan{compNoOp},
+				},
+				Composites:   []CompositeResult{{Ref: xrPlan, Status: CompositeUnknown, Composition: &compPlan}},
+				Compositions: []CompositionResult{{Ref: compPlan}},
+				Notes:        notes(),
+			},
+		},
 		"XRErrorAndRunErrors": {
 			reason: "An errored XR's error is anchored to it and not repeated; the interruption is a run error.",
 			in: &dt.CompDiffOutput{

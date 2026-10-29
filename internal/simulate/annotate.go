@@ -156,7 +156,7 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	walk(lines, opDelete, func(op diffmatchpatch.Operation) bool { return op != opInsert })
 	walk(lines, opInsert, desired)
 
-	changes := sortedChanges(pp.Changes)
+	changes := plan.SortedChanges(pp.Changes)
 	changed := false
 	for _, c := range changes {
 		var ok bool
@@ -195,7 +195,7 @@ func driftDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	}
 
 	var lines []line
-	for _, c := range sortedChanges(pp.Changes) {
+	for _, c := range plan.SortedChanges(pp.Changes) {
 		note := ""
 		if c.RequiresReplace {
 			note = forcesReplacement
@@ -630,10 +630,4 @@ func within(segs, at []string) bool {
 	}
 
 	return segs[n-1] == at[n-1] || strings.HasPrefix(segs[n-1], at[n-1]+"[")
-}
-
-func sortedChanges(changes []plan.FieldChange) []plan.FieldChange {
-	return slices.SortedStableFunc(slices.Values(changes), func(a, b plan.FieldChange) int {
-		return strings.Compare(a.Path, b.Path)
-	})
 }

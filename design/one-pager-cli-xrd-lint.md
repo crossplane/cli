@@ -174,6 +174,8 @@ customRules:
 **Rule values**
 - A rule value is either a bare severity, or an object with `severity` and
   `options` keys: `{severity: warn, options: {max: 1024}}`.
+- ESLint's array form, a list of severity then options, is not accepted. A
+  rule value that is a YAML sequence is a config error.
 - Options are validated against a schema that the rule declares.
 
 **Strict parsing**

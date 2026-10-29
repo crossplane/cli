@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/sergi/go-diff/diffmatchpatch"
+	"gopkg.in/yaml.v3"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/plan"
@@ -153,8 +154,7 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	}
 
 	lines := flatten(d.LineDiffs)
-	walk(lines, opDelete, func(op diffmatchpatch.Operation) bool { return op != opInsert })
-	walk(lines, opInsert, desired)
+	s := place(lines)
 
 	changes := plan.SortedChanges(pp.Changes)
 	changed := false
@@ -162,15 +162,15 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 		var ok bool
 		switch {
 		case c.Planned != nil && c.Planned.Unknown:
-			lines, ok = markUnknown(lines, plan.DisplayLevels(c.Path))
+			lines, ok = markUnknown(lines, s.field(c.Path))
 		case (c.Planned != nil && c.Planned.Sensitive) || (c.Actual != nil && c.Actual.Sensitive):
-			lines, ok = markSensitive(lines, plan.DisplayLevels(c.Path))
+			lines, ok = markSensitive(lines, s.field(c.Path))
 		}
 		changed = changed || ok
 	}
 	for _, c := range changes {
 		if c.RequiresReplace {
-			changed = markReplace(lines, plan.DisplayLevels(c.Path), d.DiffType == dt.DiffTypeAdded) || changed
+			changed = markReplace(lines, s.field(c.Path).new, d.DiffType == dt.DiffTypeAdded) || changed
 		}
 	}
 
@@ -229,8 +229,9 @@ func driftDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 type line struct {
 	op   diffmatchpatch.Operation
 	text string
-	// segs is the field path of the line, as plan.DisplayLevels splits it,
-	// on the side the line belongs to: the desired side for an equal line.
+	// segs is the field path of the line, as plan.DisplayLevels splits it
+	// with list items by index, on the side the line belongs to: the
+	// desired side for an equal line.
 	segs []string
 	// value is the offset in text of the field's scalar value, or -1 when
 	// the line has none: a parent, or a continuation. A block scalar's value
@@ -246,6 +247,28 @@ type line struct {
 	itemCol int
 	// cont means the line continues the scalar of the line before it.
 	cont bool
+	// old and oldCont are an equal line's segs and cont on the old side.
+	old     []string
+	oldCont bool
+}
+
+// on returns l as a line of the side op alone, placed as on that side.
+func (l line) on(op diffmatchpatch.Operation) line {
+	if l.op == opEqual && op == opDelete {
+		l.segs, l.cont = l.old, l.oldCont
+	}
+	l.op, l.old, l.oldCont = op, nil, false
+
+	return l
+}
+
+// oldSide returns the segs and cont of l on the old side.
+func (l line) oldSide() ([]string, bool) {
+	if l.op == opEqual {
+		return l.old, l.oldCont
+	}
+
+	return l.segs, l.cont
 }
 
 func desired(op diffmatchpatch.Operation) bool { return op != opDelete }
@@ -283,172 +306,368 @@ func chunk(lines []line) []diffmatchpatch.Diff {
 	return out
 }
 
-// A frame is an open map key or list item while walking.
-type frame struct {
-	indent int
-	segs   []string
-	items  int
-	item   bool
-}
+// sides holds the document each side of a diff parses to, nil for a side
+// that is absent or does not parse.
+type sides struct{ old, new *yaml.Node }
 
-// walker sets the field path of the lines on one side of a diff.
-type walker struct {
-	stack []frame
-	// scalar is the indent the open scalar's continuation lines are deeper
-	// than, and scalarSegs its path; nil when no scalar is open.
-	scalar     int
-	scalarSegs []string
-}
-
-// walk sets the field path of the lines on one side of a diff: the lines
-// side reports true for, of which only those with op own (and the equal
-// lines, for the desired side) are written. The body is YAML as
-// sigs.k8s.io/yaml writes it: two-space indents, with a list's items at its
-// key's indent.
+// place sets the field of each line from the YAML of its side: the old side
+// is the equal and removed lines, the new side the equal and added ones. A
+// removed line is placed on the old side and every other line on the new.
 //
-// ponytail: an indent-to-key stack places map keys and positional list items
-// only. A list of maps keyed by a field, or a value inside a block scalar,
-// is not placed, and gets no inline annotation; the header, the summary and
-// -o plan still carry it. Upgrade path: map by the YAML AST (yaml.v3 node
-// positions) instead.
-func walk(lines []line, own diffmatchpatch.Operation, side func(diffmatchpatch.Operation) bool) {
-	w := &walker{stack: []frame{{indent: -1}}}
-	for i := range lines {
-		l := &lines[i]
-		if !side(l.op) {
+// ponytail: lines are placed by gopkg.in/yaml.v3 node positions, including
+// the fields of a literal (|) block scalar holding a YAML or JSON map or
+// list, and a list item keyed by a field (see resolve). Still unplaced, so
+// without an inline marker (the header, the summary and -o plan still carry
+// it): a side that does not parse; the content of a folded (>), quoted or
+// plain multi-line scalar, or of a literal one that is not a map or list; a
+// field of a JSON map or list that shares its line with another; an absent
+// field whose deepest present ancestor is a scalar, or a keyed list item a
+// side lacks; and a key that starts or ends with a quote, which
+// plan.DisplayLevels trims as fieldpath.Parse does. Upgrade path for the
+// keys: carry fieldpath segments, not display levels, in plan.FieldChange.
+func place(lines []line) sides {
+	old := slices.Clone(lines)
+	s := sides{old: placeSide(old, func(op diffmatchpatch.Operation) bool { return op != opInsert }), new: placeSide(lines, desired)}
+	for i, o := range old {
+		switch o.op {
+		case opDelete:
+			lines[i] = o
+		case opEqual:
+			lines[i].old, lines[i].oldCont = o.segs, o.cont
+		case opInsert:
+			// Placed on the new side only.
+		}
+	}
+
+	return s
+}
+
+// placeSide parses the lines side reports true for as one YAML document, and
+// places them. It returns the document's root node.
+func placeSide(lines []line, side func(diffmatchpatch.Operation) bool) *yaml.Node {
+	p := &placer{lines: lines}
+	var b strings.Builder
+	for i, l := range lines {
+		if side(l.op) {
+			p.index = append(p.index, i)
+			b.WriteString(l.text + "\n")
+		}
+	}
+	root := parse(b.String())
+	if root != nil {
+		p.place(root, nil, 0, 0, len(p.index))
+	}
+
+	return root
+}
+
+// parse returns the root node of the YAML document s, or nil when s is empty
+// or does not parse.
+func parse(s string) *yaml.Node {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(s), &doc); err != nil || len(doc.Content) == 0 {
+		return nil
+	}
+
+	return doc.Content[0]
+}
+
+// content returns the map or list, YAML or JSON, the literal block scalar n
+// holds, or nil.
+func content(n *yaml.Node) *yaml.Node {
+	if n == nil || n.Kind != yaml.ScalarNode || n.Style&yaml.LiteralStyle == 0 {
+		return nil
+	}
+	root := parse(n.Value)
+	if root == nil || (root.Kind != yaml.MappingNode && root.Kind != yaml.SequenceNode) {
+		return nil
+	}
+
+	return root
+}
+
+// A placer places the lines of one side of a diff.
+type placer struct {
+	lines []line
+	// index[n-1] is the index in lines of the side's line n.
+	index []int
+	// scratch takes the writes to a line past the side's end, which a
+	// well-formed node never names.
+	scratch line
+}
+
+// get returns the side's line n, 1-based, to place.
+func (p *placer) get(n int) *line {
+	if n < 1 || n > len(p.index) {
+		p.scratch = line{}
+		return &p.scratch
+	}
+
+	return &p.lines[p.index[n-1]]
+}
+
+// reset returns the side's line n, cleared of any earlier placement.
+func (p *placer) reset(n int) *line {
+	l := p.get(n)
+	*l = line{op: l.op, text: l.text, value: -1}
+
+	return l
+}
+
+// A block is one YAML document on a side, the whole side or the content of a
+// literal block scalar, whose node line and column are offset by row and col
+// and whose last line is the side's line end.
+type block struct {
+	*placer
+
+	row, col, end int
+	// starts are the side's lines a field starts on, and scalars the values
+	// that may continue on the lines after their first.
+	starts  map[int]bool
+	scalars []scalar
+}
+
+// A scalar is a scalar value at the path segs, starting on the side's line
+// row.
+type scalar struct {
+	row  int
+	segs []string
+	node *yaml.Node
+}
+
+// place places the document root at the path segs, offset as a block is.
+// The lines a scalar spans after its first are its continuations, and a
+// literal one's map or list is placed in turn.
+func (p *placer) place(root *yaml.Node, segs []string, row, col, end int) {
+	b := &block{placer: p, row: row, col: col, end: end, starts: map[int]bool{}}
+	b.node(root, segs)
+	for _, s := range b.scalars {
+		// Its lines run to the next field or the block's end, less any
+		// trailing blank lines.
+		last := s.row
+		for n := s.row + 1; n <= end && !b.starts[n]; n++ {
+			if strings.TrimSpace(p.lines[p.index[n-1]].text) != "" {
+				last = n
+			}
+		}
+		for n := s.row + 1; n <= last; n++ {
+			l := p.reset(n)
+			l.segs, l.cont = s.segs, true
+		}
+		c := content(s.node)
+		if c == nil || last == s.row {
 			continue
 		}
-		var ignore line
-		if l.op != own && (own != opInsert || l.op != opEqual) {
-			// Walked for its structure only.
-			ignore = *l
-			l = &ignore
-		}
-		w.line(l)
+		// The content's columns are offset by the block's indentation: where
+		// its root node starts on its line, less its column in the value.
+		t := p.lines[p.index[s.row+c.Line-1]].text
+		p.place(c, s.segs, s.row, len(t)-len(strings.TrimLeft(t, " "))-(c.Column-1), last)
 	}
 }
 
-// line places one line.
-func (w *walker) line(l *line) {
-	indent := len(l.text) - len(strings.TrimLeft(l.text, " "))
-	blank := strings.TrimSpace(l.text) == ""
-	if w.scalarSegs != nil && (blank || indent > w.scalar) {
-		l.segs, l.cont = w.scalarSegs, true
-		return
+// node places the fields of the map or list n at the path segs.
+func (b *block) node(n *yaml.Node, segs []string) {
+	flow := n.Style&yaml.FlowStyle != 0
+	switch n.Kind { //nolint:exhaustive // Only maps and lists hold fields.
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if flow && !alone(n, i, 2) {
+				continue
+			}
+			k, s := n.Content[i], append(slices.Clone(segs), n.Content[i].Value)
+			b.field(k, n.Content[i+1], s, flow)
+		}
+	case yaml.SequenceNode:
+		for i, it := range n.Content {
+			if flow && !alone(n, i, 1) {
+				continue
+			}
+			s := withIndex(segs, i)
+			if it.Kind != yaml.MappingNode || len(it.Content) == 0 || it.Content[0].Line != it.Line || flow {
+				b.field(it, it, s, flow)
+				continue
+			}
+			// A "- key: value" item, whose first key is on its line.
+			b.node(it, s)
+			l := b.get(b.row + it.Line)
+			l.item, l.itemCol = s, b.col+it.Column-1
+		}
 	}
-	w.scalarSegs = nil
-	if blank {
-		return
-	}
+}
 
-	col, rest := indent, l.text[indent:]
-	for rest == "-" || strings.HasPrefix(rest, "- ") {
-		segs := w.item(col)
-		if rest == "-" {
-			l.segs, l.parent, l.children = segs, true, col+2
-			return
-		}
-		rest, col = rest[2:], col+2
-		if rest == "-" || strings.HasPrefix(rest, "- ") {
-			// The item opens a list of its own.
-			continue
-		}
-		if _, _, ok := splitKey(rest); !ok {
-			// A scalar item.
-			l.segs, l.value = segs, col
-			w.scalar, w.scalarSegs = col-2, segs
-			return
-		}
-		l.item, l.itemCol = segs, col
-	}
-
-	key, off, ok := splitKey(rest)
-	if !ok {
-		// Not a field: leave it unplaced.
-		return
-	}
-	segs := w.key(col, key)
+// field places the field at the path segs whose key, or list item, is at and
+// whose value is v.
+func (b *block) field(at, v *yaml.Node, segs []string, flow bool) {
+	n := b.row + at.Line
+	b.starts[n] = true
+	l := b.reset(n)
 	l.segs = segs
-	if off < 0 {
-		l.parent, l.children = true, col+2
+
+	if (v.Kind == yaml.MappingNode || v.Kind == yaml.SequenceNode) && len(v.Content) > 0 &&
+		(v.Style&yaml.FlowStyle == 0 || last(v) > v.Line) {
+		// A map or list on lines of its own.
+		l.parent, l.children = true, b.col+v.Content[0].Column-1
+		if v.Kind == yaml.SequenceNode && v.Style&yaml.FlowStyle == 0 {
+			l.children = b.col + v.Column + 1
+		}
+		b.node(v, segs)
 		return
 	}
-	// A scalar, which may continue on deeper lines: folded, or a block.
-	l.value = col + off
-	w.scalar, w.scalarSegs = col, segs
-}
 
-// item opens the next list item at col, returning its path.
-func (w *walker) item(col int) []string {
-	for top := w.stack[len(w.stack)-1]; top.indent > col || (top.item && top.indent == col); top = w.stack[len(w.stack)-1] {
-		w.stack = w.stack[:len(w.stack)-1]
-	}
-	p := &w.stack[len(w.stack)-1]
-	segs := withIndex(p.segs, p.items)
-	p.items++
-	w.stack = append(w.stack, frame{indent: col, segs: segs, item: true})
-
-	return segs
-}
-
-// key opens the map key at col, returning its path.
-func (w *walker) key(col int, key string) []string {
-	for w.stack[len(w.stack)-1].indent >= col {
-		w.stack = w.stack[:len(w.stack)-1]
-	}
-	segs := append(slices.Clone(w.stack[len(w.stack)-1].segs), key)
-	w.stack = append(w.stack, frame{indent: col, segs: segs})
-
-	return segs
-}
-
-// splitKey splits a "key: value" or "key:" line into its unquoted key and
-// the offset of its value, -1 for none.
-func splitKey(rest string) (string, int, bool) {
-	var key, after string
-	switch {
-	case rest == "":
-		return "", 0, false
-	case rest[0] == '"':
-		q, err := strconv.QuotedPrefix(rest)
-		if err != nil {
-			return "", 0, false
-		}
-		key, _ = strconv.Unquote(q)
-		after = rest[len(q):]
-	case rest[0] == '\'':
-		end := -1
-		for i := 1; i < len(rest) && end < 0; i++ {
-			switch {
-			case rest[i] != '\'':
-			case strings.HasPrefix(rest[i:], "''"):
-				i++
-			default:
-				end = i
-			}
-		}
-		if end < 0 {
-			return "", 0, false
-		}
-		key, after = strings.ReplaceAll(rest[1:end], "''", "'"), rest[end+1:]
+	// A scalar, or a map or list on one line.
+	switch off := offset(l.text, b.col+v.Column-1); {
+	case v.Line != at.Line:
+	case off >= len(l.text):
+		// No value written, as in "key:".
+		l.parent, l.children = true, b.col+at.Column+1
 	default:
-		i := strings.Index(rest, ": ")
-		if i < 0 {
-			if !strings.HasSuffix(rest, ":") {
-				return "", 0, false
-			}
-			i = len(rest) - 1
-		}
-		key, after = rest[:i], rest[i:]
+		l.value = off
+	}
+	if v.Kind == yaml.ScalarNode && !flow {
+		b.scalars = append(b.scalars, scalar{row: n, segs: segs, node: v})
+	}
+}
+
+// alone reports whether the field n.Content[i] of the flow map or list n,
+// with its value n.Content[i+step-1], has its lines to itself, as in
+// indented JSON. A field that shares a line is left unplaced.
+func alone(n *yaml.Node, i, step int) bool {
+	at := n.Content[i]
+	return at.Line > n.Line &&
+		(i == 0 || last(n.Content[i-1]) < at.Line) &&
+		(i+step >= len(n.Content) || n.Content[i+step].Line > last(n.Content[i+step-1]))
+}
+
+// last returns the last line a node in n starts on.
+func last(n *yaml.Node) int {
+	l := n.Line
+	for _, c := range n.Content {
+		l = max(l, last(c))
 	}
 
-	switch {
-	case after == ":":
-		return key, -1, true
-	case !strings.HasPrefix(after, ": "):
-		return "", 0, false
+	return l
+}
+
+// offset returns the byte offset in text of its rune column col, counted
+// from 0, or len(text) past its end.
+func offset(text string, col int) int {
+	for i := range text {
+		if col == 0 {
+			return i
+		}
+		col--
 	}
-	return key, len(rest) - len(after) + 2, true
+
+	return len(text)
+}
+
+// A field is a change's path as each side's lines are placed, nil on a side
+// that lacks it.
+type field struct{ old, new []string }
+
+// field returns path as each side places it (see resolve).
+func (s sides) field(path string) field {
+	levels := plan.DisplayLevels(path)
+	return field{old: resolve(s.old, levels), new: resolve(s.new, levels)}
+}
+
+// on reports whether l is on the field, on either side it belongs to.
+func (f field) on(l line) bool {
+	old, oldCont := l.oldSide()
+	return (l.op != opDelete && !l.cont && len(f.new) > 0 && slices.Equal(l.segs, f.new)) ||
+		(l.op != opInsert && !oldCont && len(f.old) > 0 && slices.Equal(old, f.old))
+}
+
+// holdsNew and holdsOld report whether l is part of the field's value after
+// its first line, on the new or the old side: a continuation, or a field of
+// a literal block scalar's content.
+func (f field) holdsNew(l line) bool { return holds(l.segs, l.cont, f.new) }
+func (f field) holdsOld(l line) bool { old, cont := l.oldSide(); return holds(old, cont, f.old) }
+
+func holds(segs []string, cont bool, at []string) bool {
+	return len(at) > 0 && ((cont && slices.Equal(segs, at)) || (len(segs) > len(at) && within(segs, at)))
+}
+
+// resolve returns levels as the document doc places them. A keyed level,
+// key=value after a list, as plan.DisplayLevels splits tags[key="k"], is the
+// index of the list's item whose key field holds value: tags[0]. Levels
+// below a field doc lacks are kept as they are. It returns nil when doc is
+// nil, or when a keyed level names an item doc lacks.
+func resolve(doc *yaml.Node, levels []string) []string {
+	if doc == nil {
+		return nil
+	}
+	out := make([]string, 0, len(levels))
+	n := doc
+	for _, lv := range levels {
+		name, idx := splitIndexes(lv)
+		key, want, keyed := strings.Cut(name, "=")
+		switch {
+		case keyed && n == nil && len(out) > 0:
+			// Under a field doc lacks: a keyed item, or a key holding "=".
+			return nil
+		case keyed && n != nil && n.Kind == yaml.SequenceNode && len(out) > 0:
+			want = strings.Trim(want, `"'`)
+			i := slices.IndexFunc(n.Content, func(it *yaml.Node) bool {
+				f := lookup(it, key)
+				return f != nil && f.Kind == yaml.ScalarNode && f.Value == want
+			})
+			if i < 0 {
+				return nil
+			}
+			out[len(out)-1] += "[" + strconv.Itoa(i) + "]" + lv[len(name):]
+			n = n.Content[i]
+		default:
+			out = append(out, lv)
+			n = lookup(n, name)
+		}
+		for _, i := range idx {
+			if n == nil || n.Kind != yaml.SequenceNode || i >= len(n.Content) {
+				n = nil
+				break
+			}
+			n = n.Content[i]
+		}
+		if c := content(n); c != nil {
+			n = c
+		}
+	}
+
+	return out
+}
+
+// lookup returns the value of key in the map n, or nil.
+func lookup(n *yaml.Node, key string) *yaml.Node {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+
+	return nil
+}
+
+// splitIndexes splits a display level into its key and list indexes:
+// "ports[0][1]" is "ports" and [0 1].
+func splitIndexes(lv string) (string, []int) {
+	var idx []int
+	for strings.HasSuffix(lv, "]") {
+		open := strings.LastIndexByte(lv, '[')
+		if open < 0 {
+			break
+		}
+		i, err := strconv.Atoi(lv[open+1 : len(lv)-1])
+		if err != nil {
+			break
+		}
+		idx = append([]int{i}, idx...)
+		lv = lv[:open]
+	}
+
+	return lv, idx
 }
 
 func withIndex(segs []string, n int) []string {
@@ -462,34 +681,38 @@ func withIndex(segs []string, n int) []string {
 	return out
 }
 
-// find returns the index of the first line of an op in ops on the field
-// segs, skipping continuations, or -1.
-func find(lines []line, segs []string, ops ...diffmatchpatch.Operation) int {
+// find returns the index of the first line of an op in ops on the field f,
+// skipping continuations, or -1. An equal line is matched on the new side.
+func find(lines []line, f field, ops ...diffmatchpatch.Operation) int {
 	return slices.IndexFunc(lines, func(l line) bool {
-		return !l.cont && slices.Contains(ops, l.op) && slices.Equal(l.segs, segs)
+		if l.op == opEqual {
+			l = l.on(opInsert)
+		}
+		return slices.Contains(ops, l.op) && f.on(l)
 	})
 }
 
-// markUnknown marks the field segs as known only after apply: its "+" line's
+// markUnknown marks the field f as known only after apply: its "+" line's
 // value is replaced; its equal line is split into the old value removed and
 // the unknown one added; a "-" line only is followed by the unknown one
 // added; and when the field is absent, a line is added after the deepest
 // ancestor present, naming the missing levels dotted. It returns the new
 // lines, and whether it placed the field.
-func markUnknown(lines []line, segs []string) ([]line, bool) {
+func markUnknown(lines []line, f field) ([]line, bool) {
+	segs := f.new
 	if len(segs) == 0 {
 		return lines, false
 	}
 
-	i := find(lines, segs, opInsert, opEqual)
+	i := find(lines, f, opInsert, opEqual)
 	if i < 0 {
-		i = find(lines, segs, opDelete)
+		i = find(lines, f, opDelete)
 	}
 	if i >= 0 {
 		if lines[i].value < 0 {
 			return lines, false
 		}
-		return setValue(lines, i, knownAfterApply, true), true
+		return setValue(lines, i, f, knownAfterApply, true), true
 	}
 
 	k, anchor, indent, ok := ancestor(lines, segs)
@@ -502,15 +725,15 @@ func markUnknown(lines []line, segs []string) ([]line, bool) {
 	return slices.Insert(lines, anchor+1, added), true
 }
 
-// markSensitive replaces every value of the field segs with "(sensitive
+// markSensitive replaces every value of the field f with "(sensitive
 // value)", on each side. It returns the new lines, and whether it replaced
 // any.
-func markSensitive(lines []line, segs []string) ([]line, bool) {
+func markSensitive(lines []line, f field) ([]line, bool) {
 	sensitive := plan.FormatValue(&plan.Value{Sensitive: true})
 	changed := false
 	for i := 0; i < len(lines); i++ {
-		if l := lines[i]; !l.cont && l.value >= 0 && slices.Equal(l.segs, segs) {
-			lines = setValue(lines, i, sensitive, false)
+		if l := lines[i]; l.value >= 0 && f.on(l) {
+			lines = setValue(lines, i, f, sensitive, false)
 			changed = true
 		}
 	}
@@ -518,40 +741,71 @@ func markSensitive(lines []line, segs []string) ([]line, bool) {
 	return lines, changed
 }
 
-// setValue sets the scalar value of line i to v, dropping its continuation
-// lines. With split, the old value stays as removed lines and v is added
-// after them, unless line i is already added. Without, the value is set on
-// each side the value spans: a changed value stays a change.
-func setValue(lines []line, i int, v string, split bool) []line {
+// setValue sets the scalar value of line i, on the field f, to v, dropping
+// the rest of the value on each side line i is on: its continuation lines,
+// and the fields of a literal block scalar's content. A line of the rest
+// that is on the other side, but not in its value, stays on that side. With
+// split, the old value stays as removed lines and v is added after them,
+// unless line i is already added. Without, the value is set on each side
+// the value spans: a changed value stays a change.
+func setValue(lines []line, i int, f field, v string, split bool) []line {
 	l := lines[i]
-	end := i + 1
-	for end < len(lines) && lines[end].cont && slices.Equal(lines[end].segs, l.segs) {
-		end++
-	}
-	span := lines[i:end]
 	set := l
 	set.text = l.text[:l.value] + v
-	with := func(op diffmatchpatch.Operation) line { s := set; s.op = op; return s }
+	with := set.on
+
+	// The rest of the value follows line i on each side it is on, though
+	// the other side's lines may come between.
+	type held struct{ old, new bool }
+	span := map[int]held{}
+	old, nu := l.op != opInsert, l.op != opDelete
+	for j := i + 1; j < len(lines) && (old || nu); j++ {
+		c := lines[j]
+		h := held{old: old && c.op != opInsert && f.holdsOld(c), new: nu && c.op != opDelete && f.holdsNew(c)}
+		old = old && (c.op == opInsert || h.old)
+		nu = nu && (c.op == opDelete || h.new)
+		if h.old || h.new {
+			span[j] = h
+		}
+	}
+	changes := l.op != opEqual
+	for _, h := range span {
+		changes = changes || !h.old || !h.new
+	}
 
 	var out []line
 	switch {
 	case split && l.op != opInsert:
-		// The old value is the header and its continuations on the current
-		// side, all removed.
-		for _, c := range span {
-			if c.op != opInsert {
-				c.op = opDelete
-				out = append(out, c)
+		// The old value is line i and the rest of it on the old side, all
+		// removed.
+		out = append(out, l.on(opDelete))
+		for j := i + 1; j < len(lines); j++ {
+			if span[j].old {
+				out = append(out, lines[j].on(opDelete))
 			}
 		}
 		out = append(out, with(opInsert))
-	case slices.ContainsFunc(span, func(c line) bool { return c.op != l.op }):
+	case changes && l.op == opEqual:
 		out = []line{with(opDelete), with(opInsert)}
 	default:
 		out = []line{set}
 	}
 
-	return slices.Replace(lines, i, end, out...)
+	rest := slices.Concat(lines[:i], out)
+	for j := i + 1; j < len(lines); j++ {
+		h, ok := span[j]
+		c := lines[j]
+		switch {
+		case !ok:
+			rest = append(rest, c)
+		case c.op == opEqual && !h.old:
+			rest = append(rest, c.on(opDelete))
+		case c.op == opEqual && !h.new:
+			rest = append(rest, c.on(opInsert))
+		}
+	}
+
+	return rest
 }
 
 // ancestor finds the deepest ancestor of segs on the desired side: the
@@ -603,7 +857,7 @@ func markReplace(lines []line, segs []string, added bool) bool {
 	if len(segs) == 0 {
 		return false
 	}
-	i := find(lines, segs, opInsert)
+	i := find(lines, field{new: segs}, opInsert)
 	if i < 0 {
 		i = slices.IndexFunc(lines, func(l line) bool { return l.op == opInsert && !l.cont && within(l.segs, segs) })
 	}

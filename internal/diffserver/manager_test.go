@@ -798,6 +798,11 @@ func TestManagerStartIdempotent(t *testing.T) {
 	pkgs := &fakePkgClient{pkgs: map[string]*runtimexpkg.Package{
 		img: parsePackage(t, pkgWithCapability, "sha256:0123456789abcdef"),
 	}}
+	const img2 = "xpkg.example.org/provider-aws-ec2-other:v2.9.0"
+	pkgs2 := &fakePkgClient{pkgs: map[string]*runtimexpkg.Package{
+		img:  pkgs.pkgs[img],
+		img2: parsePackage(t, pkgWithCapability, "sha256:fedcba9876543210"),
+	}}
 	vpc := schema.GroupKind{Group: "ec2.aws.upbound.io", Kind: "VPC"}
 
 	t.Run("RepeatStartsNothing", func(t *testing.T) {
@@ -888,32 +893,52 @@ func TestManagerStartIdempotent(t *testing.T) {
 	})
 
 	t.Run("WaiterRetriesCancelledStart", func(t *testing.T) {
+		// B claims img2 in the same claim that captures A's pending img, so
+		// holding img2's create pins B to waiting on A, then re-claiming img
+		// once A releases it.
 		fd := newFakeDocker(servePlanService(t), nil)
 		cli := fd.client()
 		create := cli.MockContainerCreate
 		entered, unblock := make(chan struct{}), make(chan struct{})
+		entered2, unblock2 := make(chan struct{}), make(chan struct{})
+		name, name2 := containerName(pkgs2.pkgs[img].Digest, CleanupOrphan), containerName(pkgs2.pkgs[img2].Digest, CleanupOrphan)
+		orphans := func(imgs ...string) []Input {
+			ins := Images(imgs)
+			for i := range ins {
+				ins[i].Cleanup = CleanupOrphan
+			}
+			return ins
+		}
 		var once sync.Once
 		cli.MockContainerCreate = func(ctx context.Context, o client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
-			first := false
-			once.Do(func() { first = true })
-			if first {
-				close(entered)
-				<-unblock
+			switch o.Name {
+			case name:
+				first := false
+				once.Do(func() { first = true })
+				if first {
+					close(entered)
+					<-unblock
+				}
+			case name2:
+				close(entered2)
+				<-unblock2
 			}
 			return create(ctx, o)
 		}
-		m := NewManager(pkgs, log, WithDockerClient(cli))
+		m := NewManager(pkgs2, log, WithDockerClient(cli))
 		actx, cancel := context.WithCancel(ctx)
 		a := make(chan error, 1)
-		go func() { _, err := m.Start(actx, Images([]string{img}), nil); a <- err }()
+		go func() { _, err := m.Start(actx, orphans(img), nil); a <- err }()
 		<-entered
 		b := make(chan error, 1)
-		go func() { _, err := m.Start(ctx, Images([]string{img}), nil); b <- err }()
+		go func() { _, err := m.Start(ctx, orphans(img, img2), nil); b <- err }()
+		<-entered2
 		cancel()
 		close(unblock)
 		if err := <-a; !errors.Is(err, context.Canceled) {
 			t.Errorf("cancelled Start: want context.Canceled, got %v", err)
 		}
+		close(unblock2)
 		if err := <-b; err != nil {
 			t.Fatalf("waiting Start: %v", err)
 		}

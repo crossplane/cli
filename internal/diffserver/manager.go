@@ -28,6 +28,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -309,10 +310,24 @@ type sharedRunClient struct {
 // returns, whether it started or was skipped. For an input another Start is
 // still starting, Start waits until that start returns or ctx ends, so once it
 // returns nil every input this Start was given has been started (and is
-// routed) or skipped. An input whose
-// start ended because ctx ended is released, so a later Start, or one waiting
-// on it, retries it.
+// routed) or skipped. An input whose start ended because ctx ended is
+// released, so a later Start, or one waiting on it, retries it.
 func (m *Manager) Start(ctx context.Context, inputs []Input, events async.EventChannel) ([]Skipped, error) {
+	// Only a run that starts containers touches Docker: a Development
+	// provider's server is the user's.
+	if slices.ContainsFunc(inputs, func(in Input) bool { return in.Runtime != RuntimeDevelopment }) {
+		// Idempotent: only the first call does anything. Best effort: a
+		// failure only risks leaking this run's containers if it dies. It
+		// holds mu, so Servers and Stop wait for it, up to the reap timeout,
+		// on purpose: reclaiming must finish before any container starts.
+		m.mu.Lock()
+		err := m.run.Acquire(ctx)
+		m.mu.Unlock()
+		if err != nil {
+			m.log.Info("Problem managing this run's diff server containers", "error", err)
+		}
+	}
+
 	var (
 		mu      sync.Mutex
 		skipped []Skipped
@@ -331,7 +346,7 @@ func (m *Manager) Start(ctx context.Context, inputs []Input, events async.EventC
 				mu.Lock()
 				if skip != nil {
 					skipped = append(skipped, *skip)
-				} else {
+				} else if s != nil {
 					m.register(s)
 				}
 				mu.Unlock()
@@ -512,6 +527,7 @@ func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChan
 		}
 	}
 
+	key := containerKey{digest: pkg.Digest, cleanup: cleanup, publishAddr: publishAddr, target: in.Target}
 	ctr := &containerruntime.Container{
 		Image: runImage,
 		Name:  containerName(pkg.Digest, cleanup),
@@ -537,6 +553,7 @@ func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChan
 	running, err := ctr.Start(ctx)
 	if err != nil {
 		events.SendEvent(start, async.EventStatusFailure)
+		m.unclaimContainer(key, image)
 		// Start may have created the container before failing, and no run
 		// finds a Remove container by its name again.
 		if cleanup != CleanupOrphan {
@@ -548,6 +565,7 @@ func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChan
 	server, err := m.connect(ctx, running, image, cleanup)
 	if err != nil {
 		events.SendEvent(start, async.EventStatusFailure)
+		m.unclaimContainer(key, image)
 		// An orphaned container is left behind even on failure, for debugging.
 		if !running.Reused && cleanup != CleanupOrphan {
 			if serr := running.Stop(ctx, CleanupRemove); serr != nil {
@@ -583,6 +601,16 @@ func (m *Manager) claimContainer(k containerKey, image string) (string, bool) {
 	}
 	m.containers[k] = image
 	return image, true
+}
+
+// unclaimContainer releases image's claim on k after its start failed, so a
+// retry, or another input naming the same package, starts the container.
+func (m *Manager) unclaimContainer(k containerKey, image string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.containers[k] == image {
+		delete(m.containers, k)
+	}
 }
 
 // markLeaked records that this run may have left a container behind.

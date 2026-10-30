@@ -390,14 +390,12 @@ func placeSide(lines []line, side func(diffmatchpatch.Operation) bool) *yaml.Nod
 	return root
 }
 
-// breaks maps the runes yaml.v3 reads as line breaks, other than \n, to a
-// rune it does not, so its node lines and rune columns match the lines split
-// on \n.
-var breaks = strings.NewReplacer("\r", "\uFFFD", "\u0085", "\uFFFD", "\u2028", "\uFFFD", "\u2029", "\uFFFD")
-
-// unbreak returns s with breaks replaced, and blanks a line holding only
-// them and spaces, as yaml.v3 would read it, keeping the line count.
+// unbreak returns s with the runes yaml.v3 reads as line breaks, other than
+// \n, replaced by a rune it does not, so its node lines and rune columns match
+// the lines split on \n. It blanks a line holding only them and spaces, as
+// yaml.v3 would read it, keeping the line count.
 func unbreak(s string) string {
+	breaks := strings.NewReplacer("\r", "\uFFFD", "\u0085", "\uFFFD", "\u2028", "\uFFFD", "\u2029", "\uFFFD")
 	ls := strings.Split(s, "\n")
 	for i, l := range ls {
 		if strings.Trim(l, " \r\u0085\u2028\u2029") == "" {
@@ -911,7 +909,7 @@ func maskUnparsed(lines []line, s sides) bool {
 	sensitive := plan.FormatValue(&plan.Value{Sensitive: true})
 	changed := false
 	for i, l := range lines {
-		if (l.op == opEqual && !(badOld && badNew)) || (l.op == opDelete && !badOld) || (l.op == opInsert && !badNew) {
+		if (l.op == opEqual && (!badOld || !badNew)) || (l.op == opDelete && !badOld) || (l.op == opInsert && !badNew) {
 			continue
 		}
 		body := strings.TrimLeft(l.text, " ")

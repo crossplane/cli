@@ -748,3 +748,50 @@ Summary: 1 modified (1 requires replacement)
 		})
 	}
 }
+
+func TestAnnotateYAMLLineBreaks(t *testing.T) {
+	sens := func(p string) plan.FieldChange {
+		return plan.FieldChange{Path: p, Actual: sensitive(), Planned: sensitive()}
+	}
+	cases := map[string]struct {
+		reason        string
+		current, want map[string]any
+		path          string
+	}{
+		"QuotedBeforeSensitive": {
+			reason:  "A U+2028 in a quoted value doesn't shift a later sensitive field off its line.",
+			current: map[string]any{"a": "x\u2028y", "pw": "OLDSECRET"},
+			want:    map[string]any{"a": "x\u2028y", "pw": "NEWSECRET"},
+			path:    "spec.pw",
+		},
+		"LiteralBeforeSensitive": {
+			reason:  "A U+2028 in an earlier literal block doesn't shift a later sensitive field off its line.",
+			current: map[string]any{"a": "l1\nx\u2028y\n", "pw": "OLDSECRET"},
+			want:    map[string]any{"a": "l1\nx\u2028y\n", "pw": "NEWSECRET"},
+			path:    "spec.pw",
+		},
+		"SiblingInLiteralMap": {
+			reason:  "A U+2028 in a sibling inside a literal map doesn't shift the sensitive field off its line.",
+			current: map[string]any{"cfg": "a: \"x\u2028y\"\npw: OLDSECRET\n"},
+			want:    map[string]any{"cfg": "a: \"x\u2028y\"\npw: NEWSECRET\n"},
+			path:    "spec.cfg.pw",
+		},
+		"LiteralLineOfBreaks": {
+			reason:  "A literal block with a line of only U+2028 runes neither panics nor leaks.",
+			current: map[string]any{"cfg": "\u2028\u2028\npw: OLDSECRET\n"},
+			want:    map[string]any{"cfg": "\u2028\u2028\npw: NEWSECRET\n"},
+			path:    "spec.cfg.pw",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := lineDiff(t, "db", dt.DiffTypeModified, tc.current, tc.want)
+			got := render(t, report(d), planFor(d, plan.ActionUpdate, sens(tc.path)), noColor())
+			for _, secret := range []string{"OLDSECRET", "NEWSECRET"} {
+				if strings.Contains(got, secret) {
+					t.Errorf("\n%s\nrender(): output contains %q:\n%s", tc.reason, secret, got)
+				}
+			}
+		})
+	}
+}

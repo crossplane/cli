@@ -354,6 +354,11 @@ func placeSide(lines []line, side func(diffmatchpatch.Operation) bool) *yaml.Nod
 		}
 	}
 	root := parse(b.String())
+	if root != nil && last(root) > len(p.index) {
+		// The tree names lines the side lacks, so its positions can't be
+		// trusted: treat the side as unparsed rather than misplace a mark.
+		root = nil
+	}
 	if root != nil {
 		p.place(root, nil, 0, 0, len(p.index))
 	}
@@ -361,11 +366,31 @@ func placeSide(lines []line, side func(diffmatchpatch.Operation) bool) *yaml.Nod
 	return root
 }
 
+// breaks maps the runes yaml.v3 reads as line breaks, other than \n, to a
+// rune it does not, so its node lines and rune columns match the lines split
+// on \n.
+var breaks = strings.NewReplacer("\r", "\uFFFD", "\u0085", "\uFFFD", "\u2028", "\uFFFD", "\u2029", "\uFFFD")
+
+// unbreak returns s with breaks replaced, and blanks a line holding only
+// them and spaces, as yaml.v3 would read it, keeping the line count.
+func unbreak(s string) string {
+	ls := strings.Split(s, "\n")
+	for i, l := range ls {
+		if strings.Trim(l, " \r\u0085\u2028\u2029") == "" {
+			ls[i] = ""
+			continue
+		}
+		ls[i] = breaks.Replace(l)
+	}
+
+	return strings.Join(ls, "\n")
+}
+
 // parse returns the root node of the YAML document s, or nil when s is empty
 // or does not parse.
 func parse(s string) *yaml.Node {
 	var doc yaml.Node
-	if err := yaml.Unmarshal([]byte(s), &doc); err != nil || len(doc.Content) == 0 {
+	if err := yaml.Unmarshal([]byte(unbreak(s)), &doc); err != nil || len(doc.Content) == 0 {
 		return nil
 	}
 
@@ -444,24 +469,24 @@ func (p *placer) place(root *yaml.Node, segs []string, row, col, end int) {
 	for _, s := range b.scalars {
 		// Its lines run to the next field or the block's end, less any
 		// trailing blank lines.
-		last := s.row
+		stop := s.row
 		for n := s.row + 1; n <= end && !b.starts[n]; n++ {
 			if strings.TrimSpace(p.lines[p.index[n-1]].text) != "" {
-				last = n
+				stop = n
 			}
 		}
-		for n := s.row + 1; n <= last; n++ {
+		for n := s.row + 1; n <= stop; n++ {
 			l := p.reset(n)
 			l.segs, l.cont = s.segs, true
 		}
 		c := content(s.node)
-		if c == nil || last == s.row {
+		if c == nil || stop == s.row || s.row+last(c) > stop {
 			continue
 		}
 		// The content's columns are offset by the block's indentation: where
 		// its root node starts on its line, less its column in the value.
 		t := p.lines[p.index[s.row+c.Line-1]].text
-		p.place(c, s.segs, s.row, len(t)-len(strings.TrimLeft(t, " "))-(c.Column-1), last)
+		p.place(c, s.segs, s.row, len(t)-len(strings.TrimLeft(t, " "))-(c.Column-1), stop)
 	}
 }
 

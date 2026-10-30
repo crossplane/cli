@@ -18,8 +18,10 @@ package simulate
 
 import (
 	"bytes"
+	"encoding/json"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -605,6 +607,52 @@ Summary: 1 modified (1 requires replacement)
 Summary: 1 modified (1 requires replacement)
 `,
 		},
+		"KeyedListShifted": {
+			reason: "An equal line of a keyed item that moves position is placed by each side's own index.",
+			in: textDiff(dt.DiffTypeModified,
+				body("    tags:\n    - key: b\n      value: SAME\n      size: SAME\n"),
+				body("    tags:\n    - key: a\n      value: other\n    - key: b\n      value: SAME\n      size: SAME\n")),
+			changes: []plan.FieldChange{sens(`tags[key="b"].value`), unk(`tags[key="b"].size`)},
+			want: `~~~ Instance/db (requires replacement)
+  spec:
+    forProvider:
+      tags:
++     - key: a
++       value: other
+      - key: b
+        value: (sensitive value)
+-       size: SAME
++       size: (known after apply)
+    deletionPolicy: Delete
+
+---
+
+Summary: 1 modified (1 requires replacement)
+`,
+		},
+		"KeyedListSwap": {
+			reason: "Two keyed items that trade places are each marked by their own key.",
+			in: textDiff(dt.DiffTypeModified,
+				body("    tags:\n    - key: b\n      value: SAME\n    - key: a\n      value: other\n"),
+				body("    tags:\n    - key: a\n      value: other\n    - key: b\n      value: SAME\n")),
+			changes: []plan.FieldChange{sens(`tags[key="b"].value`)},
+			want: `~~~ Instance/db (requires replacement)
+  spec:
+    forProvider:
+      tags:
+-     - key: b
+-       value: (sensitive value)
+      - key: a
+        value: other
++     - key: b
++       value: (sensitive value)
+    deletionPolicy: Delete
+
+---
+
+Summary: 1 modified (1 requires replacement)
+`,
+		},
 		"Scalars": {
 			reason: "A quoted value is replaced whole, and a multi-line literal, plain or quoted scalar is marked on its first line, its continuations unmarked or, when its value is replaced, dropped.",
 			in: textDiff(dt.DiffTypeModified,
@@ -782,6 +830,18 @@ func TestAnnotateYAMLLineBreaks(t *testing.T) {
 			want:    map[string]any{"cfg": "\u2028\u2028\npw: NEWSECRET\n"},
 			path:    "spec.cfg.pw",
 		},
+		"SensitiveListAfterKeptBlank": {
+			reason:  "A kept blank line of a list item's literal stays in the item, so the sensitive list's later items drop with it.",
+			current: map[string]any{"a": "\n", "pw": []any{"\n", "0OLDSECRET"}},
+			want:    map[string]any{"a": "\n", "pw": []any{"\n", "0NEWSECRET"}},
+			path:    "spec.pw",
+		},
+		"SensitiveListAfterLineOfBreaks": {
+			reason:  "A list item whose literal is a line of U+2028 runes isn't a trailing blank, so the sensitive list's later items drop with it.",
+			current: map[string]any{"pw": []any{"\u2028\u2028\n", "OLDSECRET"}},
+			want:    map[string]any{"pw": []any{"\u2028\u2028\n", "NEWSECRET"}},
+			path:    "spec.pw",
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -887,6 +947,55 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 				map[string]any{"tags": []any{map[string]any{"key": "b", "value": "NEWSECRET"}, map[string]any{"key": "b", "value": "NEW2SECRET"}}}),
 			path: `spec.tags[key="b"].value`,
 		},
+		"FlowMap": {
+			reason: "A sensitive map written in flow style is masked on both sides.",
+			in: textDiff(dt.DiffTypeModified,
+				marshal(map[string]any{"size": 1})+"  pw: {a: OLDSECRET, b: SAMESECRET}\n",
+				marshal(map[string]any{"size": 1})+"  pw: {a: NEWSECRET, b: SAMESECRET}\n"),
+			path: "spec.pw",
+		},
+		"FlowList": {
+			reason: "A sensitive list written in flow style is masked on both sides.",
+			in: textDiff(dt.DiffTypeModified,
+				marshal(map[string]any{"size": 1})+"  pw: [OLDSECRET, SAMESECRET]\n",
+				marshal(map[string]any{"size": 1})+"  pw: [NEWSECRET, SAMESECRET]\n"),
+			path: "spec.pw",
+		},
+		"FlowFieldInMap": {
+			reason: "A sensitive field inside a flow map is masked on both sides.",
+			in: textDiff(dt.DiffTypeModified,
+				marshal(map[string]any{"size": 1})+"  pw: {a: OLDSECRET, b: SAMESECRET}\n",
+				marshal(map[string]any{"size": 1})+"  pw: {a: NEWSECRET, b: SAMESECRET}\n"),
+			path: "spec.pw.a",
+		},
+		"FlowListItem": {
+			reason: "A sensitive item of a flow list is masked on both sides.",
+			in: textDiff(dt.DiffTypeModified,
+				marshal(map[string]any{"size": 1})+"  pw: [OLDSECRET, x]\n",
+				marshal(map[string]any{"size": 1})+"  pw: [NEWSECRET, x]\n"),
+			path: "spec.pw[0]",
+		},
+		"JSONInLiteralFlowValue": {
+			reason: "A sensitive object on one line of a JSON literal is masked on both sides.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"cfg": "{\n  \"pw\": {\"a\": \"OLDSECRET\"},\n  \"l\": [\"x\"]\n}\n"},
+				map[string]any{"cfg": "{\n  \"pw\": {\"a\": \"NEWSECRET\"},\n  \"l\": [\"x\"]\n}\n"}),
+			path: "spec.cfg.pw",
+		},
+		"JSONInLiteralFlowArray": {
+			reason: "A sensitive array on one line of a JSON literal is masked on both sides.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"cfg": "{\n  \"pw\": [\"OLDSECRET\", \"SAMESECRET\"],\n  \"x\": 1\n}\n"},
+				map[string]any{"cfg": "{\n  \"pw\": [\"NEWSECRET\", \"SAMESECRET\"],\n  \"x\": 1\n}\n"}),
+			path: "spec.cfg.pw",
+		},
+		"JSONInLiteralFieldInFlow": {
+			reason: "A sensitive field sharing its JSON line with a sibling is masked on both sides.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"cfg": "{\n  \"o\": {\"pw\": \"OLDSECRET\", \"b\": 1}\n}\n"},
+				map[string]any{"cfg": "{\n  \"o\": {\"pw\": \"NEWSECRET\", \"b\": 1}\n}\n"}),
+			path: "spec.cfg.o.pw",
+		},
 		"DuplicateKeyedWholeItems": {
 			reason: "A sensitive keyed item is masked whole, for every item it matches.",
 			in: lineDiff(t, "db", dt.DiffTypeModified,
@@ -905,4 +1014,53 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 			}
 		})
 	}
+}
+
+// FuzzAnnotateSensitive plants a secret under a Sensitive field, beside a
+// fuzzed sibling, and checks -o diff never prints it.
+func FuzzAnnotateSensitive(f *testing.F) {
+	// Seeds from TestAnnotateYAMLLineBreaks and TestAnnotateUnparsedSensitive.
+	for _, s := range []string{"x y", "l1\nx y\n", "a: \"x y\"\n", "  \n", "zz\n", "{\"pw\": 1}", "  size: [\n", "[a, b]", ""} {
+		for shape := range uint8(5) {
+			f.Add(s, "v", shape)
+		}
+	}
+	const secret = "PLANTEDSECRET"
+	f.Fuzz(func(t *testing.T, sibling, value string, shape uint8) {
+		side := func(plant string) map[string]any {
+			v := value + plant
+			var pw any = v
+			switch shape % 5 {
+			case 1:
+				pw = map[string]any{"a": v, sibling: "x"}
+			case 2:
+				pw = []any{sibling, v}
+			case 3:
+				// A literal holding JSON or YAML, the field inside it.
+				b, err := json.MarshalIndent(map[string]any{"pw": v, "x": sibling}, "", "  ")
+				if err != nil {
+					t.Skip()
+				}
+				return map[string]any{"cfg": string(b) + "\n", "z": sibling}
+			case 4:
+				return map[string]any{"cfg": sibling + "\npw: " + strconv.Quote(v) + "\n"}
+			}
+			return map[string]any{"a": sibling, "pw": pw}
+		}
+		path := "spec.pw"
+		if shape%5 >= 3 {
+			path = "spec.cfg.pw"
+		}
+		cur, des := side("OLD"+secret), side("NEW"+secret)
+		for _, spec := range []map[string]any{cur, des} {
+			if _, err := sigsyaml.Marshal(spec); err != nil {
+				t.Skip("not renderable as YAML:", err)
+			}
+		}
+		d := lineDiff(t, "db", dt.DiffTypeModified, cur, des)
+		ch := plan.FieldChange{Path: path, Actual: sensitive(), Planned: sensitive()}
+		if got := render(t, report(d), planFor(d, plan.ActionUpdate, ch), noColor()); strings.Contains(got, secret) {
+			t.Errorf("render(): output contains the planted secret:\n%s", got)
+		}
+	})
 }

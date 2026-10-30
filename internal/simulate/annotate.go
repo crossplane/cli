@@ -325,17 +325,26 @@ type sides struct{ old, new *yaml.Node }
 //
 // ponytail: lines are placed by gopkg.in/yaml.v3 node positions, including
 // the fields of a literal (|) block scalar holding a YAML or JSON map or
-// list, and a list item keyed by a field (see resolve). Still unplaced, so
-// without an inline marker (the header, the summary and -o plan still carry
-// it): a side that does not parse; the content of a folded (>), quoted or
-// plain multi-line scalar, or of a literal one that is not a map or list; a
-// field of a JSON map or list that shares its line with another; an absent
-// field whose deepest present ancestor is a scalar, or a keyed list item a
-// side lacks; and a key that starts or ends with a quote, which
-// plan.DisplayLevels trims as fieldpath.Parse does. Upgrade path for the
-// keys: carry fieldpath segments, not display levels, in plan.FieldChange.
-// A keyed item that matches more than one item is redacted in each, but the
-// unknown and replacement markers go on the first only.
+// list, and a list item keyed by a field (see resolve). Redaction fails
+// closed where placement can't reach; the coarse cases are:
+//   - a side that doesn't parse: every value on it is masked, keeping only
+//     indentation and keys (see maskUnparsed), and no other marker is placed;
+//   - a folded (>), quoted or plain multi-line scalar, a literal one that is
+//     not a map or list, or a flow map or list on one line (pw: {a: x}, or a
+//     JSON field that shares its line): a Sensitive field inside is masked as
+//     that whole value, and an unknown or replacement marker is not placed;
+//   - a sensitive map or list in a JSON literal drops its fields, but its
+//     closing lines such as "}," stay;
+//   - a keyed level matching more than one item is redacted in each, but
+//     the unknown and replacement markers go on the first only;
+//   - an absent field whose deepest present ancestor is a scalar, or a keyed
+//     item a side lacks, gets no unknown marker;
+//   - a key that starts or ends with a quote, which plan.DisplayLevels trims
+//     as fieldpath.Parse does, is not found.
+//
+// The header, the summary and -o plan still carry what isn't marked inline.
+// Upgrade path for the keys: carry fieldpath segments, not display levels,
+// in plan.FieldChange.
 func place(lines []line) sides {
 	old := slices.Clone(lines)
 	s := sides{old: placeSide(old, func(op diffmatchpatch.Operation) bool { return op != opInsert }), new: placeSide(lines, desired)}
@@ -482,11 +491,12 @@ func (p *placer) place(root *yaml.Node, segs []string, row, col, end int) {
 	b := &block{placer: p, row: row, col: col, end: end, starts: map[int]bool{}}
 	b.node(root, segs)
 	for _, s := range b.scalars {
-		// Its lines run to the next field or the block's end, less any
-		// trailing blank lines.
+		// Its lines run to the next field, blank ones included as a kept (|+)
+		// literal holds them, or to the block's end, less trailing blank
+		// lines. A blank is only spaces or tabs: U+2028 is content.
 		stop := s.row
 		for n := s.row + 1; n <= end && !b.starts[n]; n++ {
-			if strings.TrimSpace(p.lines[p.index[n-1]].text) != "" {
+			if strings.Trim(p.lines[p.index[n-1]].text, " \t") != "" || b.starts[n+1] {
 				stop = n
 			}
 		}
@@ -852,10 +862,10 @@ func markSensitive(lines []line, f field) ([]line, bool) {
 			continue
 		}
 		var at field
-		if old, cont := l.oldSide(); !inOld && l.op != opInsert && !cont && len(f.old) > len(old) && within(f.old, old) {
+		if old, cont := l.oldSide(); !inOld && l.op != opInsert && !cont && len(old) > 0 && !slices.Equal(f.old, old) && within(f.old, old) {
 			at.old = old
 		}
-		if !inNew && l.op != opDelete && !l.cont && len(f.new) > len(l.segs) && within(f.new, l.segs) {
+		if !inNew && l.op != opDelete && !l.cont && len(l.segs) > 0 && !slices.Equal(f.new, l.segs) && within(f.new, l.segs) {
 			at.new = l.segs
 		}
 		if at.old != nil || at.new != nil {

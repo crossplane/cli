@@ -1,0 +1,2 @@
+apiVersion: lint.crossplane.io/v1alpha1
+kind: Config

@@ -19,6 +19,7 @@ package main
 import (
 	"testing"
 
+	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 )
@@ -80,4 +81,27 @@ func TestConfigFlag(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNoSubcommandConfigFlag guards the root --config flag. main reads
+// --config from argv before Kong parses it and loads it as the CLI
+// configuration, so a subcommand flag of the same name could never work.
+func TestNoSubcommandConfigFlag(t *testing.T) {
+	app, err := kong.New(&cli{}, kongVars)
+	if err != nil {
+		t.Fatalf("kong.New(): %v", err)
+	}
+
+	var visit func(n *kong.Node)
+	visit = func(n *kong.Node) {
+		for _, f := range n.Flags {
+			if f.Name == "config" && n != app.Model.Node {
+				t.Errorf("%s declares a --config flag, which collides with the root --config flag", n.FullPath())
+			}
+		}
+		for _, c := range n.Children {
+			visit(c)
+		}
+	}
+	visit(app.Model.Node)
 }

@@ -79,25 +79,30 @@ Add `lint` as a verb under the existing `xrd` noun, gated as alpha
 $ crossplane xrd lint apis/
 apis/network/definition.yaml
   xnetworks.example.org v1alpha1
-    41:9   error  spec.subnets: array has no x-kubernetes-list-type   xrd/lists-need-list-type
-    77:13  error  status.cidr: status field must not set pattern      xrd/status-no-value-validation
-    52:11  warn   spec.public: prefer an enum to a boolean            xrd/no-bools
+    41:9   error  spec.subnets: array has no x-kubernetes-list-type  xrd/lists-need-list-type
+    52:11  warn   spec.public: prefer an enum to a boolean           xrd/no-bools
+    77:13  error  status.cidr: status field must not set pattern     xrd/status-no-value-validation
 
 2 errors, 1 warning
 ```
 
 ```
-crossplane xrd lint [flags] <files-or-dirs>...
+crossplane xrd lint [flags] <files-or-dirs|->...
 
   --old=SOURCE          Previous version of the XRD(s). Enables xrd-diff/* rules.
-  --config=PATH         Lint config file. Default: search upward for .crossplane-lint.yaml.
+  --lint-config=PATH    Lint config file. Default: search upward for .crossplane-lint.yaml.
   -o, --output=FORMAT   text | json | yaml (default text)
   --max-warnings=N      Fail if there are more than N warnings (default -1, unlimited).
 ```
 
+The lint config flag is `--lint-config` because the root CLI already owns
+`--config`, the path to the CLI's own configuration file. `main` reads that
+flag before the command line is parsed, so a subcommand cannot reuse the name.
+
 **Loading inputs**
-- Lint has its own small `yaml.v3` loader. It handles files, directories,
-  stdin and multi-document YAML, and keeps the filename, line numbers and
+- Lint has its own small `yaml.v3` loader. It handles files, directories
+  (searched recursively for `.yaml` and `.yml` files), stdin (the path `-`)
+  and multi-document YAML, and keeps the filename, line numbers and
   comments that findings and suppressions need. (proposed)
 - The shared `cmd/crossplane/common/load` loader decodes straight to
   unstructured objects and discards those positions, so it is left unchanged.
@@ -127,14 +132,23 @@ crossplane xrd lint [flags] <files-or-dirs>...
 **Validity first**
 - Before any lint rule runs, lint applies the existing structural check from
   [#301][cli-301] to each XRD. (proposed)
-- An XRD that is invalid or not structural gets an `error` finding that
-  cannot be disabled, and the remaining rules are skipped for that XRD.
+- An XRD that is invalid or not structural gets an `error` finding from
+  `lint/invalid-xrd` that cannot be disabled, and the remaining rules are
+  skipped for that XRD.
+- The check is the one `crossplane xrd convert` applies: the XRD must yield a
+  composite resource CRD with a structural schema. It does not check fields
+  that check ignores; for example, an XRD with no `spec.names` is not
+  reported.
 
 **Findings**
 - Each finding carries: rule, severity, file, line, XRD name, version, field
   path, message, docs URL, and an optional suggested fix.
-- Built-in rules always have a docs URL. A custom rule has one only if its
-  config sets `docsURL`; otherwise the field is left empty.
+- Findings with no node of their own, such as `lint/invalid-xrd`, have no
+  version or field path.
+- A finding carries a docs URL when its rule has one. Built-in rules have
+  none until docs.crossplane.io has pages for them; each built-in gains its
+  URL then. A custom rule has one only if its config sets `docsURL`.
+  Otherwise the field is left empty.
 - Text output groups findings by file and XRD.
 - json and yaml output emit `{summary: {errors, warnings}, findings: [...]}`.
   They follow the `Renderer`/`RendererFor(format)` pattern that `resource
@@ -146,13 +160,14 @@ crossplane xrd lint [flags] <files-or-dirs>...
   - warnings exceed `--max-warnings`
   - the config is invalid
   - an input cannot be read
+  - the inputs hold no XRDs, so a wrong path does not pass silently
   - a rule fails to evaluate (see [Runtime errors](#custom-rules-in-cel))
 - Otherwise it exits zero.
 
 ### Configuration
 
 The CLI searches upward from the working directory for
-`.crossplane-lint.yaml`; `--config` overrides the search. With no file, the
+`.crossplane-lint.yaml`; `--lint-config` overrides the search. With no file, the
 defaults apply. The file holds only overrides and custom rules:
 
 ```yaml
@@ -183,6 +198,11 @@ customRules:
   loader, with `KnownFields(true)`, so an unknown key is an error. (proposed)
 - `yaml.v3` also rejects a duplicate key within `rules` or `customRules`, so
   the same rule cannot be configured twice in one file. A test covers this.
+- A rule object is checked by hand, because `KnownFields` does not reach a
+  custom unmarshaller: a key other than `severity` or `options`, a repeated
+  key, or a missing `severity` is an error.
+- A rule with no value, such as `xrd/no-bools:` with nothing after it, is an
+  error rather than a silent `off`.
 
 **Rule names**
 - Custom rule names take the form `<prefix>/<name>`, with both parts in
@@ -357,9 +377,18 @@ properties:
   XRD. XRD-level findings attach to the document root.
 - A `disable-next-line` comment above that node suppresses them.
 
+**What it cannot cover**
+- The linter's own findings, `lint/invalid-xrd` and `lint/rule-error`, cannot
+  be suppressed. A comment that names one is reported as unused, with a
+  message saying it cannot be suppressed.
+
 **Unused comments**
-- A comment that suppresses nothing is itself reported, as a warning from
-  `lint/unused-disable`.
+- Each rule a comment names that suppresses nothing is reported, as a
+  warning from `lint/unused-disable`. A comment that names several rules can
+  produce one warning per unused name.
+- This includes rules that are turned off: a comment for a rule that never
+  runs suppresses nothing, so it is reported, as ESLint does.
+- A comment that names no rules is reported too.
 - This keeps stale suppressions from accumulating. (proposed)
 
 ### Custom Rules in CEL
@@ -415,8 +444,10 @@ both the old and the new XRD. Its variables:
   with index syntax, for example `self.properties['namespace']`.
 - Integral YAML numbers decode as `int`. All other numbers decode as `double`.
 - `path` is the property's data path within the resource: property names
-  joined by dots from the schema root, with `[*]` for array items, for
-  example `spec.subnets[*].cidr`. The schema root itself has the path `""`.
+  joined by dots from the schema root, with `[*]` for array items and `.*`
+  for the values of an `additionalProperties` map, for example
+  `spec.subnets[*].cidr` or `spec.labels.*`. The schema root itself has the
+  path `""`. Findings use the same paths.
 - In a `diff` rule, a property missing from one version is bound to `null`.
   `has()` only tests a field, not a bare variable, so absence is tested with
   `old == null` or `new == null`.
@@ -666,21 +697,27 @@ type Meta struct {
     Options         *apiextensionsv1.JSONSchemaProps // nil if the rule takes none
 }
 
-// SchemaRule runs on one XRD.
+// SchemaRule runs on one XRD. It returns an error only if it cannot run.
 type SchemaRule interface {
     Meta() Meta
-    Check(ctx *Context, xrd *XRD)
+    Check(ctx *Context, xrd *XRD) error
 }
 
-// DiffRule runs on an old/new pair.
+// DiffRule runs on an old/new pair. It returns an error only if it cannot run.
 type DiffRule interface {
     Meta() Meta
-    Compare(ctx *Context, old, new *XRD)
+    Compare(ctx *Context, old, new *XRD) error
 }
 
 func (c *Context) Options(into any) error
-func (c *Context) Report(path FieldPath, message string, opts ...ReportOption)
+func (c *Context) Report(p Property, message string, opts ...ReportOption)
 ```
+
+A rule reports findings through `Context` and returns an error only when it
+cannot run, for example when a crdify comparator fails. The runner turns that
+error, or a panic, into `lint/rule-error` (see [Runtime
+errors](#custom-rules-in-cel)), so a rule that did not run is never mistaken
+for one that passed.
 
 **Engine**
 - A shared walker visits every schema property and hands rules its path, its
@@ -690,23 +727,25 @@ func (c *Context) Report(path FieldPath, message string, opts ...ReportOption)
 **Positions**
 - Lint's own loader parses inputs into `yaml.v3` nodes alongside the
   decoded object.
-- A map from field path to node supplies line numbers.
-- The same map finds the comments used for suppression. (proposed)
+- The walker follows the YAML nodes as it walks the schema, so each property
+  carries its line and column, and the nodes above it.
+- Those nodes also carry the comments used for suppression. (proposed)
 
 **Testing**
-- Rules are tested table-driven, in the spirit of ESLint's `RuleTester`, with
-  `xrdlinttest.Run(t, rule, cases)`. The helper lives in
-  `internal/xrdlint/xrdlinttest` and moves with the rule package at beta.
-  (proposed)
-- Each case is a YAML fixture plus the findings it should produce: rule ID,
-  field path and, optionally, the message.
-- Diff rules take a pair of fixtures.
-- The `xrd-diff/` rules backed by crdify are tested on XRD fixtures too, so
-  the mapping from XRD schemas to crdify's comparators is covered, not just
-  crdify itself.
-- Every rule has at least one passing case and one failing case.
-- The command is tested end to end on a small fixture directory, covering
-  config discovery, exit codes and each output format.
+- The command is tested end to end by one table-driven Go test. Its inputs
+  are shared files: example XRDs in `testdata/lint/xrds/` and lint configs
+  in `testdata/lint/configs/`.
+- Each row names the XRDs, the config (discovered or passed with
+  `--lint-config`), the flags, and the expected exit, error, summary and
+  findings. Any combination of XRD and config is one more row.
+- Every rule has at least one passing case and one failing case, and the
+  table also covers config errors, discovery, suppression, invalid XRDs,
+  the warning budget, each output format and each kind of input.
+- Diff rules take a pair of XRD files. The `xrd-diff/` rules backed by
+  crdify are tested on XRD files too, so the mapping from XRD schemas to
+  crdify's comparators is covered, not just crdify itself.
+- Go-only tests in `internal/xrdlint` cover only what the command cannot
+  exercise: rules that fail or panic, option schemas, and rule ID checks.
 
 ## Alternatives Considered
 

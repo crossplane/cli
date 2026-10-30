@@ -42,7 +42,7 @@ func TestExitStatus(t *testing.T) {
 			want:   3,
 		},
 		"ErroredOnly": {
-			reason: "A plan that errored should exit 1, as project simulate does.",
+			reason: "A plan that errored should exit 1.",
 			plans:  []*plan.ResourcePlan{{Action: plan.ActionUpdate, Error: "boom"}},
 			want:   1,
 		},

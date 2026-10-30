@@ -89,7 +89,7 @@ func (c *generateCmd) AfterApply(cfg *config.Config) error {
 
 	c.proj = proj
 	c.apisFS = afero.NewBasePathFs(c.projFS, proj.Spec.Paths.APIs)
-	client, resolver, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
+	client, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
 		return err
 	}
@@ -104,7 +104,6 @@ func (c *generateCmd) AfterApply(cfg *config.Config) error {
 			proj.Spec.Schemas.GetLanguages(),
 		)),
 		dependency.WithXpkgClient(client),
-		dependency.WithResolver(resolver),
 	)
 	return nil
 }

@@ -69,7 +69,7 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 		return err
 	}
 
-	client, resolver, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
+	client, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
 		return err
 	}
@@ -84,7 +84,6 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 			proj.Spec.Schemas.GetLanguages(),
 		)),
 		dependency.WithXpkgClient(client),
-		dependency.WithResolver(resolver),
 	}
 
 	if c.GitToken != "" {

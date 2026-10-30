@@ -159,7 +159,7 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	)
 	schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs))
 	schemaMgr := manager.New(schemasFS, generators, schemaRunner)
-	client, resolver, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs))
+	client, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs))
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,6 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 		dependency.WithSchemaGenerators(generators),
 		dependency.WithSchemaRunner(schemaRunner),
 		dependency.WithXpkgClient(client),
-		dependency.WithResolver(resolver),
 	)
 
 	// The builder may decompress function runtime tarballs into this directory;

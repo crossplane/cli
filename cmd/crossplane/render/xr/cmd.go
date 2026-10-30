@@ -455,7 +455,7 @@ func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, 
 		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
 	}
 
-	xpkgClient, resolver, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
+	xpkgClient, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
 		return nil, err
 	}
@@ -469,7 +469,6 @@ func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, 
 		dependency.WithProjectFile(projFileName),
 		dependency.WithSchemaGenerators(generators),
 		dependency.WithXpkgClient(xpkgClient),
-		dependency.WithResolver(resolver),
 	)
 
 	var fns []pkgv1.Function
@@ -527,12 +526,12 @@ func (c *Cmd) loadFunctionsFromConfiguration(ctx context.Context, log logging.Lo
 		return nil, errors.Wrapf(err, "cannot parse configuration file %q", cfgFileName)
 	}
 
-	_, resolver, err := project.NewXpkgClient(c.CacheDir)
+	client, err := project.NewXpkgClient(c.CacheDir)
 	if err != nil {
 		return nil, err
 	}
 
-	fns, err := clixpkg.ResolveConfigurationFunctions(ctx, cfgMeta, resolver)
+	fns, err := clixpkg.ResolveConfigurationFunctions(ctx, cfgMeta, client)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot resolve function dependencies from configuration file")
 	}

@@ -20,16 +20,14 @@ import (
 	"github.com/spf13/afero"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
-	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/internal/dependency"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
 // NewXpkgClient returns an xpkg client that caches packages in cacheDir, or
-// in dependency.DefaultCacheDir() when cacheDir is empty, and a resolver
-// backed by it.
-func NewXpkgClient(cacheDir string, opts ...clixpkg.ClientOption) (runtimexpkg.Client, *clixpkg.Resolver, error) {
+// in dependency.DefaultCacheDir() when cacheDir is empty.
+func NewXpkgClient(cacheDir string, opts ...clixpkg.ClientOption) (clixpkg.Client, error) {
 	if cacheDir == "" {
 		cacheDir = dependency.DefaultCacheDir()
 	}
@@ -37,7 +35,7 @@ func NewXpkgClient(cacheDir string, opts ...clixpkg.ClientOption) (runtimexpkg.C
 	opts = append([]clixpkg.ClientOption{clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir)}, opts...)
 	client, err := clixpkg.NewClient(clixpkg.NewRemoteFetcher(), opts...)
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "cannot create xpkg client")
+		return nil, errors.Wrap(err, "cannot create xpkg client")
 	}
-	return client, clixpkg.NewResolver(client), nil
+	return client, nil
 }

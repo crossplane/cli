@@ -45,7 +45,7 @@ func (f *fakeClient) ListVersions(_ context.Context, _ string, _ ...xpkg.GetOpti
 	return f.tags, nil
 }
 
-func TestResolver_Resolve(t *testing.T) {
+func TestClient_Resolve(t *testing.T) {
 	tags := []string{"v1.0.0", "v1.1.0", "v2.0.0", "latest", "invalid"}
 
 	type args struct {
@@ -131,7 +131,7 @@ func TestResolver_Resolve(t *testing.T) {
 
 	for tname, tc := range tests {
 		t.Run(tname, func(t *testing.T) {
-			r := NewResolver(&fakeClient{tags: tc.args.tags})
+			r := WrapClient(&fakeClient{tags: tc.args.tags})
 			gotRef, gotVer, err := r.Resolve(context.Background(), tc.args.ref)
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("Resolve(...), -want error, +got error:\n%s", diff)

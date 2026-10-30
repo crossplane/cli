@@ -55,8 +55,8 @@ func WithImageConfigs(ics []pkgv1beta1.ImageConfig) ClientOption {
 	}
 }
 
-// NewClient assembles an xpkg.Client.
-func NewClient(fetcher xpkg.Fetcher, opts ...ClientOption) (xpkg.Client, error) {
+// NewClient assembles a Client.
+func NewClient(fetcher xpkg.Fetcher, opts ...ClientOption) (Client, error) {
 	o := &options{}
 	for _, opt := range opts {
 		opt(o)
@@ -79,15 +79,13 @@ func NewClient(fetcher xpkg.Fetcher, opts ...ClientOption) (xpkg.Client, error) 
 		cache = xpkg.NewFsPackageCache(o.cacheDir, o.cacheFs)
 	}
 
-	client := xpkg.NewCachedClient(
+	return WrapClient(xpkg.NewCachedClient(
 		fetcher,
 		parser.New(metaScheme, objScheme),
 		cache,
 		NewStaticImageConfigStore(o.imageConfigs),
 		signature.NopValidator{},
-	)
-
-	return client, nil
+	)), nil
 }
 
 // NewStaticImageConfigStore returns an xpkg.ConfigStore that uses the given set

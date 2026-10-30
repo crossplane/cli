@@ -17,6 +17,10 @@ limitations under the License.
 package manager
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/go-git/go-billy/v5"
@@ -676,6 +680,111 @@ func TestCalculateFilesystemHashDifferentContent(t *testing.T) {
 
 			if hash1 == hash2 {
 				t.Errorf("different content should produce different hashes")
+			}
+		})
+	}
+}
+
+func TestHTTPSourceResources(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		contentType string
+		body        string
+		wantErr     string
+	}{
+		"YAML": {
+			contentType: "text/plain; charset=utf-8",
+			body:        "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\n",
+		},
+		"HTMLPage": {
+			contentType: "text/html; charset=utf-8",
+			body:        "<!DOCTYPE html>\n<html lang=\"en\">\n",
+			wantErr:     "returned an HTML page instead of a YAML or JSON file",
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			t.Cleanup(srv.Close)
+
+			src := &httpSource{
+				httpRef:    &v1alpha1.HTTPDependency{URL: srv.URL + "/crds/crd.yaml"},
+				client:     srv.Client(),
+				sourceType: SourceTypeCRD,
+			}
+
+			gotFS, err := src.Resources(t.Context())
+
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := afero.ReadFile(gotFS, "crd.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(tc.body, string(got)); diff != "" {
+				t.Errorf("(-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestGitHubRawURL(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		url    string
+		want   string
+		wantOK bool
+	}{
+		"FileView": {
+			url:    "https://github.com/kubernetes/autoscaler/blob/vertical-pod-autoscaler-1.6.0/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml",
+			want:   "https://raw.githubusercontent.com/kubernetes/autoscaler/vertical-pod-autoscaler-1.6.0/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml",
+			wantOK: true,
+		},
+		"BranchWithSlash": {
+			url:    "https://github.com/example/repo/blob/release/v1/crds/crd.yaml",
+			want:   "https://raw.githubusercontent.com/example/repo/release/v1/crds/crd.yaml",
+			wantOK: true,
+		},
+		"RepoRoot": {
+			url: "https://github.com/example/repo",
+		},
+		"TreeView": {
+			url: "https://github.com/example/repo/tree/main/crds",
+		},
+		"OtherHost": {
+			url: "https://gitlab.com/example/repo/blob/main/crd.yaml",
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			u, err := url.Parse(tc.url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok := githubRawURL(u)
+			if ok != tc.wantOK {
+				t.Fatalf("ok: want %v, got %v", tc.wantOK, ok)
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("(-want +got):\n%s", diff)
 			}
 		})
 	}

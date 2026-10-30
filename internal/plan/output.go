@@ -52,6 +52,11 @@ type Summary struct {
 	Errored     int `json:"errored"`
 }
 
+// Changes is how many plans would create, update, replace or delete.
+func (s Summary) Changes() int {
+	return s.Create + s.Update + s.Destroy + s.Replace
+}
+
 // Summarize counts the given plans.
 func Summarize(plans []*ResourcePlan) Summary {
 	var s Summary

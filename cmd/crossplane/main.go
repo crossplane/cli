@@ -37,6 +37,7 @@ import (
 	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/cluster"
+	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/cmd/crossplane/completion"
 	"github.com/crossplane/cli/v2/cmd/crossplane/composition"
 	configcmd "github.com/crossplane/cli/v2/cmd/crossplane/config"
@@ -178,13 +179,20 @@ func main() {
 	interrupted := sigCtx.Err() != nil
 	stopExitOnSignal()
 	stop()
+	// A silent ExitError is a result, such as changes found, not an error,
+	// so it exits with its code and prints nothing.
+	code, silent := common.SilentExit(err)
 	if interrupted {
 		// Exit with the conventional 128+SIGINT status.
-		if err != nil {
+		if err != nil && !silent {
 			fmt.Fprintf(os.Stderr, "crossplane: %v\n", err)
 		}
 		os.Exit(130)
 	}
+	if silent {
+		os.Exit(code)
+	}
+	// An error is printed and exits 1, or with its ExitCoder's code.
 	ctx.FatalIfErrorf(err)
 }
 

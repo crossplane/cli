@@ -1,0 +1,6 @@
+apiVersion: lint.crossplane.io/v1alpha1
+kind: LintConfig
+rules:
+  xrd/no-bools:
+    options:
+      max: 1

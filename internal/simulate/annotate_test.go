@@ -245,7 +245,7 @@ Summary: 1 modified
 			want: `~~~ Instance/db
 -     password: (sensitive value)
 -     size: 1
-+     password: (sensitive value)
++     password: (sensitive value, changed)
 +     size: 2
 
 ---
@@ -537,16 +537,16 @@ func TestAnnotatePlacement(t *testing.T) {
 			in: textDiff(dt.DiffTypeModified,
 				body("    db:\n      settings:\n        password: a\n        size: 1\n        tier: a\n"),
 				body("    db:\n      settings:\n        password: b\n        size: 2\n        tier: b\n")),
-			changes: []plan.FieldChange{sens("db.settings.password"), unk("db.settings.size"), repl("db.settings.tier"), unk("db.settings.extra.id")},
+			changes: []plan.FieldChange{unk("db.settings.size"), repl("db.settings.tier"), unk("db.settings.extra.id")},
 			want: `~~~ Instance/db (requires replacement)
   spec:
     forProvider:
       db:
         settings:
--         password: (sensitive value)
+-         password: a
 -         size: 1
 -         tier: a
-+         password: (sensitive value)
++         password: b
 +         size: (known after apply)
 +         tier: b  # forces replacement
 +         extra.id: (known after apply)
@@ -562,7 +562,7 @@ Summary: 1 modified (1 requires replacement)
 			in: textDiff(dt.DiffTypeModified,
 				body("    matrix:\n    - - a\n      - b\n    - - c\n    zones:\n    - z1\n    - z2\n"),
 				body("    matrix:\n    - - a\n      - x\n    - - d\n    zones:\n    - z1\n    - z3\n")),
-			changes: []plan.FieldChange{repl("matrix[0][1]"), unk("matrix[1][0]"), sens("zones[1]")},
+			changes: []plan.FieldChange{repl("matrix[0][1]"), unk("matrix[1][0]")},
 			want: `~~~ Instance/db (requires replacement)
   spec:
     forProvider:
@@ -574,8 +574,8 @@ Summary: 1 modified (1 requires replacement)
 +     - - (known after apply)
       zones:
       - z1
--     - (sensitive value)
-+     - (sensitive value)
+-     - z2
++     - z3
     deletionPolicy: Delete
 
 ---
@@ -588,7 +588,7 @@ Summary: 1 modified (1 requires replacement)
 			in: textDiff(dt.DiffTypeModified,
 				body("    tags:\n    - key: a\n      value: \"1\"\n    - key: b\n      value: \"2\"\n"),
 				body("    tags:\n    - key: b\n      value: \"3\"\n")),
-			changes: []plan.FieldChange{sens(`tags[key="b"].value`), repl(`tags[key="b"].value`), unk(`tags[key="b"].id`), unk(`tags[key="c"].id`)},
+			changes: []plan.FieldChange{repl(`tags[key="b"].value`), unk(`tags[key="b"].id`), unk(`tags[key="c"].id`)},
 			want: `~~~ Instance/db (requires replacement)
   spec:
     forProvider:
@@ -596,9 +596,9 @@ Summary: 1 modified (1 requires replacement)
 -     - key: a
 -       value: "1"
 -     - key: b
--       value: (sensitive value)
+-       value: "2"
 +     - key: b
-+       value: (sensitive value)  # forces replacement
++       value: "3"  # forces replacement
 +       id: (known after apply)
     deletionPolicy: Delete
   
@@ -614,7 +614,7 @@ Summary: 1 modified (1 requires replacement)
 			in: textDiff(dt.DiffTypeModified,
 				body("    tags:\n    - key: b\n      value: SAME\n      size: SAME\n"),
 				body("    tags:\n    - key: a\n      value: other\n    - key: b\n      value: SAME\n      size: SAME\n")),
-			changes: []plan.FieldChange{sens(`tags[key="b"].value`), unk(`tags[key="b"].size`)},
+			changes: []plan.FieldChange{unk(`tags[key="b"].size`)},
 			want: `~~~ Instance/db (requires replacement)
   spec:
     forProvider:
@@ -622,7 +622,7 @@ Summary: 1 modified (1 requires replacement)
 +     - key: a
 +       value: other
       - key: b
-        value: (sensitive value)
+        value: SAME
 -       size: SAME
 +       size: (known after apply)
     deletionPolicy: Delete
@@ -634,11 +634,15 @@ Summary: 1 modified (1 requires replacement)
 		},
 		"KeyedListSwap": {
 			reason: "Two keyed items that trade places are each marked by their own key.",
-			in: textDiff(dt.DiffTypeModified,
-				body("    tags:\n    - key: b\n      value: SAME\n    - key: a\n      value: other\n"),
-				body("    tags:\n    - key: a\n      value: other\n    - key: b\n      value: SAME\n")),
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"forProvider": map[string]any{"tags": []any{map[string]any{"key": "b", "value": "SAME"}, map[string]any{"key": "a", "value": "other"}}}},
+				map[string]any{"forProvider": map[string]any{"tags": []any{map[string]any{"key": "a", "value": "other"}, map[string]any{"key": "b", "value": "SAME"}}}}),
 			changes: []plan.FieldChange{sens(`tags[key="b"].value`)},
 			want: `~~~ Instance/db (requires replacement)
+  apiVersion: rds.aws.upbound.io/v1beta1
+  kind: Instance
+  metadata:
+    name: db
   spec:
     forProvider:
       tags:
@@ -648,7 +652,6 @@ Summary: 1 modified (1 requires replacement)
         value: other
 +     - key: b
 +       value: (sensitive value)
-    deletionPolicy: Delete
 
 ---
 
@@ -660,20 +663,23 @@ Summary: 1 modified (1 requires replacement)
 			in: textDiff(dt.DiffTypeModified,
 				body("    cert: |\n      a\n      b\n    name: \"x: y\"\n    note: first\n      second\n    quoted: \"a\n      b\"\n"),
 				body("    cert: |\n      a\n      c\n    name: \"x: z\"\n    note: first\n      third\n    quoted: \"z\n      b\"\n")),
-			changes: []plan.FieldChange{sens("cert"), unk("name"), repl("note"), sens("quoted")},
+			changes: []plan.FieldChange{unk("name"), repl("note")},
 			want: `~~~ Instance/db (requires replacement)
   spec:
     forProvider:
--     cert: (sensitive value)
-+     cert: (sensitive value)
+      cert: |
+        a
+-       b
 -     name: "x: y"
 -     note: first
 -       second
--     quoted: (sensitive value)
+-     quoted: "a
++       c
 +     name: (known after apply)
 +     note: first  # forces replacement
 +       third
-+     quoted: (sensitive value)
++     quoted: "z
+        b"
     deletionPolicy: Delete
   
   
@@ -689,16 +695,16 @@ Summary: 1 modified (1 requires replacement)
 			in: textDiff(dt.DiffTypeModified,
 				body("    policy: |\n      {\n        \"Statement\": {\n          \"Effect\": \"Allow\",\n          \"Sid\": \"a\"\n        },\n        \"Version\": \"1\"\n      }\n"),
 				body("    policy: |\n      {\n        \"Statement\": {\n          \"Effect\": \"Deny\",\n          \"Sid\": \"b\"\n        },\n        \"Version\": \"1\"\n      }\n")),
-			changes: []plan.FieldChange{sens("policy.Statement.Effect"), repl("policy.Statement.Sid"), unk("policy.Version")},
+			changes: []plan.FieldChange{repl("policy.Statement.Sid"), unk("policy.Version")},
 			want: `~~~ Instance/db (requires replacement)
   spec:
     forProvider:
       policy: |
         {
           "Statement": {
--           "Effect": (sensitive value)
+-           "Effect": "Allow",
 -           "Sid": "a"
-+           "Effect": (sensitive value)
++           "Effect": "Deny",
 +           "Sid": "b"  # forces replacement
           },
 -         "Version": "1"
@@ -719,7 +725,6 @@ Summary: 1 modified (1 requires replacement)
 			changes: []plan.FieldChange{
 				{Path: "metadata.annotations[example.org/a.b]", Actual: str("x"), Planned: str("y"), RequiresReplace: true},
 				unk("on"),
-				{Path: "spec.forProvider[a: b]", Actual: sensitive(), Planned: sensitive()},
 				{Path: "spec.forProvider[*]", Actual: str("d"), Planned: str("e"), RequiresReplace: true},
 				unk("it's"),
 			},
@@ -731,11 +736,11 @@ Summary: 1 modified (1 requires replacement)
   spec:
     forProvider:
 -     "on": a
--     'a: b': (sensitive value)
+-     'a: b': c
 -     '*': d
 -     "it's": e
 +     "on": (known after apply)
-+     'a: b': (sensitive value)
++     'a: b': d
 +     '*': e  # forces replacement
 +     "it's": (known after apply)
     deletionPolicy: Delete
@@ -749,13 +754,13 @@ Summary: 1 modified (1 requires replacement)
 			reason: "On a create, + lines are marked: a keyed item's field, a literal block's field, and an absent field under a list item.",
 			in: textDiff(dt.DiffTypeAdded, "",
 				body("    policy: |\n      version: \"1\"\n      secret: s\n    tags:\n    - key: k\n      value: v\n")),
-			changes: []plan.FieldChange{unk("policy.version"), sens("policy.secret"), repl(`tags[key="k"].value`), unk(`tags[key="k"].id`)},
+			changes: []plan.FieldChange{unk("policy.version"), repl(`tags[key="k"].value`), unk(`tags[key="k"].id`)},
 			want: `+++ Instance/db (requires replacement)
 + spec:
 +   forProvider:
 +     policy: |
 +       version: (known after apply)
-+       secret: (sensitive value)
++       secret: s
 +     tags:
 +     - key: k
 +       value: v  # forces replacement
@@ -768,19 +773,13 @@ Summary: 1 added (1 requires replacement)
 `,
 		},
 		"Unparseable": {
-			reason: "A side that does not parse has every value masked under a sensitive change; the other side is marked.",
+			reason: "A diff without objects to redact a sensitive change in has its body hidden, its header and summary kept.",
 			in: textDiff(dt.DiffTypeModified,
 				body("    password: a\n    size: 1\n"),
 				body("    password: b\n    size: [\n")),
 			changes: []plan.FieldChange{sens("password"), unk("size"), repl("password")},
 			want: `~~~ Instance/db (requires replacement)
-  spec:
-    forProvider:
--     password: (sensitive value)
--     size: 1
-+     password: (sensitive value)
-+     size: (sensitive value)
-    deletionPolicy: Delete
+  # diff hidden: it holds sensitive values that can't be redacted
 
 ---
 
@@ -873,7 +872,44 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 		reason string
 		in     *dt.ResourceDiff
 		path   string
+		// planned replaces the Planned side of the change when set.
+		planned *plan.Value
 	}{
+		"SensitiveThenUnknown": {
+			reason:  "A value sensitive before and computed after is still redacted.",
+			in:      lineDiff(t, "db", dt.DiffTypeModified, map[string]any{"pw": "OLDSECRET"}, map[string]any{"pw": "NEWSECRET"}),
+			path:    "spec.pw",
+			planned: unknown(),
+		},
+		"QuotedKey": {
+			reason: "A key starting and ending with a quote is matched by its trimmed path.",
+			in:     lineDiff(t, "db", dt.DiffTypeModified, map[string]any{"'pw'": "OLDSECRET"}, map[string]any{"'pw'": "NEWSECRET"}),
+			path:   "spec['pw']",
+		},
+		"LineSeparatorBeforeSensitive": {
+			reason: "Text ending in U+2028 before a sensitive sibling doesn't hide it from redaction.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"forProvider": map[string]any{"description": "line one\nends\u2028", "password": "OLDSECRET"}},
+				map[string]any{"forProvider": map[string]any{"description": "line one\nends\u2028", "password": "NEWSECRET"}}),
+			path: "spec.forProvider.password",
+		},
+		"KeptBlankBeforeSensitive": {
+			reason: "A sibling of a newline and a space before a sensitive field doesn't hide it from redaction.",
+			in:     lineDiff(t, "db", dt.DiffTypeModified, map[string]any{"a": "\n ", "pw": "OLDSECRET"}, map[string]any{"a": "\n ", "pw": "NEWSECRET"}),
+			path:   "spec.pw",
+		},
+		"LongKey": {
+			reason: "A key long enough that YAML writes its value on a later line is redacted.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{strings.Repeat("k", 140): "OLDSECRET"}, map[string]any{strings.Repeat("k", 140): "NEWSECRET"}),
+			path: "spec." + strings.Repeat("k", 140),
+		},
+		"ValueBelowKeyInLiteral": {
+			reason: "A field inside a literal whose value is below its key redacts the whole literal.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"c": "pw:\n  OLDSECRET\nq: 1\n"}, map[string]any{"c": "pw:\n  NEWSECRET\nq: 1\n"}),
+			path: "spec.c.pw",
+		},
 		"EqualLineNewSideUnparsed": {
 			reason: "An unchanged sensitive line is masked when only the old side parses.",
 			in: textDiff(dt.DiffTypeModified,
@@ -1008,7 +1044,18 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := render(t, report(tc.in), planFor(tc.in, plan.ActionUpdate, sens(tc.path)), noColor())
+			ch := sens(tc.path)
+			if tc.planned != nil {
+				ch.Planned = tc.planned
+			}
+			got := render(t, report(tc.in), planFor(tc.in, plan.ActionUpdate, ch), noColor())
+			// A diff without objects (textDiff) can't be redacted.
+			if tc.in.Desired.Clean == nil && !strings.Contains(got, diffHidden) {
+				t.Errorf("\n%s\nrender(): body not hidden:\n%s", tc.reason, got)
+			}
+			if !strings.Contains(got, "(sensitive value") && !strings.Contains(got, diffHidden) {
+				t.Errorf("\n%s\nrender(): no redaction marker:\n%s", tc.reason, got)
+			}
 			for _, secret := range []string{"SAMESECRET", "OLDSECRET", "NEWSECRET", "OLD2SECRET", "NEW2SECRET"} {
 				if strings.Contains(got, secret) {
 					t.Errorf("\n%s\nrender(): output contains %q:\n%s", tc.reason, secret, got)

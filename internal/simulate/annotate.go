@@ -24,7 +24,12 @@ import (
 
 	"github.com/sergi/go-diff/diffmatchpatch"
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	sigsyaml "sigs.k8s.io/yaml"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+
+	"github.com/crossplane/cli/v2/internal/diff/compare"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
@@ -35,6 +40,7 @@ const (
 	forcesReplacement  = "  # forces replacement"
 	opInsert, opDelete = diffmatchpatch.DiffInsert, diffmatchpatch.DiffDelete
 	opEqual            = diffmatchpatch.DiffEqual
+	diffHidden         = "# diff hidden: it holds sensitive values that can't be redacted"
 )
 
 // AnnotateXRReport returns r with each resource diff annotated with its
@@ -133,10 +139,12 @@ func annotateDiffs(diffs map[string]*dt.ResourceDiff, plans *ProviderPlans) (map
 // approximate or failed one carries no replacement or computed values.
 //
 // In an added or modified diff, a field the provider computes prints as
-// "(known after apply)", a value the provider marks sensitive as "(sensitive
-// value)", and the "+" line of a field that forces replacement ends
-// "  # forces replacement". Other provider changes, such as defaults, show
-// only in -o plan.
+// "(known after apply)", a value the provider marks sensitive on either side
+// as "(sensitive value)" (on the new side "(sensitive value, changed)" when it
+// changed), and the "+" line of a field that forces replacement ends
+// "  # forces replacement". A diff whose sensitive values can't be redacted
+// keeps its header but its body is one "# diff hidden" line. Other provider
+// changes, such as defaults, show only in -o plan.
 func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	if pp == nil || pp.Error != "" || pp.Approximate {
 		return d
@@ -153,29 +161,24 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 		return d
 	}
 
-	lines := flatten(d.LineDiffs)
+	changes := plan.SortedChanges(pp.Changes)
+	diffs, redacted, err := redactDiff(d, changes)
+	if err != nil {
+		out := *d
+		out.LineDiffs = []diffmatchpatch.Diff{{Type: opEqual, Text: diffHidden + "\n"}}
+		return &out
+	}
+
+	lines := flatten(diffs)
 	s := place(lines)
 
-	changes := plan.SortedChanges(pp.Changes)
-	changed, secret := false, false
+	changed := redacted
 	for _, c := range changes {
-		var ok bool
-		switch {
-		case c.Planned != nil && c.Planned.Unknown:
+		if c.Planned != nil && c.Planned.Unknown {
+			var ok bool
 			lines, ok = markUnknown(lines, s.field(c.Path))
-		case (c.Planned != nil && c.Planned.Sensitive) || (c.Actual != nil && c.Actual.Sensitive):
-			// Every match, not only the first one other markers use.
-			for _, f := range s.fields(c.Path) {
-				var o bool
-				lines, o = markSensitive(lines, f)
-				ok = ok || o
-			}
-			secret = true
+			changed = changed || ok
 		}
-		changed = changed || ok
-	}
-	if secret {
-		changed = maskUnparsed(lines, s) || changed
 	}
 	for _, c := range changes {
 		if c.RequiresReplace {
@@ -191,6 +194,50 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	out.LineDiffs = chunk(lines)
 
 	return &out
+}
+
+// redactDiff returns d's line diff with every value a change marks sensitive,
+// on either side, replaced as plan.RedactPaths does, and whether there was
+// any. The diff is made again from redacted copies of the Clean views, as
+// compare.GenerateDiff makes it, so no secret reaches the text. It returns an
+// error when a sensitive value can't be redacted: the caller must hide the
+// body.
+func redactDiff(d *dt.ResourceDiff, changes []plan.FieldChange) ([]diffmatchpatch.Diff, bool, error) {
+	var paths []string
+	for _, c := range changes {
+		if (c.Actual != nil && c.Actual.Sensitive) || (c.Planned != nil && c.Planned.Sensitive) {
+			paths = append(paths, c.Path)
+		}
+	}
+	if len(paths) == 0 {
+		return d.LineDiffs, false, nil
+	}
+	// An added diff has no current side; any other side must have its view.
+	if d.Desired.Clean == nil || (d.DiffType != dt.DiffTypeAdded && d.Current.Clean == nil) {
+		return nil, false, errors.New("a diff without its objects can't be redacted")
+	}
+
+	cur, des, err := plan.RedactPaths(d.Current.Clean, d.Desired.Clean, paths)
+	if err != nil {
+		return nil, false, err
+	}
+	text := func(u *unstructured.Unstructured) (string, error) {
+		if u == nil {
+			return "", nil
+		}
+		b, err := sigsyaml.Marshal(u.Object)
+		return string(b), err
+	}
+	old, err := text(cur)
+	if err != nil {
+		return nil, false, err
+	}
+	nu, err := text(des)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return compare.GetLineDiff(old, nu), true, nil
 }
 
 // driftDiff renders an equal diff the provider would change, which is drift
@@ -325,22 +372,19 @@ type sides struct{ old, new *yaml.Node }
 //
 // ponytail: lines are placed by gopkg.in/yaml.v3 node positions, including
 // the fields of a literal (|) block scalar holding a YAML or JSON map or
-// list, and a list item keyed by a field (see resolve). Redaction fails
-// closed where placement can't reach; the coarse cases are:
-//   - a side that doesn't parse: every value on it is masked, keeping only
-//     indentation and keys (see maskUnparsed), and no other marker is placed;
+// list, and a list item keyed by a field (see resolve). Sensitive values are
+// redacted before this, in the objects (see redactDiff). The coarse cases are:
+//   - a side that doesn't parse: no marker is placed on it;
 //   - a folded (>), quoted or plain multi-line scalar, a literal one that is
 //     not a map or list, or a flow map or list on one line (pw: {a: x}, or a
-//     JSON field that shares its line): a Sensitive field inside is masked as
-//     that whole value, and an unknown or replacement marker is not placed;
-//   - a sensitive map or list in a JSON literal drops its fields, but its
-//     closing lines such as "}," stay;
-//   - a keyed level matching more than one item is redacted in each, but
-//     the unknown and replacement markers go on the first only;
+//     JSON field that shares its line): an unknown or replacement marker
+//     inside is not placed;
+//   - a keyed level matching more than one item: the markers go on the first
+//     only;
 //   - an absent field whose deepest present ancestor is a scalar, or a keyed
 //     item a side lacks, gets no unknown marker;
 //   - a key that starts or ends with a quote, which plan.DisplayLevels trims
-//     as fieldpath.Parse does, is not found.
+//     as fieldpath.Parse does, gets no marker.
 //
 // The header, the summary and -o plan still carry what isn't marked inline.
 // Upgrade path for the keys: carry fieldpath segments, not display levels,
@@ -619,24 +663,6 @@ func (s sides) field(path string) field {
 	return field{old: resolve(s.old, levels), new: resolve(s.new, levels)}
 }
 
-// fields returns every match of path on each side, as resolveAll finds them,
-// paired by order: a keyed level may match more than one list item.
-func (s sides) fields(path string) []field {
-	levels := plan.DisplayLevels(path)
-	old, nu := resolveAll(s.old, levels), resolveAll(s.new, levels)
-	fs := make([]field, max(len(old), len(nu)))
-	for i := range fs {
-		if i < len(old) {
-			fs[i].old = old[i]
-		}
-		if i < len(nu) {
-			fs[i].new = nu[i]
-		}
-	}
-
-	return fs
-}
-
 // on reports whether l is on the field, on either side it belongs to.
 func (f field) on(l line) bool {
 	old, oldCont := l.oldSide()
@@ -818,117 +844,6 @@ func markUnknown(lines []line, f field) ([]line, bool) {
 	added := line{op: opInsert, text: text, segs: segs, value: len(text) - len(knownAfterApply)}
 
 	return slices.Insert(lines, anchor+1, added), true
-}
-
-// markSensitive replaces every value of the field f with "(sensitive
-// value)", on each side. A map or list value, or a list item the field names,
-// becomes that one line, its subtree dropped. It returns the new lines, and
-// whether it replaced any.
-func markSensitive(lines []line, f field) ([]line, bool) {
-	sensitive := plan.FormatValue(&plan.Value{Sensitive: true})
-	changed := false
-	for i := 0; i < len(lines); i++ {
-		l := lines[i]
-		item := len(l.item) > 0 && ((l.op != opDelete && slices.Equal(l.item, f.new)) || (l.op == opDelete && slices.Equal(l.item, f.old)))
-		switch {
-		case item:
-			// "- key: value": the item's dash stays.
-			lines[i].value = l.itemCol
-		case !f.on(l):
-			continue
-		case l.value < 0 && l.parent:
-			lines[i].text, lines[i].value = opening(l.text)
-		case l.value < 0:
-			continue
-		}
-		lines = setValue(lines, i, f, sensitive, false)
-		changed = true
-	}
-
-	// On a side with no line in the field, a scalar above it, such as a
-	// literal block whose content is not a YAML or JSON map or list, may still
-	// hold it: replace the whole scalar.
-	var inOld, inNew bool
-	for _, l := range lines {
-		old, _ := l.oldSide()
-		inOld = inOld || (l.op != opInsert && len(f.old) > 0 && len(old) >= len(f.old) && within(old, f.old))
-		inNew = inNew || (l.op != opDelete && len(f.new) > 0 && len(l.segs) >= len(f.new) && within(l.segs, f.new))
-	}
-	for i := 0; i < len(lines); i++ {
-		l := lines[i]
-		if l.value < 0 {
-			continue
-		}
-		var at field
-		if old, cont := l.oldSide(); !inOld && l.op != opInsert && !cont && len(old) > 0 && !slices.Equal(f.old, old) && within(f.old, old) {
-			at.old = old
-		}
-		if !inNew && l.op != opDelete && !l.cont && len(l.segs) > 0 && !slices.Equal(f.new, l.segs) && within(f.new, l.segs) {
-			at.new = l.segs
-		}
-		if at.old != nil || at.new != nil {
-			lines = setValue(lines, i, at, sensitive, false)
-			changed = true
-		}
-	}
-
-	return lines, changed
-}
-
-// opening returns the line text of a map or list's parent with the offset
-// its value would start at: after "key: ", or its whole body when it has no
-// key, as an item opening a JSON map does.
-func opening(text string) (string, int) {
-	t := strings.TrimRight(text, " ")
-	if strings.HasSuffix(t, ":") {
-		return t + " ", len(t) + 1
-	}
-	if i := strings.LastIndex(t, ": "); i >= 0 {
-		return t, i + 2
-	}
-
-	return t, len(t) - len(strings.TrimLeft(t, " "))
-}
-
-// maskUnparsed replaces the value of every line on a side of lines that
-// doesn't parse, as s holds them, with "(sensitive value)": the field a
-// Sensitive change names on that side can't be found, so any line could hold
-// it. An equal line is masked only when neither side parses, as the other
-// side places it otherwise. It reports whether it masked any line.
-//
-// ponytail: masks the whole side, keeping only indentation and keys, rather
-// than the lines under a Sensitive change's path. Reachable only when the
-// rendered YAML and yaml.v3 disagree; narrow it if that ever happens in use.
-func maskUnparsed(lines []line, s sides) bool {
-	var hasOld, hasNew bool
-	for _, l := range lines {
-		hasOld = hasOld || l.op != opInsert
-		hasNew = hasNew || l.op != opDelete
-	}
-	badOld, badNew := hasOld && s.old == nil, hasNew && s.new == nil
-	sensitive := plan.FormatValue(&plan.Value{Sensitive: true})
-	changed := false
-	for i, l := range lines {
-		if (l.op == opEqual && (!badOld || !badNew)) || (l.op == opDelete && !badOld) || (l.op == opInsert && !badNew) {
-			continue
-		}
-		body := strings.TrimLeft(l.text, " ")
-		indent := l.text[:len(l.text)-len(body)]
-		t := indent + sensitive
-		if k, _, ok := strings.Cut(body, ": "); ok {
-			t = indent + k + ": " + sensitive
-		} else if strings.HasSuffix(body, ":") {
-			// A key alone, as in "pw:".
-			continue
-		}
-		if body == "" || t == l.text {
-			continue
-		}
-		lines[i].text = t
-		changed = true
-	}
-
-	return changed
 }
 
 // setValue sets the scalar value of line i, on the field f, to v, dropping

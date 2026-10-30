@@ -16,6 +16,7 @@ let
   # Go builders backed by a single shared per-module vendor cache.
   # See nix/go-builders.nix.
   inherit (import ./go-builders.nix { inherit pkgs self; }) buildRoot;
+  crossplaneCRDs = import ./crossplane-crds.nix { inherit pkgs; };
 in
 {
   # Run Go unit tests with coverage
@@ -26,7 +27,13 @@ in
       inherit version;
       src = self;
 
-      env.CGO_ENABLED = "0";
+      # Runs untagged unit tests only; the integration tests (envtest) run
+      # through the integration-test app. CROSSPLANE_CRDS_DIR serves the
+      # untagged CRD helper tests in internal/testutils/integration.
+      env = {
+        CGO_ENABLED = "0";
+        CROSSPLANE_CRDS_DIR = crossplaneCRDs;
+      };
 
       dontBuild = true;
 

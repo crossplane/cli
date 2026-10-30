@@ -11,8 +11,14 @@
 #   ''${SOME_VAR}        -> ${SOME_VAR}             (shell variable, escaped)
 #
 # Each app declares its tool dependencies via runtimeInputs, with inheritPath
-# set to false. This ensures apps only use explicitly declared tools.
+# set to false. This ensures apps only use explicitly declared tools. The
+# exception is integration-test, which keeps the host PATH (see there).
 { pkgs }:
+let
+  # envtest binaries for the integration tests; null only on systems
+  # without an envtest build, where the tests skip.
+  envtestAssets = import ./envtest-assets.nix { inherit pkgs; };
+in
 {
   # Run Go unit tests.
   test = _: {
@@ -25,7 +31,56 @@
         inheritPath = false;
         text = ''
           export CGO_ENABLED=0
+          export CROSSPLANE_CRDS_DIR="''${CROSSPLANE_CRDS_DIR:-${
+            import ./crossplane-crds.nix { inherit pkgs; }
+          }}"
           go test -covermode=count ./... "$@"
+        '';
+      }
+    );
+  };
+
+  # Run the integration tests: CLI commands against an envtest API server.
+  # envtest binaries and Crossplane's CRDs come from the Nix store. Unlike the
+  # sandboxed `test` check this runs outside the Nix sandbox, and it keeps the
+  # host PATH (Nix inputs first) so tests that run functions (#436's simulate
+  # tests) can reach the host's Docker and its credential helpers
+  # (docker-credential-*). CI runs it in the integration-tests job in
+  # .github/workflows/ci.yml.
+  integration-test = _: {
+    type = "app";
+    meta.description = "Run integration tests against envtest";
+    program = pkgs.lib.getExe (
+      pkgs.writeShellApplication {
+        name = "crossplane-cli-integration-test";
+        runtimeInputs = [ pkgs.unstable.go_1_26 ];
+        inheritPath = true;
+        text = ''
+          export CGO_ENABLED=0
+          export CROSSPLANE_CRDS_DIR="''${CROSSPLANE_CRDS_DIR:-${
+            import ./crossplane-crds.nix { inherit pkgs; }
+          }}"
+          ${pkgs.lib.optionalString (
+            envtestAssets != null
+          ) ''export KUBEBUILDER_ASSETS="''${KUBEBUILDER_ASSETS:-${envtestAssets}}"''}
+          # Integration tests are the test files with `//go:build integration`.
+          # Run every package that has one: its test files with the tag, minus
+          # those without it. go list applies Go's build-constraint rules.
+          # Unit tests in those packages run here too.
+          tests='{{range .TestGoFiles}}{{$.ImportPath}} {{.}}{{"\n"}}{{end}}{{range .XTestGoFiles}}{{$.ImportPath}} {{.}}{{"\n"}}{{end}}'
+          lists=$(mktemp -d)
+          go list -f "$tests" ./... | sort >"$lists/untagged"
+          go list -tags integration -f "$tests" ./... | sort >"$lists/tagged"
+          mapfile -t pkgs < <(comm -13 "$lists/untagged" "$lists/tagged" | cut -d' ' -f1 | sort -u)
+          rm -rf "$lists"
+          if [ "''${#pkgs[@]}" -eq 0 ]; then
+            echo "integration-test: found no packages with //go:build integration test files" >&2
+            exit 1
+          fi
+          # -coverpkg credits the tests' coverage to the packages they exercise;
+          # without it the profile only covers the test packages themselves.
+          go test -tags integration -covermode=count \
+            -coverpkg=./... -coverprofile=coverage-integration.txt "''${pkgs[@]}" "$@"
         '';
       }
     );

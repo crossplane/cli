@@ -137,6 +137,7 @@
         in
         {
           test = apps.test { };
+          integration-test = apps.integration-test { };
           lint = apps.lint { };
           generate = apps.generate { };
           tidy = apps.tidy { };

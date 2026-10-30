@@ -26,29 +26,32 @@ import (
 )
 
 func TestExitStatus(t *testing.T) {
+	type args struct {
+		plans []*plan.ResourcePlan
+	}
 	cases := map[string]struct {
 		reason string
-		plans  []*plan.ResourcePlan
+		args   args
 		want   int
 	}{
 		"NoChanges": {
 			reason: "Plans that change nothing should exit 0.",
-			plans:  []*plan.ResourcePlan{{Action: plan.ActionNoOp}},
+			args:   args{plans: []*plan.ResourcePlan{{Action: plan.ActionNoOp}}},
 			want:   0,
 		},
 		"Changes": {
 			reason: "A plan that would change a resource should exit 3.",
-			plans:  []*plan.ResourcePlan{{Action: plan.ActionNoOp}, {Action: plan.ActionUpdate}},
+			args:   args{plans: []*plan.ResourcePlan{{Action: plan.ActionNoOp}, {Action: plan.ActionUpdate}}},
 			want:   3,
 		},
 		"ErroredOnly": {
 			reason: "A plan that errored should exit 1.",
-			plans:  []*plan.ResourcePlan{{Action: plan.ActionUpdate, Error: "boom"}},
+			args:   args{plans: []*plan.ResourcePlan{{Action: plan.ActionUpdate, Error: "boom"}}},
 			want:   1,
 		},
 		"ErroredWithChanges": {
 			reason: "An errored plan should exit 1, not 3, even when other plans have changes.",
-			plans:  []*plan.ResourcePlan{{Action: plan.ActionUpdate}, {Error: "boom"}},
+			args:   args{plans: []*plan.ResourcePlan{{Action: plan.ActionUpdate}, {Error: "boom"}}},
 			want:   1,
 		},
 	}
@@ -57,7 +60,7 @@ func TestExitStatus(t *testing.T) {
 			// Exit as main does: a silent ExitError with its code, any
 			// other error with 1.
 			got := 0
-			err := exitStatus(tc.plans)
+			err := exitStatus(tc.args.plans)
 			if code, ok := common.SilentExit(err); ok {
 				got = code
 			} else if err != nil {

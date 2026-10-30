@@ -29,22 +29,25 @@ func TestSilentExit(t *testing.T) {
 		code   int
 		silent bool
 	}
+	type args struct {
+		err error
+	}
 	cases := map[string]struct {
 		reason string
-		err    error
+		args   args
 		want   want
 	}{
-		"Nil":      {reason: "No error isn't a silent exit.", err: nil},
-		"Silent":   {reason: "A silent ExitError value exits silently with its code.", err: ExitError{Code: ExitCodeChanges}, want: want{code: ExitCodeChanges, silent: true}},
-		"WithErr":  {reason: "An ExitError with an error is printed.", err: ExitError{Code: 2, Err: errors.New("boom")}},
-		"Wrapped":  {reason: "A wrapped silent ExitError is printed, so the wrapper's message isn't lost.", err: errors.Wrap(ExitError{Code: ExitCodeChanges}, "boom")},
-		"KongJoin": {reason: "kong's Run joins a silent ExitError with nil hook errors, which still exits silently.", err: errors.Join(ExitError{Code: ExitCodeChanges}, nil), want: want{code: ExitCodeChanges, silent: true}},
-		"Joined":   {reason: "A silent ExitError joined with a real error is printed.", err: errors.Join(ExitError{Code: ExitCodeChanges}, errors.New("boom"))},
-		"Pointer":  {reason: "A pointer isn't matched; ExitError must be returned by value.", err: &ExitError{Code: ExitCodeChanges}},
+		"Nil":      {reason: "No error isn't a silent exit.", args: args{err: nil}},
+		"Silent":   {reason: "A silent ExitError value exits silently with its code.", args: args{err: ExitError{Code: ExitCodeChanges}}, want: want{code: ExitCodeChanges, silent: true}},
+		"WithErr":  {reason: "An ExitError with an error is printed.", args: args{err: ExitError{Code: 2, Err: errors.New("boom")}}},
+		"Wrapped":  {reason: "A wrapped silent ExitError is printed, so the wrapper's message isn't lost.", args: args{err: errors.Wrap(ExitError{Code: ExitCodeChanges}, "boom")}},
+		"KongJoin": {reason: "kong's Run joins a silent ExitError with nil hook errors, which still exits silently.", args: args{err: errors.Join(ExitError{Code: ExitCodeChanges}, nil)}, want: want{code: ExitCodeChanges, silent: true}},
+		"Joined":   {reason: "A silent ExitError joined with a real error is printed.", args: args{err: errors.Join(ExitError{Code: ExitCodeChanges}, errors.New("boom"))}},
+		"Pointer":  {reason: "A pointer isn't matched; ExitError must be returned by value.", args: args{err: &ExitError{Code: ExitCodeChanges}}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			code, silent := SilentExit(tc.err)
+			code, silent := SilentExit(tc.args.err)
 			if diff := cmp.Diff(tc.want, want{code: code, silent: silent}, cmp.AllowUnexported(want{})); diff != "" {
 				t.Errorf("\n%s\nSilentExit(...): -want, +got:\n%s", tc.reason, diff)
 			}

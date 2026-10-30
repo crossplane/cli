@@ -164,7 +164,12 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 		case c.Planned != nil && c.Planned.Unknown:
 			lines, ok = markUnknown(lines, s.field(c.Path))
 		case (c.Planned != nil && c.Planned.Sensitive) || (c.Actual != nil && c.Actual.Sensitive):
-			lines, ok = markSensitive(lines, s.field(c.Path))
+			// Every match, not only the first one other markers use.
+			for _, f := range s.fields(c.Path) {
+				var o bool
+				lines, o = markSensitive(lines, f)
+				ok = ok || o
+			}
 			secret = true
 		}
 		changed = changed || ok
@@ -329,6 +334,8 @@ type sides struct{ old, new *yaml.Node }
 // side lacks; and a key that starts or ends with a quote, which
 // plan.DisplayLevels trims as fieldpath.Parse does. Upgrade path for the
 // keys: carry fieldpath segments, not display levels, in plan.FieldChange.
+// A keyed item that matches more than one item is redacted in each, but the
+// unknown and replacement markers go on the first only.
 func place(lines []line) sides {
 	old := slices.Clone(lines)
 	s := sides{old: placeSide(old, func(op diffmatchpatch.Operation) bool { return op != opInsert }), new: placeSide(lines, desired)}
@@ -340,7 +347,7 @@ func place(lines []line) sides {
 			lines[i].old, lines[i].oldCont = o.segs, o.cont
 			if s.new == nil {
 				// Only the old side placed it, so its value is there.
-				lines[i].value = o.value
+				lines[i].value, lines[i].parent = o.value, o.parent
 			}
 		case opInsert:
 			// Placed on the new side only.
@@ -604,6 +611,24 @@ func (s sides) field(path string) field {
 	return field{old: resolve(s.old, levels), new: resolve(s.new, levels)}
 }
 
+// fields returns every match of path on each side, as resolveAll finds them,
+// paired by order: a keyed level may match more than one list item.
+func (s sides) fields(path string) []field {
+	levels := plan.DisplayLevels(path)
+	old, nu := resolveAll(s.old, levels), resolveAll(s.new, levels)
+	fs := make([]field, max(len(old), len(nu)))
+	for i := range fs {
+		if i < len(old) {
+			fs[i].old = old[i]
+		}
+		if i < len(nu) {
+			fs[i].new = nu[i]
+		}
+	}
+
+	return fs
+}
+
 // on reports whether l is on the field, on either side it belongs to.
 func (f field) on(l line) bool {
 	old, oldCont := l.oldSide()
@@ -618,21 +643,43 @@ func (f field) holdsNew(l line) bool { return holds(l.segs, l.cont, f.new) }
 func (f field) holdsOld(l line) bool { old, cont := l.oldSide(); return holds(old, cont, f.old) }
 
 func holds(segs []string, cont bool, at []string) bool {
-	return len(at) > 0 && ((cont && slices.Equal(segs, at)) || (len(segs) > len(at) && within(segs, at)))
+	if len(at) == 0 {
+		return false
+	}
+	if slices.Equal(segs, at) {
+		return cont
+	}
+
+	// A deeper field, or an item of the list at at: spec.ports[0].
+	return within(segs, at)
 }
 
 // resolve returns levels as the document doc places them. A keyed level,
 // key=value after a list, as plan.DisplayLevels splits tags[key="k"], is the
-// index of the list's item whose key field holds value: tags[0]. Levels
+// index of the first list item whose key field holds value: tags[0]. Levels
 // below a field doc lacks are kept as they are. It returns nil when doc is
 // nil, or when a keyed level names an item doc lacks.
 func resolve(doc *yaml.Node, levels []string) []string {
+	if all := resolveAll(doc, levels); len(all) > 0 {
+		return all[0]
+	}
+
+	return nil
+}
+
+// resolveAll returns levels as resolve does, once per list item a keyed
+// level matches, in document order.
+func resolveAll(doc *yaml.Node, levels []string) [][]string {
 	if doc == nil {
 		return nil
 	}
-	out := make([]string, 0, len(levels))
-	n := doc
-	for _, lv := range levels {
+
+	return walk(doc, make([]string, 0, len(levels)), levels)
+}
+
+// walk resolves levels below the node n at the path out.
+func walk(n *yaml.Node, out, levels []string) [][]string {
+	for k, lv := range levels {
 		name, idx := splitIndexes(lv)
 		key, want, keyed := strings.Cut(name, "=")
 		switch {
@@ -641,32 +688,39 @@ func resolve(doc *yaml.Node, levels []string) []string {
 			return nil
 		case keyed && n != nil && n.Kind == yaml.SequenceNode && len(out) > 0:
 			want = strings.Trim(want, `"'`)
-			i := slices.IndexFunc(n.Content, func(it *yaml.Node) bool {
-				f := lookup(it, key)
-				return f != nil && f.Kind == yaml.ScalarNode && f.Value == want
-			})
-			if i < 0 {
-				return nil
+			var all [][]string
+			for i, it := range n.Content {
+				if f := lookup(it, key); f == nil || f.Kind != yaml.ScalarNode || f.Value != want {
+					continue
+				}
+				o := slices.Clone(out)
+				o[len(o)-1] += "[" + strconv.Itoa(i) + "]" + lv[len(name):]
+				all = append(all, walk(descend(it, idx), o, levels[k+1:])...)
 			}
-			out[len(out)-1] += "[" + strconv.Itoa(i) + "]" + lv[len(name):]
-			n = n.Content[i]
+			return all
 		default:
 			out = append(out, lv)
-			n = lookup(n, name)
-		}
-		for _, i := range idx {
-			if n == nil || n.Kind != yaml.SequenceNode || i >= len(n.Content) {
-				n = nil
-				break
-			}
-			n = n.Content[i]
-		}
-		if c := content(n); c != nil {
-			n = c
+			n = descend(lookup(n, name), idx)
 		}
 	}
 
-	return out
+	return [][]string{out}
+}
+
+// descend returns the item of n at the list indexes idx, or nil, as the map
+// or list a literal block scalar holds when it holds one.
+func descend(n *yaml.Node, idx []int) *yaml.Node {
+	for _, i := range idx {
+		if n == nil || n.Kind != yaml.SequenceNode || i >= len(n.Content) {
+			return nil
+		}
+		n = n.Content[i]
+	}
+	if c := content(n); c != nil {
+		return c
+	}
+
+	return n
 }
 
 // lookup returns the value of key in the map n, or nil.
@@ -759,16 +813,28 @@ func markUnknown(lines []line, f field) ([]line, bool) {
 }
 
 // markSensitive replaces every value of the field f with "(sensitive
-// value)", on each side. It returns the new lines, and whether it replaced
-// any.
+// value)", on each side. A map or list value, or a list item the field names,
+// becomes that one line, its subtree dropped. It returns the new lines, and
+// whether it replaced any.
 func markSensitive(lines []line, f field) ([]line, bool) {
 	sensitive := plan.FormatValue(&plan.Value{Sensitive: true})
 	changed := false
 	for i := 0; i < len(lines); i++ {
-		if l := lines[i]; l.value >= 0 && f.on(l) {
-			lines = setValue(lines, i, f, sensitive, false)
-			changed = true
+		l := lines[i]
+		item := len(l.item) > 0 && ((l.op != opDelete && slices.Equal(l.item, f.new)) || (l.op == opDelete && slices.Equal(l.item, f.old)))
+		switch {
+		case item:
+			// "- key: value": the item's dash stays.
+			lines[i].value = l.itemCol
+		case !f.on(l):
+			continue
+		case l.value < 0 && l.parent:
+			lines[i].text, lines[i].value = opening(l.text)
+		case l.value < 0:
+			continue
 		}
+		lines = setValue(lines, i, f, sensitive, false)
+		changed = true
 	}
 
 	// On a side with no line in the field, a scalar above it, such as a
@@ -799,6 +865,21 @@ func markSensitive(lines []line, f field) ([]line, bool) {
 	}
 
 	return lines, changed
+}
+
+// opening returns the line text of a map or list's parent with the offset
+// its value would start at: after "key: ", or its whole body when it has no
+// key, as an item opening a JSON map does.
+func opening(text string) (string, int) {
+	t := strings.TrimRight(text, " ")
+	if strings.HasSuffix(t, ":") {
+		return t + " ", len(t) + 1
+	}
+	if i := strings.LastIndex(t, ": "); i >= 0 {
+		return t, i + 2
+	}
+
+	return t, len(t) - len(strings.TrimLeft(t, " "))
 }
 
 // maskUnparsed replaces the value of every line on a side of lines that

@@ -845,11 +845,60 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 				map[string]any{"cfg": "zz\n{\"pw\": \"NEWSECRET\"}\n"}),
 			path: "spec.cfg.pw",
 		},
+		"ListItemUnparsed": {
+			reason: "A list item or continuation line without a key on an unparsed side is masked.",
+			in: textDiff(dt.DiffTypeModified,
+				marshal(map[string]any{"pw": []any{"OLDSECRET"}, "size": 1}),
+				marshal(map[string]any{"pw": []any{"NEWSECRET"}})+"  size: [\n"),
+			path: "spec.pw",
+		},
+		"SensitiveMap": {
+			reason: "A sensitive map is one masked line on each side; its children are dropped.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"pw": map[string]any{"a": "OLDSECRET", "same": "SAMESECRET"}},
+				map[string]any{"pw": map[string]any{"a": "NEWSECRET", "same": "SAMESECRET"}}),
+			path: "spec.pw",
+		},
+		"SensitiveList": {
+			reason: "A sensitive list is one masked line on each side; its items are dropped.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"pw": []any{"SAMESECRET", map[string]any{"k": "OLDSECRET"}}},
+				map[string]any{"pw": []any{"SAMESECRET", map[string]any{"k": "NEWSECRET"}}}),
+			path: "spec.pw",
+		},
+		"SensitiveJSONObjectInLiteral": {
+			reason: "A sensitive JSON object inside a literal block is masked with its content dropped.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"policy": "{\n  \"Statement\": {\n    \"a\": \"OLDSECRET\",\n    \"b\": \"SAMESECRET\"\n  },\n  \"Version\": \"1\"\n}\n"},
+				map[string]any{"policy": "{\n  \"Statement\": {\n    \"a\": \"NEWSECRET\",\n    \"b\": \"SAMESECRET\"\n  },\n  \"Version\": \"1\"\n}\n"}),
+			path: "spec.policy.Statement",
+		},
+		"MapToLiteral": {
+			reason: "A sensitive field changing from a map to a literal drops both sides' content.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"pw": map[string]any{"SAMESECRET": "x"}},
+				map[string]any{"pw": "SAMESECRET: x\nNEWSECRET: y\n"}),
+			path: "spec.pw",
+		},
+		"DuplicateKeyedItems": {
+			reason: "Every list item a keyed sensitive path matches is redacted, not only the first.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"tags": []any{map[string]any{"key": "b", "value": "OLDSECRET"}, map[string]any{"key": "b", "value": "OLD2SECRET"}}},
+				map[string]any{"tags": []any{map[string]any{"key": "b", "value": "NEWSECRET"}, map[string]any{"key": "b", "value": "NEW2SECRET"}}}),
+			path: `spec.tags[key="b"].value`,
+		},
+		"DuplicateKeyedWholeItems": {
+			reason: "A sensitive keyed item is masked whole, for every item it matches.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"tags": []any{map[string]any{"key": "b", "value": "OLDSECRET"}, map[string]any{"key": "b", "value": "OLD2SECRET"}}},
+				map[string]any{"tags": []any{map[string]any{"key": "b", "value": "NEWSECRET"}, map[string]any{"key": "b", "value": "NEW2SECRET"}}}),
+			path: `spec.tags[key="b"]`,
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			got := render(t, report(tc.in), planFor(tc.in, plan.ActionUpdate, sens(tc.path)), noColor())
-			for _, secret := range []string{"SAMESECRET", "OLDSECRET", "NEWSECRET"} {
+			for _, secret := range []string{"SAMESECRET", "OLDSECRET", "NEWSECRET", "OLD2SECRET", "NEW2SECRET"} {
 				if strings.Contains(got, secret) {
 					t.Errorf("\n%s\nrender(): output contains %q:\n%s", tc.reason, secret, got)
 				}

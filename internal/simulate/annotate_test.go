@@ -65,6 +65,8 @@ func lineDiff(t *testing.T, name string, typ dt.DiffType, current, desired map[s
 		Current: dt.ResourceViews{Raw: cur}, Desired: dt.ResourceViews{Raw: des},
 	}
 	if typ != dt.DiffTypeEqual {
+		// As GenerateDiff: only a non-equal diff carries Clean views.
+		d.Current.Clean, d.Desired.Clean = cur, des
 		d.LineDiffs = compare.GetLineDiff(curText, desText)
 	}
 

@@ -1,0 +1,60 @@
+# A v1 XRD with a claim, its Composition, and a claim bound to the XR in
+# xr.yaml, as Crossplane's claim syncer binds it.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xnops.trace.example.org
+spec:
+  group: trace.example.org
+  names:
+    kind: XNop
+    plural: xnops
+  claimNames:
+    kind: NopClaim
+    plural: nopclaims
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                coolField:
+                  type: string
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xnops.trace.example.org
+spec:
+  compositeTypeRef:
+    apiVersion: trace.example.org/v1alpha1
+    kind: XNop
+  mode: Pipeline
+  pipeline:
+    - step: generate-resources
+      functionRef:
+        name: function-dummy
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-namespace
+---
+apiVersion: trace.example.org/v1alpha1
+kind: NopClaim
+metadata:
+  name: test-claim
+  namespace: test-namespace
+spec:
+  coolField: claim-value
+  compositionRef:
+    name: xnops.trace.example.org
+  resourceRef:
+    apiVersion: trace.example.org/v1alpha1
+    kind: XNop
+    name: test-claim-xr

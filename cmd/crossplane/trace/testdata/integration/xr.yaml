@@ -1,0 +1,15 @@
+# The XR backing the claim in setup.yaml. Start fills in its resourceRefs from
+# the composed resources it is set up with.
+apiVersion: trace.example.org/v1alpha1
+kind: XNop
+metadata:
+  name: test-claim-xr
+spec:
+  claimRef:
+    apiVersion: trace.example.org/v1alpha1
+    kind: NopClaim
+    name: test-claim
+    namespace: test-namespace
+  coolField: claim-value
+  compositionRef:
+    name: xnops.trace.example.org

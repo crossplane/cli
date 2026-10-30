@@ -6,6 +6,10 @@ run:
   # runs our unit tests. Lint them anyway, so they don't rot.
   build-tags:
     - compilegate
+    # The integration tests need envtest's binaries, so they sit behind the
+    # integration tag and run in their own target, not the unit tests. Lint
+    # them anyway.
+    - integration
 
 output:
   formats:

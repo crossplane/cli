@@ -1,0 +1,19 @@
+apiVersion: nop.example.org/v1alpha1
+kind: NopResource
+metadata:
+  annotations:
+    crossplane.io/composition-resource-name: ready
+  name: test-claim-xr-ready
+spec:
+  forProvider:
+    configData: claim-value
+status:
+  conditions:
+    - type: Synced
+      status: "True"
+      reason: ReconcileSuccess
+      lastTransitionTime: "2026-01-01T00:00:00Z"
+    - type: Ready
+      status: "True"
+      reason: Available
+      lastTransitionTime: "2026-01-01T00:00:00Z"

@@ -45,3 +45,6 @@ AGENTS.md
 
 # Ignore local dev environment variables
 .env
+
+# Integration test coverage (nix run .#integration-test)
+/coverage-integration.txt

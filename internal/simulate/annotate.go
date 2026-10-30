@@ -157,7 +157,7 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	s := place(lines)
 
 	changes := plan.SortedChanges(pp.Changes)
-	changed := false
+	changed, secret := false, false
 	for _, c := range changes {
 		var ok bool
 		switch {
@@ -165,8 +165,12 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 			lines, ok = markUnknown(lines, s.field(c.Path))
 		case (c.Planned != nil && c.Planned.Sensitive) || (c.Actual != nil && c.Actual.Sensitive):
 			lines, ok = markSensitive(lines, s.field(c.Path))
+			secret = true
 		}
 		changed = changed || ok
+	}
+	if secret {
+		changed = maskUnparsed(lines, s) || changed
 	}
 	for _, c := range changes {
 		if c.RequiresReplace {
@@ -334,6 +338,10 @@ func place(lines []line) sides {
 			lines[i] = o
 		case opEqual:
 			lines[i].old, lines[i].oldCont = o.segs, o.cont
+			if s.new == nil {
+				// Only the old side placed it, so its value is there.
+				lines[i].value = o.value
+			}
 		case opInsert:
 			// Placed on the new side only.
 		}
@@ -763,7 +771,75 @@ func markSensitive(lines []line, f field) ([]line, bool) {
 		}
 	}
 
+	// On a side with no line in the field, a scalar above it, such as a
+	// literal block whose content is not a YAML or JSON map or list, may still
+	// hold it: replace the whole scalar.
+	var inOld, inNew bool
+	for _, l := range lines {
+		old, _ := l.oldSide()
+		inOld = inOld || (l.op != opInsert && len(f.old) > 0 && len(old) >= len(f.old) && within(old, f.old))
+		inNew = inNew || (l.op != opDelete && len(f.new) > 0 && len(l.segs) >= len(f.new) && within(l.segs, f.new))
+	}
+	for i := 0; i < len(lines); i++ {
+		l := lines[i]
+		if l.value < 0 {
+			continue
+		}
+		var at field
+		if old, cont := l.oldSide(); !inOld && l.op != opInsert && !cont && len(f.old) > len(old) && within(f.old, old) {
+			at.old = old
+		}
+		if !inNew && l.op != opDelete && !l.cont && len(f.new) > len(l.segs) && within(f.new, l.segs) {
+			at.new = l.segs
+		}
+		if at.old != nil || at.new != nil {
+			lines = setValue(lines, i, at, sensitive, false)
+			changed = true
+		}
+	}
+
 	return lines, changed
+}
+
+// maskUnparsed replaces the value of every line on a side of lines that
+// doesn't parse, as s holds them, with "(sensitive value)": the field a
+// Sensitive change names on that side can't be found, so any line could hold
+// it. An equal line is masked only when neither side parses, as the other
+// side places it otherwise. It reports whether it masked any line.
+//
+// ponytail: masks the whole side, keeping only indentation and keys, rather
+// than the lines under a Sensitive change's path. Reachable only when the
+// rendered YAML and yaml.v3 disagree; narrow it if that ever happens in use.
+func maskUnparsed(lines []line, s sides) bool {
+	var hasOld, hasNew bool
+	for _, l := range lines {
+		hasOld = hasOld || l.op != opInsert
+		hasNew = hasNew || l.op != opDelete
+	}
+	badOld, badNew := hasOld && s.old == nil, hasNew && s.new == nil
+	sensitive := plan.FormatValue(&plan.Value{Sensitive: true})
+	changed := false
+	for i, l := range lines {
+		if (l.op == opEqual && !(badOld && badNew)) || (l.op == opDelete && !badOld) || (l.op == opInsert && !badNew) {
+			continue
+		}
+		body := strings.TrimLeft(l.text, " ")
+		indent := l.text[:len(l.text)-len(body)]
+		t := indent + sensitive
+		if k, _, ok := strings.Cut(body, ": "); ok {
+			t = indent + k + ": " + sensitive
+		} else if strings.HasSuffix(body, ":") {
+			// A key alone, as in "pw:".
+			continue
+		}
+		if body == "" || t == l.text {
+			continue
+		}
+		lines[i].text = t
+		changed = true
+	}
+
+	return changed
 }
 
 // setValue sets the scalar value of line i, on the field f, to v, dropping

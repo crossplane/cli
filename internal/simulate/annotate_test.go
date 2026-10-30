@@ -718,7 +718,7 @@ Summary: 1 added (1 requires replacement)
 `,
 		},
 		"Unparseable": {
-			reason: "A side that does not parse gets no marker; the other side still does.",
+			reason: "A side that does not parse has every value masked under a sensitive change; the other side is marked.",
 			in: textDiff(dt.DiffTypeModified,
 				body("    password: a\n    size: 1\n"),
 				body("    password: b\n    size: [\n")),
@@ -728,8 +728,8 @@ Summary: 1 added (1 requires replacement)
     forProvider:
 -     password: (sensitive value)
 -     size: 1
-+     password: b
-+     size: [
++     password: (sensitive value)
++     size: (sensitive value)
     deletionPolicy: Delete
 
 ---
@@ -788,6 +788,68 @@ func TestAnnotateYAMLLineBreaks(t *testing.T) {
 			d := lineDiff(t, "db", dt.DiffTypeModified, tc.current, tc.want)
 			got := render(t, report(d), planFor(d, plan.ActionUpdate, sens(tc.path)), noColor())
 			for _, secret := range []string{"OLDSECRET", "NEWSECRET"} {
+				if strings.Contains(got, secret) {
+					t.Errorf("\n%s\nrender(): output contains %q:\n%s", tc.reason, secret, got)
+				}
+			}
+		})
+	}
+}
+
+func TestAnnotateUnparsedSensitive(t *testing.T) {
+	sens := func(p string) plan.FieldChange {
+		return plan.FieldChange{Path: p, Actual: sensitive(), Planned: sensitive()}
+	}
+	marshal := func(spec map[string]any) string {
+		b, err := sigsyaml.Marshal(map[string]any{"spec": spec})
+		if err != nil {
+			t.Fatalf("Marshal(): %v", err)
+		}
+		return string(b)
+	}
+	cases := map[string]struct {
+		reason string
+		in     *dt.ResourceDiff
+		path   string
+	}{
+		"EqualLineNewSideUnparsed": {
+			reason: "An unchanged sensitive line is masked when only the old side parses.",
+			in: textDiff(dt.DiffTypeModified,
+				marshal(map[string]any{"pw": "SAMESECRET", "size": 1}),
+				marshal(map[string]any{"pw": "SAMESECRET"})+"  size: [\n"),
+			path: "spec.pw",
+		},
+		"ChangedLineNewSideUnparsed": {
+			reason: "The unparsed side's own sensitive line is masked.",
+			in: textDiff(dt.DiffTypeModified,
+				marshal(map[string]any{"pw": "OLDSECRET", "size": 1}),
+				marshal(map[string]any{"pw": "NEWSECRET"})+"  size: [\n"),
+			path: "spec.pw",
+		},
+		"AddedUnparsed": {
+			reason: "An added diff whose only side doesn't parse is masked.",
+			in:     textDiff(dt.DiffTypeAdded, "", marshal(map[string]any{"pw": "NEWSECRET"})+"  size: [\n"),
+			path:   "spec.pw",
+		},
+		"LiteralJSON": {
+			reason: "A literal block holding JSON yaml.v3 can't read as a map is masked whole.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"cfg": "\u2028\u2028\n{\"pw\": \"OLDSECRET\"}\n"},
+				map[string]any{"cfg": "\u2028\u2028\n{\"pw\": \"NEWSECRET\"}\n"}),
+			path: "spec.cfg.pw",
+		},
+		"LiteralNotAMap": {
+			reason: "A literal block whose content isn't a map is masked whole.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"cfg": "zz\n{\"pw\": \"OLDSECRET\"}\n"},
+				map[string]any{"cfg": "zz\n{\"pw\": \"NEWSECRET\"}\n"}),
+			path: "spec.cfg.pw",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := render(t, report(tc.in), planFor(tc.in, plan.ActionUpdate, sens(tc.path)), noColor())
+			for _, secret := range []string{"SAMESECRET", "OLDSECRET", "NEWSECRET"} {
 				if strings.Contains(got, secret) {
 					t.Errorf("\n%s\nrender(): output contains %q:\n%s", tc.reason, secret, got)
 				}

@@ -102,6 +102,7 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 		generator.AllLanguages(
 			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
 			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+			generator.WithGoRequiredObjectFields(cfg.Features.GenerateGoRequiredObjectFields),
 		),
 		c.proj.Spec.Schemas.GetLanguages(),
 	)

@@ -54,6 +54,13 @@ type Features struct {
 	// in to register generated types with a runtime.Scheme and use them as
 	// sigs.k8s.io/controller-runtime client.Object/client.ObjectList values.
 	GenerateGoRuntimeObjects bool `json:"generateGoRuntimeObjects,omitempty"`
+
+	// GenerateGoRequiredObjectFields enables generating a required
+	// object-typed property (e.g. a managed resource's spec.forProvider) as a
+	// non-pointer value instead of the all-pointer/all-optional default.
+	// Disabled by default; it's a breaking change for any consumer that
+	// constructs such a field as a pointer or nil-checks it.
+	GenerateGoRequiredObjectFields bool `json:"generateGoRequiredObjectFields,omitempty"`
 }
 
 // Load reads a Config from path. A missing file is not an error; the zero

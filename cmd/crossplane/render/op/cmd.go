@@ -18,6 +18,7 @@ limitations under the License.
 package op
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -345,9 +346,9 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
 	}
 
-	xpkgClient, resolver, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
+	xpkgClient, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cannot create xpkg client")
 	}
 
 	// Built here rather than alongside the schema manager below so the
@@ -361,7 +362,6 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		dependency.WithProjectFile(filepath.Base(projFilePath)),
 		dependency.WithSchemaGenerators(generators),
 		dependency.WithXpkgClient(xpkgClient),
-		dependency.WithResolver(resolver),
 	)
 
 	var fns []pkgv1.Function

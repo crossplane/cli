@@ -240,8 +240,7 @@ func newTestManager(t *testing.T, fc *fakeClient, generators ...generator.Interf
 		afero.NewMemMapFs(),
 		WithSchemaFS(schemaFS),
 		WithSchemaGenerators(generators),
-		WithXpkgClient(fc),
-		WithResolver(clixpkg.NewResolver(fc)),
+		WithXpkgClient(clixpkg.WrapClient(fc)),
 	)
 	return m, schemaFS
 }
@@ -532,8 +531,7 @@ func TestManager_AddDependency(t *testing.T) {
 				WithProjectFile("crossplane-project.yaml"),
 				WithSchemaFS(afero.NewMemMapFs()),
 				WithSchemaGenerators([]generator.Interface{}),
-				WithXpkgClient(fc),
-				WithResolver(clixpkg.NewResolver(fc)),
+				WithXpkgClient(clixpkg.WrapClient(fc)),
 			)
 
 			err = m.AddDependency(context.Background(), tc.dep)
@@ -906,8 +904,7 @@ func TestManager_AddAll_SharedTransitiveDep(t *testing.T) {
 		afero.NewMemMapFs(),
 		WithSchemaFS(schemaFS),
 		WithSchemaGenerators([]generator.Interface{}),
-		WithXpkgClient(fc),
-		WithResolver(clixpkg.NewResolver(fc)),
+		WithXpkgClient(clixpkg.WrapClient(fc)),
 	)
 
 	var ch async.EventChannel // nil channel; SendEvent is a no-op.
@@ -971,8 +968,7 @@ func TestManager_AddDependency_TransitiveNotPersisted(t *testing.T) {
 		WithProjectFile("crossplane-project.yaml"),
 		WithSchemaFS(schemaFS),
 		WithSchemaGenerators([]generator.Interface{}),
-		WithXpkgClient(fc),
-		WithResolver(clixpkg.NewResolver(fc)),
+		WithXpkgClient(clixpkg.WrapClient(fc)),
 	)
 
 	if err := m.AddDependency(context.Background(), xpkgDep(provA, "v0.1.0")); err != nil {

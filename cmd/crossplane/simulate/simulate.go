@@ -149,7 +149,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		_, _ = fmt.Fprintln(k.Stderr, "No providers found to run as diff servers; all results will be approximate.")
 	}
 
-	pkgClient, err := clixpkg.NewClient(clixpkg.NewRemoteFetcher(),
+	pkgClient, err := clixpkg.NewClient(
 		clixpkg.WithCacheDir(afero.NewOsFs(), c.CacheDir),
 		clixpkg.WithImageConfigs(imageConfigs),
 	)

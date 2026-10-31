@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -278,12 +277,6 @@ func (b *MockResourceClientBuilder) WithListableResources(resources ...*un.Unstr
 	})
 }
 
-// WithGetAllResourcesByLabels sets the GetAllResourcesByLabels behavior.
-func (b *MockResourceClientBuilder) WithGetAllResourcesByLabels(fn func(context.Context, []schema.GroupVersionKind, []metav1.LabelSelector) ([]*un.Unstructured, error)) *MockResourceClientBuilder {
-	b.mock.GetAllResourcesByLabelsFn = fn
-	return b
-}
-
 // WithIsNamespacedResource sets the IsNamespacedResource behavior.
 func (b *MockResourceClientBuilder) WithIsNamespacedResource(fn func(context.Context, schema.GroupVersionKind) (bool, error)) *MockResourceClientBuilder {
 	b.mock.IsNamespacedResourceFn = fn
@@ -363,12 +356,6 @@ func NewMockSchemaClient() *MockSchemaClientBuilder {
 	return &MockSchemaClientBuilder{
 		mock: &MockSchemaClient{},
 	}
-}
-
-// WithInitialize sets the Initialize behavior.
-func (b *MockSchemaClientBuilder) WithInitialize(fn func(context.Context) error) *MockSchemaClientBuilder {
-	b.mock.InitializeFn = fn
-	return b
 }
 
 // WithGetCRD sets the GetCRD behavior.
@@ -481,18 +468,6 @@ func (b *MockSchemaClientBuilder) WithNoResourcesRequiringCRDs() *MockSchemaClie
 	})
 }
 
-// WithValidateResource sets the ValidateResource behavior.
-func (b *MockSchemaClientBuilder) WithValidateResource(fn func(context.Context, *un.Unstructured) error) *MockSchemaClientBuilder {
-	b.mock.ValidateResourceFn = fn
-	return b
-}
-
-// WithGetAllCRDs sets the GetAllCRDs behavior.
-func (b *MockSchemaClientBuilder) WithGetAllCRDs(fn func() []*extv1.CustomResourceDefinition) *MockSchemaClientBuilder {
-	b.mock.GetAllCRDsFn = fn
-	return b
-}
-
 // WithCachingBehavior creates a mock that simulates caching CRDs when GetCRD is called.
 func (b *MockSchemaClientBuilder) WithCachingBehavior() *MockSchemaClientBuilder {
 	cachedCRDs := make(map[string]*extv1.CustomResourceDefinition)
@@ -550,18 +525,6 @@ func NewMockApplyClient() *MockApplyClientBuilder {
 	}
 }
 
-// WithInitialize sets the Initialize behavior.
-func (b *MockApplyClientBuilder) WithInitialize(fn func(context.Context) error) *MockApplyClientBuilder {
-	b.mock.InitializeFn = fn
-	return b
-}
-
-// WithApply sets the Apply behavior.
-func (b *MockApplyClientBuilder) WithApply(fn func(context.Context, *un.Unstructured) (*un.Unstructured, error)) *MockApplyClientBuilder {
-	b.mock.ApplyFn = fn
-	return b
-}
-
 // WithDryRunApply sets the DryRunApply behavior.
 func (b *MockApplyClientBuilder) WithDryRunApply(fn func(context.Context, *un.Unstructured, string) (*un.Unstructured, error)) *MockApplyClientBuilder {
 	b.mock.DryRunApplyFn = fn
@@ -592,13 +555,6 @@ func (b *MockApplyClientBuilder) WithDryRunCreate(fn func(context.Context, *un.U
 func (b *MockApplyClientBuilder) WithSuccessfulDryRunCreate() *MockApplyClientBuilder {
 	return b.WithDryRunCreate(func(_ context.Context, obj *un.Unstructured) (*un.Unstructured, error) {
 		return obj, nil
-	})
-}
-
-// WithFailedDryRunCreate sets DryRunCreate to return an error.
-func (b *MockApplyClientBuilder) WithFailedDryRunCreate(errMsg string) *MockApplyClientBuilder {
-	return b.WithDryRunCreate(func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
-		return nil, errors.New(errMsg)
 	})
 }
 
@@ -736,17 +692,6 @@ func (b *MockTypeConverterBuilder) WithResourceNameForGVK(gvk schema.GroupVersio
 	})
 }
 
-// WithResourceNameForGVKs sets GetResourceNameForGVK to return specific resource names for given GVKs, with a fallback error.
-func (b *MockTypeConverterBuilder) WithResourceNameForGVKs(gvkMappings map[schema.GroupVersionKind]string) *MockTypeConverterBuilder {
-	return b.WithGetResourceNameForGVK(func(_ context.Context, gvk schema.GroupVersionKind) (string, error) {
-		if resourceName, found := gvkMappings[gvk]; found {
-			return resourceName, nil
-		}
-
-		return "", errors.New("unexpected GVK in test")
-	})
-}
-
 // Build returns the built mock.
 func (b *MockTypeConverterBuilder) Build() *MockTypeConverter {
 	return b.mock
@@ -779,30 +724,6 @@ func NewMockCompositionClient() *MockCompositionClientBuilder {
 	}
 }
 
-// WithInitialize sets the Initialize behavior.
-func (b *MockCompositionClientBuilder) WithInitialize(fn func(context.Context) error) *MockCompositionClientBuilder {
-	b.mock.InitializeFn = fn
-	return b
-}
-
-// WithSuccessfulInitialize mocks a successful call to Initialize.
-func (b *MockCompositionClientBuilder) WithSuccessfulInitialize() *MockCompositionClientBuilder {
-	b.mock.InitializeFn = func(context.Context) error {
-		return nil
-	}
-
-	return b
-}
-
-// WithFailedInitialize mocks a failed call to Initialize.
-func (b *MockCompositionClientBuilder) WithFailedInitialize(errMsg string) *MockCompositionClientBuilder {
-	b.mock.InitializeFn = func(context.Context) error {
-		return errors.New(errMsg)
-	}
-
-	return b
-}
-
 // WithFindMatchingComposition sets the FindMatchingComposition behavior.
 func (b *MockCompositionClientBuilder) WithFindMatchingComposition(fn func(context.Context, *un.Unstructured) (dtypes.ResolvedComposition, error)) *MockCompositionClientBuilder {
 	b.mock.FindMatchingCompositionFn = fn
@@ -815,19 +736,6 @@ func (b *MockCompositionClientBuilder) WithSuccessfulCompositionMatch(comp *xpex
 	return b.WithFindMatchingComposition(func(context.Context, *un.Unstructured) (dtypes.ResolvedComposition, error) {
 		return dtypes.ResolvedComposition{Composition: comp}, nil
 	})
-}
-
-// WithNoMatchingComposition sets FindMatchingComposition to return "not found".
-func (b *MockCompositionClientBuilder) WithNoMatchingComposition() *MockCompositionClientBuilder {
-	return b.WithFindMatchingComposition(func(context.Context, *un.Unstructured) (dtypes.ResolvedComposition, error) {
-		return dtypes.ResolvedComposition{}, errors.New("composition not found")
-	})
-}
-
-// WithListCompositions sets the ListCompositions behavior.
-func (b *MockCompositionClientBuilder) WithListCompositions(fn func(context.Context) ([]*xpextv1.Composition, error)) *MockCompositionClientBuilder {
-	b.mock.ListCompositionsFn = fn
-	return b
 }
 
 // WithGetComposition sets the GetComposition behavior.
@@ -952,30 +860,6 @@ func NewMockFunctionClient() *MockFunctionClientBuilder {
 	}
 }
 
-// WithInitialize sets the Initialize behavior.
-func (b *MockFunctionClientBuilder) WithInitialize(fn func(context.Context) error) *MockFunctionClientBuilder {
-	b.mock.InitializeFn = fn
-	return b
-}
-
-// WithSuccessfulInitialize mocks a successful call to Initialize.
-func (b *MockFunctionClientBuilder) WithSuccessfulInitialize() *MockFunctionClientBuilder {
-	b.mock.InitializeFn = func(context.Context) error {
-		return nil
-	}
-
-	return b
-}
-
-// WithFailedInitialize mocks a failed call to Initialize.
-func (b *MockFunctionClientBuilder) WithFailedInitialize(errMsg string) *MockFunctionClientBuilder {
-	b.mock.InitializeFn = func(context.Context) error {
-		return errors.New(errMsg)
-	}
-
-	return b
-}
-
 // WithGetFunctionsFromPipeline sets the GetFunctionsFromPipeline behavior.
 func (b *MockFunctionClientBuilder) WithGetFunctionsFromPipeline(fn func(context.Context, *xpextv1.Composition) ([]pkgv1.Function, error)) *MockFunctionClientBuilder {
 	b.mock.GetFunctionsFromPipelineFn = fn
@@ -989,24 +873,11 @@ func (b *MockFunctionClientBuilder) WithSuccessfulFunctionsFetch(functions []pkg
 	})
 }
 
-// WithNoFunctions sets GetFunctionsFromPipeline to return an empty function list.
-func (b *MockFunctionClientBuilder) WithNoFunctions() *MockFunctionClientBuilder {
-	return b.WithGetFunctionsFromPipeline(func(context.Context, *xpextv1.Composition) ([]pkgv1.Function, error) {
-		return []pkgv1.Function{}, nil
-	})
-}
-
 // WithFailedFunctionsFetch sets GetFunctionsFromPipeline to return an error.
 func (b *MockFunctionClientBuilder) WithFailedFunctionsFetch(errMsg string) *MockFunctionClientBuilder {
 	return b.WithGetFunctionsFromPipeline(func(context.Context, *xpextv1.Composition) ([]pkgv1.Function, error) {
 		return nil, errors.New(errMsg)
 	})
-}
-
-// WithListFunctions sets the ListFunctions behavior.
-func (b *MockFunctionClientBuilder) WithListFunctions(fn func(context.Context) ([]pkgv1.Function, error)) *MockFunctionClientBuilder {
-	b.mock.ListFunctionsFn = fn
-	return b
 }
 
 // WithFunctionsFetchCallback sets a callback that's called when GetFunctionsFromPipeline is invoked.
@@ -1036,25 +907,10 @@ func NewMockDefinitionClient() *MockDefinitionClientBuilder {
 	}
 }
 
-// WithInitialize sets the Initialize behavior.
-func (b *MockDefinitionClientBuilder) WithInitialize(fn func(context.Context) error) *MockDefinitionClientBuilder {
-	b.mock.InitializeFn = fn
-	return b
-}
-
 // WithSuccessfulInitialize mocks a successful call to Initialize.
 func (b *MockDefinitionClientBuilder) WithSuccessfulInitialize() *MockDefinitionClientBuilder {
 	b.mock.InitializeFn = func(context.Context) error {
 		return nil
-	}
-
-	return b
-}
-
-// WithFailedInitialize mocks a failed call to Initialize.
-func (b *MockDefinitionClientBuilder) WithFailedInitialize(errMsg string) *MockDefinitionClientBuilder {
-	b.mock.InitializeFn = func(context.Context) error {
-		return errors.New(errMsg)
 	}
 
 	return b
@@ -1211,30 +1067,6 @@ func NewMockResourceTreeClient() *MockResourceTreeClientBuilder {
 	}
 }
 
-// WithInitialize sets the Initialize behavior.
-func (b *MockResourceTreeClientBuilder) WithInitialize(fn func(context.Context) error) *MockResourceTreeClientBuilder {
-	b.mock.InitializeFn = fn
-	return b
-}
-
-// WithSuccessfulInitialize mocks a successful call to Initialize.
-func (b *MockResourceTreeClientBuilder) WithSuccessfulInitialize() *MockResourceTreeClientBuilder {
-	b.mock.InitializeFn = func(context.Context) error {
-		return nil
-	}
-
-	return b
-}
-
-// WithFailedInitialize mocks a failed call to Initialize.
-func (b *MockResourceTreeClientBuilder) WithFailedInitialize(errMsg string) *MockResourceTreeClientBuilder {
-	b.mock.InitializeFn = func(context.Context) error {
-		return errors.New(errMsg)
-	}
-
-	return b
-}
-
 // WithGetResourceTree sets the GetResourceTree behavior.
 func (b *MockResourceTreeClientBuilder) WithGetResourceTree(fn func(context.Context, *un.Unstructured) (*resource.Resource, error)) *MockResourceTreeClientBuilder {
 	b.mock.GetResourceTreeFn = fn
@@ -1314,51 +1146,6 @@ func (b *TreeNodeBuilder) WithError(err error) *TreeNodeBuilder {
 // Build returns the built node.
 func (b *TreeNodeBuilder) Build() *resource.Resource {
 	return b.node
-}
-
-// endregion
-
-// region DiffProcessor mock builder
-
-// ======================================================================================
-// DiffProcessor Mock Builder
-// ======================================================================================
-
-// DiffProcessorBuilder helps build mock DiffProcessor instances.
-type DiffProcessorBuilder struct {
-	mock *MockDiffProcessor
-}
-
-// NewMockDiffProcessor creates a new DiffProcessorBuilder.
-func NewMockDiffProcessor() *DiffProcessorBuilder {
-	return &DiffProcessorBuilder{
-		mock: &MockDiffProcessor{},
-	}
-}
-
-// WithInitialize adds an implementation for the Initialize method.
-func (b *DiffProcessorBuilder) WithInitialize(fn func(context.Context) error) *DiffProcessorBuilder {
-	b.mock.InitializeFn = fn
-	return b
-}
-
-// WithSuccessfulInitialize sets a successful Initialize implementation.
-func (b *DiffProcessorBuilder) WithSuccessfulInitialize() *DiffProcessorBuilder {
-	return b.WithInitialize(func(context.Context) error {
-		return nil
-	})
-}
-
-// WithFailedInitialize sets a failing Initialize implementation.
-func (b *DiffProcessorBuilder) WithFailedInitialize(errMsg string) *DiffProcessorBuilder {
-	return b.WithInitialize(func(context.Context) error {
-		return errors.New(errMsg)
-	})
-}
-
-// Build creates and returns the configured mock DiffProcessor.
-func (b *DiffProcessorBuilder) Build() *MockDiffProcessor {
-	return b.mock
 }
 
 // endregion
@@ -1443,15 +1230,6 @@ func (b *ResourceBuilder) WithSpecField(name string, value any) *ResourceBuilder
 
 	spec[name] = value
 	_ = un.SetNestedMap(b.resource.Object, spec, fieldSpec)
-
-	return b
-}
-
-// WithStatus sets the status field of the resource.
-func (b *ResourceBuilder) WithStatus(status map[string]any) *ResourceBuilder {
-	if len(status) > 0 {
-		_ = un.SetNestedMap(b.resource.Object, status, "status")
-	}
 
 	return b
 }
@@ -1658,20 +1436,6 @@ func (b *ResourceBuilder) WithFieldManagers(managers ...string) *ResourceBuilder
 	return b
 }
 
-// WithServerMetadata stamps the server-populated identity and versioning
-// metadata fields (resourceVersion, uid, generation, creationTimestamp) that
-// Kubernetes adds to a persisted object. Values are deterministic placeholders
-// so tests remain stable. Use this to construct a resource that looks like it
-// was fetched from the cluster (e.g. to verify diff cleanup strips these).
-func (b *ResourceBuilder) WithServerMetadata() *ResourceBuilder {
-	b.resource.SetResourceVersion("12345")
-	b.resource.SetUID(k8stypes.UID("00000000-0000-0000-0000-000000000000"))
-	b.resource.SetGeneration(1)
-	b.resource.SetCreationTimestamp(metav1.NewTime(time.Unix(0, 0).UTC()))
-
-	return b
-}
-
 // Build returns the built unstructured resource.
 func (b *ResourceBuilder) Build() *un.Unstructured {
 	return b.resource.DeepCopy()
@@ -1751,11 +1515,6 @@ func (b *CRDBuilder) WithSingular(singular string) *CRDBuilder {
 func (b *CRDBuilder) WithScope(scope extv1.ResourceScope) *CRDBuilder {
 	b.crd.Spec.Scope = scope
 	return b
-}
-
-// WithClusterScope sets the CRD to be cluster-scoped.
-func (b *CRDBuilder) WithClusterScope() *CRDBuilder {
-	return b.WithScope(extv1.ClusterScoped)
 }
 
 // WithNamespaceScope sets the CRD to be namespace-scoped.
@@ -1924,11 +1683,6 @@ func (b *XRDBuilder) WithClaimNames(kind, plural string) *XRDBuilder {
 	return b
 }
 
-// WithDefaultVersion adds a default "v1" version to the XRD.
-func (b *XRDBuilder) WithDefaultVersion() *XRDBuilder {
-	return b.WithVersion("v1", true, true)
-}
-
 // WithVersion adds a version to the XRD.
 func (b *XRDBuilder) WithVersion(name string, served, referenceable bool) *XRDBuilder {
 	version := xpextv1.CompositeResourceDefinitionVersion{
@@ -1955,20 +1709,6 @@ func (b *XRDBuilder) WithSchema(schema *extv1.JSONSchemaProps) *XRDBuilder {
 		b.xrd.Spec.Versions[lastIdx].Schema = &xpextv1.CompositeResourceValidation{
 			OpenAPIV3Schema: runtime.RawExtension{
 				Raw: rawBytes,
-			},
-		}
-	}
-
-	return b
-}
-
-// WithRawSchema adds a raw JSON schema to the last added version.
-func (b *XRDBuilder) WithRawSchema(rawJSON []byte) *XRDBuilder {
-	if len(b.xrd.Spec.Versions) > 0 {
-		lastIdx := len(b.xrd.Spec.Versions) - 1
-		b.xrd.Spec.Versions[lastIdx].Schema = &xpextv1.CompositeResourceValidation{
-			OpenAPIV3Schema: runtime.RawExtension{
-				Raw: rawJSON,
 			},
 		}
 	}

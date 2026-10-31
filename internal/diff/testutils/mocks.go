@@ -815,58 +815,6 @@ func (m *MockDiffCalculator) CalculateRemovedResourceDiffs(ctx context.Context, 
 	return nil, nil
 }
 
-// MockDiffRenderer provides a mock implementation for DiffRenderer.
-type MockDiffRenderer struct {
-	RenderDiffsFn func([]dt.XRDiffGroup, []dt.OutputError, []dt.OutputWarning) error
-}
-
-// RenderDiffs implements RenderDiffs from the DiffRenderer interface.
-func (m *MockDiffRenderer) RenderDiffs(groups []dt.XRDiffGroup, errs []dt.OutputError, warnings []dt.OutputWarning) error {
-	if m.RenderDiffsFn != nil {
-		return m.RenderDiffsFn(groups, errs, warnings)
-	}
-
-	return nil
-}
-
-// MockCompositionProvider provides a mock implementation for CompositionProvider.
-type MockCompositionProvider struct {
-	GetCompositionFn func() (*xpextv1.Composition, error)
-}
-
-// GetComposition implements GetComposition from the CompositionProvider interface.
-func (m *MockCompositionProvider) GetComposition() (*xpextv1.Composition, error) {
-	if m.GetCompositionFn != nil {
-		return m.GetCompositionFn()
-	}
-
-	return &xpextv1.Composition{}, nil
-}
-
-// MockFunctionProvider provides a mock implementation for FunctionProvider.
-type MockFunctionProvider struct {
-	GetFunctionsForCompositionFn func(ctx context.Context, comp *xpextv1.Composition) ([]pkgv1.Function, error)
-	CleanupFn                    func(ctx context.Context) error
-}
-
-// GetFunctionsForComposition implements FunctionProvider.
-func (m *MockFunctionProvider) GetFunctionsForComposition(ctx context.Context, comp *xpextv1.Composition) ([]pkgv1.Function, error) {
-	if m.GetFunctionsForCompositionFn != nil {
-		return m.GetFunctionsForCompositionFn(ctx, comp)
-	}
-
-	return nil, nil
-}
-
-// Cleanup implements FunctionProvider.
-func (m *MockFunctionProvider) Cleanup(ctx context.Context) error {
-	if m.CleanupFn != nil {
-		return m.CleanupFn(ctx)
-	}
-
-	return nil
-}
-
 // region Docker daemon fake
 
 // FakeDocker is an in-memory Docker daemon: it holds containers and networks, and implements the subset

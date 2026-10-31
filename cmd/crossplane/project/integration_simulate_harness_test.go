@@ -201,14 +201,6 @@ func runSimulateArgvRouted(t *testing.T, cfg *rest.Config, argv []string, render
 	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &simulate.Hooks{Router: router}, stdout, stderr)
 }
 
-// runSimulateArgvHooked is runSimulateArgv with changed marked as changed
-// functions, as project mode's digest detection would.
-func runSimulateArgvHooked(t *testing.T, cfg *rest.Config, argv, changed []string, stdout, stderr io.Writer) (int, error) {
-	t.Helper()
-
-	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulate.Hooks{ChangedFunctions: changed}, stdout, stderr)
-}
-
 // withRenderBinary returns argv rendering with the local crossplane binary
 // bin, or argv itself, rendering with the render image, when bin is empty.
 func withRenderBinary(argv []string, bin string) []string {

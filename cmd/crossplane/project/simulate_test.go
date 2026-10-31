@@ -17,6 +17,7 @@ limitations under the License.
 package project
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+
+	"github.com/crossplane/cli/v2/internal/config"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/pkg/render"
@@ -70,8 +74,7 @@ func TestSimulateFlags(t *testing.T) {
 	}{
 		"Defaults": {
 			reason: "With no flags the defaults should apply.",
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -88,8 +91,7 @@ func TestSimulateFlags(t *testing.T) {
 				"--max-concurrency", "2", "-o", "json", "--crossplane-version", "v2.3.4",
 				"--as", "jane", "--as-group", "admins",
 			},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"p.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "p.yaml", Flags: simulate.Flags{
 				Context:        "staging",
 				Namespace:      "team-a",
 				Name:           []string{"db"},
@@ -110,8 +112,7 @@ func TestSimulateFlags(t *testing.T) {
 				"--eventual-state", "--max-recv-message-size", "16",
 				"--minimize-composition", "--analyze-on", "always", "--dry-run-on", "existing",
 			},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:               []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency:      8,
 				MaxIterations:       dp.DefaultMaxRenderIterations,
 				Timeout:             2 * time.Minute,
@@ -131,8 +132,7 @@ func TestSimulateFlags(t *testing.T) {
 			reason: "--function-credentials should load the Secrets in the file at parse time.",
 			args:   []string{"--function-credentials", creds},
 			want: want{
-				cmd: &simulateCmd{Flags: simulate.Flags{
-					Input:               []string{"crossplane-project.yaml"},
+				cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 					MaxConcurrency:      8,
 					MaxIterations:       dp.DefaultMaxRenderIterations,
 					Timeout:             2 * time.Minute,
@@ -162,24 +162,10 @@ func TestSimulateFlags(t *testing.T) {
 			args:   []string{"--analyze-on", "never"},
 			want:   want{err: true},
 		},
-		"RepeatedInput": {
-			reason: "-f should be repeatable, and a comma should not split a path.",
-			args:   []string{"-f", "a.yaml", "-f", "b,c.yaml"},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"a.yaml", "b,c.yaml"},
-				MaxConcurrency: 8,
-				MaxIterations:  dp.DefaultMaxRenderIterations,
-				Timeout:        2 * time.Minute,
-				Output:         "plan",
-				MaxNestedDepth: 10,
-				DryRunOn:       "all",
-			}}},
-		},
 		"PlanFlags": {
 			reason: "The provider plan flags should land on their fields.",
 			args:   []string{"--providers", dir, "--image-configs", creds, "--session-id", "s1"},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -194,8 +180,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderEngineFlags": {
 			reason: "The render engine flags should land on the embedded EngineFlags.",
 			args:   []string{"--crossplane-binary", creds, "--session-id", "s1"},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -208,8 +193,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderDockerNetwork": {
 			reason: "--crossplane-docker-network should land on the embedded EngineFlags.",
 			args:   []string{"--crossplane-docker-network", "ci"},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -222,8 +206,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderDockerNetworkEnv": {
 			reason: "CROSSPLANE_DOCKER_NETWORK should land on the embedded EngineFlags.",
 			env:    map[string]string{"CROSSPLANE_DOCKER_NETWORK": "env-net"},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -237,8 +220,7 @@ func TestSimulateFlags(t *testing.T) {
 			reason: "--crossplane-docker-network should win over CROSSPLANE_DOCKER_NETWORK.",
 			env:    map[string]string{"CROSSPLANE_DOCKER_NETWORK": "env-net"},
 			args:   []string{"--crossplane-docker-network", "ci"},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -251,8 +233,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderBinaryWithNetwork": {
 			reason: "A local render binary ignores a Docker network rather than rejecting it.",
 			args:   []string{"--crossplane-binary", creds, "--crossplane-docker-network", "ci"},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -265,8 +246,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlan": {
 			reason: "--skip-plan alone should be accepted.",
 			args:   []string{"--skip-plan"},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -279,8 +259,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlanWithProviders": {
 			reason: "--providers does nothing with --skip-plan, so Run warns rather than Validate rejecting it.",
 			args:   []string{"--skip-plan", "--providers", dir},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -294,8 +273,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlanWithImageConfigs": {
 			reason: "--image-configs also rewrites function images, so it applies with --skip-plan.",
 			args:   []string{"--skip-plan", "--image-configs", creds},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -309,8 +287,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlanWithSessionID": {
 			reason: "--session-id does nothing with --skip-plan, so Run warns rather than Validate rejecting it.",
 			args:   []string{"--skip-plan", "--session-id", "s1"},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -329,8 +306,7 @@ func TestSimulateFlags(t *testing.T) {
 		"ZeroConcurrency": {
 			reason: "Zero build slots should be accepted; the builder runs one build at a time.",
 			args:   []string{"--max-concurrency", "0"},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -381,8 +357,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderImageUncomparable": {
 			reason: "A render image with no comparable version should be accepted.",
 			args:   []string{"--crossplane-image", "example.com/crossplane:stable"},
-			want: want{cmd: &simulateCmd{Flags: simulate.Flags{
-				Input:          []string{"crossplane-project.yaml"},
+			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxConcurrency: 8,
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
@@ -421,170 +396,17 @@ func TestSimulateFlags(t *testing.T) {
 	}
 }
 
-func TestLoadInputs(t *testing.T) {
-	dir := t.TempDir()
-	write := func(name, content string) string {
-		t.Helper()
-		path := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return path
+func TestSimulateBuildProjectRejectsComposition(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "comp.yaml")
+	comp := "apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: c\nspec:\n  compositeTypeRef:\n    apiVersion: example.org/v1\n    kind: XThing\n"
+	if err := os.WriteFile(path, []byte(comp), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
-	commaXR := write("a,b.yaml", "apiVersion: example.org/v1\nkind: XThing\nmetadata:\n  name: comma\n")
-
-	proj := write("crossplane-project.yaml", "apiVersion: dev.crossplane.io/v1alpha1\nkind: Project\nmetadata:\n  name: p\n")
-	comp := write("comp.yaml", `apiVersion: apiextensions.crossplane.io/v1
-kind: Composition
-metadata:
-  name: c
-spec:
-  compositeTypeRef:
-    apiVersion: example.org/v1
-    kind: XThing
-  mode: Pipeline
-  pipeline:
-  - step: render
-    functionRef:
-      name: function-go-templating
-    input:
-      apiVersion: gotemplating.fn.crossplane.io/v1beta1
-      kind: GoTemplate
-      source: Inline
-`)
-	// A step input that isn't an object is the engine's to report, not the
-	// loader's.
-	listInput := write("listinput.yaml", `apiVersion: apiextensions.crossplane.io/v1
-kind: Composition
-metadata:
-  name: l
-spec:
-  compositeTypeRef:
-    apiVersion: example.org/v1
-    kind: XThing
-  mode: Pipeline
-  pipeline:
-  - step: render
-    functionRef:
-      name: function-go-templating
-    input: [1]
-`)
-	xr := write("xr.yaml", "apiVersion: example.org/v1\nkind: XThing\nmetadata:\n  name: x\n")
-	claim := write("claim.yaml", "apiVersion: example.org/v1\nkind: Thing\nmetadata:\n  name: t\n  namespace: default\n")
-	// A GoTemplate of its own is a resource, not a pipeline input.
-	goTemplate := write("gotemplate.yaml", "apiVersion: gotemplating.fn.crossplane.io/v1beta1\nkind: GoTemplate\nsource: Inline\n")
-	comps := write("comps/a.yaml", "apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: a\n")
-	empty := write("empty.yaml", "# nothing here\n")
-	notProject := write("meta.yaml", "apiVersion: meta.pkg.crossplane.io/v1\nkind: Configuration\nmetadata:\n  name: cfg\n")
-
-	type want struct {
-		mode        simulate.Mode
-		projectFile string
-		names       []string
-		err         string
-	}
-
-	cases := map[string]struct {
-		reason string
-		paths  []string
-		want   want
-	}{
-		"ProjectFile": {
-			reason: "A single project file should select project mode.",
-			paths:  []string{proj},
-			want:   want{mode: simulate.ProjectMode, projectFile: proj},
-		},
-		"Composition": {
-			reason: "A Composition should select composition mode; its pipeline inputs are part of it.",
-			paths:  []string{comp},
-			want:   want{mode: simulate.CompositionMode, names: []string{"c"}},
-		},
-		"CompositionListInput": {
-			reason: "A Composition should be loaded without parsing its pipeline inputs as resources.",
-			paths:  []string{listInput},
-			want:   want{mode: simulate.CompositionMode, names: []string{"l"}},
-		},
-		"CompositionDirectory": {
-			reason: "A directory of Compositions should select composition mode.",
-			paths:  []string{filepath.Dir(comps)},
-			want:   want{mode: simulate.CompositionMode, names: []string{"a"}},
-		},
-		"Compositions": {
-			reason: "Several Composition files should select composition mode.",
-			paths:  []string{comp, comps},
-			want:   want{mode: simulate.CompositionMode, names: []string{"c", "a"}},
-		},
-		"XRAndClaim": {
-			reason: "Composite resources and claims should select XR mode.",
-			paths:  []string{xr, claim},
-			want:   want{mode: simulate.XRMode, names: []string{"x", "t"}},
-		},
-		"CommaInPath": {
-			reason: "-f never splits on commas, so a,b.yaml is one path.",
-			paths:  []string{commaXR},
-			want:   want{mode: simulate.XRMode, names: []string{"comma"}},
-		},
-		"NonProjectSingleFile": {
-			reason: "A single file that isn't a project file should be loaded as resources; checkComposites rejects it once XRDs are known.",
-			paths:  []string{notProject},
-			want:   want{mode: simulate.XRMode, names: []string{"cfg"}},
-		},
-		"ProjectWithResources": {
-			reason: "A project file combined with resource files should be rejected.",
-			paths:  []string{proj, xr},
-			want:   want{err: "a project file must be the only -f input"},
-		},
-		"ProjectInDirectory": {
-			reason: "A directory holding a project file should be rejected the same way.",
-			paths:  []string{dir},
-			want:   want{err: "a project file must be the only -f input"},
-		},
-		"CompositionWithXR": {
-			reason: "Compositions mixed with composite resources should be rejected.",
-			paths:  []string{comp, xr},
-			want:   want{err: `-f inputs mix Compositions with other resources (XThing "x")`},
-		},
-		"CompositionWithStandaloneGoTemplate": {
-			reason: "A resource that only looks like a pipeline input should still count as another resource.",
-			paths:  []string{comp, goTemplate, goTemplate},
-			want:   want{err: "-f inputs mix Compositions with other resources (GoTemplate"},
-		},
-		"Empty": {
-			reason: "Inputs with no resources should be rejected.",
-			paths:  []string{empty},
-			want:   want{err: "no resources found"},
-		},
-		"Missing": {
-			reason: "A missing input should be rejected.",
-			paths:  []string{filepath.Join(dir, "nope.yaml")},
-			want:   want{err: "cannot read -f input"},
-		},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			got, err := loadInputs(tc.paths)
-			if tc.want.err != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
-					t.Fatalf("\n%s\nloadInputs(%v): want error containing %q, got %v", tc.reason, tc.paths, tc.want.err, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("\n%s\nloadInputs(%v): %v", tc.reason, tc.paths, err)
-			}
-			names := []string{}
-			for _, r := range got.resources {
-				names = append(names, r.GetName())
-			}
-			if diff := cmp.Diff(tc.want, want{mode: got.mode, projectFile: got.projectFile, names: names}, cmp.AllowUnexported(want{}), cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("\n%s\nloadInputs(%v): -want, +got:\n%s", tc.reason, tc.paths, diff)
-			}
-		})
+	c := &simulateCmd{ProjectFile: path}
+	_, err := c.buildProject(context.Background(), logging.NewNopLogger(), nil, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), "failed to parse project file") {
+		t.Errorf("buildProject(-f %s): want a project file parse error, got %v", path, err)
 	}
 }
 

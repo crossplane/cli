@@ -28,11 +28,9 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
-	"github.com/sergi/go-diff/diffmatchpatch"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
@@ -347,13 +345,6 @@ func TestSimulateDiffOptions(t *testing.T) {
 // human diff for diff.
 func TestSimulateRenderReports(t *testing.T) {
 	xr := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
-	cm := &un.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": "cm"}, "data": map[string]any{"k": "v"}}}
-	added := &dt.ResourceDiff{
-		Gvk: cm.GroupVersionKind(), ResourceName: "cm", DiffType: dt.DiffTypeAdded,
-		Desired:   dt.ResourceViews{Raw: cm, Clean: cm},
-		LineDiffs: []diffmatchpatch.Diff{{Type: diffmatchpatch.DiffInsert, Text: "data:\n  k: v\n"}},
-	}
-	xrReport := &dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xr, Diffs: map[string]*dt.ResourceDiff{added.GetDiffKey(): added}}}}
 	compReport := &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
 		Name:           "net",
 		RevisionImpact: dt.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1},
@@ -387,31 +378,26 @@ func TestSimulateRenderReports(t *testing.T) {
 	cases := map[string]struct {
 		reason   string
 		cmd      Flags
-		wantXR   func(*testing.T, string)
 		wantComp func(*testing.T, string)
 	}{
 		"Plan": {
 			reason:   "-o plan, the default, should print the plan text, with the revision impact under the Composition.",
 			cmd:      Flags{Output: "plan"},
-			wantXR:   contains("XR: XNetwork.example.org prod\n  [+] ConfigMap. cm (create)\n      data:\n        + k: \"v\"", "Plan: 1 to add", "Note: "),
 			wantComp: contains("[=] Composition.apiextensions.crossplane.io net (no-op)\n    Applying this creates a new CompositionRevision, which 1 composite would adopt.", "XR: XNetwork.example.org prod", "Note: "),
 		},
 		"JSON": {
 			reason:   "-o json should print ProjectResult as JSON.",
 			cmd:      Flags{Output: "json"},
-			wantXR:   isPlanResult(json.Unmarshal),
 			wantComp: isPlanResult(json.Unmarshal),
 		},
 		"YAML": {
 			reason:   "-o yaml should print ProjectResult as YAML.",
 			cmd:      Flags{Output: "yaml"},
-			wantXR:   isPlanResult(func(b []byte, v any) error { return yaml.Unmarshal(b, v) }),
 			wantComp: isPlanResult(func(b []byte, v any) error { return yaml.Unmarshal(b, v) }),
 		},
 		"Diff": {
 			reason:   "-o diff should print the engine's human diff.",
 			cmd:      Flags{Output: "diff"},
-			wantXR:   contains("+++ ConfigMap/cm", "Summary: 1 added"),
 			wantComp: contains("=== Composition Changes ===", "=== Affected Composite Resources ==="),
 		},
 	}
@@ -423,10 +409,6 @@ func TestSimulateRenderReports(t *testing.T) {
 				render func(*kong.Context) error
 				want   func(*testing.T, string)
 			}{
-				"xr": {func(k *kong.Context) error {
-					_, err := tc.cmd.renderXRReport(k, logging.NewNopLogger(), xrReport, nil)
-					return err
-				}, tc.wantXR},
 				"comp": {func(k *kong.Context) error {
 					_, err := tc.cmd.renderCompReport(k, logging.NewNopLogger(), compReport, nil)
 					return err
@@ -683,7 +665,7 @@ func TestSimulateRun(t *testing.T) {
 				tc.args.cmd.Output = "plan"
 			}
 			k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
-			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, CompositionMode)
+			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}})
 			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), tc.args.initClients, tc.args.proc, diff)
 
 			if diff := cmp.Diff(tc.want.code, exitCode(err)); diff != "" {
@@ -715,95 +697,51 @@ func TestSimulateRun(t *testing.T) {
 	}
 }
 
-func TestValidateModeFlags(t *testing.T) {
+func TestWarnIgnoredFlags(t *testing.T) {
 	cases := map[string]struct {
 		reason   string
-		mode     Mode
 		args     []string
 		skipPlan bool
-		err      string
+		project  bool
 		warn     string
 	}{
 		"ProjectAcceptsAll": {
-			reason: "A project accepts every flag.",
-			mode:   ProjectMode,
-			args:   []string{"-n", "a", "--name", "b", "--include-pinned", "--max-concurrency", "2", "--cache-dir", "/c", "--analyze-on", "always", "--minimize-composition"},
+			reason:  "A project uses every flag.",
+			project: true,
+			args:    []string{"-n", "a", "--name", "b", "--include-pinned", "--max-concurrency", "2", "--cache-dir", "/c", "--analyze-on", "always", "--minimize-composition"},
 		},
-		"CompositionAcceptsScope": {
-			reason: "Compositions accept the flags that scope their impact.",
-			mode:   CompositionMode,
-			args:   []string{"-n", "a", "--name", "b", "--include-pinned", "--analyze-on", "always", "--minimize-composition"},
-		},
-		"CompositionWarnsBuildFlags": {
-			reason: "Compositions use the cluster's functions, so the build flags are ignored with a warning.",
-			mode:   CompositionMode,
-			args:   []string{"--max-concurrency", "2"},
-			warn:   "ignoring --max-concurrency",
-		},
-		"XRAcceptsCacheDir": {
+		"CacheDirWithPlan": {
 			reason: "--cache-dir also caches provider packages, so it applies whenever planning is on.",
-			mode:   XRMode,
 			args:   []string{"--cache-dir", "/c"},
 		},
-		"XRWarnsCacheDirSkipPlan": {
+		"CacheDirSkipPlanNoProject": {
 			reason:   "With --skip-plan and no project there is nothing to cache, so --cache-dir is ignored with a warning.",
-			mode:     XRMode,
 			args:     []string{"--cache-dir", "/c"},
 			skipPlan: true,
 			warn:     "ignoring --cache-dir",
 		},
-		"ProjectWarnsProvidersSkipPlan": {
-			reason:   "--skip-plan runs no diff servers, so --providers is ignored with a warning in every mode.",
-			mode:     ProjectMode,
+		"ProjectAcceptsCacheDirSkipPlan": {
+			reason:   "A project caches function builds even without planning.",
+			project:  true,
+			args:     []string{"--cache-dir", "/c"},
+			skipPlan: true,
+		},
+		"ProvidersSkipPlan": {
+			reason:   "--skip-plan runs no diff servers, so --providers is ignored with a warning.",
+			project:  true,
 			args:     []string{"--providers", "/p"},
 			skipPlan: true,
 			warn:     "ignoring --providers",
 		},
-		"XRWarnsSessionIDSkipPlan": {
+		"SessionIDSkipPlan": {
 			reason:   "--skip-plan runs no diff servers, so --session-id is ignored with a warning.",
-			mode:     XRMode,
 			args:     []string{"--session-id", "s1"},
 			skipPlan: true,
 			warn:     "ignoring --session-id",
 		},
-		"XRWarnsMinimizeComposition": {
-			reason: "Composite resource files have no Composition to minimize, so --minimize-composition is ignored with a warning.",
-			mode:   XRMode,
-			args:   []string{"--minimize-composition"},
-			warn:   "ignoring --minimize-composition",
-		},
-		"XRRejectsAnalyzeOn": {
-			reason: "--analyze-on doesn't apply to composite resource files.",
-			mode:   XRMode,
-			args:   []string{"--analyze-on", "always"},
-			err:    "--analyze-on selects",
-		},
-		"ProjectAcceptsCacheDirSkipPlan": {
-			reason:   "A project caches function builds even without planning.",
-			mode:     ProjectMode,
-			args:     []string{"--cache-dir", "/c"},
-			skipPlan: true,
-		},
-		"XRRejectsNamespace": {
-			reason: "Composite resource files name what to simulate, so -n doesn't apply.",
-			mode:   XRMode,
-			args:   []string{"-n", "a"},
-			err:    "--namespace selects which composite resources a Composition change reaches",
-		},
-		"XRRejectsIncludePinned": {
-			reason: "--include-pinned doesn't apply to composite resource files.",
-			mode:   XRMode,
-			args:   []string{"--include-pinned"},
-			err:    "--include-pinned selects",
-		},
-		"XRAcceptsCommon": {
-			reason: "Composite resources accept the flags shared with crossplane-diff's xr command.",
-			mode:   XRMode,
-			args:   []string{"-o", "json", "--no-color", "--ignore-paths", "a.b", "--eventual-state", "--timeout", "2m", "--dry-run-on", "existing"},
-		},
 		"DefaultsAreNotSet": {
-			reason: "Flags left at their defaults, or set from the environment, are not rejected.",
-			mode:   XRMode,
+			reason:   "Flags left at their defaults, or set from the environment, are not warned about.",
+			skipPlan: true,
 		},
 	}
 
@@ -824,21 +762,9 @@ func TestValidateModeFlags(t *testing.T) {
 			}
 
 			var stderr bytes.Buffer
-			err = validateModeFlags(&stderr, tc.mode, setFlags(k), tc.skipPlan)
+			warnIgnoredFlags(&stderr, setFlags(k), tc.skipPlan, tc.project)
 			if tc.warn == "" && stderr.Len() > 0 || !strings.Contains(stderr.String(), tc.warn) {
-				t.Errorf("\n%s\nvalidateModeFlags(...): want warning containing %q, got %q", tc.reason, tc.warn, stderr.String())
-			}
-			if tc.err == "" {
-				if err != nil {
-					t.Errorf("\n%s\nvalidateModeFlags(...): %v", tc.reason, err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.err) {
-				t.Errorf("\n%s\nvalidateModeFlags(...): want error containing %q, got %v", tc.reason, tc.err, err)
-			}
-			if diff := cmp.Diff(ExitCodeUsage, exitCode(err)); diff != "" {
-				t.Errorf("\n%s\nvalidateModeFlags(...): -want exit code, +got:\n%s", tc.reason, diff)
+				t.Errorf("\n%s\nwarnIgnoredFlags(...): want warning containing %q, got %q", tc.reason, tc.warn, stderr.String())
 			}
 		})
 	}
@@ -910,35 +836,22 @@ func TestProviderSource(t *testing.T) {
 	cases := map[string]struct {
 		reason    string
 		providers string
-		mode      Mode
 		want      source
 	}{
-		"FlagInProjectMode": {
+		"Flag": {
 			reason:    "--providers wins over the project's provider dependencies.",
 			providers: "providers.yaml",
-			mode:      ProjectMode,
 			want:      providersFlag,
 		},
-		"ProjectModeWithoutFlag": {
-			reason: "Project mode without --providers starts the project's provider dependencies.",
-			mode:   ProjectMode,
+		"WithoutFlag": {
+			reason: "Without --providers the project's provider dependencies start.",
 			want:   providersProject,
-		},
-		"XRMode": {
-			reason: "XR mode without --providers starts servers per composite resource.",
-			mode:   XRMode,
-			want:   providersPerXR,
-		},
-		"CompositionMode": {
-			reason: "Composition mode without --providers starts servers per composite resource.",
-			mode:   CompositionMode,
-			want:   providersPerXR,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := providerSource(tc.providers, tc.mode); got != tc.want {
-				t.Errorf("%s\nproviderSource(%q, %v): want %v, got %v", tc.reason, tc.providers, tc.mode, tc.want, got)
+			if got := providerSource(tc.providers); got != tc.want {
+				t.Errorf("%s\nproviderSource(%q): want %v, got %v", tc.reason, tc.providers, tc.want, got)
 			}
 		})
 	}
@@ -974,69 +887,6 @@ func TestSimulateProcessorOptionsDockerNetwork(t *testing.T) {
 			}
 			if cfg.CrossplaneDockerNetwork != tc.want {
 				t.Errorf("processorOptions(...): want network %q, got %q", tc.want, cfg.CrossplaneDockerNetwork)
-			}
-		})
-	}
-}
-
-func TestCheckComposites(t *testing.T) {
-	xrGVK := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XThing"}
-	claimGVK := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "Thing"}
-	xrd := &un.Unstructured{}
-	lookup := func(want schema.GroupVersionKind) func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) {
-		return func(_ context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
-			if gvk == want {
-				return xrd, nil
-			}
-			return nil, errors.New("no XRD found")
-		}
-	}
-	defs := &testutils.MockDefinitionClient{GetXRDForXRFn: lookup(xrGVK), GetXRDForClaimFn: lookup(claimGVK)}
-	res := func(apiVersion, kind, name string) *un.Unstructured {
-		return &un.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": map[string]any{"name": name}}}
-	}
-
-	cases := map[string]struct {
-		reason    string
-		resources []*un.Unstructured
-		err       string
-	}{
-		"XRAndClaim": {
-			reason:    "Resources an XRD defines as a composite resource or claim should be accepted.",
-			resources: []*un.Unstructured{res("example.org/v1", "XThing", "x"), res("example.org/v1", "Thing", "t")},
-		},
-		"ConfigurationMetadata": {
-			reason:    "A Configuration package metadata file should be rejected.",
-			resources: []*un.Unstructured{res("meta.pkg.crossplane.io/v1", "Configuration", "cfg")},
-			err:       `-f inputs include Configuration "cfg" (meta.pkg.crossplane.io/v1), which no XRD in the cluster defines as a composite resource or claim`,
-		},
-		"Provider": {
-			reason:    "A Provider should be rejected.",
-			resources: []*un.Unstructured{res("example.org/v1", "XThing", "x"), res("pkg.crossplane.io/v1", "Provider", "provider-aws")},
-			err:       `-f inputs include Provider "provider-aws" (pkg.crossplane.io/v1)`,
-		},
-		"ConfigMap": {
-			reason:    "A non-Crossplane kind should be rejected.",
-			resources: []*un.Unstructured{res("v1", "ConfigMap", "cm")},
-			err:       `-f inputs include ConfigMap "cm" (v1)`,
-		},
-		"WrongVersion": {
-			reason:    "A composite resource at a version its XRD doesn't define should be rejected.",
-			resources: []*un.Unstructured{res("example.org/v2", "XThing", "x")},
-			err:       `-f inputs include XThing "x" (example.org/v2)`,
-		},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			err := checkComposites(context.Background(), defs, tc.resources)
-			if tc.err == "" {
-				if err != nil {
-					t.Fatalf("\n%s\ncheckComposites(...): %v", tc.reason, err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.err) {
-				t.Fatalf("\n%s\ncheckComposites(...): want error containing %q, got %v", tc.reason, tc.err, err)
 			}
 		})
 	}

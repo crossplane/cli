@@ -53,9 +53,8 @@ type Flags struct {
 	ns   string
 	refs []k8stypes.NamespacedName
 
-	Input          []string `default:"${project_file}"   help:"Project file (default), or changed Composition or composite resource files. Takes one path per flag; repeat it for more. - reads standard input." placeholder:"PATH" sep:"none" short:"f"`
-	MaxConcurrency uint     `default:"8"                 help:"Max concurrent function builds."`
-	CacheDir       string   `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)."                                                                            name:"cache-dir"`
+	MaxConcurrency uint   `default:"8"                 help:"Max concurrent function builds."`
+	CacheDir       string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)."                                                                            name:"cache-dir"`
 
 	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                                                                             predictor:"context"                                                          short:"c"`
 	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                                                                                     predictor:"namespace"                                                        short:"n"`
@@ -100,19 +99,6 @@ type Hooks struct {
 	// Router, when set, routes provider plans through it instead of starting
 	// diff servers.
 	Router Router
-
-	// ChangedFunctions marks these functions as changed in any mode, as
-	// project mode's digest detection would. Test-only.
-	ChangedFunctions []string
-}
-
-// hookChangedFunctions returns the functions a test marked as changed.
-func (c *Flags) hookChangedFunctions() []string {
-	if c.Hooks == nil {
-		return nil
-	}
-
-	return c.Hooks.ChangedFunctions
 }
 
 // Validate rejects flag values the simulation can't run with. kong calls it

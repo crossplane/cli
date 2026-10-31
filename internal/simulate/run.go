@@ -17,7 +17,6 @@ limitations under the License.
 package simulate
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -28,7 +27,6 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/charmbracelet/x/term"
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/spf13/afero"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8stypes "k8s.io/apimachinery/pkg/types"
@@ -55,33 +53,14 @@ import (
 	"github.com/crossplane/cli/v2/internal/kube"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/terminal"
-	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
-)
-
-// Mode is what -f names, which decides where the simulation's
-// Compositions and functions come from.
-type Mode int
-
-const (
-	// ProjectMode simulates a project: its Compositions, with its functions
-	// built locally and overlaid on the cluster's.
-	ProjectMode Mode = iota
-	// CompositionMode simulates changed Compositions against the composite
-	// resources on the cluster that use them, with the cluster's functions.
-	CompositionMode
-	// XRMode simulates changed composite resources (or claims) with the
-	// cluster's Compositions and functions.
-	XRMode
 )
 
 // Packages is how a simulation fetches packages. Functions and providers go
 // through one set of ImageConfigs, so --image-configs rewrites both.
 type Packages struct {
-	ICs []pkgv1beta1.ImageConfig
-	// Client is set in project mode, and otherwise by planOptions.
+	ICs    []pkgv1beta1.ImageConfig
 	Client runtimexpkg.Client
 
-	// Proj and DepMgr are set in project mode.
 	Proj   *v1alpha1.Project
 	DepMgr *dependency.Manager
 }
@@ -89,11 +68,10 @@ type Packages struct {
 // planOptions sets up provider diff servers and the XRPlanner, and returns
 // the processor options that plan each composite resource's composed
 // resources. Namespaced resources without a namespace plan in ns, the
-// kubeconfig's namespace. pkgs is the project's in project mode; otherwise
-// planOptions sets its client. Run stops c.servers when it is set. Planning
+// kubeconfig's namespace. pkgs is the project's. Run stops c.servers when it is set. Planning
 // shares the engine's clients' REST mapper and CRD cache, so a run discovers
 // the cluster once and fetches each CRD at most once.
-func (c *Flags) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, clients *client.Clients, ns string, in *Inputs, pkgs *Packages) ([]dp.ProcessorOption, error) {
+func (c *Flags) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, clients *client.Clients, ns string, pkgs *Packages) ([]dp.ProcessorOption, error) {
 	rmapper, crds := clients.Core.Mapper, clients.K8sClients.Schema
 	kubeClient, err := NewKubeClient(restCfg, rmapper)
 	if err != nil {
@@ -104,21 +82,13 @@ func (c *Flags) planOptions(sigCtx context.Context, k *kong.Context, logger logg
 	if c.Hooks != nil && c.Hooks.Router != nil {
 		router = c.Hooks.Router
 	} else {
-		if pkgs.Client == nil {
-			client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(pkgs.ICs))
-			if err != nil {
-				return nil, errors.Wrap(err, "cannot create xpkg client")
-			}
-			pkgs.Client = client
-		}
 		c.servers = diffserver.NewManager(pkgs.Client, logger, diffserver.WithSessionID(c.SessionID))
 		router = c.servers
 	}
 
-	var ensure EnsureFunc
 	if c.servers != nil {
 		var upfront []diffserver.Input
-		switch providerSource(c.Providers, in.Mode) {
+		switch providerSource(c.Providers) {
 		case providersFlag:
 			upfront, err = LoadProviderInputs(c.Providers)
 			if err != nil {
@@ -130,22 +100,14 @@ func (c *Flags) planOptions(sigCtx context.Context, k *kong.Context, logger logg
 				return nil, errors.Wrap(err, "cannot load the project's provider dependencies")
 			}
 			upfront = diffserver.Images(images)
-		case providersPerXR:
-			cache := NewImageCache()
-			ensure = func(ctx context.Context, rs []*un.Unstructured) error {
-				imgs := RelevantProviderImages(ctx, kubeClient, rmapper, crds, rs, len(pkgs.ICs) > 0, cache, k.Stderr)
-				return EnsureServers(ctx, sp, k.Stderr, c.servers, diffserver.Images(imgs))
-			}
 		}
-		if ensure == nil {
-			if err := EnsureServers(sigCtx, sp, k.Stderr, c.servers, upfront); err != nil {
-				return nil, err
-			}
+		if err := EnsureServers(sigCtx, sp, k.Stderr, c.servers, upfront); err != nil {
+			return nil, err
 		}
 	}
 
 	c.keep = ProviderManaged(sigCtx, rmapper, crds)
-	c.xrPlanner = NewXRPlanner(NewPlanner(kubeClient, rmapper, crds, ns, router, c.Timeout), c.keep, ensure)
+	c.xrPlanner = NewXRPlanner(NewPlanner(kubeClient, rmapper, crds, ns, router, c.Timeout), c.keep, nil)
 	return []dp.ProcessorOption{dp.WithAfterXRDiff(c.xrPlanner.AfterXRDiff), dp.WithKeepEqualDiffs(c.keep)}, nil
 }
 
@@ -157,23 +119,15 @@ const (
 	providersFlag source = iota
 	// providersProject starts the project's provider dependencies up front.
 	providersProject
-	// providersPerXR starts the providers each composite resource needs as
-	// it is simulated.
-	providersPerXR
 )
 
 // providerSource picks where provider diff servers come from: --providers
-// when set, else the project's provider dependencies in project mode, else
-// per composite resource.
-func providerSource(providers string, mode Mode) source {
-	switch {
-	case providers != "":
+// when set, else the project's provider dependencies.
+func providerSource(providers string) source {
+	if providers != "" {
 		return providersFlag
-	case mode == ProjectMode:
-		return providersProject
-	default:
-		return providersPerXR
 	}
+	return providersProject
 }
 
 // noteNoServers prints NoteNoDiffServers to stderr once, for -o
@@ -234,11 +188,7 @@ func changedFunctions(ctx context.Context, rc k8client.ResourceClient, digests m
 
 // diffCompositions returns the diff simulate runs for Compositions: their
 // impact on the composite resources in scope, rendered to k's writers.
-func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp.CompDiffProcessor, comps []*un.Unstructured, mode Mode) func(context.Context) (bool, error) {
-	msg := "cannot simulate Compositions"
-	if mode == ProjectMode {
-		msg = "cannot simulate project"
-	}
+func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp.CompDiffProcessor, comps []*un.Unstructured) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
 		output, err := proc.DiffComposition(ctx, comps, c.ns, c.refs)
 
@@ -249,7 +199,7 @@ func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp
 		if output != nil {
 			changed, err = c.renderCompReport(k, logger, output, err)
 		}
-		return changed, errors.Wrap(err, msg)
+		return changed, errors.Wrap(err, "cannot simulate project")
 	}
 }
 
@@ -456,17 +406,6 @@ func (c *Flags) notes() []string {
 	return planNotes(c.SkipPlan, true, c.xrPlanner.Routed(), c.xrPlanner.Considered())
 }
 
-// renderXRReport writes an xr or project run's report in the format -o
-// selects, as renderReport does.
-func (c *Flags) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport, runErr error) (bool, error) {
-	plans := c.providerPlans()
-	return c.renderReport(k, logger, runErr, FromXRReport(r, plans, c.keep), r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
-		// Annotated even without plans, so a Secret's values are redacted.
-		r = AnnotateXRReport(r, plans)
-		return renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
-	})
-}
-
 // renderCompReport writes a composition run's report in the format -o
 // selects, as renderReport does.
 func (c *Flags) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput, runErr error) (bool, error) {
@@ -553,13 +492,10 @@ func isTerminal(w io.Writer) bool {
 	return ok && term.IsTerminal(f.Fd())
 }
 
-// Run previews the inputs against the cluster: a project's compositions, with
-// its functions built locally, or changed Composition or composite resource
-// files, with functions from the cluster.
+// Run previews a project's compositions, with its functions built locally,
+// against the cluster.
 func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, in *Inputs) error {
-	if err := validateModeFlags(k.Stderr, in.Mode, setFlags(k), c.SkipPlan); err != nil {
-		return err
-	}
+	warnIgnoredFlags(k.Stderr, setFlags(k), c.SkipPlan, true)
 
 	if err := docker.Check(sigCtx); err != nil {
 		return errors.Wrap(err, "cannot connect to Docker, which project simulate needs to run functions")
@@ -572,23 +508,11 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 		return err
 	}
 
-	var fns []pkgv1.Function
-	var digests map[string]project.EmbeddedDigest
-	var pkgs *Packages
-	comps := in.Resources
-	if in.Mode == ProjectMode {
-		built, err := in.Build(sigCtx)
-		if err != nil {
-			return err
-		}
-		comps, fns, digests, pkgs = built.Compositions, built.Functions, built.Digests, built.Packages
-	} else {
-		ics, err := ImageConfigs(c.ImageConfigs, "")
-		if err != nil {
-			return err
-		}
-		pkgs = &Packages{ICs: ics}
+	built, err := in.Build(sigCtx)
+	if err != nil {
+		return err
 	}
+	comps, fns, digests, pkgs := built.Compositions, built.Functions, built.Digests, built.Packages
 
 	clients, err := client.New(restCfg, logger)
 	if err != nil {
@@ -600,12 +524,12 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 		return err
 	}
 
-	opts := append(c.processorOptions(k, logger, fns, digests, pkgs.ICs), dp.WithChangedFunctions(append(changed, c.hookChangedFunctions()...)...), dp.WithXRTimeout(c.Timeout))
+	opts := append(c.processorOptions(k, logger, fns, digests, pkgs.ICs), dp.WithChangedFunctions(changed...), dp.WithXRTimeout(c.Timeout))
 
 	// xrPlanner and servers are for rendering the plans; they stay nil with
 	// --skip-plan, and servers also when hooks.Router supplies the router.
 	if !c.SkipPlan {
-		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, clients, ns, in, pkgs)
+		planOpts, err := c.planOptions(sigCtx, k, logger, sp, restCfg, clients, ns, pkgs)
 		// Stop even on error: upfront Ensure may have started servers.
 		if c.servers != nil {
 			defer StopServers(sigCtx, k.Stderr, c.servers)
@@ -616,91 +540,23 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 		opts = append(opts, planOpts...)
 	}
 	xrProc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
-
-	ctx := sigCtx
-
-	if in.Mode == XRMode {
-		// Compositions and functions come from the cluster, as in
-		// crossplane-diff's xr command. A claim is simulated as its XR, but
-		// the report names the input, so its result is listed under the
-		// claim's name (crossplane/cli#367).
-		return c.simulate(ctx, logger, clients.Initialize, xrProc, func(ctx context.Context) (bool, error) {
-			if err := checkComposites(ctx, clients.XpClients.Definition, in.Resources); err != nil {
-				return false, err
-			}
-			report, err := xrProc.PerformDiff(ctx, in.Resources, clients.XpClients.Composition.FindMatchingComposition)
-
-			// Render the report even when there are errors, so successful XRs
-			// are shown and structured output stays valid. The renderer
-			// includes the errors in structured output.
-			changed := report != nil && report.HasChanges()
-			if report != nil {
-				changed, err = c.renderXRReport(k, logger, report, err)
-			}
-			return changed, errors.Wrap(err, "cannot simulate composite resources")
-		})
-	}
-
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
-	return c.simulate(ctx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, in.Mode))
+	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps))
 }
 
-// checkComposites rejects resources that no XRD in the cluster defines as a
-// composite resource or claim, such as package metadata, a Provider or a
-// ConfigMap, which the engine would otherwise fail on with no hint at what -f
-// accepts. The definition client caches the XRDs when it initializes, so the
-// check costs no extra calls.
-func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, resources []*un.Unstructured) error {
-	for _, r := range resources {
-		gvk := r.GroupVersionKind()
-		if xrd, err := defs.GetXRDForClaim(ctx, gvk); err == nil && xrd != nil {
-			continue
-		}
-		if xrd, err := defs.GetXRDForXR(ctx, gvk); err == nil && xrd != nil {
-			continue
-		}
-		return errors.Errorf("-f inputs include %s %q (%s), which no XRD in the cluster defines as a composite resource or claim; -f accepts a project file alone, Composition files, or composite resource or claim files", gvk.Kind, r.GetName(), gvk.GroupVersion())
-	}
-	return nil
-}
-
-// validateModeFlags checks the flags set on the command line against mode.
-// A flag that does nothing in mode prints a warning to stderr and the run
-// continues: --skip-plan runs no diff servers, so --providers and
-// --session-id do nothing with it; functions come from the cluster unless -f
-// names a project, so --max-concurrency applies only to a project; and
-// --cache-dir caches nothing with --skip-plan and no project. A flag that
-// would mislead is a usage error that exits 80: composite resource files name
-// the composite resources to simulate, so the flags that pick which ones a
-// Composition change reaches would look like they scope the run when they
-// don't.
-func validateModeFlags(stderr io.Writer, mode Mode, set map[string]bool, skipPlan bool) error {
+// warnIgnoredFlags prints a warning to stderr for each flag set on the
+// command line that does nothing in this run: --skip-plan runs no diff
+// servers, so --providers and --session-id do nothing with it, and
+// --cache-dir caches nothing with --skip-plan unless the run builds a project.
+func warnIgnoredFlags(stderr io.Writer, set map[string]bool, skipPlan, project bool) {
 	for _, f := range []string{"providers", "session-id"} {
 		if skipPlan && set[f] {
 			_, _ = fmt.Fprintf(stderr, "Warning: ignoring --%s; --skip-plan runs no diff servers.\n", f)
 		}
 	}
-	if mode == ProjectMode {
-		return nil
-	}
-	if set["max-concurrency"] {
-		_, _ = fmt.Fprintln(stderr, "Warning: ignoring --max-concurrency, which configures a project's function builds; Composition and composite resource files use the cluster's functions.")
-	}
-	if set["cache-dir"] && skipPlan {
+	if !project && skipPlan && set["cache-dir"] {
 		_, _ = fmt.Fprintln(stderr, "Warning: ignoring --cache-dir; with --skip-plan and no project file there is nothing to cache.")
 	}
-	if mode != XRMode {
-		return nil
-	}
-	for _, f := range []string{"namespace", "name", "include-pinned", "analyze-on"} {
-		if set[f] {
-			return ExitError{Code: ExitCodeUsage, Err: errors.Errorf("--%s selects which composite resources a Composition change reaches, so it doesn't apply when -f names composite resource files; drop it, or pass Composition or project files", f)}
-		}
-	}
-	if set["minimize-composition"] {
-		_, _ = fmt.Fprintln(stderr, "Warning: ignoring --minimize-composition, which collapses changed Compositions; composite resource files have none.")
-	}
-	return nil
 }
 
 // Built is a built project: what Inputs.Build returns.
@@ -715,16 +571,9 @@ type Built struct {
 	Packages *Packages
 }
 
-// Inputs are the loaded -f inputs.
+// Inputs are what a simulate command simulates.
 type Inputs struct {
-	// Mode is what -f names.
-	Mode Mode
-
-	// Build builds the project, in ProjectMode. Run calls it after loading
-	// the kubeconfig, so a bad context fails before the slow build.
+	// Build builds the project. Run calls it after loading the kubeconfig,
+	// so a bad context fails before the slow build.
 	Build func(ctx context.Context) (*Built, error)
-
-	// Resources are the Compositions or composite resources to simulate,
-	// in the other modes.
-	Resources []*un.Unstructured
 }

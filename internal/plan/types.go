@@ -25,6 +25,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	xpfieldpath "github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 )
 
 // Action is what applying a resource would do.
@@ -255,7 +257,7 @@ func SecretPaths(us ...*unstructured.Unstructured) []string {
 				continue
 			}
 			for k := range m {
-				out = append(out, field+"."+k)
+				out = append(out, xpfieldpath.Segments{xpfieldpath.Field(field), xpfieldpath.Field(k)}.String())
 			}
 		}
 	}

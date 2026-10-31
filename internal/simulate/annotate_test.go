@@ -448,20 +448,37 @@ Summary: 1 modified (1 requires replacement)
 
 func TestAnnotateSecret(t *testing.T) {
 	gvk := schema.GroupVersionKind{Version: "v1", Kind: "Secret"}
-	sec := func(data map[string]any) map[string]any {
-		if data == nil {
-			return nil
+	sec := func(data, stringData map[string]any) map[string]any {
+		m := map[string]any{"data": data}
+		if stringData != nil {
+			m["stringData"] = stringData
 		}
-		return map[string]any{"data": data, "stringData": map[string]any{"tls.crt": "PEMSECRET"}}
+		return m
 	}
-	old, nu := sec(map[string]any{"pw": "OLDSECRET", "same": "SAMESECRET"}), sec(map[string]any{"pw": "NEWSECRET", "same": "SAMESECRET"})
+	pem := map[string]any{"tls.crt": "PEMSECRET"}
+	old := sec(map[string]any{"pw": "OLDSECRET", "same": "SAMESECRET"}, pem)
+	nu := sec(map[string]any{"pw": "NEWSECRET", "same": "SAMESECRET"}, pem)
 	cases := map[string]struct {
 		typ      dt.DiffType
 		cur, des map[string]any
+		// want are lines the output must hold, after trimming spaces.
+		want []string
 	}{
-		"Modified": {dt.DiffTypeModified, old, nu},
-		"Added":    {dt.DiffTypeAdded, nil, nu},
-		"Removed":  {dt.DiffTypeRemoved, old, nil},
+		"Modified": {dt.DiffTypeModified, old, nu, []string{"- pw: (sensitive value)", "+ pw: (sensitive value, changed)", "same: (sensitive value)"}},
+		"Added":    {dt.DiffTypeAdded, nil, nu, []string{"+ pw: (sensitive value)"}},
+		"Removed":  {dt.DiffTypeRemoved, old, nil, []string{"- pw: (sensitive value)"}},
+		"StringDataChanged": {dt.DiffTypeModified,
+			sec(map[string]any{"same": "SAMESECRET"}, map[string]any{"tok": "OLDSECRET"}),
+			sec(map[string]any{"same": "SAMESECRET"}, map[string]any{"tok": "NEWSECRET"}),
+			[]string{"- tok: (sensitive value)", "+ tok: (sensitive value, changed)"}},
+		"DockerConfig": {dt.DiffTypeAdded, nil,
+			sec(map[string]any{".dockerconfigjson": "NEWSECRET"}, nil),
+			[]string{"+ .dockerconfigjson: (sensitive value)"}},
+		// A key that extends another, and one ending in a dot.
+		"DottedKeys": {dt.DiffTypeModified,
+			sec(map[string]any{"ca": "SAMESECRET", "ca.crt": "OLDSECRET", "a.": "PEMSECRET"}, nil),
+			sec(map[string]any{"ca": "SAMESECRET", "ca.crt": "NEWSECRET", "a.": "PEMSECRET"}, nil),
+			[]string{"- ca.crt: (sensitive value)", "+ ca.crt: (sensitive value, changed)", "ca: (sensitive value)", "a.: (sensitive value)"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -474,8 +491,17 @@ func TestAnnotateSecret(t *testing.T) {
 			}
 			// No plans: a Secret is redacted without them.
 			got := render(t, report(d), nil, noColor())
-			if !strings.Contains(got, "(sensitive value") || strings.Contains(got, diffHidden) {
+			if strings.Contains(got, diffHidden) {
 				t.Errorf("render(): want redacted, not hidden:\n%s", got)
+			}
+			var lines []string
+			for l := range strings.SplitSeq(got, "\n") {
+				lines = append(lines, strings.Join(strings.Fields(l), " "))
+			}
+			for _, w := range tc.want {
+				if !slices.Contains(lines, w) {
+					t.Errorf("render(): want line %q:\n%s", w, got)
+				}
 			}
 			for _, secret := range []string{"OLDSECRET", "NEWSECRET", "SAMESECRET", "PEMSECRET"} {
 				if strings.Contains(got, secret) {

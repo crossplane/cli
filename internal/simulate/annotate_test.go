@@ -129,6 +129,14 @@ func TestAnnotateXRReport(t *testing.T) {
 	secret := lineDiff(t, "db", dt.DiffTypeModified,
 		fp(map[string]any{"password": "hunter2", "size": int64(1)}),
 		fp(map[string]any{"password": "hunter3", "size": int64(2)}))
+	keyedSecret := lineDiff(t, "db", dt.DiffTypeModified,
+		fp(map[string]any{"tags": []any{map[string]any{"key": "k", "pw": "hunter2"}}}),
+		fp(map[string]any{"tags": []any{map[string]any{"key": "k", "pw": "hunter3"}}}))
+	addedSecret := lineDiff(t, "db", dt.DiffTypeAdded, nil, fp(map[string]any{"password": "hunter2", "size": int64(1)}))
+	zones := lineDiff(t, "db", dt.DiffTypeModified,
+		fp(map[string]any{"zones": []any{"hunter1", "hunter2"}}),
+		fp(map[string]any{"zones": []any{"hunter1", "hunter3"}}))
+	quoted := lineDiff(t, "db", dt.DiffTypeModified, fp(map[string]any{"a: b": "hunter2"}), fp(map[string]any{"a: b": "hunter3"}))
 	equal := lineDiff(t, "db", dt.DiffTypeEqual, fp(map[string]any{"region": "us-east-1"}), fp(map[string]any{"region": "us-east-1"}))
 	policy := textDiff(dt.DiffTypeModified,
 		"spec:\n  forProvider:\n    policy: >\n      {\"version\": \"1\"}\n    tags:\n    - key: k\n      value: \"1\"\n",
@@ -246,6 +254,87 @@ Summary: 1 modified
 -     password: (sensitive value)
 -     size: 1
 +     password: (sensitive value, changed)
++     size: 2
+
+---
+
+Summary: 1 modified
+`,
+		},
+		"SensitiveForcesReplace": {
+			reason: "A redacted field of a keyed list item that forces replacement keeps the note.",
+			in:     report(keyedSecret),
+			plans: planFor(keyedSecret, plan.ActionReplace,
+				plan.FieldChange{Path: `spec.forProvider.tags[key="k"].pw`, Actual: sensitive(), Planned: sensitive(), RequiresReplace: true},
+			),
+			opts: func() renderer.DiffOptions { o := noColor(); o.Compact, o.ContextLines = true, 0; return o }(),
+			want: `~~~ Instance/db (requires replacement)
+-       pw: (sensitive value)
++       pw: (sensitive value, changed)  # forces replacement
+
+---
+
+Summary: 1 modified (1 requires replacement)
+`,
+		},
+		"SensitiveAdded": {
+			reason: "A sensitive value in an added diff prints the plain marker, never the changed one.",
+			in:     report(addedSecret),
+			plans:  planFor(addedSecret, plan.ActionCreate, plan.FieldChange{Path: "spec.forProvider.password", Planned: sensitive()}),
+			opts:   noColor(),
+			want: `+++ Instance/db
++ apiVersion: rds.aws.upbound.io/v1beta1
++ kind: Instance
++ metadata:
++   name: db
++ spec:
++   forProvider:
++     password: (sensitive value)
++     size: 1
+
+---
+
+Summary: 1 added
+`,
+		},
+		"SensitiveIndex": {
+			reason: "An index path redacts every item on both sides, the changed marker only on the changed item.",
+			in:     report(zones),
+			plans:  planFor(zones, plan.ActionUpdate, plan.FieldChange{Path: "spec.forProvider.zones[1]", Actual: sensitive(), Planned: sensitive()}),
+			opts:   func() renderer.DiffOptions { o := noColor(); o.Compact, o.ContextLines = true, 1; return o }(),
+			want: `~~~ Instance/db
+      - (sensitive value)
+-     - (sensitive value)
++     - (sensitive value, changed)
+
+---
+
+Summary: 1 modified
+`,
+		},
+		"SensitiveQuotedKey": {
+			reason: "A sensitive key YAML must quote is redacted.",
+			in:     report(quoted),
+			plans:  planFor(quoted, plan.ActionUpdate, plan.FieldChange{Path: "spec.forProvider[a: b]", Actual: sensitive(), Planned: sensitive()}),
+			opts:   func() renderer.DiffOptions { o := noColor(); o.Compact, o.ContextLines = true, 0; return o }(),
+			want: `~~~ Instance/db
+-     'a: b': (sensitive value)
++     'a: b': (sensitive value, changed)
+
+---
+
+Summary: 1 modified
+`,
+		},
+		"SensitiveThenUnknown": {
+			reason: "A value sensitive before and computed after prints the marker, then known after apply.",
+			in:     report(secret),
+			plans:  planFor(secret, plan.ActionUpdate, plan.FieldChange{Path: "spec.forProvider.password", Actual: sensitive(), Planned: unknown()}),
+			opts:   func() renderer.DiffOptions { o := noColor(); o.Compact, o.ContextLines = true, 0; return o }(),
+			want: `~~~ Instance/db
+-     password: (sensitive value)
+-     size: 1
++     password: (known after apply)
 +     size: 2
 
 ---

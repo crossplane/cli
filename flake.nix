@@ -110,6 +110,13 @@
           # Vendor-dependency derivation, used by `nix run .#tidy` to refresh
           # the hash in nix/vendor-hashes.nix.
           crossplane-vendor = build.vendor.root;
+          # Crossplane's CRDs, used by `nix run .#tidy` to refresh the hash in
+          # nix/crossplane-crds.nix. Wrapped in a derivation because that file
+          # evaluates to a path inside the fetched source, and packages must be
+          # derivations; building it fetches (and hash-checks) that source.
+          crossplane-crds = pkgs.runCommand "crossplane-crds" { } ''
+            ln -s ${import ./nix/crossplane-crds.nix { inherit pkgs; }} $out
+          '';
         }
       );
 
@@ -137,6 +144,7 @@
         in
         {
           test = apps.test { };
+          integration-test = apps.integration-test { };
           lint = apps.lint { };
           generate = apps.generate { };
           tidy = apps.tidy { };

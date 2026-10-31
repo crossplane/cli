@@ -1,0 +1,16 @@
+apiVersion: nop.example.org/v1alpha1
+kind: NopResource
+metadata:
+  annotations:
+    crossplane.io/composition-resource-name: failing
+  name: test-claim-xr-failing
+spec:
+  forProvider:
+    configData: claim-value
+status:
+  conditions:
+    - type: Synced
+      status: "False"
+      reason: ReconcileError
+      message: cannot observe external resource
+      lastTransitionTime: "2026-01-01T00:00:00Z"

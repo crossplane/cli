@@ -39,12 +39,15 @@ import (
 	_ "embed"
 )
 
-//go:embed help/simulate.md
-var simulateHelp string
+var (
+	//go:embed help/simulate.md
+	simulateHelp string
+	//go:embed help/simulate_examples.md
+	simulateExamples string
+)
 
-// simulateCmd previews how a project's compositions, or changed Composition
-// or composite resource files, would change the composite resources in a
-// cluster.
+// simulateCmd previews how a project's compositions would change the
+// composite resources in a cluster.
 type simulateCmd struct {
 	simulate.Flags `embed:""`
 
@@ -52,7 +55,7 @@ type simulateCmd struct {
 }
 
 func (c *simulateCmd) Help() string {
-	return simulateHelp
+	return simulateHelp + simulate.Help(true) + simulateExamples
 }
 
 // Run previews the project's compositions against the cluster, with its

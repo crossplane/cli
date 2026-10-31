@@ -235,6 +235,34 @@ func isSecretValue(path string) bool {
 	return false
 }
 
+// SecretPaths returns the path of each data and stringData key of each core
+// Secret in us, for RedactPaths, and of a data or stringData field that isn't
+// a map. Other objects, and nil, have none.
+func SecretPaths(us ...*unstructured.Unstructured) []string {
+	var out []string
+	for _, u := range us {
+		if u == nil || !isCoreSecret(u.GroupVersionKind()) {
+			continue
+		}
+		for _, field := range secretFields() {
+			v, ok := u.Object[field]
+			if !ok {
+				continue
+			}
+			m, ok := v.(map[string]any)
+			if !ok {
+				out = append(out, field)
+				continue
+			}
+			for k := range m {
+				out = append(out, field+"."+k)
+			}
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // RedactSecret returns u with each data and stringData value replaced by the
 // sensitive-value marker when u is a core Secret, as a copy; any other object
 // is returned as is. Keys are kept, so a consumer still sees which keys exist.

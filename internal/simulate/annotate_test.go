@@ -446,6 +446,46 @@ Summary: 1 modified (1 requires replacement)
 	}
 }
 
+func TestAnnotateSecret(t *testing.T) {
+	gvk := schema.GroupVersionKind{Version: "v1", Kind: "Secret"}
+	sec := func(data map[string]any) map[string]any {
+		if data == nil {
+			return nil
+		}
+		return map[string]any{"data": data, "stringData": map[string]any{"tls.crt": "PEMSECRET"}}
+	}
+	old, nu := sec(map[string]any{"pw": "OLDSECRET", "same": "SAMESECRET"}), sec(map[string]any{"pw": "NEWSECRET", "same": "SAMESECRET"})
+	cases := map[string]struct {
+		typ      dt.DiffType
+		cur, des map[string]any
+	}{
+		"Modified": {dt.DiffTypeModified, old, nu},
+		"Added":    {dt.DiffTypeAdded, nil, nu},
+		"Removed":  {dt.DiffTypeRemoved, old, nil},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := objDiff(t, "creds", tc.typ, tc.cur, tc.des)
+			d.Gvk = gvk
+			for _, u := range []*unstructured.Unstructured{d.Current.Clean, d.Desired.Clean} {
+				if u != nil {
+					u.SetGroupVersionKind(gvk)
+				}
+			}
+			// No plans: a Secret is redacted without them.
+			got := render(t, report(d), nil, noColor())
+			if !strings.Contains(got, "(sensitive value") || strings.Contains(got, diffHidden) {
+				t.Errorf("render(): want redacted, not hidden:\n%s", got)
+			}
+			for _, secret := range []string{"OLDSECRET", "NEWSECRET", "SAMESECRET", "PEMSECRET"} {
+				if strings.Contains(got, secret) {
+					t.Errorf("render(): output contains %q:\n%s", secret, got)
+				}
+			}
+		})
+	}
+}
+
 // TestAnnotateIdentity pins that no provider plan, or one that cannot
 // annotate, renders -o diff exactly as it renders without annotation.
 func TestAnnotateIdentity(t *testing.T) {

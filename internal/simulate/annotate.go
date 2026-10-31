@@ -46,7 +46,8 @@ const (
 // provider plan from plans (see ProviderPlans.For and annotateDiff), for the
 // -o diff renderer. It never mutates r: the result is a shallow copy with
 // cloned groups and diff maps, and each annotated diff is a copy with new
-// LineDiffs. Empty plans return an equivalent copy, which renders exactly as
+// LineDiffs. A core Secret's data and stringData values are redacted with or
+// without plans. Otherwise empty plans return an equivalent copy, which renders exactly as
 // r does.
 func AnnotateXRReport(r *dt.XRReport, plans *ProviderPlans) *dt.XRReport {
 	if r == nil {
@@ -143,12 +144,21 @@ func annotateDiffs(diffs map[string]*dt.ResourceDiff, plans *ProviderPlans) (map
 // changed), and the "+" line of a field that forces replacement ends
 // "  # forces replacement". A diff whose sensitive values can't be redacted
 // keeps its header but its body is one "# diff hidden" line. Other provider
-// changes, such as defaults, show only in -o plan.
+// changes, such as defaults, show only in -o plan. Whatever pp is, each data
+// and stringData value of a core Secret is sensitive, in an added, modified
+// or removed diff.
 func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
-	if pp == nil || pp.Error != "" || pp.Approximate {
-		return d
+	// A Secret's values are redacted with or without a plan.
+	var secret []plan.FieldChange
+	if d.DiffType != dt.DiffTypeEqual {
+		for _, p := range plan.SecretPaths(d.Current.Clean, d.Desired.Clean) {
+			secret = append(secret, plan.FieldChange{Path: p, Actual: &plan.Value{Sensitive: true}})
+		}
 	}
-	if len(pp.Changes) == 0 && (d.DiffType != dt.DiffTypeEqual || !isChange(pp.Action)) {
+	if pp == nil || pp.Error != "" || pp.Approximate {
+		pp = &plan.ResourcePlan{}
+	}
+	if len(pp.Changes) == 0 && len(secret) == 0 && (d.DiffType != dt.DiffTypeEqual || !isChange(pp.Action)) {
 		return d
 	}
 
@@ -157,10 +167,11 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	case dt.DiffTypeEqual:
 		return driftDiff(d, pp)
 	case dt.DiffTypeRemoved:
-		return d
+		// Only a Secret's values change a removed diff.
+		pp = &plan.ResourcePlan{}
 	}
 
-	changes := plan.SortedChanges(pp.Changes)
+	changes := append(plan.SortedChanges(pp.Changes), secret...)
 	diffs, des, changed, err := objectDiff(d, changes)
 	if err != nil {
 		out := *d
@@ -194,7 +205,7 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 // compare.GenerateDiff makes it, so no secret reaches the text. It returns an
 // error when a sensitive value can't be redacted: the caller must hide the
 // body. It also returns the desired copy the diff's new side marshals, nil
-// for a diff without its desired view, which keeps its line diff unmarked.
+// for a diff without its desired view.
 func objectDiff(d *dt.ResourceDiff, changes []plan.FieldChange) ([]diffmatchpatch.Diff, *unstructured.Unstructured, bool, error) {
 	var paths []string
 	for _, c := range changes {
@@ -202,12 +213,11 @@ func objectDiff(d *dt.ResourceDiff, changes []plan.FieldChange) ([]diffmatchpatc
 			paths = append(paths, c.Path)
 		}
 	}
-	// An added diff has no current side; any other side must have its view.
-	if len(paths) > 0 && (d.Desired.Clean == nil || (d.DiffType != dt.DiffTypeAdded && d.Current.Clean == nil)) {
+	// An added diff has no current side and a removed one no desired side;
+	// any other side must have its view.
+	if len(paths) > 0 && ((d.DiffType != dt.DiffTypeRemoved && d.Desired.Clean == nil) ||
+		(d.DiffType != dt.DiffTypeAdded && d.Current.Clean == nil)) {
 		return nil, nil, false, errors.New("a diff without its objects can't be redacted")
-	}
-	if d.Desired.Clean == nil {
-		return d.LineDiffs, nil, false, nil
 	}
 
 	cur, des := d.Current.Clean, d.Desired.Clean.DeepCopy()

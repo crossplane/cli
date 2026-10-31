@@ -888,9 +888,8 @@ func (c *simulateCmd) notes() []string {
 func (c *simulateCmd) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport, runErr error) (bool, error) {
 	plans := c.providerPlans()
 	return c.renderReport(k, logger, runErr, simulate.FromXRReport(r, plans, c.keep), r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
-		if plans != nil {
-			r = simulate.AnnotateXRReport(r, plans)
-		}
+		// Annotated even without plans, so a Secret's values are redacted.
+		r = simulate.AnnotateXRReport(r, plans)
 		return renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
 	})
 }
@@ -901,9 +900,8 @@ func (c *simulateCmd) renderCompReport(k *kong.Context, logger logging.Logger, o
 	plans := c.providerPlans()
 	return c.renderReport(k, logger, runErr, simulate.FromCompReport(o, plans, c.keep), o.HasChanges(), dt.CompDryRunWarnings(o), func(opts renderer.DiffOptions) error {
 		opts.MinimizeComposition = c.MinimizeComposition
-		if plans != nil {
-			o = simulate.AnnotateCompReport(o, plans)
-		}
+		// Annotated even without plans, so a Secret's values are redacted.
+		o = simulate.AnnotateCompReport(o, plans)
 		return renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts).RenderCompDiff(o)
 	})
 }

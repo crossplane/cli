@@ -384,7 +384,12 @@ func markReplace(lines []line, des *unstructured.Unstructured, path string, adde
 			if l.op == opDelete {
 				continue
 			}
-			if l.op == opInsert && at >= from && at < to && !strings.HasSuffix(l.text, forcesReplacement) {
+			if l.op == opInsert && at >= from && at < to {
+				// A line already marked keeps its one marker; the next
+				// line may be a field that forces nothing.
+				if strings.HasSuffix(l.text, forcesReplacement) {
+					return false
+				}
 				lines[i].text += forcesReplacement
 				return true
 			}

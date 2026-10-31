@@ -708,8 +708,9 @@ func annotateDiffsOf(t *testing.T, d *dt.ResourceDiff, plans *ProviderPlans) *dt
 }
 
 // TestAnnotatePlacement pins where each -o diff marker lands: unknowns are
-// set in the desired object, replacements placed by YAML node positions. The blank context lines some diffs end with
-// are the renderer's, with or without annotation.
+// set in the desired object, and replacements placed by a marshal probe of
+// it. The blank context lines some diffs end with are the renderer's, with or
+// without annotation.
 func TestAnnotatePlacement(t *testing.T) {
 	const fp = "spec.forProvider."
 	unk := func(p string) plan.FieldChange { return plan.FieldChange{Path: fp + p, Planned: unknown()} }
@@ -965,6 +966,26 @@ Summary: 1 modified (1 requires replacement)
 Summary: 1 added (1 requires replacement)
 `,
 		},
+		"AddedSharedAncestor": {
+			reason: "On a create, two replacements whose nearest ancestor is the same mark its line once, not the next field.",
+			in:      lineDiff(t, "db", dt.DiffTypeAdded, nil, spec(fpm(map[string]any{"arn": "a", "region": "r"}))),
+			changes: []plan.FieldChange{repl("x"), repl("y")},
+			want: `+++ Instance/db (requires replacement)
++ apiVersion: rds.aws.upbound.io/v1beta1
++ kind: Instance
++ metadata:
++   name: db
++ spec:
++   deletionPolicy: Delete
++   forProvider:  # forces replacement
++     arn: a
++     region: r
+
+---
+
+Summary: 1 added (1 requires replacement)
+`,
+		},
 		"Unparseable": {
 			reason: "A diff without objects to redact a sensitive change in has its body hidden, its header and summary kept.",
 			in: textDiff(dt.DiffTypeModified,
@@ -1126,7 +1147,7 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 			path:   "spec.pw",
 		},
 		"LiteralJSON": {
-			reason: "A literal block holding JSON yaml.v3 can't read as a map is masked whole.",
+			reason: "A literal block holding JSON is redacted whole.",
 			in: lineDiff(t, "db", dt.DiffTypeModified,
 				map[string]any{"cfg": "\u2028\u2028\n{\"pw\": \"OLDSECRET\"}\n"},
 				map[string]any{"cfg": "\u2028\u2028\n{\"pw\": \"NEWSECRET\"}\n"}),

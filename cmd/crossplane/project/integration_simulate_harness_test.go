@@ -198,7 +198,7 @@ func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary
 func runSimulateArgvRouted(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, router simulate.Router, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
-	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &simulateHooks{Router: router}, stdout, stderr)
+	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &simulate.Hooks{Router: router}, stdout, stderr)
 }
 
 // runSimulateArgvHooked is runSimulateArgv with changed marked as changed
@@ -206,7 +206,7 @@ func runSimulateArgvRouted(t *testing.T, cfg *rest.Config, argv []string, render
 func runSimulateArgvHooked(t *testing.T, cfg *rest.Config, argv, changed []string, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
-	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulateHooks{ChangedFunctions: changed}, stdout, stderr)
+	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulate.Hooks{ChangedFunctions: changed}, stdout, stderr)
 }
 
 // withRenderBinary returns argv rendering with the local crossplane binary
@@ -220,7 +220,7 @@ func withRenderBinary(argv []string, bin string) []string {
 
 // runSimulateArgvWith runs `crossplane project simulate` with argv against
 // cfg and hooks, whose RESTConfig and Terminal it sets.
-func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *simulateHooks, stdout, stderr io.Writer) (int, error) {
+func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *simulate.Hooks, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
 	var cli struct {
@@ -258,7 +258,7 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *s
 	// when there is one, and colorized unless --no-color.
 	hooks.RESTConfig = cfg
 	hooks.Terminal = true
-	cli.Project.Simulate.hooks = hooks
+	cli.Project.Simulate.Hooks = hooks
 
 	err = kctx.Run()
 	// Exit as main does: a silent ExitError, such as changes found, exits

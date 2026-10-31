@@ -194,7 +194,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			}
 
 			var stdout, stderr bytes.Buffer
-			code, err := runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulateHooks{Router: tc.router}, &stdout, &stderr)
+			code, err := runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulate.Hooks{Router: tc.router}, &stdout, &stderr)
 
 			if tc.expectedErrorContains != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.expectedErrorContains) {

@@ -115,20 +115,21 @@ type Cluster struct {
 // Composition but no revision references its current one. A value a manifest sets always wins, which is how a
 // test sets up a state Crossplane wouldn't leave.
 //
-// Start skips the test when the environment lacks envtest's binaries (KUBEBUILDER_ASSETS) or Crossplane's CRDs
-// (CROSSPLANE_CRDS_DIR); `nix run .#integration-test` provides both. The cluster is stopped and the context
+// Start fails the test when the environment lacks envtest's binaries (KUBEBUILDER_ASSETS) or Crossplane's CRDs
+// (CROSSPLANE_CRDS_DIR), rather than skipping it, so a broken environment can't pass silently; `nix run
+// .#integration-test` provides both. The cluster is stopped and the context
 // cancelled when the test ends.
 func Start(t *testing.T, s Setup, timeout time.Duration) *Cluster {
 	t.Helper()
 
-	// envtest needs kube-apiserver and etcd binaries it cannot download itself; without them it would fail to
-	// start rather than skip.
+	// envtest needs kube-apiserver and etcd binaries it cannot download itself. Only a run that opted in with
+	// the integration tag gets here, so a missing binary is a broken environment, not a reason to skip.
 	if !envtestBinariesAvailable() {
-		t.Skip("env: no envtest binaries (KUBEBUILDER_ASSETS unset); run via nix run .#integration-test")
+		t.Fatal("env: no envtest binaries (KUBEBUILDER_ASSETS unset or without kube-apiserver); run via nix run .#integration-test, or set KUBEBUILDER_ASSETS to a directory of envtest's binaries")
 	}
 
 	if os.Getenv(crossplaneCRDsDirEnv) == "" {
-		t.Skipf("env: %s unset; run via nix run .#integration-test, or set it to Crossplane's cluster/crds",
+		t.Fatalf("env: %s unset; run via nix run .#integration-test, or set it to Crossplane's cluster/crds",
 			crossplaneCRDsDirEnv)
 	}
 

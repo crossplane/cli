@@ -2,6 +2,10 @@
 # integration tests, from the controller-tools envtest release. Tests find them
 # through KUBEBUILDER_ASSETS. null is returned only for systems without an
 # envtest build, so callers can skip wiring them.
+#
+# Don't edit version or the hashes by hand: `nix run .#tidy` sets version to the
+# newest envtest release for go.mod's k8s.io/api minor, and the sha512 hashes
+# from controller-tools' envtest-releases.yaml index.
 { pkgs }:
 let
   version = "1.35.0";
@@ -9,22 +13,22 @@ let
     x86_64-linux = {
       os = "linux";
       arch = "amd64";
-      hash = "sha256-VxZxne8Uo/7D7SheXoxCgOYmiFQDm1BzqW6MCtr7HAI=";
+      hash = "sha512-EwNpwW8HbnJNCJGJr67elgMW9fXeps9XvnpPxvCcdzQokxklCXkOQFbhFuIy3/gy7YY/W9Vdy1XTjzq4NIKKEQ==";
     };
     aarch64-linux = {
       os = "linux";
       arch = "arm64";
-      hash = "sha256-UFf7Re7PJGkp2naLIdMkNLjJbiKnjvbN/pEvGmeq5Fo=";
+      hash = "sha512-5T4riDmPW5UD4/B02CotywkMcIs0lAhIYHzmWBOKXUolli4EKraDzMAmqKbJDAvn9ljkLd4Ihzadc8O2ji/IbA==";
     };
     x86_64-darwin = {
       os = "darwin";
       arch = "amd64";
-      hash = "sha256-5zP3Lv/IqAdvLI64kt5K60u1TqAggoCM4+UfgPL/heI=";
+      hash = "sha512-/MxYO6bTIsiKjFb3h2CQp61jRgBGpLyuQUCTsjzminXxcsp0hLfHR1twdlfspRCKitP9heG09wpsmcovItvWsg==";
     };
     aarch64-darwin = {
       os = "darwin";
       arch = "arm64";
-      hash = "sha256-PGsevXRbgtrtR2BftWX3xnDIozRLV6N3qRTQE7a57vA=";
+      hash = "sha512-u10Ls5dZVjMbCqDAOZVbTE3GxcKI5a82k2TH0vvqwRoCUifauxJ1aQgLJZ3Sm2l8x3+ner0nriZyHdsj6O4GEw==";
     };
   };
   target = platforms.${pkgs.stdenv.hostPlatform.system} or null;

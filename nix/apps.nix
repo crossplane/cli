@@ -173,6 +173,10 @@ in
           pkgs.git
           pkgs.gnused
           pkgs.coreutils
+          pkgs.curl
+          pkgs.yq-go
+          pkgs.gnugrep
+          pkgs.diffutils
         ];
         inheritPath = false;
         text = ''
@@ -240,6 +244,57 @@ in
               exit 1
             fi
             echo "  rev = $want"
+          fi
+
+          # Keep nix/envtest-assets.nix at the newest envtest release for the
+          # Kubernetes minor go.mod's k8s.io/api names (v0.35.x -> 1.35), with
+          # hashes from the index setup-envtest verifies downloads against.
+          echo "Syncing envtest assets with go.mod..."
+          file=nix/envtest-assets.nix
+          mod=k8s.io/api
+          want=$(go list -m -f '{{if .Replace}}replaced{{else}}{{.Version}}{{end}}' "$mod")
+          if [ "$want" = replaced ]; then
+            echo "ERROR: $mod is replaced in go.mod; set version and hashes in $file by hand" >&2
+            exit 1
+          fi
+          if [[ "$want" =~ [0-9]{14}-[0-9a-f]{12}$ ]] || ! [[ "$want" =~ ^v0\.([0-9]+)\. ]]; then
+            echo "ERROR: $mod is at $want, not a v0.<minor>.<patch> release; set version and hashes in $file by hand" >&2
+            exit 1
+          fi
+          minor="''${BASH_REMATCH[1]}"
+          index=$(curl -fsSL https://raw.githubusercontent.com/kubernetes-sigs/controller-tools/main/envtest-releases.yaml) || {
+            echo "ERROR: could not fetch the envtest release index ($file left unchanged)" >&2
+            exit 1
+          }
+          # Newest v1.<minor>.<patch> with no pre-release suffix.
+          version=$(yq '.releases | keys | .[]' <<<"$index" \
+            | sed -n "s|^v\(1\.$minor\.[0-9][0-9]*\)$|\1|p" | sort -t. -k3,3n | tail -n1)
+          if [ -z "$version" ]; then
+            echo "ERROR: no envtest release for Kubernetes 1.$minor in the index ($file left unchanged)" >&2
+            exit 1
+          fi
+          # Edit a copy and only replace $file once every hash is in hand, so
+          # a failure leaves the old file in place.
+          tmp=$(mktemp)
+          trap 'rm -f "$tmp"' EXIT
+          sed "s|version = \"[^\"]*\";|version = \"$version\";|" "$file" >"$tmp"
+          for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="''${p%/*}" arch="''${p#*/}"
+            hex=$(yq ".releases.\"v$version\".\"envtest-v$version-$os-$arch.tar.gz\".hash" <<<"$index")
+            if ! [[ "$hex" =~ ^[0-9a-f]{128}$ ]]; then
+              echo "ERROR: no sha512 for envtest v$version $os/$arch in the index ($file left unchanged)" >&2
+              exit 1
+            fi
+            sri=$(nix hash convert --hash-algo sha512 --to sri "$hex")
+            sed -i "/os = \"$os\";/{n;/arch = \"$arch\";/{n;s|hash = \"[^\"]*\";|hash = \"$sri\";|}}" "$tmp"
+            grep -q "hash = \"$sri\";" "$tmp" || {
+              echo "ERROR: could not set the $os/$arch hash in $file (left unchanged)" >&2
+              exit 1
+            }
+          done
+          if ! cmp -s "$tmp" "$file"; then
+            cat "$tmp" >"$file"
+            echo "  version = $version"
           fi
 
           echo "Done"

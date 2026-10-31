@@ -651,7 +651,7 @@ func TestIsOnlySchemaValidationErrors(t *testing.T) {
 			want: false,
 		},
 		"CrossplaneRuntimeJoinedSchemaValidationErrors": {
-			// This simulates the actual pattern in PerformDiff where errors are joined
+			// This simulates the pattern where per-resource errors are joined
 			err: xperrors.Join(
 				xperrors.Wrapf(
 					xperrors.Wrap(&SchemaValidationError{Message: "validation"}, "cannot validate resources"),

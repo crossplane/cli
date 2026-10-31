@@ -1356,40 +1356,6 @@ func (b *DiffProcessorBuilder) WithFailedInitialize(errMsg string) *DiffProcesso
 	})
 }
 
-// WithPerformDiff adds an implementation for the PerformDiff method.
-func (b *DiffProcessorBuilder) WithPerformDiff(fn func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error)) *DiffProcessorBuilder {
-	b.mock.PerformDiffFn = fn
-	return b
-}
-
-// WithSuccessfulPerformDiff sets a successful PerformDiff implementation with no diffs.
-func (b *DiffProcessorBuilder) WithSuccessfulPerformDiff() *DiffProcessorBuilder {
-	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error) {
-		return &dt.XRReport{}, nil
-	})
-}
-
-// WithSuccessfulPerformDiffWithChanges sets a successful PerformDiff implementation whose report
-// has one added resource.
-func (b *DiffProcessorBuilder) WithSuccessfulPerformDiffWithChanges() *DiffProcessorBuilder {
-	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error) {
-		added := &dt.ResourceDiff{
-			Gvk:          schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XDownstreamResource"},
-			ResourceName: "added-resource",
-			DiffType:     dt.DiffTypeAdded,
-		}
-
-		return &dt.XRReport{Groups: []dt.XRDiffGroup{{Diffs: map[string]*dt.ResourceDiff{added.GetDiffKey(): added}}}}, nil
-	})
-}
-
-// WithFailedPerformDiff sets a failing PerformDiff implementation, whose report holds the error.
-func (b *DiffProcessorBuilder) WithFailedPerformDiff(errMsg string) *DiffProcessorBuilder {
-	return b.WithPerformDiff(func(context.Context, []*un.Unstructured, dtypes.CompositionProvider) (*dt.XRReport, error) {
-		return &dt.XRReport{Errors: []dt.OutputError{{Message: errMsg}}}, errors.New(errMsg)
-	})
-}
-
 // Build creates and returns the configured mock DiffProcessor.
 func (b *DiffProcessorBuilder) Build() *MockDiffProcessor {
 	return b.mock

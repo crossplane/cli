@@ -316,8 +316,8 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 	return output, errors.Join(errs...)
 }
 
-// outputErrorsJoined returns errs as one error that names each one's resource, the way PerformDiff
-// names the resources it failed to process.
+// outputErrorsJoined returns errs as one error that names each one's resource, so each failed resource
+// is named.
 func outputErrorsJoined(errs []dt.OutputError) error {
 	joined := make([]error, 0, len(errs))
 	for _, e := range errs {

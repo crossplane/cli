@@ -46,11 +46,6 @@ const (
 
 // DiffProcessor interface for processing resources.
 type DiffProcessor interface {
-	// PerformDiff processes resources using a composition provider function, and returns the report
-	// for the caller to render. The report is non-nil whenever resources were processed, even with an
-	// error, so the successful inputs' results and the failures' errors can still be rendered.
-	PerformDiff(ctx context.Context, resources []*un.Unstructured, compositionProvider types.CompositionProvider) (*dt.XRReport, error)
-
 	// DiffSingleResource processes a single resource and returns its diffs and, by diff key, the
 	// unchanged renderings its diffs leave out (see DefaultDiffCalculator.CalculateNonRemovalDiffs),
 	// which only the render-overlap check consumes.
@@ -87,7 +82,7 @@ type DefaultDiffProcessor struct {
 // NewDiffProcessor creates a new DefaultDiffProcessor with the provided options.
 func NewDiffProcessor(k8cs k8.Clients, xpcs xp.Clients, opts ...ProcessorOption) DiffProcessor {
 	// Create default configuration
-	// Note: The processor does no presentation; the caller renders the report PerformDiff returns.
+	// Note: The processor does no presentation; the caller renders the reports it returns.
 	// Engine limits default here so a caller that doesn't go through the CLI gets the same limits.
 	config := ProcessorConfig{
 		MaxNestedDepth:      DefaultMaxNestedDepth,
@@ -213,148 +208,6 @@ func CleanupDetached(ctx context.Context, c Cleaner, logger logging.Logger) {
 	if err := c.Cleanup(cleanupCtx); err != nil {
 		logger.Debug("Failed to release processor resources", "error", err)
 	}
-}
-
-// PerformDiff processes resources using a composition provider function, and returns the report for
-// the caller to render. The report is non-nil whenever resources were processed, even with an error.
-func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.Unstructured, compositionProvider types.CompositionProvider) (*dt.XRReport, error) {
-	p.config.Logger.Debug("Processing resources with composition provider", "count", len(resources))
-
-	if len(resources) == 0 {
-		// Nothing was processed, so there is no report to render.
-		p.config.Logger.Debug("No resources to process")
-		return nil, nil
-	}
-
-	// Build one diff group per input XR/claim, in input order, so the renderer
-	// can group structured output (xrs[]) and human output (per-XR sections) by
-	// the input that produced each change. See result.XRDiffGroup.
-	groups := make([]dt.XRDiffGroup, 0, len(resources))
-
-	// Collect errors for the top-level/global (union) error list, preserved for
-	// back-compat alongside the per-group errors.
-	var outputErrors []dt.OutputError
-
-	var errs []error
-
-	// Overlapping inputs are settled in three stages by a per-run InputValidator; see input_validator.go.
-	// First, before rendering: the validator says what to render, and which inputs it already rejected.
-	validator := p.config.Factories.InputValidator(p.config.Advisories, resources)
-	toRender := validator.ToRender()
-
-	// unchanged holds, by group, the unchanged renderings its diffs leave out, for the overlap check.
-	unchanged := make([]map[string]*dt.ResourceDiff, len(toRender))
-
-	for i, in := range toRender {
-		res := in.Resource
-
-		// Attribute the group to the name the XR is rendered under. A synthesized one (generateName
-		// only) is shown the way the diff formatter shows it, "<generateName>(generated)", so the
-		// grouped and flat views agree and no unpredictable hash is published (issue #477).
-		name, generated := renderName(res)
-		if generated {
-			name = dt.GeneratedDisplayName(name, res.GetGenerateName())
-		}
-
-		group := dt.XRDiffGroup{
-			XR: corev1.ObjectReference{
-				APIVersion: res.GetAPIVersion(),
-				Kind:       res.GetKind(),
-				Name:       name,
-				Namespace:  res.GetNamespace(),
-			},
-			NameGenerated: generated,
-		}
-
-		if in.Err == nil {
-			xrCtx, cancel := p.config.xrContext(ctx)
-			diffs, rendered, err := p.diffSingleResourceInternal(xrCtx, res, compositionProvider, nil, nil, true, 0)
-			err = p.config.afterXR(ctx, xrCtx, diffs, err)
-			cancel()
-			validator.RecordRender(i, rendered.Keys(), err)
-
-			if err == nil {
-				// We don't emit partial results for a single XR: on success the
-				// whole diff tree is attached, on failure none of it.
-				group.Diffs = diffs
-				unchanged[i] = rendered.Unchanged()
-			}
-		}
-
-		groups = append(groups, group)
-	}
-
-	// Second: each group's final error, including any input another input manages. Errors are only
-	// reported now, because the validator's verdict may supersede a render failure.
-	for i, err := range validator.Verdicts(groups) {
-		if err == nil {
-			continue
-		}
-
-		groups[i].Diffs = nil
-
-		res := toRender[i].Resource
-		resourceID := fmt.Sprintf("%s/%s", groups[i].XR.Kind, groups[i].XR.Name)
-
-		// Debug, not Info: this failure is already surfaced in the returned error and as an
-		// OutputError in the output. Raising it as a warning too would double-report it.
-		p.config.Logger.Debug("Failed to process resource",
-			"resource", resourceID,
-			"namespace", res.GetNamespace(),
-			"error", err)
-		errs = append(errs, errors.Wrapf(err, "unable to process resource %s", resourceID))
-
-		// Collect error for structured output. NewOutputError
-		// surfaces typed validation failures via
-		// OutputError.ValidationFailures when err wraps a
-		// SchemaValidationError that carries a structured Result.
-		// The same converted error goes to both the top-level union
-		// (outputErrors) and the per-group entry so consumers of
-		// either view see it.
-		outErr := NewOutputError(resourceID, err)
-		outputErrors = append(outputErrors, outErr)
-		groups[i].Err = &outErr
-	}
-
-	// Third: renders that reach one resource in ways no single diff can represent. Collected into the
-	// report so they reach errors[] and the returned error like any other error; the report is still
-	// rendered, so structured output stays valid. The check sees every rendering, unchanged ones included,
-	// so contention is caught whether or not equal diffs are kept (with or without --skip-plan).
-	for _, err := range validator.RenderOverlaps(withUnchanged(groups, unchanged)) {
-		errs = append(errs, err)
-		outputErrors = append(outputErrors, dt.OutputError{Message: err.Error()})
-	}
-
-	// Release resources before draining advisories, so one raised during teardown (leftover function
-	// containers) is still in the report's warnings; the command's deferred Cleanup would run only
-	// after output has been emitted.
-	CleanupDetached(ctx, p, p.config.Logger)
-
-	// The renderer includes the report's errors in structured output but does not print them: they
-	// are returned, below, to the command, which prints them once. Every Errors entry has its
-	// counterpart in errs, except the interruption's, which the command reports itself.
-	report := &dt.XRReport{
-		Groups:   groups,
-		Errors:   withInterruption(ctx, outputErrors),
-		Warnings: p.config.Advisories.Advisories(),
-	}
-
-	totalDiffs := 0
-	for _, group := range groups {
-		totalDiffs += len(group.Diffs)
-	}
-
-	p.config.Logger.Debug("Processing complete",
-		"resourceCount", len(resources),
-		"totalDiffs", totalDiffs,
-		"hasDiffs", report.HasChanges(),
-		"errorCount", len(errs))
-
-	if len(errs) > 0 {
-		return report, errors.Join(errs...)
-	}
-
-	return report, nil
 }
 
 // DiffSingleResource handles one resource at a time and returns its diffs.

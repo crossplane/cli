@@ -23,8 +23,8 @@ limitations under the License.
 //
 // Start and the fixtures behind it build only with the integration tag, as do the tests that use them, since they
 // need envtest's binaries. Run them with `nix run .#integration-test`, which provides those binaries and
-// Crossplane's CRDs at the version go.mod pins. CRDsForXRD, PinnedCrossplaneCRDsDir and ReapOrphanedEnvtest are
-// untagged, so their own tests run with the unit tests.
+// Crossplane's CRDs at the version go.mod pins; Start fails, rather than skips, a test run without them.
+// CRDsForXRD, PinnedCrossplaneCRDsDir and ReapOrphanedEnvtest are untagged, so their own tests run with the unit tests.
 //
 // Integration tests are any test files with `//go:build integration`. The integration-test app runs
 // `go test -tags integration` on every package containing one, so unit tests in those packages also run there.

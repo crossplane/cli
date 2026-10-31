@@ -28,10 +28,21 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 )
 
-// Resolver translates a CLI-style package reference into a fully qualified OCI
-// ref, returning the resolved semantic version or tag where applicable.
+// Client is an xpkg.Client that can also resolve CLI-style package
+// references, so callers need not carry a separate resolver.
+type Client interface {
+	xpkg.Client
+
+	// Resolve returns the resolved reference and the exact version tag
+	// extracted from it (empty for digest refs).
+	Resolve(ctx context.Context, ref string) (name.Reference, string, error)
+}
+
+// resolvingClient translates a CLI-style package reference into a fully
+// qualified OCI ref, returning the resolved semantic version or tag where
+// applicable.
 //
-// It handles four shapes:
+// It handles three shapes:
 //
 //   - pkg@digest          → returned unchanged, version=""
 //   - pkg:<exact-tag>     → returned unchanged, version=<exact-tag>
@@ -39,18 +50,18 @@ import (
 //
 // Opaque (non-semver, non-constraint) tags are returned unchanged with
 // version=tag.
-type Resolver struct {
-	client xpkg.Client
+type resolvingClient struct {
+	xpkg.Client
 }
 
-// NewResolver returns a Resolver backed by client.
-func NewResolver(client xpkg.Client) *Resolver {
-	return &Resolver{client: client}
+// WrapClient returns a Client that delegates to c and resolves references
+// using c.ListVersions.
+func WrapClient(c xpkg.Client) Client {
+	return &resolvingClient{Client: c}
 }
 
-// Resolve returns the resolved reference and the exact version tag extracted
-// from it (empty for digest refs and bare sources).
-func (r *Resolver) Resolve(ctx context.Context, ref string) (name.Reference, string, error) {
+// Resolve implements Client.
+func (r *resolvingClient) Resolve(ctx context.Context, ref string) (name.Reference, string, error) {
 	// If the ref is specified by digest it doesn't need to be resolved. Return
 	// it verbatim.
 	if dgst, err := name.NewDigest(ref, name.StrictValidation); err == nil {
@@ -81,7 +92,7 @@ func (r *Resolver) Resolve(ctx context.Context, ref string) (name.Reference, str
 		return tag, tag.TagStr(), nil
 	}
 
-	tags, err := r.client.ListVersions(ctx, repo.Name())
+	tags, err := r.ListVersions(ctx, repo.Name())
 	if err != nil {
 		return nil, "", errors.Wrapf(err, "cannot list versions for %s", repo)
 	}

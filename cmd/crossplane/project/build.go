@@ -17,6 +17,7 @@ limitations under the License.
 package project
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -105,9 +106,9 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 	)
 	schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs))
 	schemaMgr := manager.New(schemasFS, generators, schemaRunner)
-	client, resolver, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs))
+	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs))
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot create xpkg client")
 	}
 
 	depMgr := dependency.NewManager(c.proj, c.projFS,
@@ -116,7 +117,6 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 		dependency.WithSchemaGenerators(generators),
 		dependency.WithSchemaRunner(schemaRunner),
 		dependency.WithXpkgClient(client),
-		dependency.WithResolver(resolver),
 	)
 
 	// The builder may decompress function runtime tarballs into this directory;

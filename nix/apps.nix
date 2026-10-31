@@ -181,40 +181,66 @@ in
           echo "Running go mod tidy..."
           go mod tidy
 
-          # Refresh a module's vendor hash in nix/vendor-hashes.nix by resetting
-          # it to a placeholder and reading the real hash back from the build
+          # Refresh a hash (a Go vendor hash, or a fetcher's) by resetting it
+          # to a placeholder and reading the real hash back from the build
           # error - the same trick nix-update uses for Go vendor hashes.
           refresh() {
-            key="$1"   # attribute in nix/vendor-hashes.nix
-            attr="$2"  # flake package that builds that module's vendor dir
+            file="$1"  # .nix file holding the hash
+            key="$2"   # attribute in $file
+            attr="$3"  # flake package whose build checks that hash
             orig="" got=""
 
             # Remember the current value so we can restore it if anything fails.
-            orig=$(sed -n "s|.*$key = \"\(sha256-[^\"]*\)\";.*|\1|p" nix/vendor-hashes.nix | head -n1)
+            orig=$(sed -n "s|.*$key = \"\(sha256-[^\"]*\)\";.*|\1|p" "$file" | head -n1)
 
             # Set a placeholder so the build is forced to report the real hash.
-            sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"${pkgs.lib.fakeHash}\";|" nix/vendor-hashes.nix
+            sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"${pkgs.lib.fakeHash}\";|" "$file"
 
-            # --option eval-cache false: we just edited nix/vendor-hashes.nix,
-            # and Nix's flake eval cache can otherwise serve a stale evaluation
-            # that ignores the change and reports no/old hash.
+            # --option eval-cache false: we just edited $file, and Nix's flake
+            # eval cache can otherwise serve a stale evaluation that ignores
+            # the change and reports no/old hash.
             got=$(nix build ".#$attr" --no-link --option eval-cache false 2>&1 \
               | sed -n 's|.*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\).*|\1|p' \
               | head -n1 || true)
             if [ -z "$got" ]; then
               # Build failed for some other reason (e.g. network); restore the
               # previous value rather than leaving the placeholder committed.
-              sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"$orig\";|" nix/vendor-hashes.nix
-              echo "ERROR: could not determine vendor hash for '$key' (restored previous value)" >&2
+              sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"$orig\";|" "$file"
+              echo "ERROR: could not determine hash for '$key' in $file (restored previous value)" >&2
               exit 1
             fi
 
-            sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"$got\";|" nix/vendor-hashes.nix
+            sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"$got\";|" "$file"
             echo "  $key = $got"
           }
 
           echo "Refreshing Go vendor hashes..."
-          refresh root crossplane-vendor
+          refresh nix/vendor-hashes.nix root crossplane-vendor
+
+          # Keep nix/crossplane-crds.nix at the crossplane/crossplane tag that
+          # go.mod's apis/v2 version names (apis/vX and vX tag the same commit).
+          echo "Syncing Crossplane CRDs with go.mod..."
+          mod=github.com/crossplane/crossplane/apis/v2
+          want=$(go list -m -f '{{if .Replace}}replaced{{else}}{{.Version}}{{end}}' "$mod")
+          if [ "$want" = replaced ]; then
+            echo "ERROR: $mod is replaced in go.mod; set rev and hash in nix/crossplane-crds.nix by hand" >&2
+            exit 1
+          fi
+          # A pseudo-version (...-yyyymmddhhmmss-<12 hex>) names a commit, not
+          # a tag, so there is no tag to pin; pin its commit by hand.
+          if [[ "$want" =~ [0-9]{14}-[0-9a-f]{12}$ ]]; then
+            echo "ERROR: $mod is at pseudo-version $want; set rev to its commit SHA and refresh hash in nix/crossplane-crds.nix by hand" >&2
+            exit 1
+          fi
+          have=$(sed -n 's|.*rev = "\([^"]*\)";.*|\1|p' nix/crossplane-crds.nix | head -n1)
+          if [ "$have" != "$want" ]; then
+            sed -i "s|rev = \"$have\";|rev = \"$want\";|" nix/crossplane-crds.nix
+            if ! (refresh nix/crossplane-crds.nix hash crossplane-crds); then
+              sed -i "s|rev = \"$want\";|rev = \"$have\";|" nix/crossplane-crds.nix
+              exit 1
+            fi
+            echo "  rev = $want"
+          fi
 
           echo "Done"
         '';

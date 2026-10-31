@@ -25,7 +25,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
@@ -52,7 +51,7 @@ func TestTraceIntegration(t *testing.T) {
 				"testdata/integration/composed-failing.yaml"),
 		},
 		XRDAPIVersion: integration.XRDV1,
-	}, 2*time.Minute)
+	})
 
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
 	if err := os.WriteFile(kubeconfig, cluster.Kubeconfig, 0o600); err != nil {

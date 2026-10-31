@@ -23,7 +23,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -100,7 +99,7 @@ type Cluster struct {
 	Kubeconfig []byte
 	// Client is the cluster admin's.
 	Client client.Client
-	// Context is the test's context, bounded by Start's timeout.
+	// Context is the test's (t.Context()), cancelled when the test ends; go test's -timeout bounds the run.
 	Context context.Context //nolint:containedctx // Handed to the test with the cluster it bounds.
 }
 
@@ -119,7 +118,7 @@ type Cluster struct {
 // (CROSSPLANE_CRDS_DIR), rather than skipping it, so a broken environment can't pass silently; `nix run
 // .#integration-test` provides both. The cluster is stopped and the context
 // cancelled when the test ends.
-func Start(t *testing.T, s Setup, timeout time.Duration) *Cluster {
+func Start(t *testing.T, s Setup) *Cluster {
 	t.Helper()
 
 	// envtest needs kube-apiserver and etcd binaries it cannot download itself. Only a run that opted in with
@@ -162,8 +161,7 @@ func Start(t *testing.T, s Setup, timeout time.Duration) *Cluster {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), timeout)
-	t.Cleanup(cancel)
+	ctx := t.Context()
 
 	defaults := newCrossplaneDefaults(k8sClient, crds)
 

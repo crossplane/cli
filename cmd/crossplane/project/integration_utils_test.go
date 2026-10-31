@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strings"
 	"testing"
 	"time"
 
@@ -368,66 +367,6 @@ func deleteResourcesFromFiles(ctx context.Context, c client.Client, paths []stri
 	return nil
 }
 
-// awaitAdmissionDenial blocks until every resource in the supplied manifest is refused by a
-// ValidatingAdmissionPolicy on a dry-run create. An empty path is a no-op.
-//
-// A VAP does not take effect the instant it is created: the apiserver's admission plugin learns
-// about policies and bindings through an informer, so for a short window after setup the cluster
-// still accepts what the policy will later refuse. Any test that depends on a rejection must wait
-// for that window to close, or it silently becomes a test of nothing.
-//
-// The gate is deliberately narrow: only an error naming ValidatingAdmissionPolicy counts as
-// "enforcing". Accepting any rejection would let an unrelated failure (a schema error in the canary,
-// a missing namespace) masquerade as a working policy.
-func awaitAdmissionDenial(ctx context.Context, c client.Client, path string) error {
-	if path == "" {
-		return nil
-	}
-
-	resources, err := readResourcesFromFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read resources from %s: %w", path, err)
-	}
-
-	// Bounded independently of the caller's context so a slow policy rollout fails here with a
-	// clear message instead of consuming the whole test's budget and timing out inside the diff.
-	waitCtx, cancel := context.WithTimeout(ctx, admissionPolicyPropagationTimeout)
-	defer cancel()
-
-	for _, r := range resources {
-		if err := awaitOneAdmissionDenial(waitCtx, c, r); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// admissionPolicyPropagationTimeout bounds the wait for a ValidatingAdmissionPolicy to start
-// enforcing. Measured at ~600ms on envtest 1.32; the margin is for loaded CI machines.
-const admissionPolicyPropagationTimeout = 30 * time.Second
-
-func awaitOneAdmissionDenial(ctx context.Context, c client.Client, canary *un.Unstructured) error {
-	for attempts := 1; ; attempts++ {
-		err := c.Create(ctx, canary.DeepCopy(), client.DryRunAll)
-
-		switch {
-		case err != nil && strings.Contains(err.Error(), "ValidatingAdmissionPolicy"):
-			return nil
-		case err != nil:
-			return fmt.Errorf("dry-run create of canary %s/%s failed for a reason unrelated to admission policy: %w",
-				canary.GetKind(), canary.GetName(), err)
-		}
-
-		if ctx.Err() != nil {
-			return fmt.Errorf("canary %s/%s was still accepted after %d attempts; no ValidatingAdmissionPolicy is enforcing: %w",
-				canary.GetKind(), canary.GetName(), attempts, ctx.Err())
-		}
-
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
 // readResourcesFromFile reads YAML resources from a file.
 func readResourcesFromFile(path string) ([]*un.Unstructured, error) {
 	data, err := os.ReadFile(path)
@@ -535,29 +474,6 @@ func envtestCRDs(crdDirs, setupFiles []string) ([]*extv1.CustomResourceDefinitio
 	}
 
 	return crds, nil
-}
-
-// leastPrivilegeRules is the access a diff of an XNopResource composing XDownstreamResources needs, the
-// types the testdata XRDs, compositions and CRDs use. It grants Crossplane's own types only get, except a
-// list of CompositionRevisions, which are found by their composition's label. It grants list only where a
-// lookup is scoped by a label. xrVerbs are the verbs on
-// the XR type: get to read the existing XR, patch and create to dry-run it, and list only where the
-// command finds composites by listing them.
-func leastPrivilegeRules(xrVerbs ...string) []rbacv1.PolicyRule {
-	return []rbacv1.PolicyRule{
-		// Fetched by name as the input needs them: the XR's XRD and CRD, its Composition, the
-		// pipeline's Functions, and any EnvironmentConfig a function requires by name.
-		{APIGroups: []string{"apiextensions.crossplane.io"}, Resources: []string{"compositeresourcedefinitions", "compositions", "environmentconfigs"}, Verbs: []string{"get"}},
-		{APIGroups: []string{"apiextensions.k8s.io"}, Resources: []string{"customresourcedefinitions"}, Verbs: []string{"get"}},
-		{APIGroups: []string{"pkg.crossplane.io"}, Resources: []string{"functions"}, Verbs: []string{"get"}},
-		// A composition's revisions are listed by its crossplane.io/composition-name label.
-		{APIGroups: []string{"apiextensions.crossplane.io"}, Resources: []string{"compositionrevisions"}, Verbs: []string{"get", "list"}},
-		// The XR type.
-		{APIGroups: []string{"ns.diff.example.org"}, Resources: []string{"xnopresources"}, Verbs: xrVerbs},
-		// Composed resources: read from the XR's resource tree, listed by their crossplane.io/composite
-		// label to find a new XR's existing ones, and dry-run created or applied.
-		{APIGroups: []string{"ns.nop.example.org"}, Resources: []string{"xdownstreamresources"}, Verbs: []string{"get", "list", "create", "patch"}},
-	}
 }
 
 // addUserWithRules provisions an envtest user bound to a ClusterRole granting exactly rules, and returns

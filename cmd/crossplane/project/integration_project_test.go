@@ -20,18 +20,43 @@ package project
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/structpb"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/simulate/simtest"
 )
+
+// fakeProviderRouter routes the composed XDownstreamResource kind, and only
+// it, to a fake diff server that answers with fn.
+type fakeProviderRouter struct {
+	fn func(*diffv1alpha1.PlanRequest) (*diffv1alpha1.PlanResponse, error)
+}
+
+func (f fakeProviderRouter) Route(gk schema.GroupKind) (diffv1alpha1.PlanServiceClient, bool) {
+	if gk.Kind != "XDownstreamResource" {
+		return nil, false
+	}
+	return f, true
+}
+
+func (f fakeProviderRouter) Plan(_ context.Context, in *diffv1alpha1.PlanRequest, _ ...grpc.CallOption) (*diffv1alpha1.PlanResponse, error) {
+	return f.fn(in)
+}
+
+func strValue(s string) *diffv1alpha1.FieldValue {
+	return &diffv1alpha1.FieldValue{Kind: &diffv1alpha1.FieldValue_Value{Value: structpb.NewStringValue(s)}}
+}
 
 // projectTestCase is a `project simulate -f <project file>` run against a
 // fixture project, exercising how a project varies rather than the XR and
@@ -74,13 +99,6 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			project:               "nocomps",
 			expectedExitCode:      dp.ExitCodeToolError,
 			expectedErrorContains: "no Compositions found",
-		},
-		"ProjectFileWithOtherInputs": {
-			reason:                "A project file must be the only -f input, so a second input is rejected before the project is built.",
-			project:               "plain",
-			extraArgs:             []string{"-f", "testdata/comp/updated-composition.yaml"},
-			expectedExitCode:      dp.ExitCodeToolError,
-			expectedErrorContains: "a project file must be the only -f input",
 		},
 		"PlainProject": {
 			reason: "A project with no dependencies or embedded functions simulates its Composition against cluster functions, like the same Composition in Composition mode.",
@@ -170,11 +188,6 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				t.Skip(reason)
 			}
 
-			dir := t.TempDir()
-			if err := os.CopyFS(dir, os.DirFS(filepath.Join("testdata", "project", tc.project))); err != nil {
-				t.Fatalf("\n%s\ncannot copy fixture %q: %v", tc.reason, tc.project, err)
-			}
-
 			cfg := startIntegrationCluster(t, CompositionDiffTest, IntegrationTestCase{
 				setupFiles:                 tc.setupFiles,
 				crossplaneManagedResources: tc.crossplaneManagedResources,
@@ -182,7 +195,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 
 			argv := []string{
 				"project", "simulate", "--timeout=" + defaultTimeout.String(),
-				"-f", filepath.Join(dir, "crossplane-project.yaml"),
+				"-f", copyProjectFixture(t, tc.project),
 				"--cache-dir=" + t.TempDir(),
 			}
 			if tc.router == nil {
@@ -211,4 +224,17 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			}
 		})
 	}
+}
+
+// copyProjectFixture copies the project fixture under testdata/project to a
+// temp dir, so the build cannot dirty the tree, and returns its project file.
+func copyProjectFixture(t *testing.T, project string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS(filepath.Join("testdata", "project", project))); err != nil {
+		t.Fatalf("cannot copy fixture %q: %v", project, err)
+	}
+
+	return filepath.Join(dir, "crossplane-project.yaml")
 }

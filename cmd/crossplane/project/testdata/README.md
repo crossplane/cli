@@ -1,38 +1,25 @@
-# Simulate integration tests (crossplane-diff port)
+# Simulate integration tests
 
-The `integration_*_test.go` files in `cmd/crossplane/project` port
-crossplane-diff's integration tests (origin/main 6a140b6:
-`cmd/diff/diff_integration_test.go`, `diff_it_utils_test.go`, `main_test.go`
-and the `testdata` tree) case for case. The case tables are verbatim; only
-the harness wiring differs.
+The `integration*_test.go` files in `cmd/crossplane/project` run
+`crossplane project simulate -f <project file>` against fixture projects
+under `testdata/project`, each against its own envtest cluster seeded from
+`testdata/comp/resources`. `TestDiffSingleResourceConcurrent` drives the
+diff processor directly with `testdata/diff`.
 
 ## How a case runs
 
-Every case is crossplane-diff CLI-style arguments plus an expected exit
-code and expected output, funneled through one function: `runSimulate` in
-`integration_simulate_harness_test.go`. It translates the arguments into
-`crossplane project simulate` arguments (input files as `-f`, a single
-`--resource` as `--name`, `--include-manual` as `--include-pinned`,
-`--analyze-unchanged` as `--analyze-on=always`) and runs the real command
-through kong. `simulate.Hooks` points the command at the case's
-envtest cluster in place of a kubeconfig, so the cases run in parallel. Composition cases run simulate's Composition-file
-mode, XR cases its composite resource mode.
+A case copies its project fixture to a temp dir and runs the real command
+through kong with `runSimulateArgvWith` in
+`integration_simulate_harness_test.go`. `simulate.Hooks` points the
+command at the case's envtest cluster in place of a kubeconfig, so the
+cases run in parallel.
 
 ## Skips
 
-Cases are never dropped. A case the current simulate surface cannot
-express is ported in full and skipped with a greppable reason:
-
-- `gap:<feature>` — the simulate command lacks the feature, or behaves
-  differently from crossplane-diff. Enable the cases by implementing the
-  feature and removing the gap from `simulateGap`.
-- `env:<reason>` — the environment lacks something. The render engine
-  runs functions as Docker containers (no Docker daemon skips the case),
-  and envtest needs `KUBEBUILDER_ASSETS` pointing at kube-apiserver/etcd
-  binaries.
-
-A small number of skips come from crossplane-diff itself (`skip: true`
-in the source tables, with the upstream reason carried verbatim).
+A case the environment cannot run skips with an `env:<reason>`: the
+render engine runs functions as Docker containers (no Docker daemon skips
+the case), and envtest needs `KUBEBUILDER_ASSETS` pointing at
+kube-apiserver/etcd binaries.
 
 ## Running
 
@@ -43,7 +30,7 @@ KUBEBUILDER_ASSETS=$(setup-envtest use -p path) \
 go test -tags integration -v ./cmd/crossplane/project/
 
 # One case:
-go test -tags integration -run 'TestCompDiffIntegration/CompositionChangeImpactsXRs' ./cmd/crossplane/project/
+go test -tags integration -run 'TestProjectSimulateIntegration/PlainProject' ./cmd/crossplane/project/
 ```
 
 The suite is behind the `integration` build tag, so `go test ./...` and

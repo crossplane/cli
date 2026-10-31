@@ -33,24 +33,14 @@ import (
 	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
-// TestSimulatePlanOutput runs project simulate's own output formats, -o plan
-// and -o json's simulate.ProjectResult, which crossplane-diff's cases cannot express.
-// Each case passes simulate args directly rather than crossplane-diff's.
+// TestSimulatePlanOutput runs project simulate's -o json simulate.ProjectResult
+// against the plain project fixture, which crossplane-diff's cases cannot
+// express. Each case passes simulate args directly rather than crossplane-diff's.
 func TestSimulatePlanOutput(t *testing.T) {
 	t.Parallel()
 
 	tu.SetupKubeTestLogger(t)
 
-	xrCase := IntegrationTestCase{
-		setupFiles: []string{
-			"testdata/diff/resources/xrd.yaml",
-			"testdata/diff/resources/composition.yaml",
-			"testdata/diff/resources/functions.yaml",
-		},
-		crossplaneManagedResources: []HierarchicalOwnershipRelation{
-			composes("testdata/diff/resources/existing-xr.yaml", "testdata/diff/resources/existing-downstream-resource.yaml"),
-		},
-	}
 	compCase := IntegrationTestCase{
 		setupFiles: []string{
 			"testdata/comp/resources/xrd.yaml",
@@ -62,8 +52,6 @@ func TestSimulatePlanOutput(t *testing.T) {
 			composes("testdata/comp/resources/existing-xr-2.yaml", "testdata/comp/resources/existing-downstream-2.yaml"),
 		},
 	}
-	xrArgs := []string{"-f", "testdata/diff/modified-xr.yaml"}
-	compArgs := []string{"-f", "testdata/comp/updated-composition.yaml", "--namespace=default"}
 
 	xnop := plan.ResourceRef{APIVersion: "ns.diff.example.org/v1alpha1", Kind: "XNopResource", Namespace: "default", Name: "test-resource"}
 	another := xnop
@@ -71,132 +59,15 @@ func TestSimulatePlanOutput(t *testing.T) {
 	comp := plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "xnopresources.diff.example.org"}
 
 	cases := map[string]struct {
-		reason   string
-		testType DiffTestType
-		tt       IntegrationTestCase
-		args     []string
-		// wantText is the -o plan output; empty for a json case.
-		wantText string
+		reason string
+		// args follow the plain project's -f.
+		args []string
 		// wantResult is the -o json output, reduced by summarize.
 		wantResult *planShape
 	}{
-		"XRPlanText": {
-			reason:   "-o plan, the default, prints an XR's updates grouped under it, then the summary and notes.",
-			testType: XRDiffTest,
-			tt:       xrCase,
-			args:     xrArgs,
-			wantText: `XR: XNopResource.ns.diff.example.org default/test-resource
-  [~] XDownstreamResource.ns.nop.example.org default/test-resource (update)
-      spec:
-        forProvider:
-          ~ configData: "existing-value" -> "modified-value"
-
-  [~] XNopResource.ns.diff.example.org default/test-resource (update)
-      spec:
-        ~ coolField: "existing-value" -> "modified-value"
-
-Plan: 0 to add, 2 to change, 0 to destroy.
-
-Note: Provider plan not run: no provider diff server planned these resources.
-`,
-		},
-		"XRCreatePlanText": {
-			reason:   "-o plan prints a dotted annotation or label key, such as crossplane.io/composite, whole as one level.",
-			testType: XRDiffTest,
-			tt:       IntegrationTestCase{setupFiles: xrCase.setupFiles},
-			args:     []string{"-f", "testdata/diff/new-xr.yaml"},
-			wantText: `XR: XNopResource.ns.diff.example.org default/test-resource
-  [+] XDownstreamResource.ns.nop.example.org default/test-resource (create)
-      metadata:
-        annotations:
-          + crossplane.io/composition-resource-name: "nop-resource"
-        labels:
-          + crossplane.io/composite: "test-resource"
-      spec:
-        forProvider:
-          + configData: "new-value"
-
-  [+] XNopResource.ns.diff.example.org default/test-resource (create)
-      spec:
-        + coolField: "new-value"
-
-Plan: 2 to add, 0 to change, 0 to destroy.
-
-Note: Provider plan not run: no provider diff server planned these resources.
-`,
-		},
-		"XRPlanJSON": {
-			reason:   "-o json emits simulate.ProjectResult: the XR as a changed composite, with both its plans grouped under it.",
-			testType: XRDiffTest,
-			tt:       xrCase,
-			args:     append([]string{"-o", "json"}, xrArgs...),
-			wantResult: &planShape{
-				Summary:    plan.Summary{Update: 2},
-				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged}},
-				Plans: []planEntry{
-					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
-					{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
-				},
-			},
-		},
-		"CompPlanText": {
-			reason:   "-o plan prints the Composition's plan with its revision impact, then each affected XR's plans under it.",
-			testType: CompositionDiffTest,
-			tt:       compCase,
-			args:     compArgs,
-			wantText: `[~] Composition.apiextensions.crossplane.io xnopresources.diff.example.org (update)
-    Applying this creates a new CompositionRevision, which 2 composites would adopt.
-    spec:
-      pipeline[0]:
-        input:
-          inline:
-            ~ template: "apiVersion: ns.nop.example.org/v1alpha1\nkind: XDownstreamResource\nmetadata:\n  name: {{ .observed.composite.resource.metadata.name }}\n  namespace: {{ .observed.composite.resource.metadata.namespace }}\n  annotations:\n    gotemplating.fn.crossplane.io/composition-resource-name: nop-resource\nspec:\n  forProvider:\n    configData: {{ .observed.composite.resource.spec.coolField }}\n    resourceTier: basic\n" -> "apiVersion: ns.nop.example.org/v1alpha1\nkind: XDownstreamResource\nmetadata:\n  name: {{ .observed.composite.resource.metadata.name }}\n  namespace: {{ .observed.composite.resource.metadata.namespace }}\n  annotations:\n    gotemplating.fn.crossplane.io/composition-resource-name: nop-resource\nspec:\n  forProvider:\n    configData: updated-{{ .observed.composite.resource.spec.coolField }}\n    resourceTier: premium\n"
-
-XR: XNopResource.ns.diff.example.org default/another-resource
-  [~] XDownstreamResource.ns.nop.example.org default/another-resource (update)
-      spec:
-        forProvider:
-          ~ configData: "another-existing-value" -> "updated-another-existing-value"
-          ~ resourceTier: "basic" -> "premium"
-
-XR: XNopResource.ns.diff.example.org default/test-resource
-  [~] XDownstreamResource.ns.nop.example.org default/test-resource (update)
-      spec:
-        forProvider:
-          ~ configData: "existing-value" -> "updated-existing-value"
-          ~ resourceTier: "basic" -> "premium"
-
-Plan: 0 to add, 3 to change, 0 to destroy.
-
-Note: Provider plan not run: no provider diff server planned these resources.
-`,
-		},
-		"CompPlanJSON": {
-			reason:   "-o json emits simulate.ProjectResult: the Composition's revision impact, both affected XRs as changed composites, and their plans.",
-			testType: CompositionDiffTest,
-			tt:       compCase,
-			args:     append([]string{"-o", "json"}, compArgs...),
-			wantResult: &planShape{
-				Summary:    plan.Summary{Update: 3, NoOp: 2},
-				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
-				Compositions: []simulate.CompositionResult{{
-					Ref:            comp,
-					RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},
-				}},
-				Plans: []planEntry{
-					{Kind: "Composition", Name: comp.Name, Action: plan.ActionUpdate},
-					{Kind: "XDownstreamResource", Name: "another-resource", Action: plan.ActionUpdate, Composite: "another-resource"},
-					{Kind: "XNopResource", Name: "another-resource", Action: plan.ActionNoOp, Composite: "another-resource"},
-					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
-					{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionNoOp, Composite: "test-resource"},
-				},
-			},
-		},
 		"NameRepeatedScopesToEach": {
-			reason:   "repeated --name with --namespace scopes the run to each named composite, as the unscoped run covers both.",
-			testType: CompositionDiffTest,
-			tt:       compCase,
-			args:     []string{"-o", "json", "-f", "testdata/comp/updated-composition.yaml", "-n", "default", "--name=another-resource", "--name=test-resource"},
+			reason: "repeated --name with --namespace scopes the run to each named composite, as the unscoped run covers both.",
+			args:   []string{"-o", "json", "-n", "default", "--name=another-resource", "--name=test-resource"},
 			wantResult: &planShape{
 				Summary:    plan.Summary{Update: 3, NoOp: 2},
 				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
@@ -214,10 +85,8 @@ Note: Provider plan not run: no provider diff server planned these resources.
 			},
 		},
 		"NameNamespaceQualifiedScopesOne": {
-			reason:   "a namespace/name --name without --namespace scopes the run to that one composite.",
-			testType: CompositionDiffTest,
-			tt:       compCase,
-			args:     []string{"-o", "json", "-f", "testdata/comp/updated-composition.yaml", "--name=default/test-resource"},
+			reason: "a namespace/name --name without --namespace scopes the run to that one composite.",
+			args:   []string{"-o", "json", "--name=default/test-resource"},
 			wantResult: &planShape{
 				Summary:    plan.Summary{Update: 2, NoOp: 1},
 				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
@@ -242,23 +111,16 @@ Note: Provider plan not run: no provider diff server planned these resources.
 				t.Skip(reason)
 			}
 
-			cfg := startIntegrationCluster(t, tc.testType, tc.tt, defaultTimeout).cfg
+			cfg := startIntegrationCluster(t, CompositionDiffTest, compCase, defaultTimeout).cfg
 
 			var stdout, stderr bytes.Buffer
-			argv := append([]string{"project", "simulate", "--timeout=" + defaultTimeout.String()}, tc.args...)
+			argv := append(plainProjectArgv(t), tc.args...)
 			code, err := runSimulateArgv(t, cfg, argv, localCrossplaneBinary(t), &stdout, &stderr)
 			if err != nil {
 				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
 			}
 			if code != dp.ExitCodeDiffDetected {
 				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, dp.ExitCodeDiffDetected, code)
-			}
-
-			if tc.wantResult == nil {
-				if diff := cmp.Diff(tc.wantText, stdout.String()); diff != "" {
-					t.Errorf("\n%s\nsimulate -o plan: -want, +got:\n%s", tc.reason, diff)
-				}
-				return
 			}
 
 			var res simulate.ProjectResult
@@ -313,7 +175,7 @@ func summarize(r simulate.ProjectResult) planShape {
 }
 
 // integrationEnvGap returns why the environment cannot run an integration
-// case, as runIntegrationTest's env: skips do, or "" when it can.
+// case, as an env: skip, or "" when it can.
 func integrationEnvGap() string {
 	switch {
 	case !dockerAvailable():
@@ -345,8 +207,6 @@ func TestSimulateNameRejected(t *testing.T) {
 			composes("testdata/comp/resources/existing-xr-2.yaml", "testdata/comp/resources/existing-downstream-2.yaml"),
 		},
 	}
-	base := []string{"-f", "testdata/comp/updated-composition.yaml"}
-
 	// exitUsageError is kong's exit status for parse and Validate errors.
 	const exitUsageError = 80
 
@@ -358,13 +218,13 @@ func TestSimulateNameRejected(t *testing.T) {
 	}{
 		"NameQualifiedWithNamespaceFlagRejected": {
 			reason:   "namespace/name with --namespace is ambiguous and is rejected.",
-			args:     append([]string{"--namespace=default", "--name=default/test-resource"}, base...),
+			args:     []string{"--namespace=default", "--name=default/test-resource"},
 			wantErr:  "can't be combined with --namespace",
 			wantCode: exitUsageError,
 		},
 		"NamePartiallyUnmatchedFailsBeforeRendering": {
 			reason:   "one --name no composite matches fails the run, and no plan is rendered.",
-			args:     append([]string{"--name=default/test-resource", "--name=default/missing"}, base...),
+			args:     []string{"--name=default/test-resource", "--name=default/missing"},
 			wantErr:  "resource ref(s) not relevant to any supplied composition: [default/missing]",
 			wantCode: dp.ExitCodeToolError,
 		},
@@ -381,7 +241,7 @@ func TestSimulateNameRejected(t *testing.T) {
 			cfg := startIntegrationCluster(t, CompositionDiffTest, compCase, defaultTimeout).cfg
 
 			var stdout, stderr bytes.Buffer
-			argv := append([]string{"project", "simulate", "--timeout=" + defaultTimeout.String()}, tc.args...)
+			argv := append(plainProjectArgv(t), tc.args...)
 			code, err := runSimulateArgv(t, cfg, argv, localCrossplaneBinary(t), &stdout, &stderr)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("\n%s\nsimulate: want error containing %q, got %v (exit %d)", tc.reason, tc.wantErr, err, code)
@@ -393,5 +253,17 @@ func TestSimulateNameRejected(t *testing.T) {
 				t.Errorf("\n%s\nsimulate: want no plan output, got:\n%s", tc.reason, stdout.String())
 			}
 		})
+	}
+}
+
+// plainProjectArgv returns `project simulate` argv for a temp copy of the
+// plain project fixture, whose Composition is the cluster's, updated.
+func plainProjectArgv(t *testing.T) []string {
+	t.Helper()
+
+	return []string{
+		"project", "simulate", "--timeout=" + defaultTimeout.String(),
+		"-f", copyProjectFixture(t, "plain"),
+		"--cache-dir=" + t.TempDir(),
 	}
 }

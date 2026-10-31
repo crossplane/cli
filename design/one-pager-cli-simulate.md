@@ -56,9 +56,11 @@ knows which diff servers to run without being told.
 
 ## Goals
 
-- `crossplane project simulate`: preview what a project change (Composition,
-  embedded function, or XR) would do to a live control plane and to the
-  cloud behind it, end to end.
+- `crossplane project simulate`: preview what a project change (Composition
+  or embedded function) would do to a live control plane and to the cloud
+  behind it, end to end.
+- `crossplane composition simulate` and `crossplane xr simulate`: the same
+  preview for changed Composition or XR files, without a project.
 - `crossplane resource simulate`: preview what applying one or more managed
   resources would do, directly.
 - Preview by rendering, not guessing: re-render each XR with the local
@@ -80,8 +82,11 @@ many controllers (that remains the domain of control-plane-level simulation).
 
 ## Proposal
 
-Add `simulate` as a verb in the CLI's noun-first command tree, in two
-places, sharing one engine.
+Add `simulate` as a verb in the CLI's noun-first command tree, sharing one
+engine: `resource simulate` and `project simulate` first, then
+`composition simulate` and `xr simulate` as follow-ups in the same stack.
+Each command takes one kind of input, so no command sniffs its inputs or
+defines flags that do nothing for them.
 
 ### `crossplane resource simulate`
 
@@ -228,16 +233,21 @@ Composition changes, embedded function changes, and XR changes all reduce to
 this one flow, because they all reduce to "re-render with local inputs, then
 ask the providers what the delta means".
 
-A project is the default source of those local inputs, not a requirement.
+A project is one source of those local inputs, not a requirement.
 Not everyone uses projects, and a changed Composition is worth previewing
-either way, so `-f` also accepts Composition or XR files directly. The
+either way, so `crossplane composition simulate -f` takes Composition files
+and `crossplane xr simulate -f` takes XR or claim files. The
 flow stays the same with the inputs swapped: the changed Composition
 comes from the file, the XRs it matches are discovered on the cluster
 exactly as in step 1, the functions its pipeline calls run from the
 packages installed on the cluster instead of a local build, and
 everything not overridden locally is fetched live. That is the preview
-crossplane-diff's `comp` gives today, which is why it becomes an input
-mode of simulate rather than a separate command (below).
+crossplane-diff's `comp` gives today, which is why it becomes a simulate
+command on the same engine rather than a separate tool (below). The three
+commands share every flag but `-f`; the XR selection flags (`--namespace`,
+`--name`, `--include-pinned`, `--analyze-on`, `--minimize-composition`)
+exist only on the project and composition commands, and
+`--max-concurrency` only on the project command.
 
 One class of matched XRs needs special honesty: those pinned to an older
 CompositionRevision (`compositionUpdatePolicy: Manual`). Applying the
@@ -278,7 +288,7 @@ Claims are supported too. Crossplane v2 still supports claims through the
 `LegacyCluster` scope on v1 XRDs, and a project can contain a v1 XRD even
 though `crossplane xrd generate` only generates v2. The CLI already has
 machinery to convert a claim to its XR, and simulate reuses it: a claim
-passed as a changed file is converted and simulated as its XR, an XR that
+passed to `xr simulate` is converted and simulated as its XR, an XR that
 a claim created on the cluster is discovered and simulated like any other,
 and the result prints under the claim's name. Simulate supports claims for
 as long as the supported upstream Crossplane versions do, and drops them
@@ -289,7 +299,7 @@ out of the flow above:
 
 ```go
 type simulateCmd struct {
-	Input          []string      `short:"f" help:"Project file (default), or changed Composition or XR files."`
+	ProjectFile    string        `short:"f" default:"crossplane-project.yaml" help:"Path to project definition."`
 	Namespace      string        `help:"Simulate only XRs in this namespace."`
 	Name           string        `help:"Simulate only the XR with this name."`
 	Providers      string        `help:"Provider manifests to run as diff servers, overriding cluster discovery."`
@@ -476,13 +486,13 @@ standalone packaging forced them to build.
   a direct call, and its loading and validation glue merges with the CLI's
   own instead of wrapping it. The move is the moment to shed that
   scaffolding, not to carry it along.
-* **What it becomes.** One simulate surface, not parallel commands. What
+* **What it becomes.** One simulate engine, not parallel tools. What
   `xr` and `comp` do today is this same engine fed from different inputs:
   `comp` is `project simulate` with the changed Compositions arriving as
   files instead of being discovered from a project, and `xr` is the same
   preview driven by a changed XR file with the Compositions coming from the
-  cluster. They become input modes of the simulate commands (`-f` for
-  changed XRs or Compositions, project discovery by default, `--namespace`
+  cluster. They become `composition simulate` and `xr simulate`, beside
+  `project simulate` (`-f` for changed Compositions or XRs, `--namespace`
   and `--name` to scope the cluster side), and both gain the plan layer as
   their upgrade. That upgrade is strictly additive, so today's diff
   functionality is subsumed rather than replaced: planning is a capability

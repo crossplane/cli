@@ -49,7 +49,8 @@ const ChangedSensitive = "(sensitive value, changed)"
 // It returns an error, and no copies, when a path can't be redacted: it
 // doesn't parse, it resolves to the root, a segment meets the wrong kind of
 // node (an index or keyed item on a map, a field on a list, a keyed item on a
-// list of non-maps), or a segment matches more than one location on a side.
+// list of non-maps), a segment matches more than one location on a side, or
+// a map key holding brackets may be the one named, as fieldpath splits it.
 // The caller must then hide what the objects would print.
 func RedactPaths(current, desired *unstructured.Unstructured, paths []string) (*unstructured.Unstructured, *unstructured.Unstructured, error) {
 	cur, des := current.DeepCopy(), desired.DeepCopy()
@@ -154,6 +155,11 @@ func locateMap(v map[string]any, at string, segs []fieldpath.Segment) ([]*slot, 
 	keys, found := 0, 0
 	for j := 1; j <= len(segs) && segs[j-1].Type == fieldpath.SegmentField; j++ {
 		f := joinFields(segs[:j])
+		// fieldpath splits a key holding brackets, such as foo[bar], so a key
+		// that starts with the joined fields and a bracket may be the one.
+		if j < len(segs) && keyWithPrefix(v, f+"[") {
+			return nil, errors.Errorf("%q may name a key holding brackets", f)
+		}
 		k, ok, err := mapKey(v, f)
 		if err != nil {
 			return nil, err
@@ -226,6 +232,17 @@ func joinFields(segs []fieldpath.Segment) string {
 		parts[i] = s.Field
 	}
 	return strings.Join(parts, ".")
+}
+
+// keyWithPrefix reports whether a key of m, as written or with quotes
+// trimmed, starts with p.
+func keyWithPrefix(m map[string]any, p string) bool {
+	for k := range m {
+		if strings.HasPrefix(k, p) || strings.HasPrefix(strings.Trim(k, `"'`), p) {
+			return true
+		}
+	}
+	return false
 }
 
 // mapKey returns the key of m that f names, as written or with quotes

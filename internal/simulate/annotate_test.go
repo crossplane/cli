@@ -1177,6 +1177,12 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 				map[string]any{"rule": []any{map[string]any{"pw": "SAMESECRET"}, map[string]any{"pw": "NEWSECRET"}}}),
 			path: "spec.rule[0].pw",
 		},
+		"BracketKey": {
+			reason: "A map key holding brackets hides the body.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"tags": map[string]any{"foo[bar]": "OLDSECRET"}}, map[string]any{"tags": map[string]any{"foo[bar]": "NEWSECRET"}}),
+			path: "spec.tags.foo[bar]",
+		},
 		"KeyedOnScalarList": {
 			reason: "A keyed item on a list of scalars hides the body.",
 			in: lineDiff(t, "db", dt.DiffTypeModified,

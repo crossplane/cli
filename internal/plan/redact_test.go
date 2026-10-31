@@ -221,6 +221,16 @@ func TestRedactPaths(t *testing.T) {
 			args:   args{nil, spec(map[string]any{"tags": map[string]any{"a.b": "x", "a": map[string]any{"b": "y"}}}), []string{"spec.tags.a.b"}},
 			want:   want{err: true},
 		},
+		"BracketKey": {
+			reason: "A key holding brackets, which fieldpath splits, fails closed.",
+			args:   args{spec(map[string]any{"tags": map[string]any{"foo[bar]": "a"}}), nil, []string{"spec.tags.foo[bar]"}},
+			want:   want{err: true},
+		},
+		"BracketKeyIndex": {
+			reason: "A key holding an index in brackets fails closed.",
+			args:   args{nil, spec(map[string]any{"tags": map[string]any{"foo[0]": "a"}}), []string{"spec.tags.foo[0]"}},
+			want:   want{err: true},
+		},
 		"DottedKeyAbsent": {
 			reason: "With no dotted key, segments are nesting.",
 			args:   args{nil, spec(map[string]any{"tags": map[string]any{"a": map[string]any{"b": "v"}}}), []string{"spec.tags.a.b"}},

@@ -1,0 +1,2 @@
+rules:
+  xrd/no-bools: warn

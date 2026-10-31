@@ -37,7 +37,6 @@ import (
 	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/cluster"
-	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/cmd/crossplane/completion"
 	"github.com/crossplane/cli/v2/cmd/crossplane/composition"
 	configcmd "github.com/crossplane/cli/v2/cmd/crossplane/config"
@@ -53,6 +52,7 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/xrd"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/maturity"
+	isimulate "github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
@@ -181,7 +181,7 @@ func main() {
 	stop()
 	// A silent ExitError is a result, such as changes found, not an error,
 	// so it exits with its code and prints nothing.
-	code, silent := common.SilentExit(err)
+	code, silent := isimulate.SilentExit(err)
 	if interrupted {
 		// Exit with the conventional 128+SIGINT status.
 		if err != nil && !silent {

@@ -41,7 +41,6 @@ import (
 
 	"github.com/crossplane/crossplane/apis/v2/pkg"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/kube"
@@ -177,7 +176,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 }
 
 // exitStatus ranks the plans' outcome: an error, which exits 1, when any
-// plan errored; otherwise a silent common.ExitError that exits 3 when a plan
+// plan errored; otherwise a silent isimulate.ExitError that exits 3 when a plan
 // would change anything; otherwise nil.
 func exitStatus(plans []*plan.ResourcePlan) error {
 	s := plan.Summarize(plans)
@@ -185,7 +184,7 @@ func exitStatus(plans []*plan.ResourcePlan) error {
 		return errors.Errorf("cannot plan %d of %d resources; see their errors in the output", s.Errored, len(plans))
 	}
 	if s.Changes() > 0 {
-		return common.ExitError{Code: common.ExitCodeChanges}
+		return isimulate.ExitError{Code: isimulate.ExitCodeChanges}
 	}
 	return nil
 }

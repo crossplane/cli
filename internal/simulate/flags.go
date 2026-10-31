@@ -54,7 +54,7 @@ type Flags struct {
 	refs []k8stypes.NamespacedName
 
 	MaxConcurrency uint   `default:"8"                 help:"Max concurrent function builds."`
-	CacheDir       string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)."                                                                            name:"cache-dir"`
+	CacheDir       string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)." name:"cache-dir"`
 
 	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                                                                             predictor:"context"                                                          short:"c"`
 	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                                                                                     predictor:"namespace"                                                        short:"n"`

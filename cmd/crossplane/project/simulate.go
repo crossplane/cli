@@ -46,9 +46,9 @@ var simulateHelp string
 // or composite resource files, would change the composite resources in a
 // cluster.
 type simulateCmd struct {
-	ProjectFile string `default:"${project_file}" help:"Path to project definition." short:"f"`
-
 	simulate.Flags `embed:""`
+
+	ProjectFile string `default:"${project_file}" help:"Path to project definition." short:"f"`
 }
 
 func (c *simulateCmd) Help() string {

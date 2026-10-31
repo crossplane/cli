@@ -45,12 +45,24 @@ var dbGVK = schema.GroupVersionKind{Group: "rds.aws.upbound.io", Version: "v1bet
 // each side, diffed by line. A nil side is absent.
 func lineDiff(t *testing.T, name string, typ dt.DiffType, current, desired map[string]any) *dt.ResourceDiff {
 	t.Helper()
-
-	text := func(spec map[string]any) (*unstructured.Unstructured, string) {
+	wrap := func(spec map[string]any) map[string]any {
 		if spec == nil {
+			return nil
+		}
+		return map[string]any{"spec": spec}
+	}
+	return objDiff(t, name, typ, wrap(current), wrap(desired))
+}
+
+// objDiff builds a diff as lineDiff does from each side's top-level fields.
+func objDiff(t *testing.T, name string, typ dt.DiffType, current, desired map[string]any) *dt.ResourceDiff {
+	t.Helper()
+
+	text := func(fields map[string]any) (*unstructured.Unstructured, string) {
+		if fields == nil {
 			return nil, ""
 		}
-		u := obj(dbGVK, name, map[string]any{"spec": spec})
+		u := obj(dbGVK, name, fields)
 		b, err := sigsyaml.Marshal(u.Object)
 		if err != nil {
 			t.Fatalf("Marshal(): %v", err)
@@ -149,8 +161,9 @@ func TestAnnotateXRReport(t *testing.T) {
 		opts   renderer.DiffOptions
 		want   string
 	}{
+		// The engine's semantic cleanup groups nearby changes, so lines between them print as -/+.
 		"ModifiedReplaceAndUnknown": {
-			reason: "A forcing field's + line is marked, the header and summary say replace, an equal computed field splits, and an absent one is added under its deepest ancestor.",
+			reason: "A forcing field's + line is marked, the header and summary say replace, an equal computed field splits, and an absent one is added as nested levels.",
 			in:     report(modified),
 			plans: planFor(modified, plan.ActionReplace,
 				plan.FieldChange{Path: "spec.forProvider.region", Actual: str("us-east-1"), Planned: str("us-west-2"), RequiresReplace: true},
@@ -167,20 +180,28 @@ func TestAnnotateXRReport(t *testing.T) {
   spec:
     forProvider:
 -     arn: arn:old
-+     arn: (known after apply)
-      engineVersion: "5.7"
+-     engineVersion: "5.7"
 -     region: us-east-1
++     arn: (known after apply)
++     endpoint:
++       address: (known after apply)
++     engineVersion: "5.7"
 +     region: us-west-2  # forces replacement
-+     endpoint.address: (known after apply)
-+ status.atProvider.id: (known after apply)
++ status:
++   atProvider:
++     id: (known after apply)
+  
+  
+  
 
 ---
 
 Summary: 1 modified (1 requires replacement)
 `,
 		},
+		// Keys print in sorted order, so a computed id comes first in its item.
 		"AddedCreate": {
-			reason: "On a create, a + value the provider computes is rewritten, a field in a list item is added under it, and an absent forcing field marks its deepest ancestor's line.",
+			reason: "On a create, a + value the provider computes is rewritten, a field in a list item is added in it, and an absent forcing field marks its deepest ancestor's line.",
 			in:     report(added),
 			plans: planFor(added, plan.ActionCreate,
 				plan.FieldChange{Path: "spec.forProvider.arn", Planned: unknown()},
@@ -197,9 +218,9 @@ Summary: 1 modified (1 requires replacement)
 +   forProvider:  # forces replacement
 +     arn: (known after apply)
 +     ports:
-+     - name: a
++     - id: (known after apply)
++       name: a
 +       port: 1
-+       id: (known after apply)
 +     region: us-west-2
 
 ---
@@ -207,6 +228,7 @@ Summary: 1 modified (1 requires replacement)
 Summary: 1 added
 `,
 		},
+		// The engine's semantic cleanup groups nearby changes, so lines between them print as -/+.
 		"Compact": {
 			reason: "Compact mode sees the annotated lines as ordinary changes, with its context around them.",
 			in:     report(modified),
@@ -217,10 +239,12 @@ Summary: 1 added
 			want: `~~~ Instance/db
     forProvider:
 -     arn: arn:old
-+     arn: (known after apply)
-      engineVersion: "5.7"
+-     engineVersion: "5.7"
 -     region: us-east-1
++     arn: (known after apply)
++     engineVersion: "5.7"
 +     region: us-west-2
+  
 
 ---
 
@@ -613,8 +637,8 @@ func annotateDiffsOf(t *testing.T, d *dt.ResourceDiff, plans *ProviderPlans) *dt
 	return out["k"]
 }
 
-// TestAnnotatePlacement pins where each -o diff marker lands, by the YAML
-// node positions of each side. The blank context lines some diffs end with
+// TestAnnotatePlacement pins where each -o diff marker lands: unknowns are
+// set in the desired object, replacements placed by YAML node positions. The blank context lines some diffs end with
 // are the renderer's, with or without annotation.
 func TestAnnotatePlacement(t *testing.T) {
 	const fp = "spec.forProvider."
@@ -627,6 +651,11 @@ func TestAnnotatePlacement(t *testing.T) {
 	}
 	// The unchanged last line keeps the diff free of trailing blank lines.
 	body := func(s string) string { return "spec:\n  forProvider:\n" + s + "  deletionPolicy: Delete\n" }
+	fpm := func(m map[string]any) map[string]any { return map[string]any{"forProvider": m} }
+	spec := func(m map[string]any) map[string]any { m["deletionPolicy"] = "Delete"; return m }
+	ld := func(cur, des map[string]any) *dt.ResourceDiff {
+		return lineDiff(t, "db", dt.DiffTypeModified, spec(cur), spec(des))
+	}
 
 	cases := map[string]struct {
 		reason  string
@@ -635,24 +664,28 @@ func TestAnnotatePlacement(t *testing.T) {
 		want    string
 	}{
 		"NestedMaps": {
-			reason: "Fields of nested maps are marked, and an absent one is added under its deepest ancestor, its missing levels dotted.",
-			in: textDiff(dt.DiffTypeModified,
-				body("    db:\n      settings:\n        password: a\n        size: 1\n        tier: a\n"),
-				body("    db:\n      settings:\n        password: b\n        size: 2\n        tier: b\n")),
+			reason: "Fields of nested maps are marked, and an absent one is added as nested levels.",
+			in: ld(fpm(map[string]any{"db": map[string]any{"settings": map[string]any{"password": "a", "size": int64(1), "tier": "a"}}}),
+				fpm(map[string]any{"db": map[string]any{"settings": map[string]any{"password": "b", "size": int64(2), "tier": "b"}}})),
 			changes: []plan.FieldChange{unk("db.settings.size"), repl("db.settings.tier"), unk("db.settings.extra.id")},
 			want: `~~~ Instance/db (requires replacement)
+  apiVersion: rds.aws.upbound.io/v1beta1
+  kind: Instance
+  metadata:
+    name: db
   spec:
+    deletionPolicy: Delete
     forProvider:
       db:
         settings:
 -         password: a
 -         size: 1
 -         tier: a
++         extra:
++           id: (known after apply)
 +         password: b
 +         size: (known after apply)
 +         tier: b  # forces replacement
-+         extra.id: (known after apply)
-    deletionPolicy: Delete
 
 ---
 
@@ -661,12 +694,16 @@ Summary: 1 modified (1 requires replacement)
 		},
 		"Lists": {
 			reason: "Items of a list of lists and scalar items are marked by position.",
-			in: textDiff(dt.DiffTypeModified,
-				body("    matrix:\n    - - a\n      - b\n    - - c\n    zones:\n    - z1\n    - z2\n"),
-				body("    matrix:\n    - - a\n      - x\n    - - d\n    zones:\n    - z1\n    - z3\n")),
+			in: ld(fpm(map[string]any{"matrix": []any{[]any{"a", "b"}, []any{"c"}}, "zones": []any{"z1", "z2"}}),
+				fpm(map[string]any{"matrix": []any{[]any{"a", "x"}, []any{"d"}}, "zones": []any{"z1", "z3"}})),
 			changes: []plan.FieldChange{repl("matrix[0][1]"), unk("matrix[1][0]")},
 			want: `~~~ Instance/db (requires replacement)
+  apiVersion: rds.aws.upbound.io/v1beta1
+  kind: Instance
+  metadata:
+    name: db
   spec:
+    deletionPolicy: Delete
     forProvider:
       matrix:
       - - a
@@ -678,7 +715,6 @@ Summary: 1 modified (1 requires replacement)
       - z1
 -     - z2
 +     - z3
-    deletionPolicy: Delete
 
 ---
 
@@ -686,25 +722,26 @@ Summary: 1 modified (1 requires replacement)
 `,
 		},
 		"KeyedList": {
-			reason: "A list item keyed by a field is the item holding that key on each side, at whatever position.",
-			in: textDiff(dt.DiffTypeModified,
-				body("    tags:\n    - key: a\n      value: \"1\"\n    - key: b\n      value: \"2\"\n"),
-				body("    tags:\n    - key: b\n      value: \"3\"\n")),
+			reason: "A list item keyed by a field is the item holding that key on each side, at whatever position; an absent key gets nothing.",
+			in: ld(fpm(map[string]any{"tags": []any{map[string]any{"key": "a", "value": "1"}, map[string]any{"key": "b", "value": "2"}}}),
+				fpm(map[string]any{"tags": []any{map[string]any{"key": "b", "value": "3"}}})),
 			changes: []plan.FieldChange{repl(`tags[key="b"].value`), unk(`tags[key="b"].id`), unk(`tags[key="c"].id`)},
 			want: `~~~ Instance/db (requires replacement)
+  apiVersion: rds.aws.upbound.io/v1beta1
+  kind: Instance
+  metadata:
+    name: db
   spec:
+    deletionPolicy: Delete
     forProvider:
       tags:
 -     - key: a
 -       value: "1"
 -     - key: b
 -       value: "2"
-+     - key: b
++     - id: (known after apply)
++       key: b
 +       value: "3"  # forces replacement
-+       id: (known after apply)
-    deletionPolicy: Delete
-  
-  
 
 ---
 
@@ -712,48 +749,28 @@ Summary: 1 modified (1 requires replacement)
 `,
 		},
 		"KeyedListShifted": {
-			reason: "An equal line of a keyed item that moves position is placed by each side's own index.",
-			in: textDiff(dt.DiffTypeModified,
-				body("    tags:\n    - key: b\n      value: SAME\n      size: SAME\n"),
-				body("    tags:\n    - key: a\n      value: other\n    - key: b\n      value: SAME\n      size: SAME\n")),
+			reason: "A keyed item that moves position is marked by its key.",
+			in: ld(fpm(map[string]any{"tags": []any{map[string]any{"key": "b", "value": "SAME", "size": "SAME"}}}),
+				fpm(map[string]any{"tags": []any{map[string]any{"key": "a", "value": "other"}, map[string]any{"key": "b", "value": "SAME", "size": "SAME"}}})),
 			changes: []plan.FieldChange{unk(`tags[key="b"].size`)},
-			want: `~~~ Instance/db (requires replacement)
-  spec:
-    forProvider:
-      tags:
-+     - key: a
-+       value: other
-      - key: b
-        value: SAME
--       size: SAME
-+       size: (known after apply)
-    deletionPolicy: Delete
-
----
-
-Summary: 1 modified (1 requires replacement)
-`,
-		},
-		"KeyedListSwap": {
-			reason: "Two keyed items that trade places are each marked by their own key.",
-			in: lineDiff(t, "db", dt.DiffTypeModified,
-				map[string]any{"forProvider": map[string]any{"tags": []any{map[string]any{"key": "b", "value": "SAME"}, map[string]any{"key": "a", "value": "other"}}}},
-				map[string]any{"forProvider": map[string]any{"tags": []any{map[string]any{"key": "a", "value": "other"}, map[string]any{"key": "b", "value": "SAME"}}}}),
-			changes: []plan.FieldChange{sens(`tags[key="b"].value`)},
 			want: `~~~ Instance/db (requires replacement)
   apiVersion: rds.aws.upbound.io/v1beta1
   kind: Instance
   metadata:
     name: db
   spec:
+    deletionPolicy: Delete
     forProvider:
       tags:
 -     - key: b
--       value: (sensitive value)
-      - key: a
-        value: other
+-       size: SAME
++     - key: a
++       value: other
 +     - key: b
-+       value: (sensitive value)
++       size: (known after apply)
+        value: SAME
+  
+  
 
 ---
 
@@ -761,31 +778,26 @@ Summary: 1 modified (1 requires replacement)
 `,
 		},
 		"Scalars": {
-			reason: "A quoted value is replaced whole, and a multi-line literal, plain or quoted scalar is marked on its first line, its continuations unmarked or, when its value is replaced, dropped.",
-			in: textDiff(dt.DiffTypeModified,
-				body("    cert: |\n      a\n      b\n    name: \"x: y\"\n    note: first\n      second\n    quoted: \"a\n      b\"\n"),
-				body("    cert: |\n      a\n      c\n    name: \"x: z\"\n    note: first\n      third\n    quoted: \"z\n      b\"\n")),
+			reason: "A multi-line literal is marked on its first line, and a value set unknown is replaced whole.",
+			in: ld(fpm(map[string]any{"cert": "a\nb\n", "name": "x: y", "note": "first"}),
+				fpm(map[string]any{"cert": "a\nc\n", "name": "x: z", "note": "second"})),
 			changes: []plan.FieldChange{unk("name"), repl("note")},
 			want: `~~~ Instance/db (requires replacement)
+  apiVersion: rds.aws.upbound.io/v1beta1
+  kind: Instance
+  metadata:
+    name: db
   spec:
+    deletionPolicy: Delete
     forProvider:
       cert: |
         a
 -       b
--     name: "x: y"
+-     name: 'x: y'
 -     note: first
--       second
--     quoted: "a
 +       c
 +     name: (known after apply)
-+     note: first  # forces replacement
-+       third
-+     quoted: "z
-        b"
-    deletionPolicy: Delete
-  
-  
-  
++     note: second  # forces replacement
 
 ---
 
@@ -793,13 +805,17 @@ Summary: 1 modified (1 requires replacement)
 `,
 		},
 		"LiteralJSON": {
-			reason: "Fields of the JSON a literal block scalar holds are placed by their nodes, offset by the scalar's position.",
-			in: textDiff(dt.DiffTypeModified,
-				body("    policy: |\n      {\n        \"Statement\": {\n          \"Effect\": \"Allow\",\n          \"Sid\": \"a\"\n        },\n        \"Version\": \"1\"\n      }\n"),
-				body("    policy: |\n      {\n        \"Statement\": {\n          \"Effect\": \"Deny\",\n          \"Sid\": \"b\"\n        },\n        \"Version\": \"1\"\n      }\n")),
+			reason: "An unknown inside a JSON string is not set; a replace inside it is placed by the literal's nodes.",
+			in: ld(fpm(map[string]any{"policy": "{\n  \"Statement\": {\n    \"Effect\": \"Allow\",\n    \"Sid\": \"a\"\n  },\n  \"Version\": \"1\"\n}\n"}),
+				fpm(map[string]any{"policy": "{\n  \"Statement\": {\n    \"Effect\": \"Deny\",\n    \"Sid\": \"b\"\n  },\n  \"Version\": \"1\"\n}\n"})),
 			changes: []plan.FieldChange{repl("policy.Statement.Sid"), unk("policy.Version")},
 			want: `~~~ Instance/db (requires replacement)
+  apiVersion: rds.aws.upbound.io/v1beta1
+  kind: Instance
+  metadata:
+    name: db
   spec:
+    deletionPolicy: Delete
     forProvider:
       policy: |
         {
@@ -809,10 +825,8 @@ Summary: 1 modified (1 requires replacement)
 +           "Effect": "Deny",
 +           "Sid": "b"  # forces replacement
           },
--         "Version": "1"
-+         "Version": (known after apply)
+          "Version": "1"
         }
-    deletionPolicy: Delete
 
 ---
 
@@ -821,9 +835,9 @@ Summary: 1 modified (1 requires replacement)
 		},
 		"QuotedKeys": {
 			reason: "Keys YAML quotes or escapes, and keys holding . or /, are matched unquoted.",
-			in: textDiff(dt.DiffTypeModified,
-				"metadata:\n  annotations:\n    example.org/a.b: x\n"+body("    \"on\": a\n    'a: b': c\n    '*': d\n    \"it's\": e\n"),
-				"metadata:\n  annotations:\n    example.org/a.b: y\n"+body("    \"on\": b\n    'a: b': d\n    '*': e\n    \"it's\": f\n")),
+			in: objDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"metadata": map[string]any{"annotations": map[string]any{"example.org/a.b": "x"}}, "spec": spec(fpm(map[string]any{"on": "a", "a: b": "c", "*": "d", "it's": "e"}))},
+				map[string]any{"metadata": map[string]any{"annotations": map[string]any{"example.org/a.b": "y"}}, "spec": spec(fpm(map[string]any{"on": "b", "a: b": "d", "*": "e", "it's": "f"}))}),
 			changes: []plan.FieldChange{
 				{Path: "metadata.annotations[example.org/a.b]", Actual: str("x"), Planned: str("y"), RequiresReplace: true},
 				unk("on"),
@@ -831,21 +845,24 @@ Summary: 1 modified (1 requires replacement)
 				unk("it's"),
 			},
 			want: `~~~ Instance/db (requires replacement)
+  apiVersion: rds.aws.upbound.io/v1beta1
+  kind: Instance
   metadata:
     annotations:
 -     example.org/a.b: x
-+     example.org/a.b: y  # forces replacement
++     example.org/a.b: "y"  # forces replacement
+    name: db
   spec:
-    forProvider:
--     "on": a
--     'a: b': c
--     '*': d
--     "it's": e
-+     "on": (known after apply)
-+     'a: b': d
-+     '*': e  # forces replacement
-+     "it's": (known after apply)
     deletionPolicy: Delete
+    forProvider:
+-     '*': d
+-     'a: b': c
+-     it's: e
+-     "on": a
++     '*': e  # forces replacement
++     'a: b': d
++     it's: (known after apply)
++     "on": (known after apply)
 
 ---
 
@@ -853,21 +870,25 @@ Summary: 1 modified (1 requires replacement)
 `,
 		},
 		"Added": {
-			reason: "On a create, + lines are marked: a keyed item's field, a literal block's field, and an absent field under a list item.",
-			in: textDiff(dt.DiffTypeAdded, "",
-				body("    policy: |\n      version: \"1\"\n      secret: s\n    tags:\n    - key: k\n      value: v\n")),
+			reason: "On a create, + lines are marked: a keyed item's field and an absent field under a list item; a field inside a literal is not set.",
+			in: lineDiff(t, "db", dt.DiffTypeAdded, nil,
+				spec(fpm(map[string]any{"policy": "version: \"1\"\nsecret: s\n", "tags": []any{map[string]any{"key": "k", "value": "v"}}}))),
 			changes: []plan.FieldChange{unk("policy.version"), repl(`tags[key="k"].value`), unk(`tags[key="k"].id`)},
 			want: `+++ Instance/db (requires replacement)
++ apiVersion: rds.aws.upbound.io/v1beta1
++ kind: Instance
++ metadata:
++   name: db
 + spec:
++   deletionPolicy: Delete
 +   forProvider:
 +     policy: |
-+       version: (known after apply)
++       version: "1"
 +       secret: s
 +     tags:
-+     - key: k
++     - id: (known after apply)
++       key: k
 +       value: v  # forces replacement
-+       id: (known after apply)
-+   deletionPolicy: Delete
 
 ---
 

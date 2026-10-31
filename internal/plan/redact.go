@@ -19,6 +19,7 @@ package plan
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -259,4 +260,110 @@ func mapKey(m map[string]any, f string) (string, bool, error) {
 		return "", false, errors.Errorf("more than one key matches %q", f)
 	}
 	return found, n == 1, nil
+}
+
+// SetPath sets the value at path in u to v, in place, at every location the
+// path reaches: a field, the item an index names, or every item a keyed
+// segment matches. Map levels are matched as RedactPaths matches them. A field
+// absent from a map is created, with the map levels below it, when the rest
+// of the path is fields alone; a dotted key absent from u is so created as
+// nested levels. It sets nothing where the path doesn't parse, resolves to the
+// root, or meets a scalar, a missing item or the wrong kind of node, nor at a
+// map level more than one key matches. It reports whether it set a value.
+func SetPath(u *unstructured.Unstructured, path string, v any) bool {
+	segs, err := fieldpath.Parse(path)
+	if err != nil || u == nil || u.Object == nil || len(segs) == 0 {
+		return false
+	}
+	return setIn(u.Object, segs, v)
+}
+
+// setIn sets v at segs, which are not empty, below node, as SetPath does.
+func setIn(node any, segs []fieldpath.Segment, v any) bool {
+	switch n := node.(type) {
+	case map[string]any:
+		return setInMap(n, segs, v)
+	case []any:
+		return setInList(n, segs, v)
+	}
+	return false
+}
+
+func setInMap(n map[string]any, segs []fieldpath.Segment, v any) bool {
+	if segs[0].Type != fieldpath.SegmentField {
+		return false
+	}
+	key, tail, found := "", segs, 0
+	for j := 1; j <= len(segs) && segs[j-1].Type == fieldpath.SegmentField; j++ {
+		k, ok, err := mapKey(n, joinFields(segs[:j]))
+		if err != nil {
+			return false
+		}
+		if ok {
+			key, tail = k, segs[j:]
+			found++
+		}
+	}
+	switch {
+	case found > 1:
+		return false
+	case found == 1 && len(tail) == 0:
+		n[key] = v
+		return true
+	case found == 1:
+		return setIn(n[key], tail, v)
+	}
+	nested, ok := levels(segs, v)
+	if ok {
+		n[segs[0].Field] = nested
+	}
+	return ok
+}
+
+// levels returns v nested in a map per field of segs after the first, or
+// false when a segment is an index or a keyed item, which is never created.
+func levels(segs []fieldpath.Segment, v any) (any, bool) {
+	for i, s := range slices.Backward(segs) {
+		// fieldpath reads [key="b"] as the field key="b.
+		if s.Type != fieldpath.SegmentField || strings.Contains(s.Field, "=") {
+			return nil, false
+		}
+		if i > 0 {
+			v = map[string]any{s.Field: v}
+		}
+	}
+	return v, true
+}
+
+func setInList(n []any, segs []fieldpath.Segment, v any) bool {
+	seg, rest := segs[0], segs[1:]
+	if seg.Type == fieldpath.SegmentIndex {
+		switch {
+		case seg.Index >= uint(len(n)):
+			return false
+		case len(rest) == 0:
+			n[seg.Index] = v
+			return true
+		}
+		return setIn(n[seg.Index], rest, v)
+	}
+	key, want, ok := strings.Cut(seg.Field, "=")
+	if !ok {
+		return false
+	}
+	want = strings.Trim(want, `"'`)
+	set := false
+	for i, item := range n {
+		m, ok := item.(map[string]any)
+		if !ok || m[key] == nil || fmt.Sprint(m[key]) != want {
+			continue
+		}
+		if len(rest) == 0 {
+			n[i] = v
+			set = true
+			continue
+		}
+		set = setIn(m, rest, v) || set
+	}
+	return set
 }

@@ -257,3 +257,36 @@ func TestRedactPaths(t *testing.T) {
 		})
 	}
 }
+
+func TestSetPath(t *testing.T) {
+	const u = "U"
+	cases := map[string]struct {
+		reason string
+		in     map[string]any
+		path   string
+		want   map[string]any
+		set    bool
+	}{
+		"Field":            {"A present field is set.", map[string]any{"a": "x"}, "a", map[string]any{"a": u}, true},
+		"AbsentLevels":     {"An absent field gets its missing map levels.", map[string]any{"a": map[string]any{}}, "a.b.c", map[string]any{"a": map[string]any{"b": map[string]any{"c": u}}}, true},
+		"DottedKey":        {"A dotted key present is set as one key.", map[string]any{"t": map[string]any{"a.b": "x"}}, "t.a.b", map[string]any{"t": map[string]any{"a.b": u}}, true},
+		"Keyed":            {"Every matching keyed item is set; a missing one is not created.", map[string]any{"l": []any{map[string]any{"k": "a"}, map[string]any{"k": "b"}}}, `l[k="a"].id`, map[string]any{"l": []any{map[string]any{"k": "a", "id": u}, map[string]any{"k": "b"}}}, true},
+		"KeyedAbsent":      {"A keyed item no item matches sets nothing.", map[string]any{"l": []any{}}, `l[k="a"].id`, map[string]any{"l": []any{}}, false},
+		"KeyedUnderAbsent": {"A keyed item under an absent field is not created.", map[string]any{}, `l[k="a"].id`, map[string]any{}, false},
+		"IndexOut":         {"An index past the end sets nothing.", map[string]any{"l": []any{"a"}}, "l[1]", map[string]any{"l": []any{"a"}}, false},
+		"Index":            {"An index in range is set.", map[string]any{"l": []any{"a"}}, "l[0]", map[string]any{"l": []any{u}}, true},
+		"UnderScalar":      {"A path under a scalar sets nothing.", map[string]any{"a": "x"}, "a.b", map[string]any{"a": "x"}, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			obj := &unstructured.Unstructured{Object: tc.in}
+			set := SetPath(obj, tc.path, u)
+			if diff := cmp.Diff(tc.set, set); diff != "" {
+				t.Errorf("\n%s\nSetPath(...): -want set, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(tc.want, obj.Object); diff != "" {
+				t.Errorf("\n%s\nSetPath(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

@@ -162,7 +162,7 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	}
 
 	changes := plan.SortedChanges(pp.Changes)
-	diffs, redacted, err := redactDiff(d, changes)
+	diffs, changed, err := objectDiff(d, changes)
 	if err != nil {
 		out := *d
 		// An insert, so --compact, which prints only changes, keeps it.
@@ -172,18 +172,9 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 
 	lines := flatten(diffs)
 	s := place(lines)
-
-	changed := redacted
-	for _, c := range changes {
-		if c.Planned != nil && c.Planned.Unknown {
-			var ok bool
-			lines, ok = markUnknown(lines, s.field(c.Path))
-			changed = changed || ok
-		}
-	}
 	for _, c := range changes {
 		if c.RequiresReplace {
-			changed = markReplace(lines, s.field(c.Path).new, d.DiffType == dt.DiffTypeAdded) || changed
+			changed = markReplace(lines, resolve(s, plan.DisplayLevels(c.Path)), d.DiffType == dt.DiffTypeAdded) || changed
 		}
 	}
 
@@ -197,31 +188,46 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	return &out
 }
 
-// redactDiff returns d's line diff with every value a change marks sensitive,
-// on either side, replaced as plan.RedactPaths does, and whether there was
-// any. The diff is made again from redacted copies of the Clean views, as
+// objectDiff returns d's line diff with the provider's values written into
+// copies of the Clean views, and whether it wrote any: every value a change
+// marks sensitive, on either side, replaced as plan.RedactPaths does, and
+// each computed value set to "(known after apply)" on the desired side, as
+// plan.SetPath sets it. The diff is made again from the copies, as
 // compare.GenerateDiff makes it, so no secret reaches the text. It returns an
 // error when a sensitive value can't be redacted: the caller must hide the
-// body.
-func redactDiff(d *dt.ResourceDiff, changes []plan.FieldChange) ([]diffmatchpatch.Diff, bool, error) {
+// body. A diff without its desired view keeps its line diff, unmarked.
+func objectDiff(d *dt.ResourceDiff, changes []plan.FieldChange) ([]diffmatchpatch.Diff, bool, error) {
 	var paths []string
 	for _, c := range changes {
 		if (c.Actual != nil && c.Actual.Sensitive) || (c.Planned != nil && c.Planned.Sensitive) {
 			paths = append(paths, c.Path)
 		}
 	}
-	if len(paths) == 0 {
-		return d.LineDiffs, false, nil
-	}
 	// An added diff has no current side; any other side must have its view.
-	if d.Desired.Clean == nil || (d.DiffType != dt.DiffTypeAdded && d.Current.Clean == nil) {
+	if len(paths) > 0 && (d.Desired.Clean == nil || (d.DiffType != dt.DiffTypeAdded && d.Current.Clean == nil)) {
 		return nil, false, errors.New("a diff without its objects can't be redacted")
 	}
-
-	cur, des, err := plan.RedactPaths(d.Current.Clean, d.Desired.Clean, paths)
-	if err != nil {
-		return nil, false, err
+	if d.Desired.Clean == nil {
+		return d.LineDiffs, false, nil
 	}
+
+	cur, des := d.Current.Clean, d.Desired.Clean.DeepCopy()
+	changed := len(paths) > 0
+	if changed {
+		var err error
+		if cur, des, err = plan.RedactPaths(cur, des, paths); err != nil {
+			return nil, false, err
+		}
+	}
+	for _, c := range changes {
+		if c.Planned != nil && c.Planned.Unknown {
+			changed = plan.SetPath(des, c.Path, knownAfterApply) || changed
+		}
+	}
+	if !changed {
+		return d.LineDiffs, false, nil
+	}
+
 	text := func(u *unstructured.Unstructured) (string, error) {
 		if u == nil {
 			return "", nil
@@ -304,31 +310,7 @@ type line struct {
 	itemCol int
 	// cont means the line continues the scalar of the line before it.
 	cont bool
-	// old and oldCont are an equal line's segs and cont on the old side.
-	old     []string
-	oldCont bool
 }
-
-// on returns l as a line of the side op alone, placed as on that side.
-func (l line) on(op diffmatchpatch.Operation) line {
-	if l.op == opEqual && op == opDelete {
-		l.segs, l.cont = l.old, l.oldCont
-	}
-	l.op, l.old, l.oldCont = op, nil, false
-
-	return l
-}
-
-// oldSide returns the segs and cont of l on the old side.
-func (l line) oldSide() ([]string, bool) {
-	if l.op == opEqual {
-		return l.old, l.oldCont
-	}
-
-	return l.segs, l.cont
-}
-
-func desired(op diffmatchpatch.Operation) bool { return op != opDelete }
 
 // flatten splits diffs into lines, as the renderer's formatter does.
 func flatten(diffs []diffmatchpatch.Diff) []line {
@@ -363,55 +345,32 @@ func chunk(lines []line) []diffmatchpatch.Diff {
 	return out
 }
 
-// sides holds the document each side of a diff parses to, nil for a side
-// that is absent or does not parse.
-type sides struct{ old, new *yaml.Node }
-
-// place sets the field of each line from the YAML of its side: the old side
-// is the equal and removed lines, the new side the equal and added ones. A
-// removed line is placed on the old side and every other line on the new.
+// place sets the field of each line of the new side, the equal and added
+// lines, from its YAML, and returns the side's document, nil when it does not
+// parse.
 //
 // ponytail: lines are placed by gopkg.in/yaml.v3 node positions, including
 // the fields of a literal (|) block scalar holding a YAML or JSON map or
 // list, and a list item keyed by a field (see resolve). Sensitive values are
-// redacted before this, in the objects (see redactDiff); a list index in a
+// redacted, and unknowns set, before this, in the objects (see objectDiff); a list index in a
 // sensitive path redacts that field in every item, because upjet writes a set
 // element's index as a hash, so the index can't be trusted. The coarse cases
 // are:
 //   - a side that doesn't parse: no marker is placed on it;
 //   - a folded (>), quoted or plain multi-line scalar, a literal one that is
 //     not a map or list, or a flow map or list on one line (pw: {a: x}, or a
-//     JSON field that shares its line): an unknown or replacement marker
-//     inside is not placed;
-//   - a keyed level matching more than one item: the markers go on the first
+//     JSON field that shares its line): a replacement marker inside is not
+//     placed;
+//   - a keyed level matching more than one item: the marker goes on the first
 //     only;
-//   - an absent field whose deepest present ancestor is a scalar, or a keyed
-//     item a side lacks, gets no unknown marker;
 //   - a key that starts or ends with a quote, which plan.DisplayLevels trims
 //     as fieldpath.Parse does, gets no marker.
 //
 // The header, the summary and -o plan still carry what isn't marked inline.
 // Upgrade path for the keys: carry fieldpath segments, not display levels,
 // in plan.FieldChange.
-func place(lines []line) sides {
-	old := slices.Clone(lines)
-	s := sides{old: placeSide(old, func(op diffmatchpatch.Operation) bool { return op != opInsert }), new: placeSide(lines, desired)}
-	for i, o := range old {
-		switch o.op {
-		case opDelete:
-			lines[i] = o
-		case opEqual:
-			lines[i].old, lines[i].oldCont = o.segs, o.cont
-			if s.new == nil {
-				// Only the old side placed it, so its value is there.
-				lines[i].value, lines[i].parent = o.value, o.parent
-			}
-		case opInsert:
-			// Placed on the new side only.
-		}
-	}
-
-	return s
+func place(lines []line) *yaml.Node {
+	return placeSide(lines, func(op diffmatchpatch.Operation) bool { return op != opDelete })
 }
 
 // placeSide parses the lines side reports true for as one YAML document, and
@@ -657,41 +616,6 @@ func offset(text string, col int) int {
 	return len(text)
 }
 
-// A field is a change's path as each side's lines are placed, nil on a side
-// that lacks it.
-type field struct{ old, new []string }
-
-// field returns path as each side places it (see resolve).
-func (s sides) field(path string) field {
-	levels := plan.DisplayLevels(path)
-	return field{old: resolve(s.old, levels), new: resolve(s.new, levels)}
-}
-
-// on reports whether l is on the field, on either side it belongs to.
-func (f field) on(l line) bool {
-	old, oldCont := l.oldSide()
-	return (l.op != opDelete && !l.cont && len(f.new) > 0 && slices.Equal(l.segs, f.new)) ||
-		(l.op != opInsert && !oldCont && len(f.old) > 0 && slices.Equal(old, f.old))
-}
-
-// holdsNew and holdsOld report whether l is part of the field's value after
-// its first line, on the new or the old side: a continuation, or a field of
-// a literal block scalar's content.
-func (f field) holdsNew(l line) bool { return holds(l.segs, l.cont, f.new) }
-func (f field) holdsOld(l line) bool { old, cont := l.oldSide(); return holds(old, cont, f.old) }
-
-func holds(segs []string, cont bool, at []string) bool {
-	if len(at) == 0 {
-		return false
-	}
-	if slices.Equal(segs, at) {
-		return cont
-	}
-
-	// A deeper field, or an item of the list at at: spec.ports[0].
-	return within(segs, at)
-}
-
 // resolve returns levels as the document doc places them. A keyed level,
 // key=value after a list, as plan.DisplayLevels splits tags[key="k"], is the
 // index of the first list item whose key field holds value: tags[0]. Levels
@@ -806,158 +730,6 @@ func withIndex(segs []string, n int) []string {
 	return out
 }
 
-// find returns the index of the first line of an op in ops on the field f,
-// skipping continuations, or -1. An equal line is matched on the new side.
-func find(lines []line, f field, ops ...diffmatchpatch.Operation) int {
-	return slices.IndexFunc(lines, func(l line) bool {
-		if l.op == opEqual {
-			l = l.on(opInsert)
-		}
-		return slices.Contains(ops, l.op) && f.on(l)
-	})
-}
-
-// markUnknown marks the field f as known only after apply: its "+" line's
-// value is replaced; its equal line is split into the old value removed and
-// the unknown one added; a "-" line only is followed by the unknown one
-// added; and when the field is absent, a line is added after the deepest
-// ancestor present, naming the missing levels dotted. It returns the new
-// lines, and whether it placed the field.
-func markUnknown(lines []line, f field) ([]line, bool) {
-	segs := f.new
-	if len(segs) == 0 {
-		return lines, false
-	}
-
-	i := find(lines, f, opInsert, opEqual)
-	if i < 0 {
-		i = find(lines, f, opDelete)
-	}
-	if i >= 0 {
-		if lines[i].value < 0 {
-			return lines, false
-		}
-		return setValue(lines, i, f, knownAfterApply, true), true
-	}
-
-	k, anchor, indent, ok := ancestor(lines, segs)
-	if !ok {
-		return lines, false
-	}
-	text := strings.Repeat(" ", indent) + strings.Join(segs[k:], ".") + ": " + knownAfterApply
-	added := line{op: opInsert, text: text, segs: segs, value: len(text) - len(knownAfterApply)}
-
-	return slices.Insert(lines, anchor+1, added), true
-}
-
-// setValue sets the scalar value of line i, on the field f, to v, dropping
-// the rest of the value on each side line i is on: its continuation lines,
-// and the fields of a literal block scalar's content. A line of the rest
-// that is on the other side, but not in its value, stays on that side. With
-// split, the old value stays as removed lines and v is added after them,
-// unless line i is already added. Without, the value is set on each side
-// the value spans: a changed value stays a change.
-func setValue(lines []line, i int, f field, v string, split bool) []line {
-	l := lines[i]
-	set := l
-	set.text = l.text[:l.value] + v
-	with := set.on
-
-	// The rest of the value follows line i on each side it is on, though
-	// the other side's lines may come between.
-	type held struct{ old, new bool }
-	span := map[int]held{}
-	old, nu := l.op != opInsert, l.op != opDelete
-	for j := i + 1; j < len(lines) && (old || nu); j++ {
-		c := lines[j]
-		h := held{old: old && c.op != opInsert && f.holdsOld(c), new: nu && c.op != opDelete && f.holdsNew(c)}
-		old = old && (c.op == opInsert || h.old)
-		nu = nu && (c.op == opDelete || h.new)
-		if h.old || h.new {
-			span[j] = h
-		}
-	}
-	changes := l.op != opEqual
-	for _, h := range span {
-		changes = changes || !h.old || !h.new
-	}
-
-	var out []line
-	switch {
-	case split && l.op != opInsert:
-		// The old value is line i and the rest of it on the old side, all
-		// removed.
-		out = append(out, l.on(opDelete))
-		for j := i + 1; j < len(lines); j++ {
-			if span[j].old {
-				out = append(out, lines[j].on(opDelete))
-			}
-		}
-		out = append(out, with(opInsert))
-	case changes && l.op == opEqual:
-		out = []line{with(opDelete), with(opInsert)}
-	default:
-		out = []line{set}
-	}
-
-	rest := slices.Concat(lines[:i], out)
-	for j := i + 1; j < len(lines); j++ {
-		h, ok := span[j]
-		c := lines[j]
-		switch {
-		case !ok:
-			rest = append(rest, c)
-		case c.op == opEqual && !h.old:
-			rest = append(rest, c.on(opDelete))
-		case c.op == opEqual && !h.new:
-			rest = append(rest, c.on(opInsert))
-		}
-	}
-
-	return rest
-}
-
-// ancestor finds the deepest ancestor of segs on the desired side: the
-// number of its path segments, the index of the last line of its subtree,
-// and its children's column. The document itself is the ancestor of last
-// resort. ok is false when the deepest ancestor holds a scalar, which can
-// have no children.
-func ancestor(lines []line, segs []string) (int, int, int, bool) {
-	for k := len(segs) - 1; k >= 1; k-- {
-		at := segs[:k]
-		i := slices.IndexFunc(lines, func(l line) bool {
-			return desired(l.op) && !l.cont && (slices.Equal(l.segs, at) || slices.Equal(l.item, at))
-		})
-		if i < 0 {
-			continue
-		}
-		children := lines[i].itemCol
-		if !slices.Equal(lines[i].item, at) {
-			if !lines[i].parent {
-				return 0, 0, 0, false
-			}
-			children = lines[i].children
-		}
-		last := i
-		for j := i + 1; j < len(lines); j++ {
-			if desired(lines[j].op) && within(lines[j].segs, at) {
-				last = j
-			}
-		}
-
-		return k, last, children, true
-	}
-
-	last := -1
-	for j, l := range lines {
-		if desired(l.op) {
-			last = j
-		}
-	}
-
-	return 0, last, 0, last >= 0
-}
-
 // markReplace ends the "+" line of the field segs with the replacement note.
 // When the field has no "+" line of its own, the first "+" line in its
 // subtree is marked; failing that, in an added diff, the "+" line of its
@@ -966,7 +738,7 @@ func markReplace(lines []line, segs []string, added bool) bool {
 	if len(segs) == 0 {
 		return false
 	}
-	i := find(lines, field{new: segs}, opInsert)
+	i := slices.IndexFunc(lines, func(l line) bool { return l.op == opInsert && !l.cont && slices.Equal(l.segs, segs) })
 	if i < 0 {
 		i = slices.IndexFunc(lines, func(l line) bool { return l.op == opInsert && !l.cont && within(l.segs, segs) })
 	}

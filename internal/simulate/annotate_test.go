@@ -154,6 +154,10 @@ func TestAnnotateXRReport(t *testing.T) {
 		"spec:\n  forProvider:\n    policy: >\n      {\"version\": \"1\"}\n    tags:\n    - key: k\n      value: \"1\"\n",
 		"spec:\n  forProvider:\n    policy: >\n      {\"version\": \"2\"}\n    tags:\n    - key: k\n      value: \"2\"\n")
 
+	tagged := lineDiff(t, "db", dt.DiffTypeModified,
+		fp(map[string]any{"policy": `{"version": "1"}`, "tags": []any{map[string]any{"key": "k", "value": "1"}}}),
+		fp(map[string]any{"policy": `{"version": "2"}`, "tags": []any{map[string]any{"key": "k", "value": "2"}}}))
+
 	cases := map[string]struct {
 		reason string
 		in     *dt.XRReport
@@ -380,16 +384,16 @@ Summary: 1 modified
 `,
 		},
 		"Unplaceable": {
-			reason: "A field in a folded scalar gets no inline annotation, and the header and summary still say replace; a field of a list item keyed by a field is placed.",
-			in:     report(policy),
-			plans: planFor(policy, plan.ActionReplace,
+			reason: "An unknown inside a string is not set, and a field of a list item keyed by a field is marked.",
+			in:     report(tagged),
+			plans: planFor(tagged, plan.ActionReplace,
 				plan.FieldChange{Path: `spec.forProvider.tags[key="k"].value`, Actual: str("1"), Planned: str("2"), RequiresReplace: true},
 				plan.FieldChange{Path: "spec.forProvider.policy.version", Planned: unknown()},
 			),
 			opts: func() renderer.DiffOptions { o := noColor(); o.Compact, o.ContextLines = true, 0; return o }(),
 			want: `~~~ Instance/db (requires replacement)
--       {"version": "1"}
-+       {"version": "2"}
+-     policy: '{"version": "1"}'
++     policy: '{"version": "2"}'
 ...
 -       value: "1"
 +       value: "2"  # forces replacement
@@ -805,7 +809,7 @@ Summary: 1 modified (1 requires replacement)
 `,
 		},
 		"LiteralJSON": {
-			reason: "An unknown inside a JSON string is not set; a replace inside it is placed by the literal's nodes.",
+			reason: "An unknown inside a JSON string is not set; a replace inside it marks the string's first changed line.",
 			in: ld(fpm(map[string]any{"policy": "{\n  \"Statement\": {\n    \"Effect\": \"Allow\",\n    \"Sid\": \"a\"\n  },\n  \"Version\": \"1\"\n}\n"}),
 				fpm(map[string]any{"policy": "{\n  \"Statement\": {\n    \"Effect\": \"Deny\",\n    \"Sid\": \"b\"\n  },\n  \"Version\": \"1\"\n}\n"})),
 			changes: []plan.FieldChange{repl("policy.Statement.Sid"), unk("policy.Version")},
@@ -822,8 +826,8 @@ Summary: 1 modified (1 requires replacement)
           "Statement": {
 -           "Effect": "Allow",
 -           "Sid": "a"
-+           "Effect": "Deny",
-+           "Sid": "b"  # forces replacement
++           "Effect": "Deny",  # forces replacement
++           "Sid": "b"
           },
           "Version": "1"
         }

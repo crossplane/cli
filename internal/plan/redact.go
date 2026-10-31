@@ -272,7 +272,15 @@ func mapKey(m map[string]any, f string) (string, bool, error) {
 // map level more than one key matches. It reports whether it set a value.
 func SetPath(u *unstructured.Unstructured, path string, v any) bool {
 	segs, err := fieldpath.Parse(path)
-	if err != nil || u == nil || u.Object == nil || len(segs) == 0 {
+	if err != nil {
+		return false
+	}
+	return SetSegments(u, segs, v)
+}
+
+// SetSegments sets v at the parsed path segs in u, as SetPath does.
+func SetSegments(u *unstructured.Unstructured, segs fieldpath.Segments, v any) bool {
+	if u == nil || u.Object == nil || len(segs) == 0 {
 		return false
 	}
 	return setIn(u.Object, segs, v)

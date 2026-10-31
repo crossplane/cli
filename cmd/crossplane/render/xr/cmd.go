@@ -18,6 +18,7 @@ limitations under the License.
 package xr
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -455,9 +456,9 @@ func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, 
 		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
 	}
 
-	xpkgClient, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
+	xpkgClient, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cannot create xpkg client")
 	}
 
 	generators := generator.AllLanguages(
@@ -526,9 +527,9 @@ func (c *Cmd) loadFunctionsFromConfiguration(ctx context.Context, log logging.Lo
 		return nil, errors.Wrapf(err, "cannot parse configuration file %q", cfgFileName)
 	}
 
-	client, err := project.NewXpkgClient(c.CacheDir)
+	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())))
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cannot create xpkg client")
 	}
 
 	fns, err := clixpkg.ResolveConfigurationFunctions(ctx, cfgMeta, client)

@@ -55,8 +55,8 @@ func WithImageConfigs(ics []pkgv1beta1.ImageConfig) ClientOption {
 	}
 }
 
-// NewClient assembles a Client.
-func NewClient(fetcher xpkg.Fetcher, opts ...ClientOption) (Client, error) {
+// NewClient assembles a Client that fetches packages from remote registries.
+func NewClient(opts ...ClientOption) (Client, error) {
 	o := &options{}
 	for _, opt := range opts {
 		opt(o)
@@ -80,7 +80,7 @@ func NewClient(fetcher xpkg.Fetcher, opts ...ClientOption) (Client, error) {
 	}
 
 	return WrapClient(xpkg.NewCachedClient(
-		fetcher,
+		NewRemoteFetcher(),
 		parser.New(metaScheme, objScheme),
 		cache,
 		NewStaticImageConfigStore(o.imageConfigs),

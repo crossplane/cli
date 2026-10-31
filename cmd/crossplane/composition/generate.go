@@ -17,6 +17,7 @@ limitations under the License.
 package composition
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -38,7 +39,6 @@ import (
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
-	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -89,9 +89,9 @@ func (c *generateCmd) AfterApply(cfg *config.Config) error {
 
 	c.proj = proj
 	c.apisFS = afero.NewBasePathFs(c.projFS, proj.Spec.Paths.APIs)
-	client, err := project.NewXpkgClient(c.CacheDir, clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
+	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot create xpkg client")
 	}
 
 	c.depManager = dependency.NewManager(proj, c.projFS,

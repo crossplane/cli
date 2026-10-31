@@ -467,18 +467,24 @@ func TestAnnotateSecret(t *testing.T) {
 		"Modified": {dt.DiffTypeModified, old, nu, []string{"- pw: (sensitive value)", "+ pw: (sensitive value, changed)", "same: (sensitive value)"}},
 		"Added":    {dt.DiffTypeAdded, nil, nu, []string{"+ pw: (sensitive value)"}},
 		"Removed":  {dt.DiffTypeRemoved, old, nil, []string{"- pw: (sensitive value)"}},
-		"StringDataChanged": {dt.DiffTypeModified,
+		"StringDataChanged": {
+			dt.DiffTypeModified,
 			sec(map[string]any{"same": "SAMESECRET"}, map[string]any{"tok": "OLDSECRET"}),
 			sec(map[string]any{"same": "SAMESECRET"}, map[string]any{"tok": "NEWSECRET"}),
-			[]string{"- tok: (sensitive value)", "+ tok: (sensitive value, changed)"}},
-		"DockerConfig": {dt.DiffTypeAdded, nil,
+			[]string{"- tok: (sensitive value)", "+ tok: (sensitive value, changed)"},
+		},
+		"DockerConfig": {
+			dt.DiffTypeAdded, nil,
 			sec(map[string]any{".dockerconfigjson": "NEWSECRET"}, nil),
-			[]string{"+ .dockerconfigjson: (sensitive value)"}},
+			[]string{"+ .dockerconfigjson: (sensitive value)"},
+		},
 		// A key that extends another, and one ending in a dot.
-		"DottedKeys": {dt.DiffTypeModified,
+		"DottedKeys": {
+			dt.DiffTypeModified,
 			sec(map[string]any{"ca": "SAMESECRET", "ca.crt": "OLDSECRET", "a.": "PEMSECRET"}, nil),
 			sec(map[string]any{"ca": "SAMESECRET", "ca.crt": "NEWSECRET", "a.": "PEMSECRET"}, nil),
-			[]string{"- ca.crt: (sensitive value)", "+ ca.crt: (sensitive value, changed)", "ca: (sensitive value)", "a.: (sensitive value)"}},
+			[]string{"- ca.crt: (sensitive value)", "+ ca.crt: (sensitive value, changed)", "ca: (sensitive value)", "a.: (sensitive value)"},
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -524,7 +530,7 @@ func TestAnnotateFailClosed(t *testing.T) {
 		plans map[string]*plan.ResourcePlan
 		want  string
 	}{
-		"RemovedSensitive": {removed, planFor(removed, plan.ActionDelete, plan.FieldChange{Path: "spec.pw", Actual: sensitive()}), "pw: (sensitive value)"},
+		"RemovedSensitive":   {removed, planFor(removed, plan.ActionDelete, plan.FieldChange{Path: "spec.pw", Actual: sensitive()}), "pw: (sensitive value)"},
 		"SecretWithoutViews": {secret, nil, diffHidden},
 	}
 	for name, tc := range cases {
@@ -992,7 +998,7 @@ Summary: 1 added (1 requires replacement)
 `,
 		},
 		"AddedSharedAncestor": {
-			reason: "On a create, two replacements whose nearest ancestor is the same mark its line once, not the next field.",
+			reason:  "On a create, two replacements whose nearest ancestor is the same mark its line once, not the next field.",
 			in:      lineDiff(t, "db", dt.DiffTypeAdded, nil, spec(fpm(map[string]any{"arn": "a", "region": "r"}))),
 			changes: []plan.FieldChange{repl("x"), repl("y")},
 			want: `+++ Instance/db (requires replacement)

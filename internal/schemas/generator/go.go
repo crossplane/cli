@@ -759,8 +759,10 @@ func goRenameEnumValues(typeName string, schema *spec.Schema) {
 	for i, oldName := range schema.Enum {
 		s, ok := oldName.(string)
 		if !ok {
-			// This should always be true, but we'd rather not panic, so ignore
-			// any non-string enums.
+			// oapi-codegen collapses empty names into a single Empty
+			// constant, so name non-string values (e.g. integers) the way it
+			// would by default: 8 becomes N8 and -1 becomes Minus1.
+			newNames[i] = typeName + codegen.SchemaNameToTypeName(fmt.Sprintf("%v", oldName))
 			continue
 		}
 		newNames[i] = typeName + flect.Capitalize(s)

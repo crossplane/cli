@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/spf13/afero"
 	"golang.org/x/mod/modfile"
 )
@@ -186,6 +187,69 @@ func TestGenerateFromCRDGoValidationOnlyCombinators(t *testing.T) {
 	// union member types.
 	if !strings.Contains(code, "IoCiliumV2CiliumClusterwideNetworkPolicySpecEgressIcmpsFieldsType0") {
 		t.Error("generated code is missing the int-or-string union member type")
+	}
+}
+
+// TestGenerateFromCRDGoIntegerEnums ensures integer enums get one constant per
+// value, named after the enum type. Without names, oapi-codegen collapses every
+// value into a single Empty constant, which drops values from Valid() and
+// redeclares Empty when two kinds in the same package have integer enums.
+func TestGenerateFromCRDGoIntegerEnums(t *testing.T) {
+	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
+	schemaFS, err := goGenerator{}.GenerateFromCRD(t.Context(), inputFS, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string][]string{
+		"SubnetSpecSize": {
+			"SubnetSpecSizeN8", "SubnetSpecSizeN16", "SubnetSpecSizeN32", "SubnetSpecSizeN64",
+			"SubnetSpecSizeN128", "SubnetSpecSizeN256", "SubnetSpecSizeN512",
+		},
+		"VirtualNetworkSpecPriority": {
+			"VirtualNetworkSpecPriorityMinus1", "VirtualNetworkSpecPriorityN0", "VirtualNetworkSpecPriorityN1",
+		},
+	}
+
+	files := token.NewFileSet()
+	got := make(map[string][]string)
+	declared := make(map[string]string)
+	for _, kind := range []string{"subnet", "virtualnetwork"} {
+		path := "models/com/example/network/v1alpha1/" + kind + ".go"
+		contents, err := afero.ReadFile(schemaFS, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := parser.ParseFile(files, path, contents, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, s := range gd.Specs {
+				vs, ok := s.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for _, name := range vs.Names {
+					if other, ok := declared[name.Name]; ok {
+						t.Errorf("constant %s declared in both %s and %s", name.Name, other, path)
+					}
+					declared[name.Name] = path
+
+					if typ, ok := vs.Type.(*ast.Ident); ok && want[typ.Name] != nil {
+						got[typ.Name] = append(got[typ.Name], name.Name)
+					}
+				}
+			}
+		}
+	}
+
+	if diff := cmp.Diff(want, got, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("enum constants (-want +got):\n%s", diff)
 	}
 }
 

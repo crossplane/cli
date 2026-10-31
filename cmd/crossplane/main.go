@@ -229,7 +229,7 @@ func configFlag(args []string) (string, error) {
 			return v, nil
 		}
 
-		if i+1 < len(args) {
+		if i+1 < len(args) && args[i+1] != "" {
 			return args[i+1], nil
 		}
 

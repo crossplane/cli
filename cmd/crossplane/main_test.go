@@ -57,6 +57,11 @@ func TestConfigFlag(t *testing.T) {
 			args:   []string{"--config="},
 			want:   want{err: cmpopts.AnyError},
 		},
+		"EmptySpaceValue": {
+			reason: "--config followed by an empty argument should return an error, as --config= does.",
+			args:   []string{"--config", ""},
+			want:   want{err: cmpopts.AnyError},
+		},
 		"MissingValue": {
 			reason: "Trailing --config with no following argv should return an error.",
 			args:   []string{"--config"},

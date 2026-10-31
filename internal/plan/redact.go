@@ -34,14 +34,16 @@ const ChangedSensitive = "(sensitive value, changed)"
 // RedactPaths returns copies of current and desired with the value at each
 // path replaced by a placeholder: the sensitive-value marker on the old side,
 // and on the new side too when the old side holds an equal value or none;
-// otherwise ChangedSensitive. A located map or list is replaced whole. A path
-// absent from a side leaves that side alone; a nil side is absent. Where a path
-// meets the wrong kind of node (an index on a map, a field under a scalar) the
-// node it reached is replaced. The inputs are never changed.
+// otherwise ChangedSensitive. Each side is located on its own, and the
+// locations are paired by order. A located map or list is replaced whole, and
+// a path under a scalar replaces the scalar. A path absent from a side leaves
+// that side alone; a nil side is absent. The inputs are never changed.
 //
 // It returns an error, and no copies, when a path can't be redacted: it
-// doesn't parse, it resolves to or stops at the root, or a key matches more
-// than one map key. The caller must then hide what the objects would print.
+// doesn't parse, it resolves to the root, a segment meets the wrong kind of
+// node (an index or keyed item on a map, a field on a list, a keyed item on a
+// list of non-maps), or a segment matches more than one location on a side.
+// The caller must then hide what the objects would print.
 func RedactPaths(current, desired *unstructured.Unstructured, paths []string) (*unstructured.Unstructured, *unstructured.Unstructured, error) {
 	cur, des := current.DeepCopy(), desired.DeepCopy()
 	root := func(u *unstructured.Unstructured) *slot {
@@ -55,8 +57,26 @@ func RedactPaths(current, desired *unstructured.Unstructured, paths []string) (*
 		if err != nil {
 			return nil, nil, errors.Wrapf(err, "cannot redact %q", p)
 		}
-		if err := redact(root(cur), root(des), segs); err != nil {
+		oc, err := locate(root(cur), segs)
+		if err != nil {
 			return nil, nil, errors.Wrapf(err, "cannot redact %q", p)
+		}
+		nc, err := locate(root(des), segs)
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "cannot redact %q", p)
+		}
+		// Keyed matches are paired by order; a side with fewer has none left.
+		for i := range max(len(oc), len(nc)) {
+			var o, n *slot
+			if i < len(oc) {
+				o = oc[i]
+			}
+			if i < len(nc) {
+				n = nc[i]
+			}
+			if err := replace(o, n); err != nil {
+				return nil, nil, errors.Wrapf(err, "cannot redact %q", p)
+			}
 		}
 	}
 	return cur, des, nil
@@ -90,99 +110,93 @@ func replace(o, n *slot) error {
 	return nil
 }
 
-// redact walks segs from o and n, an old and a new node at the same path,
-// and replaces what they reach.
-func redact(o, n *slot, segs []fieldpath.Segment) error {
-	if o != nil && o.v == nil {
-		o = nil
-	}
-	if n != nil && n.v == nil {
-		n = nil
-	}
-	if o == nil && n == nil {
-		return nil
+// locate returns what segs reach from s. Providers don't escape dots in map
+// keys, so tags.kubernetes.io/cluster/x may name the key
+// kubernetes.io/cluster/x: every run of field segments that joins to a key is
+// tried, and more than one reaching something is ambiguous.
+func locate(s *slot, segs []fieldpath.Segment) ([]*slot, error) {
+	if s == nil || s.v == nil {
+		return nil, nil
 	}
 	if len(segs) == 0 {
-		return replace(o, n)
+		return []*slot{s}, nil
 	}
-
-	used, err := dottedKey(o, n, segs)
-	if err != nil {
-		return err
+	switch v := s.v.(type) {
+	case map[string]any:
+		return locateMap(v, segs)
+	case []any:
+		return locateList(v, segs)
+	default:
+		// A path under a scalar can't reach past it; the scalar holds the value.
+		return []*slot{s}, nil
 	}
-	oc, oBad, err := children(o, segs[:used])
-	if err != nil {
-		return err
-	}
-	nc, nBad, err := children(n, segs[:used])
-	if err != nil {
-		return err
-	}
-	switch {
-	case oBad && nBad:
-		return replace(o, n)
-	case oBad:
-		if err := replace(o, nil); err != nil {
-			return err
-		}
-		oc = nil
-	case nBad:
-		// An old side that resolves differently holds a changed value.
-		if n.set == nil {
-			return errors.New("the path resolves to the whole object")
-		}
-		v := ChangedSensitive
-		if o == nil {
-			v = FormatValue(&Value{Sensitive: true})
-		}
-		n.set(v)
-		nc = nil
-	}
-	// Keyed matches are paired by order; a side with fewer has none left.
-	for i := range max(len(oc), len(nc)) {
-		var oi, ni *slot
-		if i < len(oc) {
-			oi = oc[i]
-		}
-		if i < len(nc) {
-			ni = nc[i]
-		}
-		if err := redact(oi, ni, segs[used:]); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
-// dottedKey returns how many leading segments name one map key. Providers
-// don't escape dots in map keys, so tags.kubernetes.io/cluster/x may name the
-// key kubernetes.io/cluster/x: the longest run of field segments that joins
-// to a key on either side wins; otherwise one segment is one key.
-func dottedKey(o, n *slot, segs []fieldpath.Segment) (int, error) {
-	run := 0
-	for run < len(segs) && segs[run].Type == fieldpath.SegmentField {
-		run++
+func locateMap(v map[string]any, segs []fieldpath.Segment) ([]*slot, error) {
+	seg := segs[0]
+	if seg.Type != fieldpath.SegmentField {
+		return nil, errors.Errorf("index [%d] meets a map", seg.Index)
 	}
-	for j := run; j > 1; j-- {
-		key := joinFields(segs[:j])
-		for _, s := range []*slot{o, n} {
-			if s == nil {
-				continue
-			}
-			m, ok := s.v.(map[string]any)
-			if !ok {
-				continue
-			}
-			_, ok, err := mapKey(m, key)
-			if err != nil {
-				return 0, err
-			}
-			if ok {
-				return j, nil
-			}
+	var out []*slot
+	keys, found := 0, 0
+	for j := 1; j <= len(segs) && segs[j-1].Type == fieldpath.SegmentField; j++ {
+		k, ok, err := mapKey(v, joinFields(segs[:j]))
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		keys++
+		got, err := locate(&slot{v: v[k], set: func(x any) { v[k] = x }}, segs[j:])
+		if err != nil {
+			return nil, err
+		}
+		if len(got) > 0 {
+			found++
+			out = got
 		}
 	}
-	return 1, nil
+	if found > 1 {
+		return nil, errors.Errorf("%q matches more than one location", seg.Field)
+	}
+	// fieldpath reads [key="b"] as the field key="b.
+	if keys == 0 && strings.Contains(seg.Field, "=") {
+		return nil, errors.Errorf("keyed item [%s] meets a map", seg.Field)
+	}
+	return out, nil
+}
+
+func locateList(v []any, segs []fieldpath.Segment) ([]*slot, error) {
+	seg := segs[0]
+	if seg.Type == fieldpath.SegmentIndex {
+		i := int(seg.Index)
+		if i >= len(v) {
+			return nil, nil
+		}
+		return locate(&slot{v: v[i], set: func(x any) { v[i] = x }}, segs[1:])
+	}
+	key, want, ok := strings.Cut(seg.Field, "=")
+	if !ok {
+		return nil, errors.Errorf("field %q meets a list", seg.Field)
+	}
+	want = strings.Trim(want, `"'`)
+	var out []*slot
+	for i, item := range v {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, errors.Errorf("keyed item [%s] meets a list of non-maps", seg.Field)
+		}
+		if m[key] == nil || fmt.Sprint(m[key]) != want {
+			continue
+		}
+		got, err := locate(&slot{v: item, set: func(x any) { v[i] = x }}, segs[1:])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, got...)
+	}
+	return out, nil
 }
 
 func joinFields(segs []fieldpath.Segment) string {
@@ -207,48 +221,4 @@ func mapKey(m map[string]any, f string) (string, bool, error) {
 		return "", false, errors.Errorf("more than one key matches %q", f)
 	}
 	return found, n == 1, nil
-}
-
-// children returns what segs (one key, or one index or keyed item) reach
-// from s, or bad when s is the wrong kind of node for them.
-func children(s *slot, segs []fieldpath.Segment) ([]*slot, bool, error) {
-	if s == nil {
-		return nil, false, nil
-	}
-	seg := segs[0]
-	switch v := s.v.(type) {
-	case map[string]any:
-		if seg.Type != fieldpath.SegmentField {
-			return nil, true, nil
-		}
-		k, ok, err := mapKey(v, joinFields(segs))
-		if err != nil || !ok {
-			return nil, false, err
-		}
-		return []*slot{{v: v[k], set: func(x any) { v[k] = x }}}, false, nil
-	case []any:
-		if seg.Type == fieldpath.SegmentIndex {
-			i := int(seg.Index)
-			if i >= len(v) {
-				return nil, false, nil
-			}
-			return []*slot{{v: v[i], set: func(x any) { v[i] = x }}}, false, nil
-		}
-		// fieldpath reads [key="b"] as the field key="b.
-		key, want, ok := strings.Cut(seg.Field, "=")
-		if !ok {
-			return nil, true, nil
-		}
-		want = strings.Trim(want, `"'`)
-		var out []*slot
-		for i, item := range v {
-			m, ok := item.(map[string]any)
-			if ok && m[key] != nil && fmt.Sprint(m[key]) == want {
-				out = append(out, &slot{v: item, set: func(x any) { v[i] = x }})
-			}
-		}
-		return out, false, nil
-	default:
-		return nil, true, nil
-	}
 }

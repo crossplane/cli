@@ -1041,6 +1041,32 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 				map[string]any{"tags": []any{map[string]any{"key": "b", "value": "NEWSECRET"}, map[string]any{"key": "b", "value": "NEW2SECRET"}}}),
 			path: `spec.tags[key="b"]`,
 		},
+		"DottedOldNestedNew": {
+			reason: "A dotted key on the old side and nesting on the new are each redacted.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"tags": map[string]any{"a.b": "OLDSECRET"}},
+				map[string]any{"tags": map[string]any{"a": map[string]any{"b": "NEWSECRET"}}}),
+			path: "spec.tags.a.b",
+		},
+		"DottedAndNestedSameSide": {
+			reason: "A path matching a dotted key and nesting on one side hides the body.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"tags": map[string]any{"a.b": "OLDSECRET", "a": map[string]any{"b": "OLD2SECRET"}}},
+				map[string]any{"tags": map[string]any{"a.b": "NEWSECRET", "a": map[string]any{"b": "NEW2SECRET"}}}),
+			path: "spec.tags.a.b",
+		},
+		"KeyedOnMap": {
+			reason: "A keyed item on a map hides the body.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"tags": map[string]any{"b": "OLDSECRET"}}, map[string]any{"tags": map[string]any{"b": "NEWSECRET"}}),
+			path: `spec.tags[key="b"]`,
+		},
+		"KeyedOnScalarList": {
+			reason: "A keyed item on a list of scalars hides the body.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"tags": []any{"OLDSECRET"}}, map[string]any{"tags": []any{"NEWSECRET"}}),
+			path: `spec.tags[key="b"]`,
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

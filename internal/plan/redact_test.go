@@ -112,10 +112,25 @@ func TestRedactPaths(t *testing.T) {
 			args:   args{spec(map[string]any{"doc": `{"pw":"a"}`}), spec(map[string]any{"doc": `{"pw":"b"}`}), []string{"spec.doc.pw"}},
 			want:   want{current: spec(map[string]any{"doc": s}), desired: spec(map[string]any{"doc": c})},
 		},
-		"ListMapMismatch": {
-			reason: "An index on a map, or a plain field on a list, replaces the node reached.",
-			args:   args{spec(map[string]any{"m": map[string]any{"a": int64(1)}}), spec(map[string]any{"l": []any{int64(1)}}), []string{"spec.m[0]", "spec.l.a"}},
-			want:   want{current: spec(map[string]any{"m": s}), desired: spec(map[string]any{"l": s})},
+		"IndexOnMap": {
+			reason: "An index on a map fails closed.",
+			args:   args{spec(map[string]any{"m": map[string]any{"a": int64(1)}}), nil, []string{"spec.m[0]"}},
+			want:   want{err: true},
+		},
+		"FieldOnList": {
+			reason: "A plain field on a list fails closed.",
+			args:   args{nil, spec(map[string]any{"l": []any{int64(1)}}), []string{"spec.l.a"}},
+			want:   want{err: true},
+		},
+		"KeyedOnMap": {
+			reason: "A keyed item on a map fails closed.",
+			args:   args{spec(map[string]any{"tags": map[string]any{"b": "a"}}), spec(map[string]any{"tags": map[string]any{"b": "b"}}), []string{`spec.tags[key="b"]`}},
+			want:   want{err: true},
+		},
+		"KeyedOnScalarList": {
+			reason: "A keyed item on a list of non-maps fails closed.",
+			args:   args{spec(map[string]any{"tags": []any{"a"}}), spec(map[string]any{"tags": []any{"b"}}), []string{`spec.tags[key="b"]`}},
+			want:   want{err: true},
 		},
 		"OneSideMismatch": {
 			reason: "A side that resolves differently is replaced where it stopped; the other is changed.",
@@ -145,13 +160,30 @@ func TestRedactPaths(t *testing.T) {
 			},
 		},
 		"DottedKeyOneSide": {
-			reason: "A dotted key on either side decides the split for both.",
+			reason: "A dotted key on one side is located there; the other side lacks it.",
 			args: args{
 				spec(map[string]any{"tags": map[string]any{}}),
 				spec(map[string]any{"tags": map[string]any{"a.b": "v"}}),
 				[]string{"spec.tags.a.b"},
 			},
 			want: want{current: spec(map[string]any{"tags": map[string]any{}}), desired: spec(map[string]any{"tags": map[string]any{"a.b": s}})},
+		},
+		"DottedOldNestedNew": {
+			reason: "Each side is located on its own: a dotted key on one, nesting on the other.",
+			args: args{
+				spec(map[string]any{"tags": map[string]any{"a.b": "a"}}),
+				spec(map[string]any{"tags": map[string]any{"a": map[string]any{"b": "b"}}}),
+				[]string{"spec.tags.a.b"},
+			},
+			want: want{
+				current: spec(map[string]any{"tags": map[string]any{"a.b": s}}),
+				desired: spec(map[string]any{"tags": map[string]any{"a": map[string]any{"b": c}}}),
+			},
+		},
+		"DottedAndNestedSameSide": {
+			reason: "A dotted key and nesting both matching on one side fail closed.",
+			args:   args{nil, spec(map[string]any{"tags": map[string]any{"a.b": "x", "a": map[string]any{"b": "y"}}}), []string{"spec.tags.a.b"}},
+			want:   want{err: true},
 		},
 		"DottedKeyAbsent": {
 			reason: "With no dotted key, segments are nesting.",

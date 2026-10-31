@@ -169,7 +169,24 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		plans = append(plans, planner.Plan(ctx, desired))
 	}
 
-	return renderer.Render(k.Stdout, plans)
+	if err := renderer.Render(k.Stdout, plans); err != nil {
+		return err
+	}
+	return exitStatus(plans)
+}
+
+// exitStatus ranks the plans' outcome: an error, which exits 1, when any
+// plan errored; otherwise a silent isimulate.ExitError that exits 3 when a plan
+// would change anything; otherwise nil.
+func exitStatus(plans []*plan.ResourcePlan) error {
+	s := plan.Summarize(plans)
+	if s.Errored > 0 {
+		return errors.Errorf("cannot plan %d of %d resources; see their errors in the output", s.Errored, len(plans))
+	}
+	if s.Changes() > 0 {
+		return isimulate.ExitError{Code: isimulate.ExitCodeChanges}
+	}
+	return nil
 }
 
 func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMapper, string, error) {

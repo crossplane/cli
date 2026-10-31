@@ -52,6 +52,7 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/xrd"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/maturity"
+	isimulate "github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
@@ -121,7 +122,7 @@ func main() {
 	flagVal, err := configFlag(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "crossplane: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitUsageError)
 	}
 	cfgPath := config.ResolvePath(flagVal)
 
@@ -178,13 +179,20 @@ func main() {
 	interrupted := sigCtx.Err() != nil
 	stopExitOnSignal()
 	stop()
+	// A silent ExitError is a result, such as changes found, not an error,
+	// so it exits with its code and prints nothing.
+	code, silent := isimulate.SilentExit(err)
 	if interrupted {
 		// Exit with the conventional 128+SIGINT status.
-		if err != nil {
+		if err != nil && !silent {
 			fmt.Fprintf(os.Stderr, "crossplane: %v\n", err)
 		}
 		os.Exit(130)
 	}
+	if silent {
+		os.Exit(code)
+	}
+	// An error is printed and exits 1, or with its ExitCoder's code.
 	ctx.FatalIfErrorf(err)
 }
 
@@ -201,6 +209,10 @@ func exitOnSignal(tty bool) {
 	}
 	os.Exit(130)
 }
+
+// exitUsageError is the status kong exits with on a parse error. Kong does
+// not export it, so it is mirrored here for flag errors found before Parse.
+const exitUsageError = 80
 
 // configFlag scans argv for the --config flag and returns its value or "" if
 // the config flag is not present.

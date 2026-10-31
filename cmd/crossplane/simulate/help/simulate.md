@@ -54,6 +54,17 @@ run reuses it. The containers have names like `crossplane-diff-server-DIGEST`
 and carry `simulate.crossplane.io/managed-by` and session labels; any later
 run without the annotation cleans them up, or remove them with docker rm.
 
+The command exits with one of these statuses, so a CI pipeline can gate on
+the result:
+
+- 0: the simulation found no changes.
+- 1: the simulation failed, including when any resource couldn't be planned
+  (its error is in the output).
+- 3: the simulation found changes: a plan would create, update, destroy or
+  replace a resource.
+- 80: the flags were invalid, so nothing was simulated.
+- 130: the simulation was interrupted.
+
 ## Examples
 
 Preview what applying resources.yaml would do:

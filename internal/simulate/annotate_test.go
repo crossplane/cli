@@ -976,6 +976,9 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 		path   string
 		// planned replaces the Planned side of the change when set.
 		planned *plan.Value
+		// hidden is whether the body is hidden rather than redacted; a diff
+		// without objects (textDiff) is always hidden.
+		hidden bool
 	}{
 		"SensitiveThenUnknown": {
 			reason:  "A value sensitive before and computed after is still redacted.",
@@ -1155,13 +1158,15 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 			in: lineDiff(t, "db", dt.DiffTypeModified,
 				map[string]any{"tags": map[string]any{"a.b": "OLDSECRET", "a": map[string]any{"b": "OLD2SECRET"}}},
 				map[string]any{"tags": map[string]any{"a.b": "NEWSECRET", "a": map[string]any{"b": "NEW2SECRET"}}}),
-			path: "spec.tags.a.b",
+			path:   "spec.tags.a.b",
+			hidden: true,
 		},
 		"KeyedOnMap": {
 			reason: "A keyed item on a map hides the body.",
 			in: lineDiff(t, "db", dt.DiffTypeModified,
 				map[string]any{"tags": map[string]any{"b": "OLDSECRET"}}, map[string]any{"tags": map[string]any{"b": "NEWSECRET"}}),
-			path: `spec.tags[key="b"]`,
+			path:   `spec.tags[key="b"]`,
+			hidden: true,
 		},
 		"IndexHash": {
 			reason: "A set element path whose hash index is past the end redacts the field in every item.",
@@ -1181,13 +1186,15 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 			reason: "A map key holding brackets hides the body.",
 			in: lineDiff(t, "db", dt.DiffTypeModified,
 				map[string]any{"tags": map[string]any{"foo[bar]": "OLDSECRET"}}, map[string]any{"tags": map[string]any{"foo[bar]": "NEWSECRET"}}),
-			path: "spec.tags.foo[bar]",
+			path:   "spec.tags.foo[bar]",
+			hidden: true,
 		},
 		"KeyedOnScalarList": {
 			reason: "A keyed item on a list of scalars hides the body.",
 			in: lineDiff(t, "db", dt.DiffTypeModified,
 				map[string]any{"tags": []any{"OLDSECRET"}}, map[string]any{"tags": []any{"NEWSECRET"}}),
-			path: `spec.tags[key="b"]`,
+			path:   `spec.tags[key="b"]`,
+			hidden: true,
 		},
 	}
 	for name, tc := range cases {
@@ -1197,11 +1204,11 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 				ch.Planned = tc.planned
 			}
 			got := render(t, report(tc.in), planFor(tc.in, plan.ActionUpdate, ch), noColor())
-			// A diff without objects (textDiff) can't be redacted.
-			if tc.in.Desired.Clean == nil && !strings.Contains(got, diffHidden) {
-				t.Errorf("\n%s\nrender(): body not hidden:\n%s", tc.reason, got)
+			hidden := tc.hidden || tc.in.Desired.Clean == nil
+			if diff := cmp.Diff(hidden, strings.Contains(got, diffHidden)); diff != "" {
+				t.Errorf("\n%s\nrender(): -want hidden, +got:\n%s\n%s", tc.reason, diff, got)
 			}
-			if !strings.Contains(got, "(sensitive value") && !strings.Contains(got, diffHidden) {
+			if !hidden && !strings.Contains(got, "(sensitive value") {
 				t.Errorf("\n%s\nrender(): no redaction marker:\n%s", tc.reason, got)
 			}
 			for _, secret := range []string{"SAMESECRET", "OLDSECRET", "NEWSECRET", "OLD2SECRET", "NEW2SECRET"} {

@@ -253,6 +253,19 @@ Summary: 1 modified
 Summary: 1 modified
 `,
 		},
+		"CompactHidden": {
+			reason: "Compact mode keeps a hidden body, with the header and summary, so the change still shows.",
+			in:     report(policy),
+			plans:  planFor(policy, plan.ActionUpdate, plan.FieldChange{Path: "spec.forProvider.policy", Actual: sensitive(), Planned: sensitive()}),
+			opts:   func() renderer.DiffOptions { o := noColor(); o.Compact, o.ContextLines = true, 0; return o }(),
+			want: `~~~ Instance/db
++ # diff hidden: it holds sensitive values that can't be redacted
+
+---
+
+Summary: 1 modified
+`,
+		},
 		"Unplaceable": {
 			reason: "A field in a folded scalar gets no inline annotation, and the header and summary still say replace; a field of a list item keyed by a field is placed.",
 			in:     report(policy),
@@ -779,7 +792,7 @@ Summary: 1 added (1 requires replacement)
 				body("    password: b\n    size: [\n")),
 			changes: []plan.FieldChange{sens("password"), unk("size"), repl("password")},
 			want: `~~~ Instance/db (requires replacement)
-  # diff hidden: it holds sensitive values that can't be redacted
++ # diff hidden: it holds sensitive values that can't be redacted
 
 ---
 

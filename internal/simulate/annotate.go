@@ -165,7 +165,8 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	diffs, redacted, err := redactDiff(d, changes)
 	if err != nil {
 		out := *d
-		out.LineDiffs = []diffmatchpatch.Diff{{Type: opEqual, Text: diffHidden + "\n"}}
+		// An insert, so --compact, which prints only changes, keeps it.
+		out.LineDiffs = []diffmatchpatch.Diff{{Type: opInsert, Text: diffHidden + "\n"}}
 		return &out
 	}
 

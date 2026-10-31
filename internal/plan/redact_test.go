@@ -93,9 +93,45 @@ func TestRedactPaths(t *testing.T) {
 			want:   want{desired: spec(map[string]any{"tags": []any{map[string]any{"key": "b", "value": s}, map[string]any{"key": "b", "value": s}}})},
 		},
 		"Index": {
-			reason: "An indexed item is located.",
+			reason: "A whole-item index path redacts every item of the list.",
 			args:   args{nil, spec(map[string]any{"l": []any{"x", "y"}}), []string{"spec.l[1]"}},
-			want:   want{desired: spec(map[string]any{"l": []any{"x", s}})},
+			want:   want{desired: spec(map[string]any{"l": []any{s, s}})},
+		},
+		"IndexHash": {
+			reason: "An index past the end, as upjet writes a set hash, still redacts every item.",
+			args: args{
+				spec(map[string]any{"rule": []any{map[string]any{"name": "a", "pw": "OLD"}}}),
+				spec(map[string]any{"rule": []any{map[string]any{"name": "a", "pw": "NEW"}}}),
+				[]string{"spec.rule[2876543210].pw"},
+			},
+			want: want{
+				current: spec(map[string]any{"rule": []any{map[string]any{"name": "a", "pw": s}}}),
+				desired: spec(map[string]any{"rule": []any{map[string]any{"name": "a", "pw": c}}}),
+			},
+		},
+		"IndexSmallHash": {
+			reason: "An index naming the wrong item still redacts the rest of the path in every item.",
+			args: args{
+				spec(map[string]any{"rule": []any{map[string]any{"pw": "a"}, map[string]any{"pw": "OLD"}}}),
+				spec(map[string]any{"rule": []any{map[string]any{"pw": "a"}, map[string]any{"pw": "NEW"}}}),
+				[]string{"spec.rule[0].pw"},
+			},
+			want: want{
+				current: spec(map[string]any{"rule": []any{map[string]any{"pw": s}, map[string]any{"pw": s}}}),
+				desired: spec(map[string]any{"rule": []any{map[string]any{"pw": s}, map[string]any{"pw": c}}}),
+			},
+		},
+		"IndexItemsPairedByPosition": {
+			reason: "Items are paired by position; an item lacking the rest of the path is absent, and an added item is plain.",
+			args: args{
+				spec(map[string]any{"l": []any{map[string]any{"pw": "a"}, map[string]any{"x": int64(1)}}}),
+				spec(map[string]any{"l": []any{map[string]any{"pw": "b"}, map[string]any{"pw": "c"}, map[string]any{"pw": "d"}}}),
+				[]string{"spec.l[1].pw"},
+			},
+			want: want{
+				current: spec(map[string]any{"l": []any{map[string]any{"pw": s}, map[string]any{"x": int64(1)}}}),
+				desired: spec(map[string]any{"l": []any{map[string]any{"pw": c}, map[string]any{"pw": s}, map[string]any{"pw": s}}}),
+			},
 		},
 		"QuoteTrimmedKey": {
 			reason: "A key written with quotes is matched by the path without them.",

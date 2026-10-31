@@ -1061,6 +1061,20 @@ func TestAnnotateUnparsedSensitive(t *testing.T) {
 				map[string]any{"tags": map[string]any{"b": "OLDSECRET"}}, map[string]any{"tags": map[string]any{"b": "NEWSECRET"}}),
 			path: `spec.tags[key="b"]`,
 		},
+		"IndexHash": {
+			reason: "A set element path whose hash index is past the end redacts the field in every item.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"rule": []any{map[string]any{"name": "a", "pw": "OLDSECRET"}}},
+				map[string]any{"rule": []any{map[string]any{"name": "a", "pw": "NEWSECRET"}}}),
+			path: "spec.rule[2876543210].pw",
+		},
+		"IndexSmallHash": {
+			reason: "A set element path whose hash index names another item redacts the field in every item.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"rule": []any{map[string]any{"pw": "SAMESECRET"}, map[string]any{"pw": "OLDSECRET"}}},
+				map[string]any{"rule": []any{map[string]any{"pw": "SAMESECRET"}, map[string]any{"pw": "NEWSECRET"}}}),
+			path: "spec.rule[0].pw",
+		},
 		"KeyedOnScalarList": {
 			reason: "A keyed item on a list of scalars hides the body.",
 			in: lineDiff(t, "db", dt.DiffTypeModified,

@@ -34,10 +34,17 @@ const ChangedSensitive = "(sensitive value, changed)"
 // RedactPaths returns copies of current and desired with the value at each
 // path replaced by a placeholder: the sensitive-value marker on the old side,
 // and on the new side too when the old side holds an equal value or none;
-// otherwise ChangedSensitive. Each side is located on its own, and the
-// locations are paired by order. A located map or list is replaced whole, and
-// a path under a scalar replaces the scalar. A path absent from a side leaves
-// that side alone; a nil side is absent. The inputs are never changed.
+// otherwise ChangedSensitive. Each side is located on its own. A located map
+// or list is replaced whole, and a path under a scalar replaces the scalar. A
+// path absent from a side leaves that side alone; a nil side is absent. The
+// inputs are never changed.
+//
+// An index [n] means every item of the list, whatever n is: upjet writes a set
+// element's index as a hash, which can be past the end or name the wrong
+// item, so the index can't be trusted. The rest of the path is applied to
+// each item, and an item without it is absent. Locations are paired across
+// the sides by list position for an index and by match order for a keyed
+// item, so the changed marker is decided per item.
 //
 // It returns an error, and no copies, when a path can't be redacted: it
 // doesn't parse, it resolves to the root, a segment meets the wrong kind of
@@ -65,16 +72,20 @@ func RedactPaths(current, desired *unstructured.Unstructured, paths []string) (*
 		if err != nil {
 			return nil, nil, errors.Wrapf(err, "cannot redact %q", p)
 		}
-		// Keyed matches are paired by order; a side with fewer has none left.
-		for i := range max(len(oc), len(nc)) {
-			var o, n *slot
-			if i < len(oc) {
-				o = oc[i]
+		// Locations are paired by where they are; a side lacking one has none.
+		pairs := map[string]*[2]*slot{}
+		var order []string
+		for side, ss := range [][]*slot{oc, nc} {
+			for _, s := range ss {
+				if pairs[s.at] == nil {
+					pairs[s.at] = &[2]*slot{}
+					order = append(order, s.at)
+				}
+				pairs[s.at][side] = s
 			}
-			if i < len(nc) {
-				n = nc[i]
-			}
-			if err := replace(o, n); err != nil {
+		}
+		for _, at := range order {
+			if err := replace(pairs[at][0], pairs[at][1]); err != nil {
 				return nil, nil, errors.Wrapf(err, "cannot redact %q", p)
 			}
 		}
@@ -82,10 +93,12 @@ func RedactPaths(current, desired *unstructured.Unstructured, paths []string) (*
 	return cur, des, nil
 }
 
-// A slot is a located value and how to replace it. The root has no set.
+// A slot is a located value, how to replace it, and where it is among the
+// items an index or keyed segment matched, for pairing. The root has no set.
 type slot struct {
 	v   any
 	set func(any)
+	at  string
 }
 
 // replace replaces each present side with its placeholder.
@@ -123,16 +136,16 @@ func locate(s *slot, segs []fieldpath.Segment) ([]*slot, error) {
 	}
 	switch v := s.v.(type) {
 	case map[string]any:
-		return locateMap(v, segs)
+		return locateMap(v, s.at, segs)
 	case []any:
-		return locateList(v, segs)
+		return locateList(v, s.at, segs)
 	default:
 		// A path under a scalar can't reach past it; the scalar holds the value.
 		return []*slot{s}, nil
 	}
 }
 
-func locateMap(v map[string]any, segs []fieldpath.Segment) ([]*slot, error) {
+func locateMap(v map[string]any, at string, segs []fieldpath.Segment) ([]*slot, error) {
 	seg := segs[0]
 	if seg.Type != fieldpath.SegmentField {
 		return nil, errors.Errorf("index [%d] meets a map", seg.Index)
@@ -140,7 +153,8 @@ func locateMap(v map[string]any, segs []fieldpath.Segment) ([]*slot, error) {
 	var out []*slot
 	keys, found := 0, 0
 	for j := 1; j <= len(segs) && segs[j-1].Type == fieldpath.SegmentField; j++ {
-		k, ok, err := mapKey(v, joinFields(segs[:j]))
+		f := joinFields(segs[:j])
+		k, ok, err := mapKey(v, f)
 		if err != nil {
 			return nil, err
 		}
@@ -148,7 +162,7 @@ func locateMap(v map[string]any, segs []fieldpath.Segment) ([]*slot, error) {
 			continue
 		}
 		keys++
-		got, err := locate(&slot{v: v[k], set: func(x any) { v[k] = x }}, segs[j:])
+		got, err := locate(&slot{v: v[k], set: func(x any) { v[k] = x }, at: at}, segs[j:])
 		if err != nil {
 			return nil, err
 		}
@@ -167,14 +181,19 @@ func locateMap(v map[string]any, segs []fieldpath.Segment) ([]*slot, error) {
 	return out, nil
 }
 
-func locateList(v []any, segs []fieldpath.Segment) ([]*slot, error) {
+func locateList(v []any, at string, segs []fieldpath.Segment) ([]*slot, error) {
 	seg := segs[0]
 	if seg.Type == fieldpath.SegmentIndex {
-		i := int(seg.Index)
-		if i >= len(v) {
-			return nil, nil
+		// Every item, whatever the index: see RedactPaths.
+		var out []*slot
+		for i := range v {
+			got, err := locate(&slot{v: v[i], set: func(x any) { v[i] = x }, at: fmt.Sprintf("%s[%d]", at, i)}, segs[1:])
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, got...)
 		}
-		return locate(&slot{v: v[i], set: func(x any) { v[i] = x }}, segs[1:])
+		return out, nil
 	}
 	key, want, ok := strings.Cut(seg.Field, "=")
 	if !ok {
@@ -182,6 +201,7 @@ func locateList(v []any, segs []fieldpath.Segment) ([]*slot, error) {
 	}
 	want = strings.Trim(want, `"'`)
 	var out []*slot
+	n := 0
 	for i, item := range v {
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -190,7 +210,8 @@ func locateList(v []any, segs []fieldpath.Segment) ([]*slot, error) {
 		if m[key] == nil || fmt.Sprint(m[key]) != want {
 			continue
 		}
-		got, err := locate(&slot{v: item, set: func(x any) { v[i] = x }}, segs[1:])
+		got, err := locate(&slot{v: item, set: func(x any) { v[i] = x }, at: fmt.Sprintf("%s[#%d]", at, n)}, segs[1:])
+		n++
 		if err != nil {
 			return nil, err
 		}

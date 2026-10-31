@@ -373,7 +373,10 @@ type sides struct{ old, new *yaml.Node }
 // ponytail: lines are placed by gopkg.in/yaml.v3 node positions, including
 // the fields of a literal (|) block scalar holding a YAML or JSON map or
 // list, and a list item keyed by a field (see resolve). Sensitive values are
-// redacted before this, in the objects (see redactDiff). The coarse cases are:
+// redacted before this, in the objects (see redactDiff); a list index in a
+// sensitive path redacts that field in every item, because upjet writes a set
+// element's index as a hash, so the index can't be trusted. The coarse cases
+// are:
 //   - a side that doesn't parse: no marker is placed on it;
 //   - a folded (>), quoted or plain multi-line scalar, a literal one that is
 //     not a map or list, or a flow map or list on one line (pw: {a: x}, or a

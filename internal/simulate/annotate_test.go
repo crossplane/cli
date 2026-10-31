@@ -512,6 +512,31 @@ func TestAnnotateSecret(t *testing.T) {
 	}
 }
 
+// TestAnnotateFailClosed pins that a removed diff honours its plan's
+// sensitive paths, and that a Secret without the views to find its keys in
+// has its body hidden.
+func TestAnnotateFailClosed(t *testing.T) {
+	removed := lineDiff(t, "db", dt.DiffTypeRemoved, map[string]any{"pw": "OLDSECRET"}, nil)
+	secret := textDiff(dt.DiffTypeModified, "data:\n  pw: OLDSECRET\n", "data:\n  pw: NEWSECRET\n")
+	secret.Gvk = schema.GroupVersionKind{Version: "v1", Kind: "Secret"}
+	cases := map[string]struct {
+		in    *dt.ResourceDiff
+		plans map[string]*plan.ResourcePlan
+		want  string
+	}{
+		"RemovedSensitive": {removed, planFor(removed, plan.ActionDelete, plan.FieldChange{Path: "spec.pw", Actual: sensitive()}), "pw: (sensitive value)"},
+		"SecretWithoutViews": {secret, nil, diffHidden},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := render(t, report(tc.in), tc.plans, noColor())
+			if !strings.Contains(got, tc.want) || strings.Contains(got, "SECRET") {
+				t.Errorf("render(): want %q and no secret:\n%s", tc.want, got)
+			}
+		})
+	}
+}
+
 // TestAnnotateIdentity pins that no provider plan, or one that cannot
 // annotate, renders -o diff exactly as it renders without annotation.
 func TestAnnotateIdentity(t *testing.T) {
@@ -984,6 +1009,32 @@ Summary: 1 added (1 requires replacement)
 ---
 
 Summary: 1 added (1 requires replacement)
+`,
+		},
+		"KeyedListSwap": {
+			reason: "Two keyed items that trade places, one holding a sensitive value, are redacted by their own key.",
+			in: lineDiff(t, "db", dt.DiffTypeModified,
+				map[string]any{"forProvider": map[string]any{"tags": []any{map[string]any{"key": "b", "value": "SAME"}, map[string]any{"key": "a", "value": "other"}}}},
+				map[string]any{"forProvider": map[string]any{"tags": []any{map[string]any{"key": "a", "value": "other"}, map[string]any{"key": "b", "value": "SAME"}}}}),
+			changes: []plan.FieldChange{sens(`tags[key="b"].value`)},
+			want: `~~~ Instance/db (requires replacement)
+  apiVersion: rds.aws.upbound.io/v1beta1
+  kind: Instance
+  metadata:
+    name: db
+  spec:
+    forProvider:
+      tags:
+-     - key: b
+-       value: (sensitive value)
+      - key: a
+        value: other
++     - key: b
++       value: (sensitive value)
+
+---
+
+Summary: 1 modified (1 requires replacement)
 `,
 		},
 		"Unparseable": {

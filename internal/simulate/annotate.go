@@ -47,8 +47,8 @@ const (
 // -o diff renderer. It never mutates r: the result is a shallow copy with
 // cloned groups and diff maps, and each annotated diff is a copy with new
 // LineDiffs. A core Secret's data and stringData values are redacted with or
-// without plans. Otherwise empty plans return an equivalent copy, which renders exactly as
-// r does.
+// without plans. Otherwise empty plans return an equivalent copy, which
+// renders exactly as r does.
 func AnnotateXRReport(r *dt.XRReport, plans *ProviderPlans) *dt.XRReport {
 	if r == nil {
 		return nil
@@ -154,6 +154,13 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 		for _, p := range plan.SecretPaths(d.Current.Clean, d.Desired.Clean) {
 			secret = append(secret, plan.FieldChange{Path: p, Actual: &plan.Value{Sensitive: true}})
 		}
+		// A Secret missing a view its diff needs can't be read for keys:
+		// a sensitive change makes objectDiff hide the body.
+		if d.Gvk.Group == "" && d.Gvk.Kind == "Secret" &&
+			((d.DiffType != dt.DiffTypeRemoved && d.Desired.Clean == nil) ||
+				(d.DiffType != dt.DiffTypeAdded && d.Current.Clean == nil)) {
+			secret = append(secret, plan.FieldChange{Path: "data", Actual: &plan.Value{Sensitive: true}})
+		}
 	}
 	if pp == nil || pp.Error != "" || pp.Approximate {
 		pp = &plan.ResourcePlan{}
@@ -167,8 +174,15 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 	case dt.DiffTypeEqual:
 		return driftDiff(d, pp)
 	case dt.DiffTypeRemoved:
-		// Only a Secret's values change a removed diff.
-		pp = &plan.ResourcePlan{}
+		// Only sensitive values change a removed diff: nothing is planned
+		// or replaced on a delete.
+		var sens []plan.FieldChange
+		for _, c := range pp.Changes {
+			if (c.Actual != nil && c.Actual.Sensitive) || (c.Planned != nil && c.Planned.Sensitive) {
+				sens = append(sens, plan.FieldChange{Path: c.Path, Actual: &plan.Value{Sensitive: true}})
+			}
+		}
+		pp = &plan.ResourcePlan{Changes: sens}
 	}
 
 	changes := append(plan.SortedChanges(pp.Changes), secret...)

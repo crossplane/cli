@@ -48,8 +48,8 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/cli/v2/pkg/render"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/pkg/render"
 )
 
 const (

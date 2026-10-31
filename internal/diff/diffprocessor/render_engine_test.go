@@ -40,9 +40,9 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
-	"github.com/crossplane/cli/v2/pkg/render"
 	"github.com/crossplane/cli/v2/internal/diff/dockerrun"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
+	"github.com/crossplane/cli/v2/pkg/render"
 	renderv1alpha1 "github.com/crossplane/cli/v2/proto/render/v1alpha1"
 )
 

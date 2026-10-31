@@ -31,9 +31,9 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
-	"github.com/crossplane/cli/v2/pkg/render"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
+	"github.com/crossplane/cli/v2/pkg/render"
 )
 
 func testFn(name, pkg string) pkgv1.Function {

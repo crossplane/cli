@@ -13,13 +13,13 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	cmp "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
-	"github.com/crossplane/cli/v2/pkg/resource"
-	"github.com/crossplane/cli/v2/pkg/render"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	"github.com/crossplane/cli/v2/internal/diff/compare"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	dtypes "github.com/crossplane/cli/v2/internal/diff/types"
+	"github.com/crossplane/cli/v2/pkg/render"
+	"github.com/crossplane/cli/v2/pkg/resource"
 )
 
 // DiffCalculator calculates differences between resources.

@@ -8,9 +8,9 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	"github.com/crossplane/cli/v2/internal/diff/client/core"
 	"github.com/crossplane/cli/v2/pkg/resource"
 	"github.com/crossplane/cli/v2/pkg/resource/xrm"
-	"github.com/crossplane/cli/v2/internal/diff/client/core"
 )
 
 // ResourceTreeClient handles resource tree operations.

@@ -15,9 +15,9 @@ import (
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
-	clixrgen "github.com/crossplane/cli/v2/pkg/xr"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	clixrgen "github.com/crossplane/cli/v2/pkg/xr"
 )
 
 // clusterWrittenFields are the Crossplane machinery fields of a composite that Crossplane, not the

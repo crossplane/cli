@@ -29,9 +29,9 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
-	"github.com/crossplane/cli/v2/pkg/render"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/render"
 )
 
 // FunctionProvider provides functions for rendering compositions.

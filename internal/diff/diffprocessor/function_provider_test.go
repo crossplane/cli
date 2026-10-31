@@ -31,8 +31,8 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
-	"github.com/crossplane/cli/v2/pkg/render"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
+	"github.com/crossplane/cli/v2/pkg/render"
 )
 
 func TestNewCachedFunctionProvider(t *testing.T) {

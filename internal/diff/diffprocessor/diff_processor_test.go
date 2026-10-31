@@ -29,8 +29,6 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
-	"github.com/crossplane/cli/v2/pkg/resource"
-	"github.com/crossplane/cli/v2/pkg/render"
 	"github.com/crossplane/cli/v2/internal/diff/client/core"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
@@ -38,6 +36,8 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/diff/types"
+	"github.com/crossplane/cli/v2/pkg/render"
+	"github.com/crossplane/cli/v2/pkg/resource"
 )
 
 // Test constants to avoid duplication.

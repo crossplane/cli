@@ -9,9 +9,9 @@ import (
 
 	gcmp "github.com/google/go-cmp/cmp"
 
-	"github.com/crossplane/cli/v2/pkg/render"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
+	"github.com/crossplane/cli/v2/pkg/render"
 )
 
 func TestNewDiffProcessor(t *testing.T) {

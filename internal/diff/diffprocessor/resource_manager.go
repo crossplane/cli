@@ -17,10 +17,10 @@ import (
 	cpd "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composed"
 	cmp "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
-	"github.com/crossplane/cli/v2/pkg/resource"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/pkg/resource"
 )
 
 // ResourceManager handles resource-related operations like fetching, updating owner refs,

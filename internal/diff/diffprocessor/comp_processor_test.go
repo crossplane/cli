@@ -39,12 +39,12 @@ import (
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
-	"github.com/crossplane/cli/v2/pkg/render"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/diff/types"
+	"github.com/crossplane/cli/v2/pkg/render"
 )
 
 func TestDefaultCompDiffProcessor_findResourcesUsingComposition(t *testing.T) {

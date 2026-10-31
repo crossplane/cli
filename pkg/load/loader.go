@@ -63,15 +63,8 @@ func NewLoader(input string) (Loader, error) {
 }
 
 func newLoader(input string) (Loader, error) {
-	return newSourceLoader(input, false)
-}
-
-// newSourceLoader returns the Loader for one input. With skipPipelineInputs,
-// the loader doesn't return Composition pipeline step inputs as manifests of
-// their own.
-func newSourceLoader(input string, skipPipelineInputs bool) (Loader, error) {
 	if input == "-" {
-		return &StdinLoader{skipPipelineInputs: skipPipelineInputs}, nil
+		return &StdinLoader{}, nil
 	}
 
 	fi, err := os.Stat(input)
@@ -80,10 +73,10 @@ func newSourceLoader(input string, skipPipelineInputs bool) (Loader, error) {
 	}
 
 	if fi.IsDir() {
-		return &FolderLoader{path: input, skipPipelineInputs: skipPipelineInputs}, nil
+		return &FolderLoader{path: input}, nil
 	}
 
-	return &FileLoader{path: input, skipPipelineInputs: skipPipelineInputs}, nil
+	return &FileLoader{path: input}, nil
 }
 
 // MultiLoader implements the Loader interface for reading from multiple other loaders.
@@ -108,9 +101,7 @@ func (m *MultiLoader) Load() ([]*unstructured.Unstructured, error) {
 }
 
 // StdinLoader implements the Loader interface for reading from stdin.
-type StdinLoader struct {
-	skipPipelineInputs bool
-}
+type StdinLoader struct{}
 
 // Load reads the contents from stdin.
 func (s *StdinLoader) Load() ([]*unstructured.Unstructured, error) {
@@ -119,13 +110,12 @@ func (s *StdinLoader) Load() ([]*unstructured.Unstructured, error) {
 		return nil, errors.Wrap(err, "cannot load YAML stream from stdin")
 	}
 
-	return streamToUnstructured(stream, s.skipPipelineInputs)
+	return streamToUnstructured(stream)
 }
 
 // FileLoader implements the Loader interface for reading from a file and converting input to unstructured objects.
 type FileLoader struct {
-	path               string
-	skipPipelineInputs bool
+	path string
 }
 
 // Load reads the contents from a file.
@@ -135,13 +125,12 @@ func (f *FileLoader) Load() ([]*unstructured.Unstructured, error) {
 		return nil, errors.Wrap(err, "cannot read file")
 	}
 
-	return streamToUnstructured(stream, f.skipPipelineInputs)
+	return streamToUnstructured(stream)
 }
 
 // FolderLoader implements the Loader interface for reading from a folder.
 type FolderLoader struct {
-	path               string
-	skipPipelineInputs bool
+	path string
 }
 
 // Load reads the contents from all files in a folder.
@@ -168,7 +157,7 @@ func (f *FolderLoader) Load() ([]*unstructured.Unstructured, error) {
 		return nil, errors.Wrap(err, "cannot read folder")
 	}
 
-	return streamToUnstructured(stream, f.skipPipelineInputs)
+	return streamToUnstructured(stream)
 }
 
 func isYamlFile(info os.FileInfo) bool {
@@ -211,10 +200,7 @@ func YamlStream(r io.Reader) ([][]byte, error) {
 	return stream, nil
 }
 
-// streamToUnstructured parses stream. Unless skipPipelineInputs is set, it also
-// returns each Composition pipeline step input as a manifest of its own, so
-// validate can check the inputs against their schemas.
-func streamToUnstructured(stream [][]byte, skipPipelineInputs bool) ([]*unstructured.Unstructured, error) {
+func streamToUnstructured(stream [][]byte) ([]*unstructured.Unstructured, error) {
 	manifests := make([]*unstructured.Unstructured, 0, len(stream))
 
 	for _, y := range stream {
@@ -229,7 +215,7 @@ func streamToUnstructured(stream [][]byte, skipPipelineInputs bool) ([]*unstruct
 		}
 
 		// extract pipeline input resources
-		if !skipPipelineInputs && u.GetObjectKind().GroupVersionKind() == v1.CompositionGroupVersionKind {
+		if u.GetObjectKind().GroupVersionKind() == v1.CompositionGroupVersionKind {
 			// Convert the unstructured resource to a Composition
 			var comp v1.Composition
 
@@ -273,35 +259,6 @@ type CompositeLoader struct {
 // Sources can be files, directories, or "-" for stdin.
 // If sources is empty, stdin is used by default.
 func NewCompositeLoader(sources []string) (Loader, error) {
-	return newCompositeLoader(sources, NewLoader)
-}
-
-// ExactCompositeLoaderOption configures NewExactCompositeLoader.
-type ExactCompositeLoaderOption func(*exactCompositeLoaderOptions)
-
-type exactCompositeLoaderOptions struct {
-	skipPipelineInputs bool
-}
-
-// WithoutPipelineInputs stops the loader from returning each Composition
-// pipeline step input as a manifest of its own. By default it returns them.
-func WithoutPipelineInputs() ExactCompositeLoaderOption {
-	return func(o *exactCompositeLoaderOptions) { o.skipPipelineInputs = true }
-}
-
-// NewExactCompositeLoader is NewCompositeLoader, except each source is exactly
-// one path or "-": commas are part of the path, not separators.
-func NewExactCompositeLoader(sources []string, opts ...ExactCompositeLoaderOption) (Loader, error) {
-	o := &exactCompositeLoaderOptions{}
-	for _, fn := range opts {
-		fn(o)
-	}
-	return newCompositeLoader(sources, func(source string) (Loader, error) {
-		return newSourceLoader(source, o.skipPipelineInputs)
-	})
-}
-
-func newCompositeLoader(sources []string, newSource func(string) (Loader, error)) (Loader, error) {
 	if len(sources) == 0 {
 		// In unit tests, this will cause an error when Load() is called
 		// which is the expected behavior for NoSources test case
@@ -323,7 +280,7 @@ func newCompositeLoader(sources []string, newSource func(string) (Loader, error)
 			stdinUsed = true
 		}
 
-		loader, err := newSource(source)
+		loader, err := NewLoader(source)
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot create loader for %q", source)
 		}

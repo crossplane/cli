@@ -25,10 +25,6 @@ const (
 	// ExitCodeChanges is the status a simulate command exits with when the
 	// simulation succeeded and found changes.
 	ExitCodeChanges = 3
-	// ExitCodeUsage is the status kong exits with for parse and Validate
-	// errors. Commands return it for invalid flags they can only detect in
-	// Run.
-	ExitCodeUsage = 80
 )
 
 // ExitError is an error that sets the command's exit status; it implements

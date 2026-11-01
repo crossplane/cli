@@ -8,51 +8,51 @@ go 1.26.8
 // and "upgrade" it to v2.5.1. Use a replace to pin the version so renovate
 // doesn't touch it.
 // TODO(adamwg): Get rid of this when upjet v2.6.0 ships.
-replace github.com/crossplane/upjet/v2 => github.com/crossplane/upjet/v2 v2.5.1-0.20261005082904-c3b7d449d0d4
+replace github.com/crossplane/upjet/v2 => github.com/crossplane/upjet/v2 v2.5.1
 
 require (
 	charm.land/bubbles/v2 v2.2.1
-	charm.land/bubbletea/v2 v2.0.9
+	charm.land/bubbletea/v2 v2.1.1
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.6
 	dario.cat/mergo v1.0.2
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/alecthomas/kong v1.16.1
-	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/containerd/errdefs v1.0.0
-	github.com/crossplane/crossplane-runtime/v2 v2.4.0
-	github.com/crossplane/crossplane/apis/v2 v2.4.1
+	github.com/crossplane/crossplane-runtime/v2 v2.4.3
+	github.com/crossplane/crossplane/apis/v2 v2.4.3
 	github.com/crossplane/function-sdk-go v0.7.1
 	github.com/crossplane/upjet/v2 v2.5.1
-	github.com/docker/cli v29.8.1+incompatible
+	github.com/docker/cli v29.9.2+incompatible
 	github.com/emicklei/dot v1.11.0
-	github.com/getkin/kin-openapi v0.149.0
-	github.com/go-git/go-billy/v5 v5.9.1
-	github.com/go-git/go-git/v5 v5.19.2
+	github.com/getkin/kin-openapi v0.152.0
+	github.com/go-git/go-billy/v5 v5.9.2
+	github.com/go-git/go-git/v5 v5.19.3
 	github.com/gobuffalo/flect v1.0.3
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-containerregistry v0.22.1
-	github.com/google/ko v0.18.1
+	github.com/google/ko v0.19.1
 	github.com/invopop/jsonschema v0.14.0
-	github.com/kubernetes-sigs/kro v0.9.2
-	github.com/moby/moby/api v1.56.0
-	github.com/moby/moby/client v0.5.1
+	github.com/kubernetes-sigs/kro v0.9.4
+	github.com/moby/moby/api v1.56.1
+	github.com/moby/moby/client v0.6.2
 	github.com/muesli/termenv v0.16.0
-	github.com/oapi-codegen/oapi-codegen/v2 v2.8.0
+	github.com/oapi-codegen/oapi-codegen/v2 v2.8.2
 	github.com/pkg/errors v0.9.1
 	github.com/posener/complete v1.2.3
 	github.com/spf13/afero v1.15.0
 	github.com/willabides/kongplete v0.4.0
-	golang.org/x/mod v0.41.0
+	golang.org/x/mod v0.42.0
 	golang.org/x/sync v0.24.0
 	golang.org/x/text v0.43.0
-	golang.org/x/tools v0.51.0
+	golang.org/x/tools v0.52.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d
-	google.golang.org/grpc v1.83.2
+	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
-	helm.sh/helm/v3 v3.20.2
+	helm.sh/helm/v3 v3.22.1
 	k8s.io/api v0.35.3
 	k8s.io/apiextensions-apiserver v0.35.1
 	k8s.io/apimachinery v0.35.3

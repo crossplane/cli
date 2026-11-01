@@ -47,32 +47,24 @@ type Flags struct {
 	servers *diffserver.Manager
 	// noServersNoted is set once the "no diff servers" line is printed.
 	noServersNoted bool
+	// sel is Inputs.Selection, which Run copies in; zero without one.
+	sel CompositionFlags
 	// Validate loads this from --function-credentials.
 	functionCredentials []corev1.Secret
-	// Validate sets these from scope(), so --name is parsed once.
-	ns   string
-	refs []k8stypes.NamespacedName
+	CacheDir            string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)." name:"cache-dir"`
 
-	MaxConcurrency uint   `default:"8"                 help:"Max concurrent function builds."`
-	CacheDir       string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)." name:"cache-dir"`
-
-	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context."                                                                                             predictor:"context"                                                          short:"c"`
-	Namespace     string        `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                                                                                     predictor:"namespace"                                                        short:"n"`
-	Name          []string      `help:"Only simulate the composite resource with this [namespace/]name. Repeatable or comma-separated. A bare name pairs with --namespace, or is cluster scoped without it." sep:","`
-	IncludePinned bool          `help:"Render every composite resource pinned by a Manual update policy against the new Composition."`
-	MaxIterations int           `default:"20"                                                                                                                                                                help:"Max render iterations per composite resource to resolve requirements."`
-	Timeout       time.Duration `default:"2m"                                                                                                                                                                help:"Max time to simulate one composite resource."`
-	Output        string        `default:"plan"                                                                                                                                                              enum:"plan,diff,json,yaml"                                                   help:"Output format. One of: plan, diff, json, yaml." short:"o"`
+	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context." predictor:"context"                                                          short:"c"`
+	MaxIterations int           `default:"20"                                                                    help:"Max render iterations per composite resource to resolve requirements."`
+	Timeout       time.Duration `default:"2m"                                                                    help:"Max time to simulate one composite resource."`
+	Output        string        `default:"plan"                                                                  enum:"plan,diff,json,yaml"                                                   help:"Output format. One of: plan, diff, json, yaml." short:"o"`
 
 	NoColor             bool     `help:"Disable colorized output."`
 	Compact             bool     `help:"Show compact diffs with minimal context."`
 	MaxNestedDepth      int      `default:"10"                                                                                          help:"Maximum depth for nested XR recursion."`
 	IgnorePaths         []string `help:"Paths to ignore in diffs (e.g., 'metadata.annotations[argocd.argoproj.io/tracking-id]')."`
-	FunctionCredentials string   `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."     placeholder:"PATH"                                                                    predictor:"yaml_file_or_directory"                                                                             type:"path"`
+	FunctionCredentials string   `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."     placeholder:"PATH"                                                                    predictor:"yaml_file_or_directory"                                                      type:"path"`
 	EventualState       bool     `help:"Show eventual state after all reconciliation cycles complete (useful with function-sequencer)."`
 	MaxRecvMessageSize  int      `env:"MAX_RECV_MESSAGE_SIZE"                                                                           help:"Max gRPC message size (MB) for render function containers (4 MB if undefined)."`
-	MinimizeComposition bool     `help:"Collapse each changed Composition to one line in -o diff output."`
-	AnalyzeOn           string   `default:""                                                                                            enum:",spec-change,any-change,always"                                                 help:"Smallest Composition change that triggers impact analysis: spec-change, any-change (default) or always."`
 	DryRunOn            string   `default:"all"                                                                                         enum:"existing,all"                                                                   help:"Which resources to verify with a server-side dry run: existing or all (default)."`
 
 	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster diff."`
@@ -83,6 +75,32 @@ type Flags struct {
 
 	// Hooks is for tests; the CLI never sets it.
 	Hooks *Hooks `kong:"-"`
+}
+
+// CompositionFlags select which composite resources a Composition change is
+// simulated against. Only commands that simulate Compositions embed them; the
+// runner takes them through Inputs.Selection.
+type CompositionFlags struct {
+	// Validate sets these from scope(), so --name is parsed once.
+	ns   string
+	refs []k8stypes.NamespacedName
+
+	Namespace           string   `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                                                                                     predictor:"namespace"                 short:"n"`
+	Name                []string `help:"Only simulate the composite resource with this [namespace/]name. Repeatable or comma-separated. A bare name pairs with --namespace, or is cluster scoped without it." sep:","`
+	IncludePinned       bool     `help:"Render every composite resource pinned by a Manual update policy against the new Composition."`
+	MinimizeComposition bool     `help:"Collapse each changed Composition to one line in -o diff output."`
+	AnalyzeOn           string   `default:""                                                                                                                                                                  enum:",spec-change,any-change,always" help:"Smallest Composition change that triggers impact analysis: spec-change, any-change (default) or always."`
+}
+
+// Validate rejects bad --name/--namespace values. kong calls it during
+// parsing, so they fail before any build.
+func (c *CompositionFlags) Validate() error {
+	ns, refs, err := c.scope()
+	if err != nil {
+		return err
+	}
+	c.ns, c.refs = ns, refs
+	return nil
 }
 
 // Hooks replace what project simulate otherwise takes from its
@@ -108,13 +126,6 @@ func (c *Flags) Validate() error {
 	if c.MaxIterations < 1 {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
 	}
-
-	// Bad --name/--namespace values fail here, before any build.
-	ns, refs, err := c.scope()
-	if err != nil {
-		return err
-	}
-	c.ns, c.refs = ns, refs
 
 	if c.FunctionCredentials != "" {
 		secrets, err := xprender.LoadCredentials(afero.NewOsFs(), c.FunctionCredentials)

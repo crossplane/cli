@@ -190,7 +190,7 @@ func changedFunctions(ctx context.Context, rc k8client.ResourceClient, digests m
 // impact on the composite resources in scope, rendered to k's writers.
 func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp.CompDiffProcessor, comps []*un.Unstructured) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
-		output, err := proc.DiffComposition(ctx, comps, c.ns, c.refs)
+		output, err := proc.DiffComposition(ctx, comps, c.sel.ns, c.sel.refs)
 
 		// Render the report even when there are errors (e.g. every
 		// composition failed), so structured output stays valid. A render
@@ -264,7 +264,7 @@ func (c *Flags) simulate(ctx context.Context, logger logging.Logger, initClients
 // bare name is namespaced when --namespace is set and cluster scoped
 // otherwise, and namespace/name carries its own namespace. The namespace moves
 // into the refs, so it is not also returned.
-func (c *Flags) scope() (string, []k8stypes.NamespacedName, error) {
+func (c *CompositionFlags) scope() (string, []k8stypes.NamespacedName, error) {
 	if len(c.Name) == 0 {
 		return c.Namespace, nil, nil
 	}
@@ -302,10 +302,10 @@ func (c *Flags) processorOptions(k *kong.Context, logger logging.Logger, fns []p
 		dp.WithAdvisories(dp.NewAdvisoryCollector(k.Stderr)),
 		dp.WithMaxNestedDepth(c.MaxNestedDepth),
 		dp.WithEventualState(c.EventualState),
-		dp.WithAnalyzeOn(dp.AnalyzeOn(c.AnalyzeOn)),
+		dp.WithAnalyzeOn(dp.AnalyzeOn(c.sel.AnalyzeOn)),
 		dp.WithDryRunOn(dp.DryRunOn(c.DryRunOn)),
 		dp.WithIgnorePaths(c.IgnorePaths),
-		dp.WithIncludeManual(c.IncludePinned),
+		dp.WithIncludeManual(c.sel.IncludePinned),
 		dp.WithMaxRenderIterations(c.MaxIterations),
 	}
 
@@ -411,7 +411,7 @@ func (c *Flags) notes() []string {
 func (c *Flags) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput, runErr error) (bool, error) {
 	plans := c.providerPlans()
 	return c.renderReport(k, logger, runErr, FromCompReport(o, plans, c.keep), o.HasChanges(), dt.CompDryRunWarnings(o), func(opts renderer.DiffOptions) error {
-		opts.MinimizeComposition = c.MinimizeComposition
+		opts.MinimizeComposition = c.sel.MinimizeComposition
 		// Annotated even without plans, so a Secret's values are redacted.
 		o = AnnotateCompReport(o, plans)
 		return renderer.NewDefaultCompDiffRenderer(logger, renderer.NewDiffRenderer(logger, opts), opts).RenderCompDiff(o)
@@ -495,6 +495,9 @@ func isTerminal(w io.Writer) bool {
 // Run previews a project's compositions, with its functions built locally,
 // against the cluster.
 func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, in *Inputs) error {
+	if in.Selection != nil {
+		c.sel = *in.Selection
+	}
 	warnIgnoredFlags(k.Stderr, setFlags(k), c.SkipPlan, true)
 
 	if err := docker.Check(sigCtx); err != nil {
@@ -576,4 +579,8 @@ type Inputs struct {
 	// Build builds the project. Run calls it after loading the kubeconfig,
 	// so a bad context fails before the slow build.
 	Build func(ctx context.Context) (*Built, error)
+
+	// Selection limits the run to the composite resources it selects. A
+	// command without CompositionFlags leaves it nil, which selects them all.
+	Selection *CompositionFlags
 }

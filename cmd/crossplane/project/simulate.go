@@ -49,9 +49,11 @@ var (
 // simulateCmd previews how a project's compositions would change the
 // composite resources in a cluster.
 type simulateCmd struct {
-	simulate.Flags `embed:""`
+	simulate.Flags            `embed:""`
+	simulate.CompositionFlags `embed:""`
 
-	ProjectFile string `default:"${project_file}" help:"Path to project definition." short:"f"`
+	MaxConcurrency uint   `default:"8"               help:"Max concurrent function builds."`
+	ProjectFile    string `default:"${project_file}" help:"Path to project definition."     short:"f"`
 }
 
 func (c *simulateCmd) Help() string {
@@ -63,7 +65,7 @@ func (c *simulateCmd) Help() string {
 func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config) error {
 	return c.Flags.Run(sigCtx, k, logger, sp, &simulate.Inputs{Build: func(ctx context.Context) (*simulate.Built, error) {
 		return c.buildProject(ctx, logger, sp, cliCfg)
-	}})
+	}, Selection: &c.CompositionFlags})
 }
 
 // buildProject returns the project's compositions, its locally built

@@ -60,7 +60,7 @@ func TestSimulateScope(t *testing.T) {
 
 	cases := map[string]struct {
 		reason string
-		cmd    Flags
+		cmd    CompositionFlags
 		want   want
 	}{
 		"All": {
@@ -68,42 +68,42 @@ func TestSimulateScope(t *testing.T) {
 		},
 		"Namespace": {
 			reason: "--namespace alone should scope discovery to the namespace.",
-			cmd:    Flags{Namespace: "team-a"},
+			cmd:    CompositionFlags{Namespace: "team-a"},
 			want:   want{namespace: "team-a"},
 		},
 		"ClusterScopedName": {
 			reason: "--name alone should name a cluster-scoped composite resource.",
-			cmd:    Flags{Name: []string{"db"}},
+			cmd:    CompositionFlags{Name: []string{"db"}},
 			want:   want{refs: []k8stypes.NamespacedName{{Name: "db"}}},
 		},
 		"NamespacedName": {
 			reason: "--name with --namespace should name a namespaced composite resource, not scope discovery.",
-			cmd:    Flags{Namespace: "team-a", Name: []string{"db"}},
+			cmd:    CompositionFlags{Namespace: "team-a", Name: []string{"db"}},
 			want:   want{refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}}},
 		},
 		"ManyNames": {
 			reason: "Each --name should become a ref, bare names taking --namespace.",
-			cmd:    Flags{Namespace: "team-a", Name: []string{"db", "cache"}},
+			cmd:    CompositionFlags{Namespace: "team-a", Name: []string{"db", "cache"}},
 			want:   want{refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}, {Namespace: "team-a", Name: "cache"}}},
 		},
 		"QualifiedNames": {
 			reason: "namespace/name should carry its own namespace, mixed with a cluster-scoped bare name.",
-			cmd:    Flags{Name: []string{"team-a/db", "team-b/db", "global"}},
+			cmd:    CompositionFlags{Name: []string{"team-a/db", "team-b/db", "global"}},
 			want:   want{refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}, {Namespace: "team-b", Name: "db"}, {Name: "global"}}},
 		},
 		"QualifiedWithNamespaceFlag": {
 			reason: "namespace/name together with --namespace should be rejected.",
-			cmd:    Flags{Namespace: "team-a", Name: []string{"team-a/db"}},
+			cmd:    CompositionFlags{Namespace: "team-a", Name: []string{"team-a/db"}},
 			want:   want{err: "can't be combined with --namespace"},
 		},
 		"EmptyName": {
 			reason: "An empty --name value should be rejected.",
-			cmd:    Flags{Name: []string{"db", " "}},
+			cmd:    CompositionFlags{Name: []string{"db", " "}},
 			want:   want{err: "--name must not be empty"},
 		},
 		"MalformedName": {
 			reason: "A malformed namespace/name should be rejected naming --name.",
-			cmd:    Flags{Name: []string{"a/b/c"}},
+			cmd:    CompositionFlags{Name: []string{"a/b/c"}},
 			want:   want{err: `invalid --name "a/b/c"`},
 		},
 	}
@@ -134,7 +134,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: stderr}}
 	c := &Flags{
-		IncludePinned: true,
+		sel:           CompositionFlags{IncludePinned: true, AnalyzeOn: "spec-change"},
 		MaxIterations: 7,
 		EngineFlags:   xprender.EngineFlags{CrossplaneVersion: "v2.3.4", CrossplaneDockerNetwork: "ci"},
 
@@ -143,7 +143,6 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		functionCredentials: []corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "creds"}}},
 		EventualState:       true,
 		MaxRecvMessageSize:  16,
-		AnalyzeOn:           "spec-change",
 		DryRunOn:            "existing",
 	}
 
@@ -608,12 +607,12 @@ func TestSimulateRun(t *testing.T) {
 		},
 		"Namespaced": {
 			reason: "The namespace Validate scoped to should reach DiffComposition.",
-			args:   args{cmd: Flags{ns: "team-a"}, initClients: noInit, proc: &fakeCompProc{}},
+			args:   args{cmd: Flags{sel: CompositionFlags{ns: "team-a"}}, initClients: noInit, proc: &fakeCompProc{}},
 			want:   want{diffed: true, namespace: "team-a"},
 		},
 		"Scoped": {
 			reason: "The refs Validate scoped to should reach DiffComposition.",
-			args:   args{cmd: Flags{refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}}}, initClients: noInit, proc: &fakeCompProc{}},
+			args:   args{cmd: Flags{sel: CompositionFlags{refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}}}}, initClients: noInit, proc: &fakeCompProc{}},
 			want:   want{diffed: true, refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}}},
 		},
 		"ClientInitError": {
@@ -708,7 +707,7 @@ func TestWarnIgnoredFlags(t *testing.T) {
 		"ProjectAcceptsAll": {
 			reason:  "A project uses every flag.",
 			project: true,
-			args:    []string{"-n", "a", "--name", "b", "--include-pinned", "--max-concurrency", "2", "--cache-dir", "/c", "--analyze-on", "always", "--minimize-composition"},
+			args:    []string{"-n", "a", "--name", "b", "--include-pinned", "--cache-dir", "/c", "--analyze-on", "always", "--minimize-composition"},
 		},
 		"CacheDirWithPlan": {
 			reason: "--cache-dir also caches provider packages, so it applies whenever planning is on.",
@@ -750,7 +749,10 @@ func TestWarnIgnoredFlags(t *testing.T) {
 			t.Setenv("CROSSPLANE_XPKG_CACHE", "/env-cache")
 
 			var cli struct {
-				Simulate Flags `cmd:""`
+				Simulate struct {
+					Flags            `embed:""`
+					CompositionFlags `embed:""`
+				} `cmd:""`
 			}
 			parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}))
 			if err != nil {

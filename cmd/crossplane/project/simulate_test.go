@@ -74,8 +74,7 @@ func TestSimulateFlags(t *testing.T) {
 	}{
 		"Defaults": {
 			reason: "With no flags the defaults should apply.",
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -91,19 +90,15 @@ func TestSimulateFlags(t *testing.T) {
 				"--max-concurrency", "2", "-o", "json", "--crossplane-version", "v2.3.4",
 				"--as", "jane", "--as-group", "admins",
 			},
-			want: want{cmd: &simulateCmd{ProjectFile: "p.yaml", Flags: simulate.Flags{
+			want: want{cmd: &simulateCmd{MaxConcurrency: 2, ProjectFile: "p.yaml", Flags: simulate.Flags{
 				Context:        "staging",
-				Namespace:      "team-a",
-				Name:           []string{"db"},
-				IncludePinned:  true,
 				MaxIterations:  3,
 				Timeout:        2 * time.Minute,
-				MaxConcurrency: 2,
 				Output:         "json",
 				EngineFlags:    render.EngineFlags{CrossplaneVersion: "v2.3.4"},
 				MaxNestedDepth: 10,
 				DryRunOn:       "all",
-			}}},
+			}, CompositionFlags: simulate.CompositionFlags{Namespace: "team-a", Name: []string{"db"}, IncludePinned: true}}},
 		},
 		"ParityFlags": {
 			reason: "The crossplane-diff parity flags should land on their fields.",
@@ -112,28 +107,24 @@ func TestSimulateFlags(t *testing.T) {
 				"--eventual-state", "--max-recv-message-size", "16",
 				"--minimize-composition", "--analyze-on", "always", "--dry-run-on", "existing",
 			},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency:      8,
-				MaxIterations:       dp.DefaultMaxRenderIterations,
-				Timeout:             2 * time.Minute,
-				Output:              "plan",
-				NoColor:             true,
-				Compact:             true,
-				MaxNestedDepth:      3,
-				IgnorePaths:         []string{"a.b", "c.d"},
-				EventualState:       true,
-				MaxRecvMessageSize:  16,
-				MinimizeComposition: true,
-				AnalyzeOn:           "always",
-				DryRunOn:            "existing",
-			}}},
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+				MaxIterations:      dp.DefaultMaxRenderIterations,
+				Timeout:            2 * time.Minute,
+				Output:             "plan",
+				NoColor:            true,
+				Compact:            true,
+				MaxNestedDepth:     3,
+				IgnorePaths:        []string{"a.b", "c.d"},
+				EventualState:      true,
+				MaxRecvMessageSize: 16,
+				DryRunOn:           "existing",
+			}, CompositionFlags: simulate.CompositionFlags{MinimizeComposition: true, AnalyzeOn: "always"}}},
 		},
 		"FunctionCredentials": {
 			reason: "--function-credentials should load the Secrets in the file at parse time.",
 			args:   []string{"--function-credentials", creds},
 			want: want{
-				cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-					MaxConcurrency:      8,
+				cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 					MaxIterations:       dp.DefaultMaxRenderIterations,
 					Timeout:             2 * time.Minute,
 					Output:              "plan",
@@ -165,8 +156,7 @@ func TestSimulateFlags(t *testing.T) {
 		"PlanFlags": {
 			reason: "The provider plan flags should land on their fields.",
 			args:   []string{"--providers", dir, "--image-configs", creds, "--session-id", "s1"},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -180,8 +170,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderEngineFlags": {
 			reason: "The render engine flags should land on the embedded EngineFlags.",
 			args:   []string{"--crossplane-binary", creds, "--session-id", "s1"},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -193,8 +182,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderDockerNetwork": {
 			reason: "--crossplane-docker-network should land on the embedded EngineFlags.",
 			args:   []string{"--crossplane-docker-network", "ci"},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -206,8 +194,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderDockerNetworkEnv": {
 			reason: "CROSSPLANE_DOCKER_NETWORK should land on the embedded EngineFlags.",
 			env:    map[string]string{"CROSSPLANE_DOCKER_NETWORK": "env-net"},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -220,8 +207,7 @@ func TestSimulateFlags(t *testing.T) {
 			reason: "--crossplane-docker-network should win over CROSSPLANE_DOCKER_NETWORK.",
 			env:    map[string]string{"CROSSPLANE_DOCKER_NETWORK": "env-net"},
 			args:   []string{"--crossplane-docker-network", "ci"},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -233,8 +219,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderBinaryWithNetwork": {
 			reason: "A local render binary ignores a Docker network rather than rejecting it.",
 			args:   []string{"--crossplane-binary", creds, "--crossplane-docker-network", "ci"},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -246,8 +231,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlan": {
 			reason: "--skip-plan alone should be accepted.",
 			args:   []string{"--skip-plan"},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -259,8 +243,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlanWithProviders": {
 			reason: "--providers does nothing with --skip-plan, so Run warns rather than Validate rejecting it.",
 			args:   []string{"--skip-plan", "--providers", dir},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -273,8 +256,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlanWithImageConfigs": {
 			reason: "--image-configs also rewrites function images, so it applies with --skip-plan.",
 			args:   []string{"--skip-plan", "--image-configs", creds},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -287,8 +269,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlanWithSessionID": {
 			reason: "--session-id does nothing with --skip-plan, so Run warns rather than Validate rejecting it.",
 			args:   []string{"--skip-plan", "--session-id", "s1"},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -357,8 +338,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderImageUncomparable": {
 			reason: "A render image with no comparable version should be accepted.",
 			args:   []string{"--crossplane-image", "example.com/crossplane:stable"},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
-				MaxConcurrency: 8,
+			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -386,7 +366,7 @@ func TestSimulateFlags(t *testing.T) {
 			if tc.want.err {
 				return
 			}
-			if diff := cmp.Diff(tc.want.cmd, got, cmpopts.IgnoreFields(simulate.Flags{}, "Impersonation"), cmpopts.IgnoreUnexported(simulate.Flags{})); diff != "" {
+			if diff := cmp.Diff(tc.want.cmd, got, cmpopts.IgnoreFields(simulate.Flags{}, "Impersonation"), cmpopts.IgnoreUnexported(simulate.Flags{}, simulate.CompositionFlags{})); diff != "" {
 				t.Errorf("\n%s\nParse(%v): -want, +got:\n%s", tc.reason, tc.args, diff)
 			}
 			if diff := cmp.Diff(tc.want.secrets, got.Credentials(), cmpopts.EquateEmpty()); diff != "" {
@@ -426,6 +406,26 @@ func TestSimulateNameFlagParse(t *testing.T) {
 			}
 			if diff := cmp.Diff([]string{"a/db", "b/db"}, c.Name); diff != "" {
 				t.Errorf("Name: -want, +got:\n%s", diff)
+			}
+		})
+	}
+}
+
+// Both embedded flag structs have a Validate; kong must call each, so a bad
+// --name fails in CompositionFlags.Validate and a bad --max-iterations in
+// Flags.Validate.
+func TestSimulateEmbeddedValidate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args []string
+		want string
+	}{
+		"CompositionFlags": {args: []string{"-n", "a", "--name", "b/c"}, want: "can't be combined with --namespace"},
+		"Flags":            {args: []string{"--max-iterations", "0"}, want: "--max-iterations must be at least 1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseSimulate(t, tc.args...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("Parse(%v): want error containing %q, got %v", tc.args, tc.want, err)
 			}
 		})
 	}

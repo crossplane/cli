@@ -6,6 +6,7 @@ import (
 	gcmp "github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	corev1 "k8s.io/api/core/v1"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
@@ -19,6 +20,122 @@ func errMessage(err error) string {
 	}
 
 	return err.Error()
+}
+
+func TestManagedBy(t *testing.T) {
+	xr := func(name string) *tu.ResourceBuilder { return tu.NewResource("example.org/v1", "XR", name) }
+	claim := func(name string) *tu.ResourceBuilder {
+		return tu.NewResource("example.org/v1", "Claim", name).InNamespace("default")
+	}
+	resourceRef := map[string]any{"apiVersion": "example.org/v1", "kind": "XR", "name": "backing"}
+	claimRef := map[string]any{"apiVersion": "example.org/v1", "kind": "Claim", "name": "my-claim", "namespace": "default"}
+	claimLabels := func(namespace string) map[string]string {
+		return map[string]string{LabelClaimName: "my-claim", LabelClaimNamespace: namespace}
+	}
+
+	// side is one input with what its own diff carries: its cluster copy and rendered form, if any.
+	type side struct {
+		res, cluster, rendered *un.Unstructured
+	}
+	group := func(s side) dt.XRDiffGroup {
+		if s.cluster == nil && s.rendered == nil {
+			return dt.XRDiffGroup{}
+		}
+		return dt.XRDiffGroup{Diffs: map[string]*dt.ResourceDiff{
+			dt.MakeDiffKeyFromResource(s.res): {Current: dt.ResourceViews{Raw: s.cluster}, Desired: dt.ResourceViews{Raw: s.rendered}},
+		}}
+	}
+
+	tests := map[string]struct {
+		reason      string
+		xr, manager side
+		want        management
+	}{
+		"UnrelatedInputs": {
+			reason:  "Inputs that neither compose nor bind one another manage nothing.",
+			xr:      side{res: xr("b").Build()},
+			manager: side{res: xr("a").Build()},
+			want:    notManaged,
+		},
+		"ChildComposedByParent": {
+			reason:  "The child's rendered form names the parent as its controller.",
+			xr:      side{res: xr("child").Build(), rendered: xr("child").WithControllerReference("XR", "parent", "example.org/v1", "uid").Build()},
+			manager: side{res: xr("parent").Build()},
+			want:    composedBy,
+		},
+		"ChildControlledByParentInCluster": {
+			reason:  "A child the parent still controls in the cluster is managed by it.",
+			xr:      side{res: xr("child").Build(), cluster: xr("child").WithControllerReference("XR", "parent", "example.org/v1", "uid").Build()},
+			manager: side{res: xr("parent").Build()},
+			want:    composedBy,
+		},
+		"ControllerOfTheSameNameInAnotherNamespace": {
+			reason:  "A namespaced parent controls only objects in its own namespace.",
+			xr:      side{res: xr("child").InNamespace("b").WithControllerReference("XR", "parent", "example.org/v1", "uid").Build()},
+			manager: side{res: xr("parent").InNamespace("a").Build()},
+			want:    notManaged,
+		},
+		"ControllerAtAnotherAPIVersion": {
+			reason:  "A controller reference at another version names the same object.",
+			xr:      side{res: xr("child").WithControllerReference("XR", "parent", "example.org/v2", "uid").Build()},
+			manager: side{res: xr("parent").Build()},
+			want:    composedBy,
+		},
+		"ManagerWithNoName": {
+			reason:  "A generateName-only manager has no identity, so it manages nothing.",
+			xr:      side{res: xr("child").WithControllerReference("XR", "", "example.org/v1", "uid").Build()},
+			manager: side{res: xr("").WithGenerateName("parent-").Build()},
+			want:    notManaged,
+		},
+		"AnInputWithNoNameIsNobodysClaim": {
+			reason:  "A generateName-only input must not match an XR's absent claimRef, which is also empty.",
+			xr:      side{res: xr("named").Build()},
+			manager: side{res: xr("").WithGenerateName("gen-").Build()},
+			want:    notManaged,
+		},
+		"BackingXRNamedByTheClaimsClusterResourceRef": {
+			reason:  "A bound claim's cluster copy names its XR in spec.resourceRef.",
+			xr:      side{res: xr("backing").Build()},
+			manager: side{res: claim("my-claim").Build(), cluster: claim("my-claim").WithSpecField("resourceRef", resourceRef).Build()},
+			want:    claimedBy,
+		},
+		"BackingXRNamedByTheClaimsInputResourceRef": {
+			reason:  "A claim exported from the cluster carries spec.resourceRef in the input itself.",
+			xr:      side{res: xr("backing").Build()},
+			manager: side{res: claim("my-claim").WithSpecField("resourceRef", resourceRef).Build()},
+			want:    claimedBy,
+		},
+		"BackingXRWhoseClaimRefNamesTheClaim": {
+			reason:  "The XR's side of the binding is enough on its own.",
+			xr:      side{res: xr("backing").WithSpecField("claimRef", claimRef).Build()},
+			manager: side{res: claim("my-claim").Build()},
+			want:    claimedBy,
+		},
+		"BackingXRWhoseClaimLabelsNameTheClaim": {
+			reason:  "Crossplane stamps the claim's name and namespace on the XR as labels.",
+			xr:      side{res: xr("backing").Build(), cluster: xr("backing").WithLabels(claimLabels("default")).Build()},
+			manager: side{res: claim("my-claim").Build()},
+			want:    claimedBy,
+		},
+		"ClaimLabelsForAnotherNamespace": {
+			reason:  "A claim of the same name in another namespace is a different claim.",
+			xr:      side{res: xr("backing").WithLabels(claimLabels("elsewhere")).Build()},
+			manager: side{res: claim("my-claim").Build()},
+			want:    notManaged,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			xg, mg := group(tt.xr), group(tt.manager)
+			if got := managedBy(xg, tt.xr.res, mg, tt.manager.res); got != tt.want {
+				t.Errorf("%s\nmanagedBy(...): want %d, got %d", tt.reason, tt.want, got)
+			}
+			if got, want := boundToClaim(xg, tt.xr.res, mg, tt.manager.res), tt.want == claimedBy; got != want {
+				t.Errorf("%s\nboundToClaim(...): want %t, got %t", tt.reason, want, got)
+			}
+		})
+	}
 }
 
 func TestRenderOverlapErrors(t *testing.T) {

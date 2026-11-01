@@ -29,6 +29,8 @@ jobs:
       packages: write  # for pushing to ghcr.io
     runs-on: ubuntu-24.04
 
+    outputs:
+      version: ${{ steps.set-version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -41,6 +43,14 @@ jobs:
         with:
           name: crossplane
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # The promoted version is an input, not a tag, so we can't derive it
+      # from the ref here. The docs update job needs it for the target path.
+      - name: Set Version
+        id: set-version
+        run: |
+          VERSION="${{ inputs.version }}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Promote Artifacts to S3
         if: env.AWS_USR != ''
@@ -57,3 +67,83 @@ jobs:
             PRERELEASE_FLAG="--prerelease"
           fi
           nix run .#promote-artifacts -- "${GITHUB_REF##*/}" "$VERSION" "$CHANNEL" $PRERELEASE_FLAG
+
+  update-docs:
+    # Docs update only once a release is promoted to the stable channel:
+    # pre-release and other-channel promotions must not publish reference docs.
+    if: inputs.channel == 'stable'
+    needs: promote
+    concurrency:
+      group: update-cli-docs
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download Artifacts
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_USR }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_PSW }}
+          AWS_DEFAULT_REGION: us-east-1
+          VERSION: ${{ needs.promote.outputs.version }}
+        run: |
+          mkdir -p bin
+          aws s3 cp "s3://crossplane-cli-releases/stable/${VERSION}/linux_amd64/crossplane" bin/crossplane
+          chmod +x bin/crossplane
+
+      - name: Generate Docs
+        run: bin/crossplane generate-docs -o generated-docs/command-reference.md
+
+      - name: Checkout Docs
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: crossplane/docs
+          persist-credentials: false
+          path: docs
+
+      - name: Determine Target Directory
+        id: target
+        run: |
+          VERSION="${{ needs.promote.outputs.version }}"
+          MINOR_VERSION="${VERSION%.*}"
+          echo "dir=content/cli/${MINOR_VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Docs
+        env:
+          TARGET_DIR: ${{ steps.target.outputs.dir }}
+        run: |
+          mkdir -p "docs/${TARGET_DIR}"
+          cp generated-docs/command-reference.md "docs/${TARGET_DIR}/command-reference.md"
+          cd docs
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+            echo "docs-changed=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Create Pull Request
+        if: env.docs-changed == 'true'
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: generate-token
+        with:
+          app-id: ${{ secrets.CLI_DOCS_BOT_APP_ID }}
+          private-key: ${{ secrets.CLI_DOCS_BOT_APP_PRIVATE_KEY }}
+          owner: crossplane
+          repositories: docs
+
+      - name: Create docs PR
+        if: env.docs-changed == 'true'
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          path: docs
+          commit-message: "docs(cli): auto-update command reference for ${{ steps.target.outputs.dir }}"
+          author: cli-docs-bot <info@crossplane.io>
+          signoff: true
+          title: "docs(cli): auto-update command reference for ${{ steps.target.outputs.dir }}"
+          body: |
+            Auto-generated CLI command reference update.
+
+            Generated from: `${{ github.sha }}`
+            Trigger: promote of `${{ inputs.version }}` to the stable channel
+          branch: auto/update-cli-docs
+          delete-branch: false

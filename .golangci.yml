@@ -137,10 +137,6 @@ linters:
           paramsOnly: true
         rangeValCopy:
           sizeThreshold: 32
-    gomoddirectives:
-      replace-allow-list:
-        # TODO(adamwg): Remove once upjet v2.6.0 is released; see go.mod.
-        - github.com/crossplane/upjet/v2
     govet:
       disable:
         - shadow

@@ -2,14 +2,6 @@ module github.com/crossplane/cli/v2
 
 go 1.26.8
 
-// We're using the main branch of upjet to get the new diff server feature,
-// which isn't in a release yet. Because of how upjet's releases are tagged, the
-// pseudo-version for main is a v2.5.1 pre-release, which causes renovate to try
-// and "upgrade" it to v2.5.1. Use a replace to pin the version so renovate
-// doesn't touch it.
-// TODO(adamwg): Get rid of this when upjet v2.6.0 ships.
-replace github.com/crossplane/upjet/v2 => github.com/crossplane/upjet/v2 v2.5.1-0.20261005082904-c3b7d449d0d4
-
 require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.0.9
@@ -24,7 +16,7 @@ require (
 	github.com/crossplane/crossplane-runtime/v2 v2.4.0
 	github.com/crossplane/crossplane/apis/v2 v2.4.1
 	github.com/crossplane/function-sdk-go v0.7.1
-	github.com/crossplane/upjet/v2 v2.5.1
+	github.com/crossplane/upjet/v2 v2.5.1-0.20261005082904-c3b7d449d0d4
 	github.com/docker/cli v29.8.1+incompatible
 	github.com/emicklei/dot v1.11.0
 	github.com/getkin/kin-openapi v0.149.0

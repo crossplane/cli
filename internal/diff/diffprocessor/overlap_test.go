@@ -9,6 +9,8 @@ import (
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 )
@@ -22,7 +24,97 @@ func errMessage(err error) string {
 	return err.Error()
 }
 
-func TestManagedBy(t *testing.T) {
+func TestCheckInputs(t *testing.T) {
+	xr := func(name string) *tu.ResourceBuilder { return tu.NewResource("example.org/v1", "XR", name) }
+
+	type verdict struct {
+		Duplicate bool
+		Err       string
+	}
+
+	conflict := func(position, other int, name string) string {
+		return errMessage(conflictingInputError(position, other, xr(name).Build()))
+	}
+
+	tests := map[string]struct {
+		reason       string
+		inputs       []*un.Unstructured
+		want         []verdict
+		wantWarnings []string
+	}{
+		"DistinctInputsPass": {
+			reason: "Inputs naming different objects are each rendered.",
+			inputs: []*un.Unstructured{xr("a").Build(), xr("b").Build()},
+			want:   []verdict{{}, {}},
+		},
+		"IdenticalDuplicateIsDropped": {
+			reason:       "An input identical to an earlier one has one clear intent, so it is dropped with a warning.",
+			inputs:       []*un.Unstructured{xr("a").WithSpecField("f", "v").Build(), xr("a").WithSpecField("f", "v").Build()},
+			want:         []verdict{{}, {Duplicate: true}},
+			wantWarnings: []string{"Ignoring a duplicate input: it is identical to an earlier one"},
+		},
+		"SameObjectWithDifferentContentFailsBoth": {
+			reason: "Neither of two differing definitions can be preferred, so each fails, naming the other.",
+			inputs: []*un.Unstructured{xr("a").WithSpecField("f", "1").Build(), xr("a").WithSpecField("f", "2").Build()},
+			want:   []verdict{{Err: conflict(1, 2, "a")}, {Err: conflict(2, 1, "a")}},
+		},
+		"SameObjectAtAnotherAPIVersionIsStillTheSameObject": {
+			reason: "Identity is version-independent, so one object at two versions is a conflict, not two objects.",
+			inputs: []*un.Unstructured{xr("a").Build(), tu.NewResource("example.org/v2", "XR", "a").Build()},
+			want:   []verdict{{Err: conflict(1, 2, "a")}, {Err: conflict(2, 1, "a")}},
+		},
+		"SameNameInAnotherNamespaceIsAnotherObject": {
+			reason: "Namespace is part of identity.",
+			inputs: []*un.Unstructured{xr("a").InNamespace("one").Build(), xr("a").InNamespace("two").Build()},
+			want:   []verdict{{}, {}},
+		},
+		"GenerateNameOnlyInputsAreNotJudged": {
+			reason: "An input with no name yet has no identity: two identical ones are two XRs, not a duplicate.",
+			inputs: []*un.Unstructured{xr("").WithGenerateName("g-").Build(), xr("").WithGenerateName("g-").Build()},
+			want:   []verdict{{}, {}},
+		},
+		"LaterInputIsJudgedAgainstTheFirst": {
+			reason: "A third input identical to the first is a duplicate of it, even after a conflicting second.",
+			inputs: []*un.Unstructured{
+				xr("a").WithSpecField("f", "1").Build(),
+				xr("a").WithSpecField("f", "2").Build(),
+				xr("a").WithSpecField("f", "1").Build(),
+			},
+			want:         []verdict{{Err: conflict(1, 2, "a")}, {Err: conflict(2, 1, "a")}, {Duplicate: true}},
+			wantWarnings: []string{"Ignoring a duplicate input: it is identical to an earlier one"},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			advisories := NewAdvisoryCollector(nil)
+
+			checks := checkInputs(advisories, tt.inputs)
+
+			got := make([]verdict, 0, len(checks))
+			for _, c := range checks {
+				got = append(got, verdict{Duplicate: c.duplicate, Err: errMessage(c.err)})
+			}
+
+			if diff := gcmp.Diff(tt.want, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("%s\ncheckInputs(...): -want, +got:\n%s", tt.reason, diff)
+			}
+
+			warnings := advisories.Advisories()
+
+			gotWarnings := make([]string, 0, len(warnings))
+			for _, w := range warnings {
+				gotWarnings = append(gotWarnings, w.Message)
+			}
+
+			if diff := gcmp.Diff(tt.wantWarnings, gotWarnings, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("%s\ncheckInputs(...) warnings: -want, +got:\n%s", tt.reason, diff)
+			}
+		})
+	}
+}
+
+func TestRejectManagedInputs(t *testing.T) {
 	xr := func(name string) *tu.ResourceBuilder { return tu.NewResource("example.org/v1", "XR", name) }
 	claim := func(name string) *tu.ResourceBuilder {
 		return tu.NewResource("example.org/v1", "Claim", name).InNamespace("default")
@@ -33,106 +125,298 @@ func TestManagedBy(t *testing.T) {
 		return map[string]string{LabelClaimName: "my-claim", LabelClaimNamespace: namespace}
 	}
 
-	// side is one input with what its own diff carries: its cluster copy and rendered form, if any.
-	type side struct {
-		res, cluster, rendered *un.Unstructured
-	}
-	group := func(s side) dt.XRDiffGroup {
-		if s.cluster == nil && s.rendered == nil {
-			return dt.XRDiffGroup{}
-		}
-		return dt.XRDiffGroup{Diffs: map[string]*dt.ResourceDiff{
-			dt.MakeDiffKeyFromResource(s.res): {Current: dt.ResourceViews{Raw: s.cluster}, Desired: dt.ResourceViews{Raw: s.rendered}},
-		}}
+	const (
+		composedErr = "XR/child is composed by input XR/parent, whose composition writes it; supplying it as an " +
+			"input too gives it a second writer — pass XR/parent only"
+		controlledErr = "XR/child is controlled by input XR/parent; supplying it as an input too gives it a " +
+			"second writer — pass XR/parent only"
+		claimErr = "XR/backing is the XR bound to claim Claim/my-claim, which Crossplane's claim controller writes; " +
+			"supplying it as an input too gives it a second writer — pass the claim, not its XR"
+	)
+
+	// input is one group as the processor would hand it over.
+	type input struct {
+		res *un.Unstructured
+		// cluster is the cluster copy carried by the input's own diff, if any.
+		cluster *un.Unstructured
+		// rendered is every resource key the input's render produced.
+		rendered []string
+		// failedRender marks the input's own render as failed; rejected marks it failed before rendering.
+		failedRender, rejected bool
 	}
 
 	tests := map[string]struct {
-		reason      string
-		xr, manager side
-		want        management
+		reason string
+		inputs []input
+		want   map[int]string
 	}{
-		"UnrelatedInputs": {
-			reason:  "Inputs that neither compose nor bind one another manage nothing.",
-			xr:      side{res: xr("b").Build()},
-			manager: side{res: xr("a").Build()},
-			want:    notManaged,
+		"UnrelatedInputsPass": {
+			reason: "Inputs that neither compose nor bind one another are all valid.",
+			inputs: []input{{res: xr("a").Build()}, {res: xr("b").Build()}},
 		},
-		"ChildComposedByParent": {
-			reason:  "The child's rendered form names the parent as its controller.",
-			xr:      side{res: xr("child").Build(), rendered: xr("child").WithControllerReference("XR", "parent", "example.org/v1", "uid").Build()},
-			manager: side{res: xr("parent").Build()},
-			want:    composedBy,
+		"ChildComposedByAParentInputIsRejected": {
+			reason: "A child in the parent's rendered keys has a second writer if it is also an input.",
+			inputs: []input{
+				{res: xr("parent").Build(), rendered: []string{dt.MakeDiffKey("example.org/v1", "XR", "", "child")}},
+				{res: xr("child").Build()},
+			},
+			want: map[int]string{1: composedErr},
 		},
-		"ChildControlledByParentInCluster": {
-			reason:  "A child the parent still controls in the cluster is managed by it.",
-			xr:      side{res: xr("child").Build(), cluster: xr("child").WithControllerReference("XR", "parent", "example.org/v1", "uid").Build()},
-			manager: side{res: xr("parent").Build()},
-			want:    composedBy,
+		"ChildControlledByAParentInputIsRejected": {
+			reason: "A child the parent still controls in the cluster is rejected even when the parent's render drops it.",
+			inputs: []input{
+				{res: xr("parent").Build()},
+				{res: xr("child").Build(), cluster: xr("child").WithControllerReference("XR", "parent", "example.org/v1", "uid").Build()},
+			},
+			want: map[int]string{1: controlledErr},
 		},
-		"ControllerOfTheSameNameInAnotherNamespace": {
-			reason:  "A namespaced parent controls only objects in its own namespace.",
-			xr:      side{res: xr("child").InNamespace("b").WithControllerReference("XR", "parent", "example.org/v1", "uid").Build()},
-			manager: side{res: xr("parent").InNamespace("a").Build()},
-			want:    notManaged,
+		"ControllerOfTheSameNameInAnotherNamespaceDoesNotMatch": {
+			reason: "A namespaced parent controls only objects in its own namespace.",
+			inputs: []input{
+				{res: xr("parent").InNamespace("a").Build()},
+				{res: xr("child").InNamespace("b").WithControllerReference("XR", "parent", "example.org/v1", "uid").Build()},
+			},
 		},
-		"ControllerAtAnotherAPIVersion": {
-			reason:  "A controller reference at another version names the same object.",
-			xr:      side{res: xr("child").WithControllerReference("XR", "parent", "example.org/v2", "uid").Build()},
-			manager: side{res: xr("parent").Build()},
-			want:    composedBy,
+		"ChildRenderedAtAnotherAPIVersionIsStillRejected": {
+			reason: "The parent may render the child at another version; it is the same object.",
+			inputs: []input{
+				{res: xr("parent").Build(), rendered: []string{dt.MakeDiffKey("example.org/v2", "XR", "", "child")}},
+				{res: xr("child").Build()},
+			},
+			want: map[int]string{1: composedErr},
 		},
-		"ManagerWithNoName": {
-			reason:  "A generateName-only manager has no identity, so it manages nothing.",
-			xr:      side{res: xr("child").WithControllerReference("XR", "", "example.org/v1", "uid").Build()},
-			manager: side{res: xr("").WithGenerateName("parent-").Build()},
-			want:    notManaged,
+		"ManagedInputIsJudgedDespiteItsOwnRenderFailure": {
+			reason: "The verdict supersedes the managed input's own render failure, which is moot.",
+			inputs: []input{
+				{res: xr("parent").Build(), rendered: []string{dt.MakeDiffKey("example.org/v1", "XR", "", "child")}},
+				{res: xr("child").Build(), failedRender: true},
+			},
+			want: map[int]string{1: composedErr},
+		},
+		"AFailedManagerManagesNothing": {
+			reason: "What a manager manages is read from its render, so one that failed to render cannot reject.",
+			inputs: []input{
+				{res: xr("parent").Build(), rendered: []string{dt.MakeDiffKey("example.org/v1", "XR", "", "child")}, failedRender: true},
+				{res: xr("child").Build()},
+			},
+		},
+		"InputRejectedBeforeRenderingIsNotJudged": {
+			reason: "An input already rejected by checkInputs keeps that error.",
+			inputs: []input{
+				{res: xr("parent").Build(), rendered: []string{dt.MakeDiffKey("example.org/v1", "XR", "", "child")}},
+				{res: xr("child").Build(), rejected: true},
+			},
+		},
+		"GenerateNameOnlyInputIsNotJudged": {
+			reason: "An input with no name yet has no identity to be managed by.",
+			inputs: []input{
+				{res: xr("parent").Build(), rendered: []string{dt.MakeDiffKey("example.org/v1", "XR", "", "")}},
+				{res: xr("").WithGenerateName("child-").Build()},
+			},
 		},
 		"AnInputWithNoNameIsNobodysClaim": {
-			reason:  "A generateName-only input must not match an XR's absent claimRef, which is also empty.",
-			xr:      side{res: xr("named").Build()},
-			manager: side{res: xr("").WithGenerateName("gen-").Build()},
-			want:    notManaged,
+			reason: "A generateName-only input must not match an XR's absent claimRef, which is also empty.",
+			inputs: []input{{res: xr("named").Build()}, {res: xr("").WithGenerateName("gen-").Build()}},
 		},
 		"BackingXRNamedByTheClaimsClusterResourceRef": {
-			reason:  "A bound claim's cluster copy names its XR in spec.resourceRef.",
-			xr:      side{res: xr("backing").Build()},
-			manager: side{res: claim("my-claim").Build(), cluster: claim("my-claim").WithSpecField("resourceRef", resourceRef).Build()},
-			want:    claimedBy,
+			reason: "A bound claim's cluster copy names its XR in spec.resourceRef.",
+			inputs: []input{
+				{res: claim("my-claim").Build(), cluster: claim("my-claim").WithSpecField("resourceRef", resourceRef).Build()},
+				{res: xr("backing").Build()},
+			},
+			want: map[int]string{1: claimErr},
 		},
 		"BackingXRNamedByTheClaimsInputResourceRef": {
-			reason:  "A claim exported from the cluster carries spec.resourceRef in the input itself.",
-			xr:      side{res: xr("backing").Build()},
-			manager: side{res: claim("my-claim").WithSpecField("resourceRef", resourceRef).Build()},
-			want:    claimedBy,
+			reason: "A claim exported from the cluster carries spec.resourceRef in the input itself.",
+			inputs: []input{
+				{res: claim("my-claim").WithSpecField("resourceRef", resourceRef).Build()},
+				{res: xr("backing").Build()},
+			},
+			want: map[int]string{1: claimErr},
 		},
 		"BackingXRWhoseClaimRefNamesTheClaim": {
-			reason:  "The XR's side of the binding is enough on its own.",
-			xr:      side{res: xr("backing").WithSpecField("claimRef", claimRef).Build()},
-			manager: side{res: claim("my-claim").Build()},
-			want:    claimedBy,
+			reason: "The XR's side of the binding is enough on its own.",
+			inputs: []input{
+				{res: claim("my-claim").Build()},
+				{res: xr("backing").WithSpecField("claimRef", claimRef).Build()},
+			},
+			want: map[int]string{1: claimErr},
 		},
 		"BackingXRWhoseClaimLabelsNameTheClaim": {
-			reason:  "Crossplane stamps the claim's name and namespace on the XR as labels.",
-			xr:      side{res: xr("backing").Build(), cluster: xr("backing").WithLabels(claimLabels("default")).Build()},
-			manager: side{res: claim("my-claim").Build()},
-			want:    claimedBy,
+			reason: "Crossplane stamps the claim's name and namespace on the XR as labels.",
+			inputs: []input{
+				{res: claim("my-claim").Build()},
+				{res: xr("backing").Build(), cluster: xr("backing").WithLabels(claimLabels("default")).Build()},
+			},
+			want: map[int]string{1: claimErr},
 		},
-		"ClaimLabelsForAnotherNamespace": {
-			reason:  "A claim of the same name in another namespace is a different claim.",
-			xr:      side{res: xr("backing").WithLabels(claimLabels("elsewhere")).Build()},
-			manager: side{res: claim("my-claim").Build()},
-			want:    notManaged,
+		"ClaimLabelsForAnotherNamespaceDoNotMatch": {
+			reason: "A claim of the same name in another namespace is a different claim.",
+			inputs: []input{
+				{res: claim("my-claim").Build()},
+				{res: xr("backing").WithLabels(claimLabels("elsewhere")).Build()},
+			},
 		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			xg, mg := group(tt.xr), group(tt.manager)
-			if got := managedBy(xg, tt.xr.res, mg, tt.manager.res); got != tt.want {
-				t.Errorf("%s\nmanagedBy(...): want %d, got %d", tt.reason, tt.want, got)
+			var (
+				groups   = make([]dt.XRDiffGroup, len(tt.inputs))
+				checks   = make([]inputCheck, len(tt.inputs))
+				rendered = make([]map[string]bool, len(tt.inputs))
+				failed   = make([]error, len(tt.inputs))
+			)
+
+			for i, in := range tt.inputs {
+				checks[i] = inputCheck{res: in.res}
+				if in.rejected {
+					checks[i].err = errors.New("rejected before rendering")
+				}
+
+				if in.failedRender {
+					failed[i] = errors.New("render failed")
+				}
+
+				if in.cluster != nil {
+					groups[i].Diffs = map[string]*dt.ResourceDiff{
+						dt.MakeDiffKeyFromResource(in.res): {Current: dt.ResourceViews{Raw: in.cluster}},
+					}
+				}
+
+				rendered[i] = map[string]bool{}
+				for _, key := range in.rendered {
+					rendered[i][key] = true
+				}
 			}
-			if got, want := boundToClaim(xg, tt.xr.res, mg, tt.manager.res), tt.want == claimedBy; got != want {
-				t.Errorf("%s\nboundToClaim(...): want %t, got %t", tt.reason, want, got)
+
+			got := map[int]string{}
+			for i, err := range rejectManagedInputs(groups, checks, rendered, failed) {
+				got[i] = errMessage(err)
+			}
+
+			if diff := gcmp.Diff(tt.want, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("%s\nrejectManagedInputs(...): -want, +got:\n%s", tt.reason, diff)
+			}
+		})
+	}
+}
+
+// TestManagedByManagerWithNoName pins that a generateName-only manager has no identity, so it manages
+// nothing even when the candidate's controller reference has an empty name.
+func TestManagedByManagerWithNoName(t *testing.T) {
+	xr := tu.NewResource("example.org/v1", "XR", "child").WithControllerReference("XR", "", "example.org/v1", "uid").Build()
+	manager := tu.NewResource("example.org/v1", "XR", "").WithGenerateName("parent-").Build()
+
+	if got := managedBy(dt.XRDiffGroup{}, xr, dt.XRDiffGroup{}, manager); got != notManaged {
+		t.Errorf("managedBy(...): want notManaged, got %d", got)
+	}
+
+	if boundToClaim(dt.XRDiffGroup{}, xr, dt.XRDiffGroup{}, manager) {
+		t.Error("boundToClaim(...): want false, got true")
+	}
+}
+
+// TestBundleInputValidatorVerdicts drives the default validator through its stages as PerformDiff does,
+// pinning what it owns beyond its rules: dropping duplicates from ToRender, and the precedence of a
+// managed-input verdict over that input's own render failure.
+func TestBundleInputValidatorVerdicts(t *testing.T) {
+	xr := func(name string) *un.Unstructured { return tu.NewResource("example.org/v1", "XR", name).Build() }
+	childKey := dt.MakeDiffKey("example.org/v1", "XR", "", "child")
+
+	const composedErr = "XR/child is composed by input XR/parent, whose composition writes it; supplying it as an " +
+		"input too gives it a second writer — pass XR/parent only"
+
+	conflict34 := conflictingInputError(3, 4, xr("b")).Error()
+	conflict43 := conflictingInputError(4, 3, xr("b")).Error()
+
+	// render is one input's recorded render: its rendered keys and its own failure.
+	type render struct {
+		keys []string
+		err  string
+	}
+
+	type want struct {
+		ToRender []string // name, or "name: err" for an input rejected before rendering
+		Verdicts []string
+	}
+
+	tests := map[string]struct {
+		reason  string
+		inputs  []*un.Unstructured
+		renders map[int]render // by ToRender index; an input rejected before rendering is not rendered
+		want    want
+	}{
+		"ManagedVerdictReplacesTheManagedInputsRenderFailure": {
+			reason: "A managed input whose own render failed reports why it should not have been passed, not the render failure.",
+			inputs: []*un.Unstructured{xr("parent"), xr("child")},
+			renders: map[int]render{
+				0: {keys: []string{childKey}},
+				1: {err: "render failed"},
+			},
+			want: want{ToRender: []string{"parent", "child"}, Verdicts: []string{"", composedErr}},
+		},
+		"AnUnmanagedRenderFailureIsKept": {
+			reason:  "Without a managed-input verdict, a group's final error is its own render failure.",
+			inputs:  []*un.Unstructured{xr("a"), xr("b")},
+			renders: map[int]render{0: {}, 1: {err: "render failed"}},
+			want:    want{ToRender: []string{"a", "b"}, Verdicts: []string{"", "render failed"}},
+		},
+		"DuplicateIsDroppedAndAConflictIsRejectedBeforeRendering": {
+			reason: "An identical duplicate is not handed back to render; the same object twice differently is, " +
+				"rejected, and that rejection is its verdict.",
+			inputs: []*un.Unstructured{
+				xr("a"), xr("a"),
+				tu.NewResource("example.org/v1", "XR", "b").WithSpecField("v", "1").Build(),
+				tu.NewResource("example.org/v1", "XR", "b").WithSpecField("v", "2").Build(),
+			},
+			renders: map[int]render{0: {}},
+			want: want{
+				ToRender: []string{"a", "b: " + conflict34, "b: " + conflict43},
+				Verdicts: []string{"", conflict34, conflict43},
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			v := NewBundleInputValidator(NewAdvisoryCollector(nil), tt.inputs)
+
+			got := want{}
+
+			toRender := v.ToRender()
+			for i, in := range toRender {
+				entry := in.Resource.GetName()
+				if in.Err != nil {
+					entry += ": " + in.Err.Error()
+				}
+
+				got.ToRender = append(got.ToRender, entry)
+
+				r, ok := tt.renders[i]
+				if !ok {
+					continue
+				}
+
+				keys := map[string]bool{}
+				for _, k := range r.keys {
+					keys[k] = true
+				}
+
+				var err error
+				if r.err != "" {
+					err = errors.New(r.err)
+				}
+
+				v.RecordRender(i, keys, err)
+			}
+
+			for _, err := range v.Verdicts(make([]dt.XRDiffGroup, len(toRender))) {
+				got.Verdicts = append(got.Verdicts, errMessage(err))
+			}
+
+			if diff := gcmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("%s\nbundleInputValidator: -want, +got:\n%s", tt.reason, diff)
 			}
 		})
 	}

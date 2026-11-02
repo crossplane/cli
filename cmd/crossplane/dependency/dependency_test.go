@@ -18,6 +18,7 @@ package dependency
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -180,6 +181,18 @@ func TestLoad(t *testing.T) {
 			content:   testMeta,
 			languages: []string{"cobol"},
 			wantErr:   true,
+		},
+		"MetaProvider": {
+			file:        "crossplane.yaml",
+			content:     strings.Replace(testMeta, "kind: Configuration", "kind: Provider", 1),
+			wantSchemas: "schemas",
+			wantDeps:    metaDeps,
+		},
+		"MetaFunction": {
+			file:        "crossplane.yaml",
+			content:     strings.Replace(testMeta, "kind: Configuration", "kind: Function", 1),
+			wantSchemas: "schemas",
+			wantDeps:    metaDeps,
 		},
 		"UnsupportedMetaKind": {
 			file:    "crossplane.yaml",

@@ -21,7 +21,7 @@ Non-xpkg dependencies are always build-time dependencies.
 
 ## Package metadata files
 
-The command can also add a dependency to `Configuration` package metadata (`crossplane.yaml`).
+The command can also add a dependency to package metadata (`crossplane.yaml`) of a Configuration, Provider, or Function.
 When `-f` isn't set, it uses `crossplane-project.yaml` in the current directory if present,
 otherwise `crossplane.yaml`.
 Package metadata only supports runtime xpkg dependencies, which are added to `spec.dependsOn`.

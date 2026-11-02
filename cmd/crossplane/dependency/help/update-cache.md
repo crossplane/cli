@@ -6,7 +6,7 @@ re-generates language bindings (schemas) for them if needed.
 ## Project and package metadata files
 
 The command reads dependencies from a project file (`crossplane-project.yaml`)
-or from Configuration package metadata (`crossplane.yaml`).
+or from Configuration, Provider, or Function package metadata (`crossplane.yaml`).
 When `-f` isn't set, it uses `crossplane-project.yaml` in the current directory if present,
 otherwise `crossplane.yaml`.
 

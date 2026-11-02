@@ -36,7 +36,7 @@ const (
 
 // IsProjectFile reads the TypeMeta from the given YAML file and returns true
 // when apiVersion and kind match a Crossplane Project. Any other type (e.g. a
-// Configuration package metadata file) returns false with no error.
+// package metadata file) returns false with no error.
 func IsProjectFile(fs afero.Fs, filePath string) (bool, error) {
 	bs, err := afero.ReadFile(fs, filePath)
 	if err != nil {

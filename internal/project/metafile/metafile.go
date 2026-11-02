@@ -37,7 +37,7 @@ import (
 // dependencies that don't specify a version.
 const defaultXpkgVersion = ">=v0.0.0"
 
-// Parse parses Configuration package metadata.
+// Parse parses Configuration, Provider, or Function package metadata.
 func Parse(fs afero.Fs, file string) (pkgmetav1.Pkg, error) {
 	bs, err := afero.ReadFile(fs, file)
 	if err != nil {
@@ -56,6 +56,10 @@ func Parse(fs afero.Fs, file string) (pkgmetav1.Pkg, error) {
 	switch tm.Kind {
 	case pkgmetav1.ConfigurationKind:
 		pkg = &pkgmetav1.Configuration{}
+	case pkgmetav1.ProviderKind:
+		pkg = &pkgmetav1.Provider{}
+	case pkgmetav1.FunctionKind:
+		pkg = &pkgmetav1.Function{}
 	default:
 		return nil, errors.Errorf("unsupported package metadata kind %q", tm.Kind)
 	}

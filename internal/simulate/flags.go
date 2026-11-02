@@ -64,8 +64,8 @@ type Flags struct {
 	DryRunOn            string   `default:"all"                                                                                         enum:"existing,all"                           help:"Which resources to verify with a server-side dry run: existing or all (default)."`
 
 	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster diff."`
-	Providers    string `help:"YAML file or directory of Provider manifests to run as diff servers, instead of discovering them from the cluster." name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
-	ImageConfigs string `help:"YAML file of ImageConfig manifests that rewrite package paths for pulls, replacing the project's imageConfigs."     name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
+	Providers    string `help:"YAML file or directory of Provider manifests to run as diff servers, instead of discovering them from the cluster."                                  name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
+	ImageConfigs string `help:"YAML file of ImageConfig manifests that rewrite package paths for pulls, replacing the project's imageConfigs, or supplying them without a project." name:"image-configs" optional:"" predictor:"yaml_file"              type:"existingfile"`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 

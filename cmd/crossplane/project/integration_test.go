@@ -615,7 +615,7 @@ Summary: 2 modified`,
 				WithDownstreamSummary(1, 0, 0).
 				WithDownstreamResource("added", "XDownstreamResource", "test-resource", "default"),
 		},
-		// The comp side of TestDiffIntegration/ResourceRemovalSkipsResourcesTheXRDoesNotControl (#552):
+		// Regression test for #552:
 		// the updated composition stops rendering resource2, which the XR controls, so it is removed;
 		// the XR's resourceRefs also name a resource another XR controls and one with no controller,
 		// which the composition doesn't render either, and neither of those is removed.
@@ -1463,7 +1463,7 @@ Summary: 1 modified`,
 			// +++ addition and a --- removal. The composition diff itself WILL show the template change
 			// from v1beta1 to v1beta2.
 			//
-			// As in TestDiffIntegration/CompositionRevisionUpgradesResourceAPIVersion, the XR composes the
+			// The XR composes the
 			// resource as Crossplane leaves it, named in its resourceRefs at v1beta1, so this also checks
 			// that it is not reported as removed (#552).
 			reason: "Validates composition upgrade that changes resource API version shows as update not remove/add",

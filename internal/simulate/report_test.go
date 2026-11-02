@@ -203,7 +203,7 @@ func TestFromCompReport(t *testing.T) {
 					Summary:       plan.Summary{NoOp: 1},
 					Plans:         []*plan.ResourcePlan{compNoOp},
 				},
-				Composites:   []CompositeResult{{Ref: xrPlan, Status: CompositeChanged, Composition: &compPlan, Pinned: true, Detail: "rendered against pinned revision net-6 with the project's functions"}},
+				Composites:   []CompositeResult{{Ref: xrPlan, Status: CompositeChanged, Composition: &compPlan, Pinned: true, Detail: "rendered against pinned revision net-6 with the simulated functions"}},
 				Compositions: []CompositionResult{{Ref: compPlan}},
 				Notes:        notes(),
 			},

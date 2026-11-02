@@ -5,7 +5,8 @@ the difference from what's in the cluster. It doesn't change the cluster.
 
 `-f` (`--input`) names a file of Compositions to simulate, and is required.
 Repeat it for more files; `-f -` reads standard input. Every resource in the
-files must be a Composition; to simulate a project, use `project simulate`.
+files must be a Composition; to simulate a project, use
+`crossplane project simulate`.
 Functions come from the cluster. `--cache-dir` sets where provider package
 contents are cached.
 

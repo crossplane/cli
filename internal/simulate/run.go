@@ -538,7 +538,7 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 	warnIgnoredFlags(k.Stderr, setFlags(k), c.SkipPlan, project)
 
 	if err := docker.Check(sigCtx); err != nil {
-		return errors.Wrap(err, "cannot connect to Docker, which project simulate needs to run functions")
+		return errors.Wrap(err, "cannot connect to Docker, which simulate needs to run functions")
 	}
 
 	var creds []corev1.Secret

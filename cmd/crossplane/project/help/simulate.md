@@ -1,7 +1,8 @@
 The `project simulate` command previews how applying a project's Compositions
 would change the composite resources in a cluster. It renders each affected
 composite resource and shows the difference from what's in the cluster. It
-doesn't change the cluster.
+doesn't change the cluster. To simulate Composition files against a cluster
+without a project, use `crossplane composition simulate`.
 
 The `-f` flag names the project file, `crossplane-project.yaml` by default. The
 command builds the project's embedded functions and loads them into the local

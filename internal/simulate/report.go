@@ -126,7 +126,7 @@ func compositeResult(impact dt.XRImpact) CompositeResult {
 	c := CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned || impact.FilterReason == dt.FilterReasonManualPolicy}
 
 	if impact.Pinned && impact.RenderedRevision != "" {
-		c.Detail = "rendered against pinned revision " + impact.RenderedRevision + " with the project's functions"
+		c.Detail = "rendered against pinned revision " + impact.RenderedRevision + " with the simulated functions"
 	}
 
 	switch impact.Status {

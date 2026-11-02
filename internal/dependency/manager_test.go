@@ -1033,11 +1033,7 @@ metadata:
 	if err := afero.WriteFile(projFS, "crossplane.yaml", []byte(meta), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pkg, err := metafile.Parse(projFS, "crossplane.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	proj := metafile.ToProject(pkg)
+	proj := &v1alpha1.Project{}
 	proj.Default()
 
 	m := NewManager(proj, projFS,

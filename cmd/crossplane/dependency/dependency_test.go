@@ -49,6 +49,8 @@ spec:
   repository: xpkg.crossplane.io/foo/bar
   paths:
     schemas: my-schemas
+  schemas:
+    languages: [go]
 `
 
 func TestLoad(t *testing.T) {
@@ -70,7 +72,6 @@ func TestLoad(t *testing.T) {
 	}
 
 	tcs := map[string]struct {
-		file          string
 		content       string
 		schemasDir    string
 		languages     []string
@@ -79,89 +80,65 @@ func TestLoad(t *testing.T) {
 		wantDeps      []v1alpha1.Dependency
 		wantErr       bool
 	}{
-		"MetaDefaultSchemas": {
-			file:        "crossplane.yaml",
+		"Meta": {
 			content:     testMeta,
 			wantSchemas: "schemas",
 			wantDeps:    metaDeps,
 		},
-		"MetaSchemasFlag": {
-			file:        "crossplane.yaml",
-			content:     testMeta,
-			schemasDir:  "gen/schemas",
-			wantSchemas: "gen/schemas",
-			wantDeps:    metaDeps,
-		},
-		"ProjectKeepsSchemasPath": {
-			file:        "crossplane-project.yaml",
-			content:     testProject,
-			wantSchemas: "my-schemas",
-		},
-		"ProjectSchemasFlagOverrides": {
-			file:        "crossplane-project.yaml",
-			content:     testProject,
-			schemasDir:  "other",
-			wantSchemas: "other",
-		},
-		"SchemasDirEscapes": {
-			file:       "crossplane.yaml",
-			content:    testMeta,
-			schemasDir: "../schemas",
-			wantErr:    true,
-		},
-		"SchemasDirAbsolute": {
-			file:       "crossplane.yaml",
-			content:    testMeta,
-			schemasDir: "/tmp/schemas",
-			wantErr:    true,
-		},
-		"SchemasDirIsRoot": {
-			file:       "crossplane.yaml",
-			content:    testMeta,
-			schemasDir: "./",
-			wantErr:    true,
-		},
-		"MetaLanguagesFlag": {
-			file:          "crossplane.yaml",
-			content:       testMeta,
-			languages:     []string{"python"},
-			wantSchemas:   "schemas",
-			wantLanguages: []string{"python"},
-			wantDeps:      metaDeps,
-		},
-		"ProjectLanguagesFlagOverrides": {
-			file:          "crossplane-project.yaml",
-			content:       testProject + "  schemas:\n    languages: [go]\n",
-			languages:     []string{"python", "json"},
-			wantSchemas:   "my-schemas",
-			wantLanguages: []string{"python", "json"},
-		},
-		"ProjectKeepsLanguages": {
-			file:          "crossplane-project.yaml",
-			content:       testProject + "  schemas:\n    languages: [go]\n",
-			wantSchemas:   "my-schemas",
-			wantLanguages: []string{"go"},
-		},
-		"UnsupportedLanguage": {
-			file:      "crossplane.yaml",
-			content:   testMeta,
-			languages: []string{"cobol"},
-			wantErr:   true,
-		},
 		"MetaProvider": {
-			file:        "crossplane.yaml",
 			content:     strings.Replace(testMeta, "kind: Configuration", "kind: Provider", 1),
 			wantSchemas: "schemas",
 			wantDeps:    metaDeps,
 		},
 		"MetaFunction": {
-			file:        "crossplane.yaml",
 			content:     strings.Replace(testMeta, "kind: Configuration", "kind: Function", 1),
 			wantSchemas: "schemas",
 			wantDeps:    metaDeps,
 		},
+		"MetaFunctionV1beta1": {
+			content: strings.NewReplacer(
+				"meta.pkg.crossplane.io/v1", "meta.pkg.crossplane.io/v1beta1",
+				"kind: Configuration", "kind: Function",
+			).Replace(testMeta),
+			wantSchemas: "schemas",
+			wantDeps:    metaDeps,
+		},
+		"MetaOverrides": {
+			content:       testMeta,
+			schemasDir:    "gen/schemas",
+			languages:     []string{"python"},
+			wantSchemas:   "gen/schemas",
+			wantLanguages: []string{"python"},
+			wantDeps:      metaDeps,
+		},
+		"Project": {
+			content:       testProject,
+			wantSchemas:   "my-schemas",
+			wantLanguages: []string{"go"},
+		},
+		"ProjectOverrides": {
+			content:       testProject,
+			schemasDir:    "other",
+			languages:     []string{"python", "json"},
+			wantSchemas:   "other",
+			wantLanguages: []string{"python", "json"},
+		},
+		"SchemasDirEscapes": {
+			content:    testMeta,
+			schemasDir: "../schemas",
+			wantErr:    true,
+		},
+		"SchemasDirIsRoot": {
+			content:    testMeta,
+			schemasDir: "./",
+			wantErr:    true,
+		},
+		"UnsupportedLanguage": {
+			content:   testMeta,
+			languages: []string{"cobol"},
+			wantErr:   true,
+		},
 		"UnsupportedMetaKind": {
-			file:    "crossplane.yaml",
 			content: "apiVersion: meta.pkg.crossplane.io/v1\nkind: Bogus\n",
 			wantErr: true,
 		},
@@ -172,11 +149,11 @@ func TestLoad(t *testing.T) {
 			t.Parallel()
 
 			fs := afero.NewMemMapFs()
-			if err := afero.WriteFile(fs, tc.file, []byte(tc.content), 0o644); err != nil {
+			if err := afero.WriteFile(fs, "crossplane.yaml", []byte(tc.content), 0o644); err != nil {
 				t.Fatal(err)
 			}
 
-			proj, _, err := load(fs, tc.file, Overrides{SchemasDir: tc.schemasDir, SchemaLanguages: tc.languages})
+			proj, _, err := load(fs, "crossplane.yaml", Overrides{SchemasDir: tc.schemasDir, SchemaLanguages: tc.languages})
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")

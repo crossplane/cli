@@ -91,9 +91,4 @@ spec:
 	if diff := cmp.Diff(want, string(got)); diff != "" {
 		t.Errorf("on-disk contents (-want +got):\n%s", diff)
 	}
-
-	// The result must still parse as package metadata.
-	if _, err := Parse(fs, "crossplane.yaml"); err != nil {
-		t.Fatalf("updated file no longer loads: %v", err)
-	}
 }

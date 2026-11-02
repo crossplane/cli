@@ -31,6 +31,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/git"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -88,9 +89,9 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 	}
 
 	if c.GitToken != "" {
-		opts = append(opts, dependency.WithGitAuthProvider(&gitAuthProvider{
-			username: c.GitUsername,
-			token:    c.GitToken,
+		opts = append(opts, dependency.WithGitAuthProvider(&git.HTTPSAuthProvider{
+			Username: c.GitUsername,
+			Password: c.GitToken,
 		}))
 	}
 

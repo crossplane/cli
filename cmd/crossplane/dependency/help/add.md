@@ -19,6 +19,12 @@ dependencies. Use the `--api-only` flag to add a build-time xpkg dependency.
 
 Non-xpkg dependencies are always build-time dependencies.
 
+Git dependencies fetched over HTTPS can authenticate using `--git-token` and
+`--git-username`. Prefer the `CROSSPLANE_GIT_TOKEN` and
+`CROSSPLANE_GIT_USERNAME` environment variables to avoid exposing credentials
+in shell history. The username defaults to `x-access-token`. Credentials are not
+saved in the project file.
+
 ## Examples
 
 Retrieve the latest available semantic version of `provider-aws-eks`, generate

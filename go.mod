@@ -2,6 +2,18 @@ module github.com/crossplane/cli/v2
 
 go 1.26.8
 
+// Use an old version of go-yit, because the latest version (pulled in as a
+// transitive dependency of oapi-codegen) is incompatible with the YAML library
+// used by vmware-labs/yaml-jsonpath (also pulled in as a transitive dep of
+// oapi-codegen).
+//
+// oapi-codegen has fixed this in their main branch by cleaning up their
+// dependencies. We can remove this replace once they cut a release with the
+// fix.
+//
+// TODO(adamwg): Remove this once oapi-codegen is updated.
+replace github.com/dprotaso/go-yit => github.com/dprotaso/go-yit v0.0.0-20250513223454-5ece0c5aa76c
+
 require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.1.1

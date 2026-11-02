@@ -21,7 +21,7 @@ limitations under the License.
 // https://github.com/crossplane-contrib/crossplane-diff/commit/6a140b65a6bdb428add78680e6caee9f08b7f04b, plus later upstream additions through
 // https://github.com/crossplane-contrib/crossplane-diff/commit/d93eb87c6315cb2b44e4790e369eef3590c31dff), written as its comp and xr commands' CLI args plus an expected
 // exit code and output. runSimulate translates those args into
-// `crossplane composition simulate` args and runs the real command through
+// `crossplane composition simulate` or `crossplane xr simulate` args and runs the real command through
 // kong against the case's envtest cluster, started by
 // internal/testutils/integration, so no case table changes.
 //
@@ -173,12 +173,12 @@ func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
 }
 
 // runSimulate runs one case's args through the real `crossplane
-// composition simulate` command against cfg, and returns the exit code the command
+// composition simulate` or `crossplane xr simulate` command against cfg, and returns the exit code the command
 // would exit with, the error it would fail with, and everything it wrote,
 // including the error as main prints it.
 // Each call parses a fresh command, so a second run starts with cold
-// client caches just as a second CLI invocation would; the restricted
-// RBAC rerun relies on it.
+// client caches just as a second CLI invocation would; the determinism
+// re-run and the restricted RBAC rerun rely on it.
 func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []string, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 

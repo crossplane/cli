@@ -99,7 +99,7 @@ func (c *CompositionFlags) Validate() error {
 	return nil
 }
 
-// Hooks replace what project simulate otherwise takes from its
+// Hooks replace what a simulate command otherwise takes from its
 // environment, so a test can run the real command against a cluster it
 // started. Fields left zero keep the CLI's behavior.
 type Hooks struct {

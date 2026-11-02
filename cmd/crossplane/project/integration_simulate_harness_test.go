@@ -74,7 +74,7 @@ const defaultTimeout = 60 * time.Second
 
 // simArgs mirrors the crossplane-diff flags the integration cases pass,
 // plus each command's positional files, so runSimulate can translate
-// them into composition (or project) simulate's flags.
+// them into composition simulate's flags.
 type simArgs struct {
 	Timeout                time.Duration `default:"1m"                                                         help:"How long to run before timing out."`
 	CrossplaneRenderBinary string        `help:"Local crossplane binary to render with."                       name:"crossplane-render-binary"`
@@ -126,12 +126,12 @@ func simulateGap(_ DiffTestType, _ *simArgs) string {
 func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
 	t.Helper()
 
-	cmd := "project"
-	if testType == CompositionDiffTest {
-		cmd = "composition"
+	// ponytail: only Composition cases run here; xr simulate adds its type.
+	if testType != CompositionDiffTest {
+		t.Fatalf("simulateArgv: no simulate command for test type %q", testType)
 	}
 	argv := []string{
-		cmd, "simulate",
+		"composition", "simulate",
 		"--timeout=" + a.Timeout.String(),
 		"--output=" + a.Output,
 		"--dry-run-on=" + a.DryRunOn,
@@ -175,13 +175,13 @@ func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
 	return argv
 }
 
-// runSimulate runs one case's args through the real `crossplane project
-// simulate` command against cfg, and returns the exit code the command
+// runSimulate runs one case's args through the real `crossplane
+// composition simulate` command against cfg, and returns the exit code the command
 // would exit with, the error it would fail with, and everything it wrote,
 // including the error as main prints it.
 // Each call parses a fresh command, so a second run starts with cold
-// client caches just as a second CLI invocation would; the determinism
-// cases rely on it.
+// client caches just as a second CLI invocation would; the restricted
+// RBAC rerun relies on it.
 func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []string, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 

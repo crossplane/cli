@@ -345,7 +345,6 @@ func leastPrivilegeRules(xrVerbs ...string) []rbacv1.PolicyRule {
 	}
 }
 
-// TestDiffIntegration runs an integration test for the diff command.
 // TestCompDiffIntegration runs an integration test for the composition diff command.
 func TestCompDiffIntegration(t *testing.T) {
 	t.Parallel()

@@ -3,7 +3,8 @@ would change the composite resources in a cluster. It renders each affected
 composite resource and shows the difference from what's in the cluster. It
 doesn't change the cluster. To simulate Composition files against a cluster
 without a project, use `crossplane composition simulate`; to simulate composite
-resource or claim files, use `crossplane xr simulate`.
+resource or claim files, use `crossplane xr simulate`; to simulate managed
+resources directly, use `crossplane resource simulate`.
 
 > **Important:** Although it doesn't change the cluster, this command needs
 > `create` and `patch` permission on the resources it renders. It checks each

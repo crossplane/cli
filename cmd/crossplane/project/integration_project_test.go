@@ -20,7 +20,6 @@ package project
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -28,36 +27,12 @@ import (
 
 	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
 	"github.com/google/go-cmp/cmp"
-	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/structpb"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
 )
-
-// fakeProviderRouter routes the composed XDownstreamResource kind, and only
-// it, to a fake diff server that answers with fn.
-type fakeProviderRouter struct {
-	fn func(*diffv1alpha1.PlanRequest) (*diffv1alpha1.PlanResponse, error)
-}
-
-func (f fakeProviderRouter) Route(gk schema.GroupKind) (diffv1alpha1.PlanServiceClient, bool) {
-	if gk.Kind != "XDownstreamResource" {
-		return nil, false
-	}
-	return f, true
-}
-
-func (f fakeProviderRouter) Plan(_ context.Context, in *diffv1alpha1.PlanRequest, _ ...grpc.CallOption) (*diffv1alpha1.PlanResponse, error) {
-	return f.fn(in)
-}
-
-func strValue(s string) *diffv1alpha1.FieldValue {
-	return &diffv1alpha1.FieldValue{Kind: &diffv1alpha1.FieldValue_Value{Value: structpb.NewStringValue(s)}}
-}
 
 // projectTestCase is a `project simulate -f <project file>` run against a
 // fixture project, exercising how a project varies rather than the XR and

@@ -54,6 +54,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/composition"
+	"github.com/crossplane/cli/v2/cmd/crossplane/xr"
 	"github.com/crossplane/cli/v2/internal/config"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/ref"
@@ -69,7 +70,7 @@ const defaultTimeout = 60 * time.Second
 
 // simArgs mirrors the crossplane-diff flags the integration cases pass,
 // plus each command's positional files, so runSimulate can translate
-// them into composition simulate's flags.
+// them into composition or xr simulate's flags.
 type simArgs struct {
 	Timeout                time.Duration `default:"1m"                                                         help:"How long to run before timing out."`
 	CrossplaneRenderBinary string        `help:"Local crossplane binary to render with."                       name:"crossplane-render-binary"`
@@ -105,7 +106,7 @@ func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simA
 }
 
 // simulateArgv translates the parsed crossplane-diff args into composition
-// simulate's: the input files as -f, each --resource as a --name (and
+// or xr simulate's: the input files as -f, each --resource as a --name (and
 // --namespace), --include-manual as --include-pinned, and
 // --analyze-unchanged as its replacement --analyze-on=always. The output
 // is passed explicitly: crossplane-diff's default diff, since simulate
@@ -113,12 +114,15 @@ func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simA
 func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
 	t.Helper()
 
-	// NOTE: only Composition cases run here; xr simulate adds its type.
-	if testType != CompositionDiffTest {
-		t.Fatalf("simulateArgv: no simulate command for test type %q", testType)
+	cmd := "project"
+	switch testType {
+	case CompositionDiffTest:
+		cmd = "composition"
+	case XRDiffTest:
+		cmd = "xr"
 	}
 	argv := []string{
-		"composition", "simulate",
+		cmd, "simulate",
 		"--timeout=" + a.Timeout.String(),
 		"--output=" + a.Output,
 		"--dry-run-on=" + a.DryRunOn,
@@ -174,15 +178,16 @@ func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []s
 
 	a := parseSimulateArgs(t, testType, args)
 
-	return runSimulateArgv(t, cfg, simulateArgv(t, testType, a), a.CrossplaneRenderBinary, stdout, stderr)
+	return runSimulateArgv(t, cfg, simulateArgv(t, testType, a), a.CrossplaneRenderBinary, nil, stdout, stderr)
 }
 
-// runSimulateArgv runs `crossplane <project|composition> simulate` with argv against cfg,
-// rendering with renderBinary when it is set, as runSimulate does.
-func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, stdout, stderr io.Writer) (int, error) {
+// runSimulateArgv runs `crossplane <project|composition|xr> simulate` with argv against cfg,
+// rendering with renderBinary when it is set, as runSimulate does, and routing provider
+// plans through router, when it is non-nil, instead of started diff servers.
+func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, router simulate.Router, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
-	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &simulate.Hooks{}, stdout, stderr)
+	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &simulate.Hooks{Router: router}, stdout, stderr)
 }
 
 // withRenderBinary returns argv rendering with the local crossplane binary
@@ -194,7 +199,7 @@ func withRenderBinary(argv []string, bin string) []string {
 	return append(slices.Clip(argv), "--crossplane-binary="+bin)
 }
 
-// runSimulateArgvWith runs `crossplane <project|composition> simulate` with argv against
+// runSimulateArgvWith runs `crossplane <project|composition|xr> simulate` with argv against
 // cfg and hooks, whose RESTConfig and Terminal it sets.
 func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *simulate.Hooks, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
@@ -202,6 +207,7 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *s
 	var cli struct {
 		Project     Cmd             `cmd:""`
 		Composition composition.Cmd `cmd:""`
+		XR          xr.Cmd          `cmd:""`
 	}
 	parser, err := kong.New(&cli,
 		kong.Name("crossplane"),
@@ -237,6 +243,7 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *s
 	hooks.Terminal = true
 	cli.Project.Simulate.Hooks = hooks
 	cli.Composition.Simulate.Hooks = hooks
+	cli.XR.Simulate.Hooks = hooks
 
 	err = kctx.Run()
 	// Exit as main does: a silent ExitError, such as changes found, exits

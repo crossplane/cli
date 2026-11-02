@@ -36,12 +36,24 @@ import (
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
 )
 
-// TestSimulatePlanOutput runs project simulate's -o json simulate.ProjectResult
-// against the plain project fixture, which the diff cases cannot
-// express. Each case passes simulate args directly.
+// TestSimulatePlanOutput runs simulate's own output formats, -o plan and
+// -o json's simulate.ProjectResult, for xr, composition and the plain project
+// fixture, which crossplane-diff's cases cannot express. Each case passes
+// simulate args directly rather than crossplane-diff's.
 func TestSimulatePlanOutput(t *testing.T) {
 	t.Parallel()
 
+	xrCase := integration.Setup{
+		CRDDirs: []string{"testdata/diff/crds"},
+		SetupFiles: []string{
+			"testdata/diff/resources/xrd.yaml",
+			"testdata/diff/resources/composition.yaml",
+			"testdata/diff/resources/functions.yaml",
+		},
+		CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+			integration.Composes("testdata/diff/resources/existing-xr.yaml", "testdata/diff/resources/existing-downstream-resource.yaml"),
+		},
+	}
 	compCase := integration.Setup{
 		CRDDirs: []string{"testdata/comp/crds"},
 		SetupFiles: []string{
@@ -60,19 +72,79 @@ func TestSimulatePlanOutput(t *testing.T) {
 	another.Name = "another-resource"
 	comp := plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "xnopresources.diff.example.org"}
 
+	xrArgs := []string{"-f", "testdata/diff/modified-xr.yaml"}
 	compArgs := []string{"-f", "testdata/comp/updated-composition.yaml", "--namespace=default"}
 
 	cases := map[string]struct {
 		reason string
-		// args follow the plain project's -f, or with compArgv set, `composition simulate`.
+		// args follow the plain project's -f, or `composition simulate`'s with compArgv, or `xr simulate`'s with tt.
 		args []string
 		// compArgv runs `composition simulate` with args instead.
 		compArgv bool
+		// tt, when set, runs `xr simulate` with args against its cluster
+		// instead of compCase's.
+		tt *integration.Setup
 		// wantText is the -o plan output; empty for a json case.
 		wantText string
 		// wantResult is the -o json output, reduced by summarize.
 		wantResult *planShape
 	}{
+		"XRPlanText": {
+			reason: "-o plan, the default, prints an XR's updates grouped under it, then the summary and notes.",
+			tt:     &xrCase,
+			args:   xrArgs,
+			wantText: `XR: XNopResource.ns.diff.example.org default/test-resource
+  [~] XDownstreamResource.ns.nop.example.org default/test-resource (update)
+      spec:
+        forProvider:
+          ~ configData: "existing-value" -> "modified-value"
+
+  [~] XNopResource.ns.diff.example.org default/test-resource (update)
+      spec:
+        ~ coolField: "existing-value" -> "modified-value"
+
+Plan: 0 to add, 2 to change, 0 to destroy.
+
+Note: Provider plan not run: no provider diff server planned these resources.
+`,
+		},
+		"XRCreatePlanText": {
+			reason: "-o plan prints a dotted annotation or label key, such as crossplane.io/composite, whole as one level.",
+			tt:     &integration.Setup{CRDDirs: xrCase.CRDDirs, SetupFiles: xrCase.SetupFiles},
+			args:   []string{"-f", "testdata/diff/new-xr.yaml"},
+			wantText: `XR: XNopResource.ns.diff.example.org default/test-resource
+  [+] XDownstreamResource.ns.nop.example.org default/test-resource (create)
+      metadata:
+        annotations:
+          + crossplane.io/composition-resource-name: "nop-resource"
+        labels:
+          + crossplane.io/composite: "test-resource"
+      spec:
+        forProvider:
+          + configData: "new-value"
+
+  [+] XNopResource.ns.diff.example.org default/test-resource (create)
+      spec:
+        + coolField: "new-value"
+
+Plan: 2 to add, 0 to change, 0 to destroy.
+
+Note: Provider plan not run: no provider diff server planned these resources.
+`,
+		},
+		"XRPlanJSON": {
+			reason: "-o json emits simulate.ProjectResult: the XR as a changed composite, with both its plans grouped under it.",
+			tt:     &xrCase,
+			args:   append([]string{"-o", "json"}, xrArgs...),
+			wantResult: &planShape{
+				Summary:    plan.Summary{Update: 2},
+				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged}},
+				Plans: []planEntry{
+					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
+					{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
+				},
+			},
+		},
 		"CompPlanText": {
 			reason:   "-o plan prints the Composition's plan with its revision impact, then each affected XR's plans under it.",
 			compArgv: true,
@@ -170,14 +242,21 @@ Note: Provider plan not run: no provider diff server planned these resources.
 				t.Skip(reason)
 			}
 
-			cfg := integration.Start(t, compCase).Config
+			setup := compCase
+			if tc.tt != nil {
+				setup = *tc.tt
+			}
+			cfg := integration.Start(t, setup).Config
 
 			var stdout, stderr bytes.Buffer
 			argv := append(plainProjectArgv(t), tc.args...)
-			if tc.compArgv {
+			switch {
+			case tc.compArgv:
 				argv = append([]string{"composition", "simulate", "--timeout=" + defaultTimeout.String()}, tc.args...)
+			case tc.tt != nil:
+				argv = append([]string{"xr", "simulate", "--timeout=" + defaultTimeout.String()}, tc.args...)
 			}
-			code, err := runSimulateArgv(t, cfg, argv, localCrossplaneBinary(t), &stdout, &stderr)
+			code, err := runSimulateArgv(t, cfg, argv, localCrossplaneBinary(t), nil, &stdout, &stderr)
 			if err != nil {
 				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
 			}
@@ -428,7 +507,7 @@ func TestSimulateNameRejected(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 			argv := append(plainProjectArgv(t), tc.args...)
-			code, err := runSimulateArgv(t, cfg, argv, localCrossplaneBinary(t), &stdout, &stderr)
+			code, err := runSimulateArgv(t, cfg, argv, localCrossplaneBinary(t), nil, &stdout, &stderr)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("\n%s\nsimulate: want error containing %q, got %v (exit %d)", tc.reason, tc.wantErr, err, code)
 			}

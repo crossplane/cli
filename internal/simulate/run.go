@@ -563,7 +563,7 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 			return err
 		}
 	} else {
-		ics, err := ImageConfigs(c.ImageConfigs, "")
+		ics, err := c.flagImageConfigs()
 		if err != nil {
 			return err
 		}
@@ -599,6 +599,17 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 	xrProc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
 	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, project))
+}
+
+// flagImageConfigs returns the ImageConfigs from --image-configs, or none.
+// Unlike ImageConfigs it never falls back to a project file in the current
+// directory: a command that takes files rather than a project uses only what
+// the user passed.
+func (c *Flags) flagImageConfigs() ([]pkgv1beta1.ImageConfig, error) {
+	if c.ImageConfigs == "" {
+		return nil, nil
+	}
+	return ImageConfigs(c.ImageConfigs, "")
 }
 
 // warnIgnoredFlags prints a warning to stderr for each flag set on the

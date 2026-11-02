@@ -914,3 +914,21 @@ func parseFlags(t *testing.T, args ...string) (*Flags, error) {
 	_, err = parser.Parse(append([]string{"simulate"}, args...))
 	return &cli.Simulate, err
 }
+
+func TestFlagImageConfigsIgnoresProjectFile(t *testing.T) {
+	// A Composition run inside a project directory must not read its
+	// project file: an unparseable one would otherwise fail the run.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "crossplane-project.yaml"), []byte("{not: [yaml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	ics, err := (&Flags{}).flagImageConfigs()
+	if err != nil {
+		t.Errorf("flagImageConfigs(): want no error, got %v", err)
+	}
+	if len(ics) != 0 {
+		t.Errorf("flagImageConfigs(): want no ImageConfigs, got %v", ics)
+	}
+}

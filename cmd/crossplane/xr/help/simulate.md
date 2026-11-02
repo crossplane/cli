@@ -7,8 +7,9 @@ the difference from what's in the cluster. It doesn't change the cluster.
 resources or claims to simulate, and is required. Repeat it for more; `-f -`
 reads standard input. Every resource in them must be a kind an XRD in the
 cluster defines as a composite resource or claim; to simulate a Composition, use
-`crossplane composition simulate`, and to simulate a project, use
-`crossplane project simulate`. A claim is simulated as its composite resource,
+`crossplane composition simulate`, to simulate a project, use
+`crossplane project simulate`, and to simulate managed resources directly, use
+`crossplane resource simulate`. A claim is simulated as its composite resource,
 and its result is listed under the claim's name.
 Functions come from the cluster. `--cache-dir` sets where provider package
 contents are cached.

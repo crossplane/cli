@@ -340,8 +340,8 @@ type Flags struct {
 
 `crossplane resource simulate` shares the diff server, timeout, and output
 flags, and takes its resources from `-f` files instead of project
-discovery. Both commands enter the tree with the CLI's `maturity:"alpha"`
-tag and graduate the way every other command does.
+discovery. Each simulate command enters the tree with the CLI's
+`maturity:"alpha"` tag and graduates the way every other command does.
 
 ### Running Diff Servers Like Render Runs Functions
 
@@ -517,8 +517,9 @@ standalone packaging forced them to build.
   files instead of being discovered from a project, and `xr` is the same
   preview driven by a changed XR file with the Compositions coming from the
   cluster. They become `composition simulate` and `xr simulate`, beside
-  `project simulate` (`-f` for changed Compositions or XRs, `--namespace`
-  and `--name` to scope the cluster side), and both gain the plan layer as
+  `project simulate` (`-f` for changed Compositions or XRs;
+  `composition simulate` adds `--namespace` and `--name` to scope the
+  cluster side), and both gain the plan layer as
   their upgrade. That upgrade is strictly additive, so today's diff
   functionality is subsumed rather than replaced: planning is a capability
   simulate detects per resource, and a resource with no diff server gets

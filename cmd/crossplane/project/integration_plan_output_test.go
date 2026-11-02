@@ -346,7 +346,7 @@ func TestSimulatePinnedChangedFunction(t *testing.T) {
 			if code != dp.ExitCodeDiffDetected {
 				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, dp.ExitCodeDiffDetected, code)
 			}
-			if c.Status != simulate.CompositeChanged || !c.Pinned || c.Detail != "rendered against pinned revision "+rev+" with the project's functions" {
+			if c.Status != simulate.CompositeChanged || !c.Pinned || c.Detail != "rendered against pinned revision "+rev+" with the changed functions" {
 				t.Errorf("\n%s\nsimulate -o json: want a changed pinned composite rendered against %s, got %+v", tc.reason, rev, c)
 			}
 			// The plan is rendered by the project's build of the function the

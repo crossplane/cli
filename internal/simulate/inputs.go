@@ -17,14 +17,19 @@ limitations under the License.
 package simulate
 
 import (
+	"context"
 	"fmt"
 
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
+	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	ld "github.com/crossplane/cli/v2/pkg/load"
 )
+
+// XRTakes is what xr simulate takes, for RejectInput.
+const XRTakes = "xr simulate takes composite resource or claim files"
 
 // RejectInput returns the error for an -f input r that the command doesn't
 // take. takes describes what the command does take, e.g. "composition
@@ -68,6 +73,25 @@ func RejectDuplicateNames(comps []*un.Unstructured) error {
 			return errors.Errorf("Composition %q is defined more than once; Composition names must be unique", c.GetName())
 		}
 		seen[c.GetName()] = true
+	}
+	return nil
+}
+
+// checkComposites rejects resources that no XRD in the cluster defines as a
+// composite resource or claim, such as package metadata, a Provider or a
+// ConfigMap, which the engine would otherwise fail on with no hint at what -f
+// accepts. The definition client caches the XRDs when it initializes, so the
+// check costs no extra calls.
+func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, resources []*un.Unstructured) error {
+	for _, r := range resources {
+		gvk := r.GroupVersionKind()
+		if xrd, err := defs.GetXRDForClaim(ctx, gvk); err == nil && xrd != nil {
+			continue
+		}
+		if xrd, err := defs.GetXRDForXR(ctx, gvk); err == nil && xrd != nil {
+			continue
+		}
+		return RejectInput(r, XRTakes)
 	}
 	return nil
 }

@@ -17,6 +17,8 @@ limitations under the License.
 package simulate
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,8 +26,11 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+
+	"github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 
 func TestLoadInputs(t *testing.T) {
@@ -207,6 +212,69 @@ spec:
 			}
 			if diff := cmp.Diff(tc.want.names, names); diff != "" {
 				t.Errorf("\n%s\nLoadInputs(%v): -want, +got:\n%s", tc.reason, tc.paths, diff)
+			}
+		})
+	}
+}
+
+func TestCheckComposites(t *testing.T) {
+	xrGVK := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XThing"}
+	claimGVK := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "Thing"}
+	xrd := &un.Unstructured{}
+	lookup := func(want schema.GroupVersionKind) func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) {
+		return func(_ context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
+			if gvk == want {
+				return xrd, nil
+			}
+			return nil, errors.New("no XRD found")
+		}
+	}
+	defs := &testutils.MockDefinitionClient{GetXRDForXRFn: lookup(xrGVK), GetXRDForClaimFn: lookup(claimGVK)}
+	res := func(apiVersion, kind, name string) *un.Unstructured {
+		return &un.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": map[string]any{"name": name}}}
+	}
+
+	cases := map[string]struct {
+		reason    string
+		resources []*un.Unstructured
+		err       string
+	}{
+		"XRAndClaim": {
+			reason:    "Resources an XRD defines as a composite resource or claim should be accepted.",
+			resources: []*un.Unstructured{res("example.org/v1", "XThing", "x"), res("example.org/v1", "Thing", "t")},
+		},
+		"ConfigurationMetadata": {
+			reason:    "A Configuration package metadata file should be rejected in the shared template, with no other command to point at.",
+			resources: []*un.Unstructured{res("meta.pkg.crossplane.io/v1", "Configuration", "cfg")},
+			err:       `-f inputs include Configuration "cfg" (meta.pkg.crossplane.io/v1); xr simulate takes composite resource or claim files`,
+		},
+		"Provider": {
+			reason:    "A Provider should be rejected.",
+			resources: []*un.Unstructured{res("example.org/v1", "XThing", "x"), res("pkg.crossplane.io/v1", "Provider", "provider-aws")},
+			err:       `-f inputs include Provider "provider-aws" (pkg.crossplane.io/v1); xr simulate takes composite resource or claim files`,
+		},
+		"ConfigMap": {
+			reason:    "A non-Crossplane kind should be rejected.",
+			resources: []*un.Unstructured{res("v1", "ConfigMap", "cm")},
+			err:       `-f inputs include ConfigMap "cm" (v1); xr simulate takes composite resource or claim files`,
+		},
+		"WrongVersion": {
+			reason:    "A composite resource at a version its XRD doesn't define should be rejected.",
+			resources: []*un.Unstructured{res("example.org/v2", "XThing", "x")},
+			err:       `-f inputs include XThing "x" (example.org/v2); xr simulate takes composite resource or claim files`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := checkComposites(context.Background(), defs, tc.resources)
+			if tc.err == "" {
+				if err != nil {
+					t.Fatalf("\n%s\ncheckComposites(...): %v", tc.reason, err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.err {
+				t.Fatalf("\n%s\ncheckComposites(...): want error %q, got %v", tc.reason, tc.err, err)
 			}
 		})
 	}

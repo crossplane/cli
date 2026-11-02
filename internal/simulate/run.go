@@ -229,6 +229,29 @@ func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp
 	}
 }
 
+// diffComposites returns the diff simulate runs for composite resources and
+// claims: each rendered with the cluster's Compositions and functions, as in
+// crossplane-diff's xr command. A claim is simulated as its XR, but the
+// report names the input, so its result is listed under the claim's name
+// (crossplane/cli#367).
+func (c *Flags) diffComposites(k *kong.Context, logger logging.Logger, proc dp.DiffProcessor, xp *xpclient.Clients, xrs []*un.Unstructured) func(context.Context) (bool, error) {
+	return func(ctx context.Context) (bool, error) {
+		if err := checkComposites(ctx, xp.Definition, xrs); err != nil {
+			return false, err
+		}
+		report, err := proc.PerformDiff(ctx, xrs, xp.Composition.FindMatchingComposition)
+
+		// Render the report even when there are errors, so successful XRs
+		// are shown and structured output stays valid. The renderer
+		// includes the errors in structured output.
+		changed := report != nil && report.HasChanges()
+		if report != nil {
+			changed, err = c.renderXRReport(k, logger, report, err)
+		}
+		return changed, errors.Wrap(err, "cannot simulate composite resources")
+	}
+}
+
 // setFlags returns the names of the flags set on the command line, not
 // those left at their defaults or set from the environment.
 func setFlags(k *kong.Context) map[string]bool {
@@ -431,6 +454,17 @@ func (c *Flags) notes() []string {
 	return planNotes(c.SkipPlan, true, c.xrPlanner.Routed(), c.xrPlanner.Considered())
 }
 
+// renderXRReport writes an xr run's report in the format -o selects, as
+// renderReport does.
+func (c *Flags) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport, runErr error) (bool, error) {
+	plans := c.providerPlans()
+	return c.renderReport(k, logger, runErr, FromXRReport(r, plans, c.keep), r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
+		// Annotated even without plans, so a Secret's values are redacted.
+		r = AnnotateXRReport(r, plans)
+		return renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
+	})
+}
+
 // renderCompReport writes a composition run's report in the format -o
 // selects, as renderReport does.
 func (c *Flags) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput, runErr error) (bool, error) {
@@ -518,7 +552,8 @@ func isTerminal(w io.Writer) bool {
 }
 
 // Run previews in against the cluster: a project's Compositions, with its
-// functions built locally, or Composition files, with the cluster's
+// functions built locally, Composition files, with the cluster's functions,
+// or composite resource or claim files, with the cluster's Compositions and
 // functions.
 func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, in *Inputs) error {
 	if in.Selection != nil {
@@ -597,6 +632,9 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 		opts = append(opts, planOpts...)
 	}
 	xrProc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
+	if in.Composites != nil {
+		return c.simulate(sigCtx, logger, clients.Initialize, xrProc, c.diffComposites(k, logger, xrProc, &clients.XpClients, in.Composites))
+	}
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
 	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, msg))
 }
@@ -643,12 +681,18 @@ type Built struct {
 type Inputs struct {
 	// Build builds the project. Run calls it after loading the kubeconfig,
 	// so a bad context fails before the slow build.
-	// Build is nil for a command that takes Compositions instead.
+	// Build is nil for a command that takes Compositions or composite
+	// resources instead.
 	Build func(ctx context.Context) (*Built, error)
 
 	// Compositions are the Compositions to simulate, with the cluster's
 	// functions, when Build is nil.
 	Compositions []*un.Unstructured
+
+	// Composites are the composite resources or claims to simulate, with the
+	// cluster's Compositions and functions, when Build is nil. When set,
+	// Compositions is unused.
+	Composites []*un.Unstructured
 
 	// Selection limits the run to the composite resources it selects. A
 	// command without CompositionFlags leaves it nil, which selects them all.

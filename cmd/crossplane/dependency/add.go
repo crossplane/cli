@@ -30,7 +30,6 @@ import (
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
-	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -64,7 +63,7 @@ func (c *addCmd) Help() string {
 func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
-	proj, projFS, projFile, err := loadProject(c.ProjectFile, projectfile.Overrides{
+	proj, store, projFS, err := loadProject(c.ProjectFile, Overrides{
 		SchemasDir:      c.SchemasDir,
 		SchemaLanguages: c.SchemaLanguages,
 	})
@@ -78,7 +77,7 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	}
 
 	m := dependency.NewManager(proj, projFS,
-		dependency.WithProjectFile(projFile),
+		dependency.WithStore(store),
 		dependency.WithSchemaGenerators(generator.Filter(
 			generator.AllLanguages(
 				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),

@@ -49,10 +49,10 @@ import (
 // Manager manages dependencies for a Crossplane project, including fetching
 // packages, extracting CRDs, and generating schemas.
 type Manager struct {
-	proj     *v1alpha1.Project
-	projFS   afero.Fs
-	projFile string
-	schemas  *smanager.Manager
+	proj    *v1alpha1.Project
+	projFS  afero.Fs
+	store   Store
+	schemas *smanager.Manager
 
 	gitCloner       git.Cloner
 	gitAuthProvider git.AuthProvider
@@ -67,11 +67,21 @@ type Manager struct {
 	visitedMu sync.Mutex
 }
 
+// Store records dependencies in the file that declares them.
+type Store interface {
+	// Supports returns an error if the file can't express dep.
+	Supports(dep v1alpha1.Dependency) error
+	// Upsert writes dep to the file, replacing any existing entry for the
+	// same source.
+	Upsert(dep v1alpha1.Dependency) error
+}
+
 // ManagerOption configures the dependency manager.
 type ManagerOption func(*managerOptions)
 
 type managerOptions struct {
 	projFile         string
+	store            Store
 	schemaFS         afero.Fs
 	schemaGenerators []generator.Interface
 	schemaRunner     runner.SchemaRunner
@@ -83,6 +93,14 @@ type managerOptions struct {
 func WithProjectFile(path string) ManagerOption {
 	return func(opts *managerOptions) {
 		opts.projFile = path
+	}
+}
+
+// WithStore sets where AddDependency records dependencies. It defaults to the
+// project file set by WithProjectFile.
+func WithStore(s Store) ManagerOption {
+	return func(opts *managerOptions) {
+		opts.store = s
 	}
 }
 
@@ -141,6 +159,10 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 		opt(options)
 	}
 
+	if options.store == nil {
+		options.store = projectfile.NewStore(projFS, options.projFile)
+	}
+
 	schemas := smanager.New(
 		options.schemaFS,
 		options.schemaGenerators,
@@ -150,7 +172,7 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 	return &Manager{
 		proj:            proj,
 		projFS:          projFS,
-		projFile:        options.projFile,
+		store:           options.store,
 		schemas:         schemas,
 		gitCloner:       &git.DefaultCloner{},
 		gitAuthProvider: options.gitAuthProvider,
@@ -300,16 +322,10 @@ func runtimeGVKForPackage(pkg *runtimexpkg.Package) (*schema.GroupVersionKind, e
 }
 
 // AddDependency adds a dependency, generates schemas for it, and persists the
-// dependency to the project file, or to spec.dependsOn when the file is
-// Configuration package metadata.
+// dependency using the manager's store.
 func (m *Manager) AddDependency(ctx context.Context, dep *v1alpha1.Dependency) error {
-	isProject, err := projectfile.IsProjectFile(m.projFS, m.projFile)
-	if err != nil {
+	if err := m.store.Supports(*dep); err != nil {
 		return err
-	}
-	// Package metadata can only express runtime xpkg dependencies.
-	if !isProject && (dep.Xpkg == nil || dep.Xpkg.APIOnly) {
-		return errors.New("package metadata files support only runtime xpkg dependencies; use a project file for k8s, CRD, or API-only dependencies")
 	}
 
 	gvk, err := m.addDependencyNoWrite(ctx, dep, false)
@@ -328,13 +344,8 @@ func (m *Manager) AddDependency(ctx context.Context, dep *v1alpha1.Dependency) e
 	m.updateMutex.Lock()
 	defer m.updateMutex.Unlock()
 
-	upsertDependency(m.proj, *dep)
-	if !isProject {
-		return projectfile.UpsertConfigurationDependency(m.projFS, m.projFile, *dep.Xpkg)
-	}
-	return projectfile.Update(m.projFS, m.projFile, func(p *v1alpha1.Project) {
-		upsertDependency(p, *dep)
-	})
+	projectfile.UpsertDependency(m.proj, *dep)
+	return m.store.Upsert(*dep)
 }
 
 // AddAll adds all dependencies configured in the project. If ch is non-nil,
@@ -426,32 +437,4 @@ func GetSourceDescription(dep v1alpha1.Dependency) string {
 	default:
 		return "unknown source"
 	}
-}
-
-func upsertDependency(proj *v1alpha1.Project, dep v1alpha1.Dependency) {
-	for i, existing := range proj.Spec.Dependencies {
-		if matchesDependency(existing, dep) {
-			proj.Spec.Dependencies[i] = dep
-			return
-		}
-	}
-
-	proj.Spec.Dependencies = append(proj.Spec.Dependencies, dep)
-}
-
-func matchesDependency(a, b v1alpha1.Dependency) bool {
-	if a.Type != b.Type {
-		return false
-	}
-	switch {
-	case a.Xpkg != nil && b.Xpkg != nil:
-		return a.Xpkg.Package == b.Xpkg.Package
-	case a.Git != nil && b.Git != nil:
-		return a.Git.Repository == b.Git.Repository
-	case a.HTTP != nil && b.HTTP != nil:
-		return a.HTTP.URL == b.HTTP.URL
-	case a.K8s != nil && b.K8s != nil:
-		return true // Only one k8s dep makes sense.
-	}
-	return false
 }

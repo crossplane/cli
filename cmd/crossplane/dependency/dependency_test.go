@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package projectfile
+package dependency
 
 import (
 	"slices"
@@ -22,7 +22,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/afero"
-	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 )
@@ -182,9 +181,9 @@ func TestLoad(t *testing.T) {
 			languages: []string{"cobol"},
 			wantErr:   true,
 		},
-		"NotAConfiguration": {
+		"UnsupportedMetaKind": {
 			file:    "crossplane.yaml",
-			content: "apiVersion: meta.pkg.crossplane.io/v1\nkind: Provider\n",
+			content: "apiVersion: meta.pkg.crossplane.io/v1\nkind: Bogus\n",
 			wantErr: true,
 		},
 	}
@@ -198,7 +197,7 @@ func TestLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			proj, err := Load(fs, tc.file, Overrides{SchemasDir: tc.schemasDir, SchemaLanguages: tc.languages, K8sVersion: tc.k8sVersion})
+			proj, _, err := load(fs, tc.file, Overrides{SchemasDir: tc.schemasDir, SchemaLanguages: tc.languages, K8sVersion: tc.k8sVersion})
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -219,67 +218,5 @@ func TestLoad(t *testing.T) {
 				t.Errorf("dependencies (-want +got):\n%s", diff)
 			}
 		})
-	}
-}
-
-func TestUpsertConfigurationDependency(t *testing.T) {
-	t.Parallel()
-
-	fs := afero.NewMemMapFs()
-	if err := afero.WriteFile(fs, "crossplane.yaml", []byte(testMeta), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Replaces the deprecated-style function entry in place.
-	if err := UpsertConfigurationDependency(fs, "crossplane.yaml", v1alpha1.XpkgDependency{
-		APIVersion: "pkg.crossplane.io/v1", Kind: "Function",
-		Package: "xpkg.crossplane.io/crossplane-contrib/function-auto-ready", Version: "v0.6.0",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// Appends a new entry.
-	if err := UpsertConfigurationDependency(fs, "crossplane.yaml", v1alpha1.XpkgDependency{
-		APIVersion: "pkg.crossplane.io/v1", Kind: "Provider",
-		Package: "xpkg.crossplane.io/crossplane-contrib/provider-new", Version: "v1.0.0",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := afero.ReadFile(fs, "crossplane.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	want := `apiVersion: meta.pkg.crossplane.io/v1
-kind: Configuration
-metadata:
-  name: my-config
-spec:
-  dependsOn:
-  - apiVersion: pkg.crossplane.io/v1
-    kind: Provider
-    package: xpkg.crossplane.io/crossplane-contrib/provider-nop
-    version: '>=v0.2.0'
-  - apiVersion: pkg.crossplane.io/v1
-    kind: Function
-    package: xpkg.crossplane.io/crossplane-contrib/function-auto-ready
-    version: v0.6.0
-  - configuration: xpkg.crossplane.io/crossplane-contrib/configuration-foo
-  - apiVersion: pkg.crossplane.io/v1
-    kind: Provider
-    package: xpkg.crossplane.io/crossplane-contrib/provider-new
-    version: v1.0.0
-`
-	if diff := cmp.Diff(want, string(got)); diff != "" {
-		t.Errorf("on-disk contents (-want +got):\n%s", diff)
-	}
-
-	// The result must still parse as a Configuration.
-	var doc map[string]any
-	if err := yaml.Unmarshal(got, &doc); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(fs, "crossplane.yaml", Overrides{}); err != nil {
-		t.Fatalf("updated file no longer loads: %v", err)
 	}
 }

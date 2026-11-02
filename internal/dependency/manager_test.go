@@ -38,7 +38,7 @@ import (
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/async"
-	"github.com/crossplane/cli/v2/internal/project/projectfile"
+	"github.com/crossplane/cli/v2/internal/project/metafile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
@@ -1033,27 +1033,30 @@ metadata:
 	if err := afero.WriteFile(projFS, "crossplane.yaml", []byte(meta), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	proj, err := projectfile.Load(projFS, "crossplane.yaml", projectfile.Overrides{})
+	pkg, err := metafile.Parse(projFS, "crossplane.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
+	proj := metafile.ToProject(pkg)
+	proj.Default()
 
 	m := NewManager(proj, projFS,
-		WithProjectFile("crossplane.yaml"),
+		WithStore(metafile.NewStore(projFS, "crossplane.yaml")),
 		WithSchemaFS(afero.NewMemMapFs()),
 		WithSchemaGenerators([]generator.Interface{}),
 		WithXpkgClient(clixpkg.WrapClient(fc)),
 	)
 
-	if err := m.AddDependency(context.Background(), xpkgDep(prov, "v0.1.0")); err != nil {
+	if err := m.AddDependency(t.Context(), xpkgDep(prov, "v0.1.0")); err != nil {
 		t.Fatalf("AddDependency: %v", err)
 	}
 
 	// The dependency is persisted to spec.dependsOn and loads back.
-	got, err := projectfile.Load(projFS, "crossplane.yaml", projectfile.Overrides{})
+	gotPkg, err := metafile.Parse(projFS, "crossplane.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := metafile.ToProject(gotPkg)
 	want := []v1alpha1.Dependency{{
 		Type: v1alpha1.DependencyTypeXpkg,
 		Xpkg: &v1alpha1.XpkgDependency{
@@ -1069,7 +1072,7 @@ metadata:
 
 	// Dependencies package metadata can't express are rejected.
 	k8s := &v1alpha1.Dependency{Type: v1alpha1.DependencyTypeK8s, K8s: &v1alpha1.K8sDependency{Version: "v1.33.0"}}
-	if err := m.AddDependency(context.Background(), k8s); err == nil {
+	if err := m.AddDependency(t.Context(), k8s); err == nil {
 		t.Error("expected error adding k8s dependency to package metadata, got nil")
 	}
 }

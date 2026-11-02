@@ -30,7 +30,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
-	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -61,7 +60,7 @@ func (c *updateCacheCmd) Help() string {
 func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
-	proj, projFS, projFile, err := loadProject(c.ProjectFile, projectfile.Overrides{
+	proj, store, projFS, err := loadProject(c.ProjectFile, Overrides{
 		SchemasDir:      c.SchemasDir,
 		SchemaLanguages: c.SchemaLanguages,
 		K8sVersion:      c.K8sVersion,
@@ -76,7 +75,7 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 	}
 
 	opts := []dependency.ManagerOption{
-		dependency.WithProjectFile(projFile),
+		dependency.WithStore(store),
 		dependency.WithSchemaGenerators(generator.Filter(
 			generator.AllLanguages(
 				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
@@ -120,13 +119,13 @@ func (c *cleanCacheCmd) Help() string {
 
 // Run executes the clean-cache command.
 func (c *cleanCacheCmd) Run(k *kong.Context, _ logging.Logger) error {
-	proj, projFS, projFile, err := loadProject(c.ProjectFile, projectfile.Overrides{SchemasDir: c.SchemasDir})
+	proj, store, projFS, err := loadProject(c.ProjectFile, Overrides{SchemasDir: c.SchemasDir})
 	if err != nil {
 		return err
 	}
 
 	m := dependency.NewManager(proj, projFS,
-		dependency.WithProjectFile(projFile),
+		dependency.WithStore(store),
 	)
 
 	if err := m.Clean(); err != nil {

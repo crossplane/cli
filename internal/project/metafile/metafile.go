@@ -14,126 +14,58 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package projectfile
+// Package metafile reads and edits Crossplane package metadata files
+// (crossplane.yaml) for dependency management.
+package metafile
 
 import (
-	"os"
-	"path/filepath"
-	"slices"
-
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/afero"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
-	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	pkgmetav1 "github.com/crossplane/crossplane/apis/v2/pkg/meta/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
-	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/internal/project/projectfile"
 )
 
 // defaultXpkgVersion is the version constraint used for package metadata
 // dependencies that don't specify a version.
 const defaultXpkgVersion = ">=v0.0.0"
 
-// Resolve returns the absolute path of the project or package metadata file to
-// use. An explicit path is returned as-is (made absolute). Otherwise it probes
-// for crossplane-project.yaml and then crossplane.yaml in the working
-// directory.
-func Resolve(path string) (string, error) {
-	if path != "" {
-		return filepath.Abs(path)
-	}
-
-	for _, name := range []string{clixpkg.ProjectFile, runtimexpkg.MetaFile} {
-		abs, err := filepath.Abs(name)
-		if err != nil {
-			return "", errors.Wrapf(err, "cannot determine path for %q", name)
-		}
-		if _, err := os.Stat(abs); err == nil {
-			return abs, nil
-		}
-	}
-
-	return "", errors.Errorf("neither %s nor %s found in the current directory", clixpkg.ProjectFile, runtimexpkg.MetaFile)
-}
-
-// Overrides are settings supplied on the command line that take precedence over the file.
-// They exist mainly because package metadata can't express them, but they apply to project files too.
-// The file on disk is never changed.
-type Overrides struct {
-	// K8sVersion replaces any k8s dependency with one for this Kubernetes version, or adds one if there is none.
-	K8sVersion string
-	// SchemasDir overrides paths.schemas. It must be a relative subdirectory of the file's directory.
-	SchemasDir string
-	// SchemaLanguages overrides schemas.languages. Each must be a supported schema language.
-	SchemaLanguages []string
-}
-
-// Load parses either a project file or a Configuration package metadata file (crossplane.yaml),
-// applies the overrides, and returns a Project with defaults applied.
-// A metadata file is converted into an in-memory Project whose dependencies are the
-// metadata package dependencies.
-func Load(fs afero.Fs, file string, o Overrides) (*v1alpha1.Project, error) {
-	// The schemas directory is removed by clean-cache, so it must be a strict
-	// subdirectory of the project directory.
-	if o.SchemasDir != "" && (!filepath.IsLocal(o.SchemasDir) || filepath.Clean(o.SchemasDir) == ".") {
-		return nil, errors.Errorf("schemas directory %q must be a relative subdirectory of the project directory", o.SchemasDir)
-	}
-
-	isProject, err := IsProjectFile(fs, file)
+// Parse parses Configuration package metadata.
+func Parse(fs afero.Fs, file string) (pkgmetav1.Pkg, error) {
+	bs, err := afero.ReadFile(fs, file)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "failed to read package metadata file %q", file)
 	}
 
-	var proj *v1alpha1.Project
-	if isProject {
-		proj, err = ParseWithoutDefaults(fs, file)
-	} else {
-		var cfg *pkgmetav1.Configuration
-		cfg, err = clixpkg.ParseConfiguration(fs, file)
-		if err == nil {
-			proj = FromConfiguration(cfg)
-		}
+	var tm metav1.TypeMeta
+	if err := yaml.Unmarshal(bs, &tm); err != nil {
+		return nil, errors.Wrap(err, "failed to parse package metadata file")
 	}
-	if err != nil {
-		return nil, err
+	if want := pkgmetav1.SchemeGroupVersion.String(); tm.APIVersion != want {
+		return nil, errors.Errorf("unsupported package metadata apiVersion %q, expected %q", tm.APIVersion, want)
 	}
 
-	if o.SchemasDir != "" {
-		if proj.Spec.Paths == nil {
-			proj.Spec.Paths = &v1alpha1.ProjectPaths{}
-		}
-		proj.Spec.Paths.Schemas = o.SchemasDir
+	var pkg pkgmetav1.Pkg
+	switch tm.Kind {
+	case pkgmetav1.ConfigurationKind:
+		pkg = &pkgmetav1.Configuration{}
+	default:
+		return nil, errors.Errorf("unsupported package metadata kind %q", tm.Kind)
 	}
-	if len(o.SchemaLanguages) > 0 {
-		if proj.Spec.Schemas == nil {
-			proj.Spec.Schemas = &v1alpha1.ProjectSchemas{}
-		}
-		proj.Spec.Schemas.Languages = o.SchemaLanguages
-		if err := errors.Join(proj.Spec.Schemas.Validate()...); err != nil {
-			return nil, err
-		}
+	if err := yaml.Unmarshal(bs, pkg); err != nil {
+		return nil, errors.Wrap(err, "failed to parse package metadata file")
 	}
-	if o.K8sVersion != "" {
-		// Only one k8s dependency makes sense, so replace any existing one.
-		proj.Spec.Dependencies = slices.DeleteFunc(proj.Spec.Dependencies, func(d v1alpha1.Dependency) bool {
-			return d.Type == v1alpha1.DependencyTypeK8s
-		})
-		proj.Spec.Dependencies = append(proj.Spec.Dependencies, v1alpha1.Dependency{
-			Type: v1alpha1.DependencyTypeK8s,
-			K8s:  &v1alpha1.K8sDependency{Version: o.K8sVersion},
-		})
-	}
-	proj.Default()
-
-	return proj, nil
+	return pkg, nil
 }
 
-// FromConfiguration converts Configuration package metadata into a Project
+// ToProject converts package metadata into a Project
 // whose dependencies are the metadata's package dependencies.
 //
 // TODO: review, we might want this now, or postpone to a separate PR:
@@ -141,12 +73,12 @@ func Load(fs afero.Fs, file string, o Overrides) (*v1alpha1.Project, error) {
 // Package annotations, spec.crossplane and capabilities are dropped.
 // It can be extended to map those fields when a consumer needs them, potentially a
 // `crossplane project init --from crossplane.yaml`, or the same with `crossplane project build`.
-func FromConfiguration(cfg *pkgmetav1.Configuration) *v1alpha1.Project {
+func ToProject(pkg pkgmetav1.Pkg) *v1alpha1.Project {
 	proj := &v1alpha1.Project{}
-	proj.APIVersion, proj.Kind = APIVersion, Kind
-	proj.Name = cfg.Name
+	proj.APIVersion, proj.Kind = projectfile.APIVersion, projectfile.Kind
+	proj.Name = pkg.GetName()
 
-	for _, dep := range cfg.Spec.DependsOn {
+	for _, dep := range pkg.GetDependencies() {
 		x, ok := xpkgDependency(dep)
 		if !ok {
 			continue
@@ -160,11 +92,11 @@ func FromConfiguration(cfg *pkgmetav1.Configuration) *v1alpha1.Project {
 	return proj
 }
 
-// UpsertConfigurationDependency adds dep to the dependsOn list of the
-// Configuration package metadata file, replacing any existing entry for the
+// UpsertDependency adds dep to the dependsOn list of the
+// package metadata file, replacing any existing entry for the
 // same package. The file is edited as generic YAML so that fields are not
 // defaulted; like Update, formatting and comments are not preserved.
-func UpsertConfigurationDependency(fs afero.Fs, file string, dep v1alpha1.XpkgDependency) error {
+func UpsertDependency(fs afero.Fs, file string, dep v1alpha1.XpkgDependency) error {
 	bs, err := afero.ReadFile(fs, file)
 	if err != nil {
 		return errors.Wrapf(err, "failed to read package metadata file %q", file)
@@ -263,4 +195,30 @@ func xpkgDependency(dep pkgmetav1.Dependency) (*v1alpha1.XpkgDependency, bool) {
 		x.Version = defaultXpkgVersion
 	}
 	return x, true
+}
+
+// NewStore returns a Store that records dependencies in a package metadata file.
+func NewStore(fs afero.Fs, file string) *Store {
+	return &Store{fs: fs, file: file}
+}
+
+// Store records dependencies in the spec.dependsOn list of a package metadata
+// file.
+type Store struct {
+	fs   afero.Fs
+	file string
+}
+
+// Supports accepts only runtime xpkg dependencies, the only kind package
+// metadata can express.
+func (s *Store) Supports(dep v1alpha1.Dependency) error {
+	if dep.Xpkg == nil || dep.Xpkg.APIOnly {
+		return errors.New("package metadata files support only runtime xpkg dependencies; use a project file for k8s, CRD, or API-only dependencies")
+	}
+	return nil
+}
+
+// Upsert writes dep to the spec.dependsOn list of the metadata file.
+func (s *Store) Upsert(dep v1alpha1.Dependency) error {
+	return UpsertDependency(s.fs, s.file, *dep.Xpkg)
 }

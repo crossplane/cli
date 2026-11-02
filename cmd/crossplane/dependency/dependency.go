@@ -19,10 +19,17 @@ package dependency
 
 import (
 	"path/filepath"
+	"slices"
 
 	"github.com/spf13/afero"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+
+	pkgmetav1 "github.com/crossplane/crossplane/apis/v2/pkg/meta/v1"
+
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/project/metafile"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 )
 
@@ -35,18 +42,93 @@ type Cmd struct {
 
 // loadProject finds and loads the project or package metadata file at path,
 // probing the working directory when path is empty.
-// projFS is rooted at the file's directory and projFile is the file's name within it.
-func loadProject(path string, o projectfile.Overrides) (proj *v1alpha1.Project, projFS afero.Fs, projFile string, err error) {
+// projFS is rooted at the file's directory; store writes back to the file.
+func loadProject(path string, o Overrides) (proj *v1alpha1.Project, store dependency.Store, projFS afero.Fs, err error) {
 	abs, err := projectfile.Resolve(path)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, nil, err
 	}
 	projFS = afero.NewBasePathFs(afero.NewOsFs(), filepath.Dir(abs))
-	projFile = filepath.Base(abs)
 
-	proj, err = projectfile.Load(projFS, projFile, o)
+	proj, store, err = load(projFS, filepath.Base(abs), o)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, nil, err
 	}
-	return proj, projFS, projFile, nil
+	return proj, store, projFS, nil
+}
+
+// Overrides are settings supplied on the command line that take precedence over the file.
+// They exist mainly because package metadata can't express them, but they apply to project files too.
+// The file on disk is never changed.
+type Overrides struct {
+	// K8sVersion replaces any k8s dependency with one for this Kubernetes version, or adds one if there is none.
+	K8sVersion string
+	// SchemasDir overrides paths.schemas. It must be a relative subdirectory of the file's directory.
+	SchemasDir string
+	// SchemaLanguages overrides schemas.languages. Each must be a supported schema language.
+	SchemaLanguages []string
+}
+
+// load parses either a project file or a package metadata file (crossplane.yaml),
+// applies the overrides, and returns a Project with defaults applied, plus the
+// Store that writes dependencies back to the file.
+// A metadata file is converted into an in-memory Project whose dependencies are the
+// metadata package dependencies.
+func load(fs afero.Fs, file string, o Overrides) (*v1alpha1.Project, dependency.Store, error) {
+	// The schemas directory is removed by clean-cache, so it must be a strict
+	// subdirectory of the project directory.
+	if o.SchemasDir != "" && (!filepath.IsLocal(o.SchemasDir) || filepath.Clean(o.SchemasDir) == ".") {
+		return nil, nil, errors.Errorf("schemas directory %q must be a relative subdirectory of the project directory", o.SchemasDir)
+	}
+
+	isProject, err := projectfile.IsProjectFile(fs, file)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var proj *v1alpha1.Project
+	var store dependency.Store
+	if isProject {
+		proj, err = projectfile.ParseWithoutDefaults(fs, file)
+		store = projectfile.NewStore(fs, file)
+	} else {
+		var pkg pkgmetav1.Pkg
+		pkg, err = metafile.Parse(fs, file)
+		if err == nil {
+			proj = metafile.ToProject(pkg)
+		}
+		store = metafile.NewStore(fs, file)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if o.SchemasDir != "" {
+		if proj.Spec.Paths == nil {
+			proj.Spec.Paths = &v1alpha1.ProjectPaths{}
+		}
+		proj.Spec.Paths.Schemas = o.SchemasDir
+	}
+	if len(o.SchemaLanguages) > 0 {
+		if proj.Spec.Schemas == nil {
+			proj.Spec.Schemas = &v1alpha1.ProjectSchemas{}
+		}
+		proj.Spec.Schemas.Languages = o.SchemaLanguages
+		if err := errors.Join(proj.Spec.Schemas.Validate()...); err != nil {
+			return nil, nil, err
+		}
+	}
+	if o.K8sVersion != "" {
+		// Only one k8s dependency makes sense, so replace any existing one.
+		proj.Spec.Dependencies = slices.DeleteFunc(proj.Spec.Dependencies, func(d v1alpha1.Dependency) bool {
+			return d.Type == v1alpha1.DependencyTypeK8s
+		})
+		proj.Spec.Dependencies = append(proj.Spec.Dependencies, v1alpha1.Dependency{
+			Type: v1alpha1.DependencyTypeK8s,
+			K8s:  &v1alpha1.K8sDependency{Version: o.K8sVersion},
+		})
+	}
+	proj.Default()
+
+	return proj, store, nil
 }

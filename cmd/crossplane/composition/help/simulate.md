@@ -16,7 +16,8 @@ one `--context` names.
 `-f` (`--input`) names a file, or a directory of YAML files, of Compositions to
 simulate, and is required. Give a comma-separated list, or repeat it, for more; `-f -` reads standard input.
 Every resource in them must be a Composition; to simulate a project, use
-`crossplane project simulate`.
+`crossplane project simulate`, and to simulate composite resources or claims,
+use `crossplane xr simulate`.
 Functions come from the cluster. `--cache-dir` sets where provider package
 contents are cached.
 

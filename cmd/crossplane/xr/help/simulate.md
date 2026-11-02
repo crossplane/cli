@@ -5,8 +5,8 @@ the difference from what's in the cluster. It doesn't change the cluster.
 
 `-f` (`--input`) names a file, or a directory of YAML files, of composite
 resources or claims to simulate, and is required. Repeat it for more; `-f -`
-reads standard input. Every resource in them must be a kind an XRD in the cluster defines as a
-composite resource or claim; to simulate a Composition, use
+reads standard input. Every resource in them must be a kind an XRD in the
+cluster defines as a composite resource or claim; to simulate a Composition, use
 `crossplane composition simulate`, and to simulate a project, use
 `crossplane project simulate`. A claim is simulated as its composite resource,
 and its result is listed under the claim's name.

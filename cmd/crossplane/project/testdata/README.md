@@ -11,12 +11,13 @@ the harness wiring differs.
 Every case is crossplane-diff CLI-style arguments plus an expected exit
 code and expected output, funneled through one function: `runSimulate` in
 `integration_simulate_harness_test.go`. It translates the arguments into
-`crossplane project simulate` arguments (input files as `-f`, a single
+`crossplane composition simulate` or `crossplane xr simulate` arguments (input
+files as `-f`, a single
 `--resource` as `--name`, `--include-manual` as `--include-pinned`,
 `--analyze-unchanged` as `--analyze-on=always`) and runs the real command
 through kong. `simulateHooks` points the command at the case's
-envtest cluster in place of a kubeconfig, so the cases run in parallel. Composition cases run simulate's Composition-file
-mode, XR cases its composite resource mode.
+envtest cluster in place of a kubeconfig, so the cases run in parallel. Composition cases run `composition simulate`, XR
+cases `xr simulate`.
 
 ## Skips
 

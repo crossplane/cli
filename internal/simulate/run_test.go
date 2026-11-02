@@ -29,6 +29,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/sergi/go-diff/diffmatchpatch"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -344,6 +345,13 @@ func TestSimulateDiffOptions(t *testing.T) {
 // human diff for diff.
 func TestSimulateRenderReports(t *testing.T) {
 	xr := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
+	cm := &un.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": "cm"}, "data": map[string]any{"k": "v"}}}
+	added := &dt.ResourceDiff{
+		Gvk: cm.GroupVersionKind(), ResourceName: "cm", DiffType: dt.DiffTypeAdded,
+		Desired:   dt.ResourceViews{Raw: cm, Clean: cm},
+		LineDiffs: []diffmatchpatch.Diff{{Type: diffmatchpatch.DiffInsert, Text: "data:\n  k: v\n"}},
+	}
+	xrReport := &dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xr, Diffs: map[string]*dt.ResourceDiff{added.GetDiffKey(): added}}}}
 	compReport := &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
 		Name:           "net",
 		RevisionImpact: dt.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1},
@@ -377,26 +385,31 @@ func TestSimulateRenderReports(t *testing.T) {
 	cases := map[string]struct {
 		reason   string
 		cmd      Flags
+		wantXR   func(*testing.T, string)
 		wantComp func(*testing.T, string)
 	}{
 		"Plan": {
 			reason:   "-o plan, the default, should print the plan text, with the revision impact under the Composition.",
 			cmd:      Flags{Output: "plan"},
+			wantXR:   contains("XR: XNetwork.example.org prod\n  [+] ConfigMap. cm (create)\n      data:\n        + k: \"v\"", "Plan: 1 to add", "Note: "),
 			wantComp: contains("[=] Composition.apiextensions.crossplane.io net (no-op)\n    Applying this creates a new CompositionRevision, which 1 composite would adopt.", "XR: XNetwork.example.org prod", "Note: "),
 		},
 		"JSON": {
 			reason:   "-o json should print ProjectResult as JSON.",
 			cmd:      Flags{Output: "json"},
+			wantXR:   isPlanResult(json.Unmarshal),
 			wantComp: isPlanResult(json.Unmarshal),
 		},
 		"YAML": {
 			reason:   "-o yaml should print ProjectResult as YAML.",
 			cmd:      Flags{Output: "yaml"},
+			wantXR:   isPlanResult(func(b []byte, v any) error { return yaml.Unmarshal(b, v) }),
 			wantComp: isPlanResult(func(b []byte, v any) error { return yaml.Unmarshal(b, v) }),
 		},
 		"Diff": {
 			reason:   "-o diff should print the engine's human diff.",
 			cmd:      Flags{Output: "diff"},
+			wantXR:   contains("+++ ConfigMap/cm", "Summary: 1 added"),
 			wantComp: contains("=== Composition Changes ===", "=== Affected Composite Resources ==="),
 		},
 	}
@@ -408,6 +421,10 @@ func TestSimulateRenderReports(t *testing.T) {
 				render func(*kong.Context) error
 				want   func(*testing.T, string)
 			}{
+				"xr": {func(k *kong.Context) error {
+					_, err := tc.cmd.renderXRReport(k, logging.NewNopLogger(), xrReport, nil)
+					return err
+				}, tc.wantXR},
 				"comp": {func(k *kong.Context) error {
 					_, err := tc.cmd.renderCompReport(k, logging.NewNopLogger(), compReport, nil)
 					return err

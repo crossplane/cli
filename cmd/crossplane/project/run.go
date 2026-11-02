@@ -31,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
-	"sigs.k8s.io/controller-runtime/pkg/scheme"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -216,15 +215,13 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 				return ctpErr
 			}
 
-			ctpSchemeBuilders := []*scheme.Builder{
-				xpkgv1.SchemeBuilder,
-				xpkgv1beta1.SchemeBuilder,
-			}
-			for _, bld := range ctpSchemeBuilders {
-				if err := bld.AddToScheme(devCtp.Client().Scheme()); err != nil {
-					ch.SendEvent("Setting up control plane", async.EventStatusFailure)
-					return err
-				}
+			bld := runtime.NewSchemeBuilder(
+				xpkgv1.SchemeBuilder.AddToScheme,
+				xpkgv1beta1.SchemeBuilder.AddToScheme,
+			)
+			if err := bld.AddToScheme(devCtp.Client().Scheme()); err != nil {
+				ch.SendEvent("Setting up control plane", async.EventStatusFailure)
+				return err
 			}
 			ch.SendEvent("Setting up control plane", async.EventStatusSuccess)
 			return nil

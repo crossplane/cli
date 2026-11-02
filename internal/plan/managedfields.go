@@ -49,7 +49,7 @@ func applierOwned(live *unstructured.Unstructured) *fieldpath.Set {
 			continue
 		}
 		s := fieldpath.NewSet()
-		if err := s.FromJSON(bytes.NewReader(e.FieldsV1.Raw)); err != nil {
+		if err := s.FromJSON(bytes.NewReader(e.FieldsV1.GetRawBytes())); err != nil {
 			return nil
 		}
 		if e.Operation == metav1.ManagedFieldsOperationApply || e.Manager == "kubectl-client-side-apply" {

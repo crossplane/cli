@@ -80,6 +80,7 @@ spec:
 	// A GoTemplate of its own is a resource, not a pipeline input.
 	goTemplate := write("gotemplate.yaml", "apiVersion: gotemplating.fn.crossplane.io/v1beta1\nkind: GoTemplate\nmetadata:\n  name: g\nsource: Inline\n")
 	comps := write("comps/a.yaml", "apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: a\n")
+	list := write("list.yaml", "apiVersion: v1\nkind: List\nitems:\n- apiVersion: apiextensions.crossplane.io/v1\n  kind: Composition\n  metadata:\n    name: a\n")
 	empty := write("empty.yaml", "# nothing here\n")
 
 	type want struct {
@@ -131,6 +132,11 @@ spec:
 			reason: "A resource that only looks like a pipeline input should still be rejected.",
 			paths:  []string{comp, goTemplate},
 			want:   want{err: `-f inputs include GoTemplate "g"`},
+		},
+		"KubectlList": {
+			reason: "A List, as kubectl get -o yaml writes, should be rejected with a hint to unwrap it.",
+			paths:  []string{list},
+			want:   want{err: `-f inputs include List "" (v1); composition simulate takes Composition files; pass its items as separate YAML documents instead of a List`},
 		},
 		"Empty": {
 			reason: "Inputs with no resources should be rejected.",

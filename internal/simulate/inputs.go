@@ -56,8 +56,8 @@ func taker(c Class) (command, what string, ok bool) {
 	return "", "", false
 }
 
-// Classify returns the class of the -f input r.
-func Classify(r *un.Unstructured) Class {
+// classify returns the class of the -f input r.
+func classify(r *un.Unstructured) Class {
 	gvk := r.GroupVersionKind()
 	switch {
 	case gvk.GroupVersion().String() == projectfile.APIVersion && gvk.Kind == projectfile.Kind:
@@ -69,14 +69,17 @@ func Classify(r *un.Unstructured) Class {
 	}
 }
 
-// RejectInput returns the error for an -f input r that the command taking
+// rejectInput returns the error for an -f input r that the command taking
 // want doesn't take, pointing at the command that does take it, if any.
-func RejectInput(r *un.Unstructured, want Class) error {
+func rejectInput(r *un.Unstructured, want Class) error {
 	gvk := r.GroupVersionKind()
 	cmd, what, _ := taker(want)
 	msg := fmt.Sprintf("-f inputs include %s %q (%s); %s takes %s", gvk.Kind, r.GetName(), gvk.GroupVersion(), cmd, what)
-	if cmd, what, ok := taker(Classify(r)); ok {
+	if cmd, what, ok := taker(classify(r)); ok {
 		msg += fmt.Sprintf("; %s takes %s", cmd, what)
+	}
+	if r.IsList() || gvk.Kind == "List" {
+		msg += "; pass its items as separate YAML documents instead of a List"
 	}
 	return errors.New(msg)
 }
@@ -95,8 +98,8 @@ func LoadInputs(paths []string, want Class) ([]*un.Unstructured, error) {
 		return nil, errors.Wrap(err, "cannot load -f inputs")
 	}
 	for _, r := range resources {
-		if Classify(r) != want {
-			return nil, RejectInput(r, want)
+		if classify(r) != want {
+			return nil, rejectInput(r, want)
 		}
 	}
 	return resources, nil

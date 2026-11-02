@@ -720,6 +720,21 @@ func NewMockCompositionClient() *MockCompositionClientBuilder {
 	}
 }
 
+// WithInitialize sets the Initialize behavior.
+func (b *MockCompositionClientBuilder) WithInitialize(fn func(context.Context) error) *MockCompositionClientBuilder {
+	b.mock.InitializeFn = fn
+	return b
+}
+
+// WithSuccessfulInitialize mocks a successful call to Initialize.
+func (b *MockCompositionClientBuilder) WithSuccessfulInitialize() *MockCompositionClientBuilder {
+	b.mock.InitializeFn = func(context.Context) error {
+		return nil
+	}
+
+	return b
+}
+
 // WithFindMatchingComposition sets the FindMatchingComposition behavior.
 func (b *MockCompositionClientBuilder) WithFindMatchingComposition(fn func(context.Context, *un.Unstructured) (dtypes.ResolvedComposition, error)) *MockCompositionClientBuilder {
 	b.mock.FindMatchingCompositionFn = fn
@@ -731,6 +746,13 @@ func (b *MockCompositionClientBuilder) WithFindMatchingComposition(fn func(conte
 func (b *MockCompositionClientBuilder) WithSuccessfulCompositionMatch(comp *xpextv1.Composition) *MockCompositionClientBuilder {
 	return b.WithFindMatchingComposition(func(context.Context, *un.Unstructured) (dtypes.ResolvedComposition, error) {
 		return dtypes.ResolvedComposition{Composition: comp}, nil
+	})
+}
+
+// WithNoMatchingComposition sets FindMatchingComposition to return "not found".
+func (b *MockCompositionClientBuilder) WithNoMatchingComposition() *MockCompositionClientBuilder {
+	return b.WithFindMatchingComposition(func(context.Context, *un.Unstructured) (dtypes.ResolvedComposition, error) {
+		return dtypes.ResolvedComposition{}, errors.New("composition not found")
 	})
 }
 
@@ -1142,6 +1164,13 @@ func (b *TreeNodeBuilder) Build() *resource.Resource {
 
 // endregion
 
+// region DiffProcessor mock builder
+
+// ======================================================================================
+// DiffProcessor Mock Builder
+// ======================================================================================
+// endregion
+
 // region Resource builders
 
 // ======================================================================================
@@ -1222,6 +1251,15 @@ func (b *ResourceBuilder) WithSpecField(name string, value any) *ResourceBuilder
 
 	spec[name] = value
 	_ = un.SetNestedMap(b.resource.Object, spec, fieldSpec)
+
+	return b
+}
+
+// WithStatus sets the status field of the resource.
+func (b *ResourceBuilder) WithStatus(status map[string]any) *ResourceBuilder {
+	if len(status) > 0 {
+		_ = un.SetNestedMap(b.resource.Object, status, "status")
+	}
 
 	return b
 }
@@ -1668,6 +1706,11 @@ func (b *XRDBuilder) WithClaimNames(kind, plural string) *XRDBuilder {
 	}
 
 	return b
+}
+
+// WithDefaultVersion adds a default "v1" version to the XRD.
+func (b *XRDBuilder) WithDefaultVersion() *XRDBuilder {
+	return b.WithVersion("v1", true, true)
 }
 
 // WithVersion adds a version to the XRD.

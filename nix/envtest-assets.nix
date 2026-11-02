@@ -8,27 +8,27 @@
 # from controller-tools' envtest-releases.yaml index.
 { pkgs }:
 let
-  version = "1.35.0";
+  version = "1.37.0";
   platforms = {
     x86_64-linux = {
       os = "linux";
       arch = "amd64";
-      hash = "sha512-EwNpwW8HbnJNCJGJr67elgMW9fXeps9XvnpPxvCcdzQokxklCXkOQFbhFuIy3/gy7YY/W9Vdy1XTjzq4NIKKEQ==";
+      hash = "sha512-HRxFNjO3LBYaXVqIbN56yFC+GirHlqnh1P+srMZIaClb3S1XqmbNDBWPXOUQ9d/j+8YawhvT3PuHW9cGWKpmOg==";
     };
     aarch64-linux = {
       os = "linux";
       arch = "arm64";
-      hash = "sha512-5T4riDmPW5UD4/B02CotywkMcIs0lAhIYHzmWBOKXUolli4EKraDzMAmqKbJDAvn9ljkLd4Ihzadc8O2ji/IbA==";
+      hash = "sha512-rmpnBQKYggCwExyUN1jP09OljPTmJH738OamRn8c2aMzyALoYQHwRGsbkqDjJzhyJOHkT+GkaT2gkpxuUpz+mg==";
     };
     x86_64-darwin = {
       os = "darwin";
       arch = "amd64";
-      hash = "sha512-/MxYO6bTIsiKjFb3h2CQp61jRgBGpLyuQUCTsjzminXxcsp0hLfHR1twdlfspRCKitP9heG09wpsmcovItvWsg==";
+      hash = "sha512-GaKlN2qKpXp7JexRmINNspvyug1v9XLX9Fumg7E/sUw+vsgGnpLbZsOfHHqc/xvCvoeeKqzcn6i4p+hhlZvfew==";
     };
     aarch64-darwin = {
       os = "darwin";
       arch = "arm64";
-      hash = "sha512-u10Ls5dZVjMbCqDAOZVbTE3GxcKI5a82k2TH0vvqwRoCUifauxJ1aQgLJZ3Sm2l8x3+ner0nriZyHdsj6O4GEw==";
+      hash = "sha512-+zjPrN1xtel6TUzOrIYa9fVQac94Pw5Jzxgb/DLrPlV8IJGlNNxdOPG5LFuhQrwZefIVpThbNjDqamYb5voWGw==";
     };
   };
   target = platforms.${pkgs.stdenv.hostPlatform.system} or null;

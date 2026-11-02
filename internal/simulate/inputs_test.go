@@ -170,7 +170,7 @@ spec:
 			want:   want{err: `-f inputs include GoTemplate "g"`},
 		},
 		"KubectlList": {
-			reason: "A List, as kubectl get -o yaml writes, should be rejected with a hint to unwrap it.",
+			reason: "A List, as kubectl get -o yaml writes, should be rejected with a hint to unwrap it and no pointer at another command.",
 			paths:  []string{list},
 			want:   want{err: `-f inputs include List "" (v1); composition simulate takes Composition files; pass its items as separate YAML documents instead of a List`},
 		},

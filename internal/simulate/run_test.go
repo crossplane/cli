@@ -664,7 +664,7 @@ func TestSimulateRun(t *testing.T) {
 				tc.args.cmd.Output = "plan"
 			}
 			k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
-			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}})
+			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, true)
 			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), tc.args.initClients, tc.args.proc, diff)
 
 			if diff := cmp.Diff(tc.want.code, exitCode(err)); diff != "" {
@@ -838,6 +838,7 @@ func TestProviderSource(t *testing.T) {
 	cases := map[string]struct {
 		reason    string
 		providers string
+		project   bool
 		want      source
 	}{
 		"Flag": {
@@ -845,14 +846,19 @@ func TestProviderSource(t *testing.T) {
 			providers: "providers.yaml",
 			want:      providersFlag,
 		},
-		"WithoutFlag": {
-			reason: "Without --providers the project's provider dependencies start.",
-			want:   providersProject,
+		"Project": {
+			reason:  "Without --providers the project's provider dependencies start.",
+			project: true,
+			want:    providersProject,
+		},
+		"NoProject": {
+			reason: "Without --providers or a project, each composite resource's providers start as it is simulated.",
+			want:   providersPerXR,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := providerSource(tc.providers); got != tc.want {
+			if got := providerSource(tc.providers, tc.project); got != tc.want {
 				t.Errorf("%s\nproviderSource(%q): want %v, got %v", tc.reason, tc.providers, tc.want, got)
 			}
 		})

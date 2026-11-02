@@ -49,14 +49,14 @@ func TestUpsertDependency(t *testing.T) {
 	}
 
 	// Replaces the deprecated-style function entry in place.
-	if err := UpsertDependency(fs, "crossplane.yaml", v1alpha1.XpkgDependency{
+	if err := upsertDependency(fs, "crossplane.yaml", v1alpha1.XpkgDependency{
 		APIVersion: "pkg.crossplane.io/v1", Kind: "Function",
 		Package: "xpkg.crossplane.io/crossplane-contrib/function-auto-ready", Version: "v0.6.0",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// Appends a new entry.
-	if err := UpsertDependency(fs, "crossplane.yaml", v1alpha1.XpkgDependency{
+	if err := upsertDependency(fs, "crossplane.yaml", v1alpha1.XpkgDependency{
 		APIVersion: "pkg.crossplane.io/v1", Kind: "Provider",
 		Package: "xpkg.crossplane.io/crossplane-contrib/provider-new", Version: "v1.0.0",
 	}); err != nil {

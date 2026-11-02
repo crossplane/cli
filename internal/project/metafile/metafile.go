@@ -88,11 +88,11 @@ func ToProject(pkg pkgmetav1.Pkg) *v1alpha1.Project {
 	return proj
 }
 
-// UpsertDependency adds dep to the dependsOn list of the
+// upsertDependency adds dep to the dependsOn list of the
 // package metadata file, replacing any existing entry for the
 // same package. The file is edited as generic YAML so that fields are not
 // defaulted; like Update, formatting and comments are not preserved.
-func UpsertDependency(fs afero.Fs, file string, dep v1alpha1.XpkgDependency) error {
+func upsertDependency(fs afero.Fs, file string, dep v1alpha1.XpkgDependency) error {
 	bs, err := afero.ReadFile(fs, file)
 	if err != nil {
 		return errors.Wrapf(err, "failed to read package metadata file %q", file)
@@ -216,5 +216,5 @@ func (s *Store) Supports(dep v1alpha1.Dependency) error {
 
 // Upsert writes dep to the spec.dependsOn list of the metadata file.
 func (s *Store) Upsert(dep v1alpha1.Dependency) error {
-	return UpsertDependency(s.fs, s.file, *dep.Xpkg)
+	return upsertDependency(s.fs, s.file, *dep.Xpkg)
 }

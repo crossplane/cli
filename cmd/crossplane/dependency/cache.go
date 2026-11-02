@@ -117,14 +117,12 @@ func (c *cleanCacheCmd) Help() string {
 
 // Run executes the clean-cache command.
 func (c *cleanCacheCmd) Run(k *kong.Context, _ logging.Logger) error {
-	proj, store, projFS, err := loadProject(c.ProjectFile, Overrides{SchemasDir: c.SchemasDir})
+	proj, _, projFS, err := loadProject(c.ProjectFile, Overrides{SchemasDir: c.SchemasDir})
 	if err != nil {
 		return err
 	}
 
-	m := dependency.NewManager(proj, projFS,
-		dependency.WithStore(store),
-	)
+	m := dependency.NewManager(proj, projFS)
 
 	if err := m.Clean(); err != nil {
 		return err

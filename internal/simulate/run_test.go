@@ -33,6 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
@@ -44,10 +45,12 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
+	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
+	difftypes "github.com/crossplane/cli/v2/internal/diff/types"
 	"github.com/crossplane/cli/v2/internal/plan"
 	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
@@ -996,6 +999,76 @@ func TestBuildFileInputsIgnoreProjectFile(t *testing.T) {
 			}
 			if len(built.Packages.ICs) != 0 {
 				t.Errorf("build(): want no ImageConfigs, got %v", built.Packages.ICs)
+			}
+		})
+	}
+}
+
+func TestDiffComposites(t *testing.T) {
+	xrGVK := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XThing"}
+	defs := &testutils.MockDefinitionClient{
+		GetXRDForXRFn: func(_ context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
+			if gvk == xrGVK {
+				return &un.Unstructured{}, nil
+			}
+			return nil, errors.New("no XRD found")
+		},
+		GetXRDForClaimFn: func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) {
+			return nil, errors.New("no XRD found")
+		},
+	}
+	res := func(apiVersion, kind string) *un.Unstructured {
+		return &un.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": map[string]any{"name": "n"}}}
+	}
+
+	cases := map[string]struct {
+		reason    string
+		xrs       []*un.Unstructured
+		diffErr   error
+		wantDiffs bool
+		wantErr   string
+		wantOut   string
+	}{
+		"RejectedBeforeDiff": {
+			reason:  "An input no XRD defines should be rejected, unwrapped, before PerformDiff runs.",
+			xrs:     []*un.Unstructured{res("example.org/v1", "XThing"), res("v1", "ConfigMap")},
+			wantErr: `-f inputs include ConfigMap "n" (v1), which no XRD`,
+		},
+		"DiffErrorWrapsAndRenders": {
+			reason:    "A PerformDiff error should be wrapped, and the report rendered anyway.",
+			xrs:       []*un.Unstructured{res("example.org/v1", "XThing")},
+			diffErr:   errors.New("boom"),
+			wantDiffs: true,
+			wantErr:   "cannot simulate composite resources: boom",
+			wantOut:   "XThing",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			diffed := false
+			proc := &testutils.MockDiffProcessor{PerformDiffFn: func(context.Context, []*un.Unstructured, difftypes.CompositionProvider) (*dt.XRReport, error) {
+				diffed = true
+				ref := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XThing", Name: "n"}
+				g := dt.XRDiffGroup{XR: ref}
+				if tc.diffErr != nil {
+					g.Err = &dt.OutputError{Message: tc.diffErr.Error()}
+				}
+				return &dt.XRReport{Groups: []dt.XRDiffGroup{g}}, tc.diffErr
+			}}
+			c := &Flags{Output: "plan", NoColor: true}
+			stdout := &bytes.Buffer{}
+			k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: &bytes.Buffer{}}}
+			xp := &xpclient.Clients{Definition: defs, Composition: &testutils.MockCompositionClient{}}
+
+			_, err := c.diffComposites(k, logging.NewNopLogger(), proc, xp, tc.xrs)(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("\n%s\ndiffComposites(...): want error containing %q, got %v", tc.reason, tc.wantErr, err)
+			}
+			if diffed != tc.wantDiffs {
+				t.Errorf("\n%s\ndiffComposites(...): PerformDiff called = %t, want %t", tc.reason, diffed, tc.wantDiffs)
+			}
+			if !strings.Contains(stdout.String(), tc.wantOut) {
+				t.Errorf("\n%s\ndiffComposites(...): want output containing %q, got:\n%s", tc.reason, tc.wantOut, stdout.String())
 			}
 		})
 	}

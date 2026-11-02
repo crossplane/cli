@@ -84,7 +84,7 @@ many controllers (that remains the domain of control-plane-level simulation).
 
 Add `simulate` as a verb in the CLI's noun-first command tree, sharing one
 engine: `resource simulate`, `project simulate` and `composition simulate`
-(all added), then `xr simulate` as a follow-up in the same stack.
+first, then `xr simulate` later in the same stack.
 Each command takes one kind of input, so no command sniffs its inputs or
 defines flags that do nothing for them.
 

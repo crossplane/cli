@@ -35,12 +35,14 @@ func mr(spec map[string]any) *unstructured.Unstructured {
 }
 
 func managedBy(manager string, op metav1.ManagedFieldsOperationType, fields string) metav1.ManagedFieldsEntry {
-	return metav1.ManagedFieldsEntry{
+	e := metav1.ManagedFieldsEntry{
 		Manager:    manager,
 		Operation:  op,
 		FieldsType: "FieldsV1",
-		FieldsV1:   &metav1.FieldsV1{Raw: []byte(fields)},
+		FieldsV1:   &metav1.FieldsV1{},
 	}
+	e.FieldsV1.SetRawString(fields)
+	return e
 }
 
 func TestFallback(t *testing.T) {

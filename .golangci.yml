@@ -137,6 +137,10 @@ linters:
           paramsOnly: true
         rangeValCopy:
           sizeThreshold: 32
+    gomoddirectives:
+      replace-allow-list:
+        # TODO(adamwg): Remove once go-openapi is updated; see go.mod.
+        - github.com/dprotaso/go-yit
     govet:
       disable:
         - shadow

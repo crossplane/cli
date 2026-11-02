@@ -19,7 +19,6 @@ package dependency
 
 import (
 	"path/filepath"
-	"slices"
 
 	"github.com/spf13/afero"
 
@@ -61,8 +60,6 @@ func loadProject(path string, o Overrides) (proj *v1alpha1.Project, store depend
 // They exist mainly because package metadata can't express them, but they apply to project files too.
 // The file on disk is never changed.
 type Overrides struct {
-	// K8sVersion replaces any k8s dependency with one for this Kubernetes version, or adds one if there is none.
-	K8sVersion string
 	// SchemasDir overrides paths.schemas. It must be a relative subdirectory of the file's directory.
 	SchemasDir string
 	// SchemaLanguages overrides schemas.languages. Each must be a supported schema language.
@@ -117,16 +114,6 @@ func load(fs afero.Fs, file string, o Overrides) (*v1alpha1.Project, dependency.
 		if err := errors.Join(proj.Spec.Schemas.Validate()...); err != nil {
 			return nil, nil, err
 		}
-	}
-	if o.K8sVersion != "" {
-		// Only one k8s dependency makes sense, so replace any existing one.
-		proj.Spec.Dependencies = slices.DeleteFunc(proj.Spec.Dependencies, func(d v1alpha1.Dependency) bool {
-			return d.Type == v1alpha1.DependencyTypeK8s
-		})
-		proj.Spec.Dependencies = append(proj.Spec.Dependencies, v1alpha1.Dependency{
-			Type: v1alpha1.DependencyTypeK8s,
-			K8s:  &v1alpha1.K8sDependency{Version: o.K8sVersion},
-		})
 	}
 	proj.Default()
 

@@ -380,6 +380,12 @@ func (m *Manager) addAll(ctx context.Context, ch async.EventChannel, refresh boo
 	return eg.Wait()
 }
 
+// GenerateSchemas generates schemas for dep without recording it anywhere.
+func (m *Manager) GenerateSchemas(ctx context.Context, dep *v1alpha1.Dependency) error {
+	_, err := m.addDependencyNoWrite(ctx, dep, false)
+	return err
+}
+
 func (m *Manager) addDependencyNoWrite(ctx context.Context, dep *v1alpha1.Dependency, refresh bool) (*schema.GroupVersionKind, error) {
 	switch {
 	case dep.Type == v1alpha1.DependencyTypeXpkg:

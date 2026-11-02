@@ -46,10 +46,9 @@ type updateCacheCmd struct {
 	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"  help:"Token for git HTTPS authentication."`
 	GitUsername string `default:"x-access-token"    env:"CROSSPLANE_GIT_USERNAME"                      help:"Username for git HTTPS authentication."`
 
-	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                                               optional:""             predictor:"yaml_file" short:"f" type:"path"`
-	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."                                     name:"schemas-dir"`
-	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python, rust). Overrides the project's schemas.languages; defaults to all."                     name:"schema-languages"`
-	K8sVersion      string   `help:"Kubernetes version to generate core API schemas for, such as v1.33.0. Replaces the project's Kubernetes dependency for this run; never written to the file." name:"k8s-version"`
+	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                           optional:""             predictor:"yaml_file" short:"f" type:"path"`
+	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."                 name:"schemas-dir"`
+	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python, rust). Overrides the project's schemas.languages; defaults to all." name:"schema-languages"`
 }
 
 func (c *updateCacheCmd) Help() string {
@@ -63,7 +62,6 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 	proj, store, projFS, err := loadProject(c.ProjectFile, Overrides{
 		SchemasDir:      c.SchemasDir,
 		SchemaLanguages: c.SchemaLanguages,
-		K8sVersion:      c.K8sVersion,
 	})
 	if err != nil {
 		return err

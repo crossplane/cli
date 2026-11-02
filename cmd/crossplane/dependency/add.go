@@ -19,15 +19,12 @@ package dependency
 import (
 	"cmp"
 	"context"
-	"strings"
 
-	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/afero"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
@@ -88,9 +85,15 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 		dependency.WithXpkgClient(client),
 	)
 
-	dep, err := c.buildDependency()
+	dep, err := dependency.ParseSource(c.Package, c.GitRef, c.GitPath)
 	if err != nil {
 		return err
+	}
+	if c.APIOnly {
+		if dep.Xpkg == nil {
+			return errors.New("--api-only is only valid for xpkg dependencies")
+		}
+		dep.Xpkg.APIOnly = true
 	}
 
 	desc := dependency.GetSourceDescription(dep)
@@ -98,83 +101,4 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	return sp.WrapWithSuccessSpinner("Adding "+desc, func() error {
 		return m.AddDependency(ctx, &dep)
 	})
-}
-
-func (c *addCmd) buildDependency() (v1alpha1.Dependency, error) {
-	// k8s dependency: k8s:vX.Y.Z
-	if version, found := strings.CutPrefix(c.Package, "k8s:"); found {
-		if version == "" {
-			return v1alpha1.Dependency{}, errors.New("k8s version is required (e.g., k8s:v1.33.0)")
-		}
-		if c.APIOnly {
-			return v1alpha1.Dependency{}, errors.New("--api-only is only valid for xpkg dependencies")
-		}
-		return v1alpha1.Dependency{
-			Type: v1alpha1.DependencyTypeK8s,
-			K8s: &v1alpha1.K8sDependency{
-				Version: version,
-			},
-		}, nil
-	}
-
-	// CRD dependency via git ref.
-	if c.GitRef != "" {
-		if c.Package == "" {
-			return v1alpha1.Dependency{}, errors.New("repository URL is required for git-based CRD dependencies")
-		}
-		if c.APIOnly {
-			return v1alpha1.Dependency{}, errors.New("--api-only is only valid for xpkg dependencies")
-		}
-		return v1alpha1.Dependency{
-			Type: v1alpha1.DependencyTypeCRD,
-			Git: &v1alpha1.GitDependency{
-				Repository: c.Package,
-				Ref:        c.GitRef,
-				Path:       c.GitPath,
-			},
-		}, nil
-	}
-
-	// CRD dependency via HTTP URL.
-	if strings.HasPrefix(c.Package, "http://") || strings.HasPrefix(c.Package, "https://") {
-		if c.APIOnly {
-			return v1alpha1.Dependency{}, errors.New("--api-only is only valid for xpkg dependencies")
-		}
-		return v1alpha1.Dependency{
-			Type: v1alpha1.DependencyTypeCRD,
-			HTTP: &v1alpha1.HTTPDependency{
-				URL: c.Package,
-			},
-		}, nil
-	}
-
-	// Default: xpkg dependency. We allow three formats:
-	//
-	// 1. registry.example.com/repo:<tag / semver constraint>
-	// 2. registry.example.com/repo@<digest>
-	// 3. registry.example.com/repo (implies a semver constraint of '>=v0.0.0').
-	pkg := c.Package
-	version := ">=v0.0.0"
-	if ref, err := name.NewDigest(c.Package, name.StrictValidation); err == nil {
-		pkg = ref.Context().String()
-		version = ref.DigestStr()
-	} else if repo, tag, ok := strings.Cut(c.Package, ":"); ok {
-		// NOTE(adamwg): This doesn't work properly if the dependency has a
-		// colon in the registry part for a port number (e.g.,
-		// example.com:5000/my-repo:v1.2.3). But there's no easy way to handle
-		// that correctly in all cases (since we also allow
-		// `example.com:5000/my-repo, with no tag/constraint), so leave the
-		// corner case unhandled for now.
-		pkg = repo
-		version = tag
-	}
-
-	return v1alpha1.Dependency{
-		Type: v1alpha1.DependencyTypeXpkg,
-		Xpkg: &v1alpha1.XpkgDependency{
-			Package: pkg,
-			Version: version,
-			APIOnly: c.APIOnly,
-		},
-	}, nil
 }

@@ -17,7 +17,6 @@ limitations under the License.
 package dependency
 
 import (
-	"slices"
 	"strings"
 	"testing"
 
@@ -75,7 +74,6 @@ func TestLoad(t *testing.T) {
 		content       string
 		schemasDir    string
 		languages     []string
-		k8sVersion    string
 		wantSchemas   string
 		wantLanguages []string
 		wantDeps      []v1alpha1.Dependency
@@ -144,38 +142,6 @@ func TestLoad(t *testing.T) {
 			wantSchemas:   "my-schemas",
 			wantLanguages: []string{"go"},
 		},
-		"MetaK8sVersionAdds": {
-			file:        "crossplane.yaml",
-			content:     testMeta,
-			k8sVersion:  "v1.33.0",
-			wantSchemas: "schemas",
-			wantDeps: append(slices.Clone(metaDeps), v1alpha1.Dependency{
-				Type: v1alpha1.DependencyTypeK8s, K8s: &v1alpha1.K8sDependency{Version: "v1.33.0"},
-			}),
-		},
-		"ProjectK8sVersionReplaces": {
-			file: "crossplane-project.yaml",
-			content: testProject + `  dependencies:
-  - type: k8s
-    k8s:
-      version: v1.31.0
-  - type: xpkg
-    xpkg:
-      apiVersion: pkg.crossplane.io/v1
-      kind: Provider
-      package: xpkg.crossplane.io/crossplane-contrib/provider-nop
-      version: v0.4.0
-`,
-			k8sVersion:  "v1.33.0",
-			wantSchemas: "my-schemas",
-			wantDeps: []v1alpha1.Dependency{
-				{Type: v1alpha1.DependencyTypeXpkg, Xpkg: &v1alpha1.XpkgDependency{
-					APIVersion: "pkg.crossplane.io/v1", Kind: "Provider",
-					Package: "xpkg.crossplane.io/crossplane-contrib/provider-nop", Version: "v0.4.0",
-				}},
-				{Type: v1alpha1.DependencyTypeK8s, K8s: &v1alpha1.K8sDependency{Version: "v1.33.0"}},
-			},
-		},
 		"UnsupportedLanguage": {
 			file:      "crossplane.yaml",
 			content:   testMeta,
@@ -210,7 +176,7 @@ func TestLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			proj, _, err := load(fs, tc.file, Overrides{SchemasDir: tc.schemasDir, SchemaLanguages: tc.languages, K8sVersion: tc.k8sVersion})
+			proj, _, err := load(fs, tc.file, Overrides{SchemasDir: tc.schemasDir, SchemaLanguages: tc.languages})
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")

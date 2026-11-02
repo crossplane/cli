@@ -21,10 +21,11 @@ package metafile
 import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/afero"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	pkgmetav1 "github.com/crossplane/crossplane/apis/v2/pkg/meta/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
@@ -37,34 +38,25 @@ import (
 // dependencies that don't specify a version.
 const defaultXpkgVersion = ">=v0.0.0"
 
-// Parse parses Configuration, Provider, or Function package metadata.
+// Parse parses Configuration, Provider, or Function package metadata of any
+// supported apiVersion, converting it to its v1 form.
 func Parse(fs afero.Fs, file string) (pkgmetav1.Pkg, error) {
 	bs, err := afero.ReadFile(fs, file)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to read package metadata file %q", file)
 	}
 
-	var tm metav1.TypeMeta
-	if err := yaml.Unmarshal(bs, &tm); err != nil {
-		return nil, errors.Wrap(err, "failed to parse package metadata file")
+	scheme, err := xpkg.BuildMetaScheme()
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot build package meta scheme")
 	}
-	if want := pkgmetav1.SchemeGroupVersion.String(); tm.APIVersion != want {
-		return nil, errors.Errorf("unsupported package metadata apiVersion %q, expected %q", tm.APIVersion, want)
+	obj, _, err := serializer.NewCodecFactory(scheme).UniversalDeserializer().Decode(bs, nil, nil)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to parse package metadata file %q", file)
 	}
-
-	var pkg pkgmetav1.Pkg
-	switch tm.Kind {
-	case pkgmetav1.ConfigurationKind:
-		pkg = &pkgmetav1.Configuration{}
-	case pkgmetav1.ProviderKind:
-		pkg = &pkgmetav1.Provider{}
-	case pkgmetav1.FunctionKind:
-		pkg = &pkgmetav1.Function{}
-	default:
-		return nil, errors.Errorf("unsupported package metadata kind %q", tm.Kind)
-	}
-	if err := yaml.Unmarshal(bs, pkg); err != nil {
-		return nil, errors.Wrap(err, "failed to parse package metadata file")
+	pkg, ok := xpkg.TryConvertToPkg(obj, &pkgmetav1.Configuration{}, &pkgmetav1.Provider{}, &pkgmetav1.Function{})
+	if !ok {
+		return nil, errors.Errorf("%q is not Configuration, Provider, or Function package metadata", file)
 	}
 	return pkg, nil
 }

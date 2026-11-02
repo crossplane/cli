@@ -19,5 +19,5 @@ package schema
 
 // Cmd contains schema subcommands.
 type Cmd struct {
-	Generate generateCmd `cmd:"" help:"Generate schemas for a package, CRD source, or Kubernetes core APIs." novale:"Google.WordList[\"k8s\"]"`
+	Generate generateCmd `cmd:"" help:"Generate schemas for a package, CRD source, or Kubernetes core APIs." novale:"Google.WordList[\"k8s\"],Google.Units,gitlab.Units"`
 }

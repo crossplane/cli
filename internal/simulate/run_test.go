@@ -557,6 +557,8 @@ func TestSimulateRun(t *testing.T) {
 		initClients func(context.Context, logging.Logger) error
 		proc        *fakeCompProc
 		cancel      bool
+		// files runs as composition simulate rather than project simulate.
+		files bool
 	}
 	type want struct {
 		code      int
@@ -635,6 +637,20 @@ func TestSimulateRun(t *testing.T) {
 			}}},
 			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
 		},
+		"ProjectDiffErrorWrap": {
+			reason: "A project's simulation error should name the project.",
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return nil, errBoom
+			}}},
+			want: want{code: dp.ExitCodeToolError, err: errBoom, errMsg: "cannot simulate project: boom", diffed: true},
+		},
+		"CompositionDiffErrorWrap": {
+			reason: "A Composition file's simulation error should name the Compositions.",
+			args: args{files: true, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return nil, errBoom
+			}}},
+			want: want{code: dp.ExitCodeToolError, err: errBoom, errMsg: "cannot simulate Compositions: boom", diffed: true},
+		},
 		"SchemaValidationError": {
 			reason: "A simulation that failed only schema validation should exit 2.",
 			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
@@ -664,7 +680,7 @@ func TestSimulateRun(t *testing.T) {
 				tc.args.cmd.Output = "plan"
 			}
 			k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
-			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, true)
+			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, !tc.args.files)
 			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), tc.args.initClients, tc.args.proc, diff)
 
 			if diff := cmp.Diff(tc.want.code, exitCode(err)); diff != "" {

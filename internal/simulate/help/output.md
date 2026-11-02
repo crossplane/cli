@@ -1,8 +1,9 @@
 The `-o` flag picks the output format:
 
 - `plan`, the default, prints each change as a field-level plan, grouped under
-  the composite resource it belongs to. A changed Composition prints first,
-  with whether applying it creates a new Composition revision.
+  the composite resource it belongs to. When the run simulates a changed
+  Composition, the Composition prints first, with whether applying it creates
+  a new Composition revision.
 - `json` and `yaml` print the same plan as a structured result, for CI and
   other tools. Each plan carries the objects it compares, as `before` (the
   live object, absent for a create) and `after` (the rendered object, absent

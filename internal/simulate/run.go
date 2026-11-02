@@ -582,27 +582,13 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 		return err
 	}
 
-	built := &Built{Compositions: in.Compositions}
 	msg := "cannot simulate Compositions"
 	if project {
 		msg = "cannot simulate project"
 	}
-	if project {
-		if built, err = in.Build(sigCtx); err != nil {
-			return err
-		}
-	} else {
-		var ics []pkgv1beta1.ImageConfig
-		if ics, err = c.flagImageConfigs(); err != nil {
-			return err
-		}
-		built.Packages = &Packages{ICs: ics}
-		// Only planning fetches packages, so --skip-plan needs no cache.
-		if !c.SkipPlan {
-			if built.Packages.Client, err = clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(ics)); err != nil {
-				return errors.Wrap(err, "cannot create xpkg client")
-			}
-		}
+	built, err := c.build(sigCtx, in)
+	if err != nil {
+		return err
 	}
 	comps, fns, digests, pkgs := built.Compositions, built.Functions, built.Digests, built.Packages
 
@@ -637,6 +623,23 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 	}
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
 	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, msg))
+}
+
+// build builds in's project, or for file inputs (Compositions or composite
+// resources) takes imageConfigs only from --image-configs.
+func (c *Flags) build(ctx context.Context, in *Inputs) (*Built, error) {
+	if in.Build != nil {
+		return in.Build(ctx)
+	}
+	ics, err := c.flagImageConfigs()
+	if err != nil {
+		return nil, err
+	}
+	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(ics))
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot create xpkg client")
+	}
+	return &Built{Compositions: in.Compositions, Packages: &Packages{ICs: ics, Client: client}}, nil
 }
 
 // flagImageConfigs returns the ImageConfigs from --image-configs, or none.

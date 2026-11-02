@@ -958,3 +958,28 @@ func TestFlagImageConfigsIgnoresProjectFile(t *testing.T) {
 		t.Errorf("flagImageConfigs(): want no ImageConfigs, got %v", ics)
 	}
 }
+
+func TestBuildFileInputsIgnoreProjectFile(t *testing.T) {
+	// Composition and composite resource runs inside a project directory
+	// must not read its project file.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "crossplane-project.yaml"), []byte("{not: [yaml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	for name, in := range map[string]*Inputs{
+		"Compositions": {Compositions: []*un.Unstructured{{}}},
+		"Composites":   {Composites: []*un.Unstructured{{}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			built, err := (&Flags{}).build(context.Background(), in)
+			if err != nil {
+				t.Fatalf("build(): want no error, got %v", err)
+			}
+			if len(built.Packages.ICs) != 0 {
+				t.Errorf("build(): want no ImageConfigs, got %v", built.Packages.ICs)
+			}
+		})
+	}
+}

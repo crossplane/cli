@@ -35,8 +35,18 @@ const XRTakes = "xr simulate takes composite resource or claim files"
 // take. takes describes what the command does take, e.g. "composition
 // simulate takes Composition files".
 func RejectInput(r *un.Unstructured, takes string) error {
+	return rejectInput(r, "", takes)
+}
+
+// rejectInput is RejectInput with a reason, if not empty, that says why r was
+// rejected and follows the input.
+func rejectInput(r *un.Unstructured, reason, takes string) error {
 	gvk := r.GroupVersionKind()
-	msg := fmt.Sprintf("-f inputs include %s %q (%s); %s", gvk.Kind, r.GetName(), gvk.GroupVersion(), takes)
+	msg := fmt.Sprintf("-f inputs include %s %q (%s)", gvk.Kind, r.GetName(), gvk.GroupVersion())
+	if reason != "" {
+		msg += ", " + reason
+	}
+	msg += "; " + takes
 	if r.IsList() || gvk.Kind == "List" {
 		msg += "; pass its items as separate YAML documents instead of a List"
 	}
@@ -91,7 +101,7 @@ func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, resour
 		if xrd, err := defs.GetXRDForXR(ctx, gvk); err == nil && xrd != nil {
 			continue
 		}
-		return RejectInput(r, XRTakes)
+		return rejectInput(r, "which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)", XRTakes)
 	}
 	return nil
 }

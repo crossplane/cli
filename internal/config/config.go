@@ -48,9 +48,11 @@ type Features struct {
 	// interfaces over generated resources.
 	GenerateGoModelAccessors bool `json:"generateGoModelAccessors,omitempty"`
 
-	// GenerateGoRuntimeObjects enables generation of runtime.Object methods and
-	// per-package AddToScheme helpers on generated Go models. Disabled by
-	// default; opt in to register generated types with a runtime.Scheme.
+	// GenerateGoRuntimeObjects enables generation of runtime.Object,
+	// metav1.Object, and metav1.ListInterface methods, plus per-package
+	// AddToScheme helpers, on generated Go models. Disabled by default; opt
+	// in to register generated types with a runtime.Scheme and use them as
+	// sigs.k8s.io/controller-runtime client.Object/client.ObjectList values.
 	GenerateGoRuntimeObjects bool `json:"generateGoRuntimeObjects,omitempty"`
 }
 

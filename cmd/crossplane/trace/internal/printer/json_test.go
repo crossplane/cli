@@ -25,7 +25,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
+	"github.com/crossplane/cli/v2/pkg/resource"
 )
 
 func TestJSONPrinterPrint(t *testing.T) {

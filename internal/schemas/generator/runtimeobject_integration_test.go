@@ -23,6 +23,25 @@ import (
 	"github.com/spf13/afero"
 )
 
+func TestGroupVersionInfoRegistersAddToGroupVersion(t *testing.T) {
+	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
+	schemaFS, err := goGenerator{runtimeObjects: true}.GenerateFromCRD(t.Context(), inputFS, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gvi, err := afero.ReadFile(schemaFS, "models/co/acme/platform/v1alpha1/groupversion_info.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gvi), "k8smetav1.AddToGroupVersion(s, GroupVersion)") {
+		t.Errorf("expected groupversion_info.go to register AddToGroupVersion, got:\n%s", gvi)
+	}
+	if !strings.Contains(string(gvi), `k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"`) {
+		t.Errorf("expected groupversion_info.go to import real apimachinery meta/v1, got:\n%s", gvi)
+	}
+}
+
 func TestGenerateFromCRDRuntimeObjectsArtifacts(t *testing.T) {
 	inputFS := afero.NewBasePathFs(afero.FromIOFS{FS: testdataFS}, "testdata")
 	schemaFS, err := goGenerator{runtimeObjects: true}.GenerateFromCRD(t.Context(), inputFS, nil)
@@ -50,12 +69,11 @@ func TestGenerateFromCRDRuntimeObjectsArtifacts(t *testing.T) {
 		t.Error("nested struct should not implement runtime.Object")
 	}
 
-	// A groupversion_info.go is generated for each package, carrying the real API
-	// group: the CRD's own group, and the core (empty) group for the built-in
-	// metav1 package the CRD path emits alongside it.
+	// The local meta/v1 mirror package no longer exists. It resolves to the
+	// real k8s.io/apimachinery package, which nothing here registers into a
+	// scheme.
 	gvis := map[string]string{
 		"models/co/acme/platform/v1alpha1/groupversion_info.go": `GroupVersion = schema.GroupVersion{Group: "platform.acme.co", Version: "v1alpha1"}`,
-		"models/io/k8s/meta/v1/groupversion_info.go":            `GroupVersion = schema.GroupVersion{Group: "", Version: "v1"}`,
 	}
 	for path, want := range gvis {
 		gvi, err := afero.ReadFile(schemaFS, path)
@@ -123,10 +141,6 @@ func TestGenerateFromOpenAPIBuiltInGroupVersions(t *testing.T) {
 	}{
 		"CoreV1": {
 			path: "models/io/k8s/core/v1/groupversion_info.go",
-			want: `GroupVersion = schema.GroupVersion{Group: "", Version: "v1"}`,
-		},
-		"MetaV1": {
-			path: "models/io/k8s/core/meta/v1/groupversion_info.go",
 			want: `GroupVersion = schema.GroupVersion{Group: "", Version: "v1"}`,
 		},
 		"RealGroupIsUnchanged": {

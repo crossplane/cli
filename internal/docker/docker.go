@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"path"
 	"path/filepath"
 	"slices"
@@ -377,6 +378,16 @@ func RunWithExtraHosts(hosts []string) RunContainerOption {
 	}
 }
 
+// RunWithLabels adds labels to the container.
+func RunWithLabels(labels map[string]string) RunContainerOption {
+	return func(cfg *runContainerConfig) {
+		if cfg.containerConfig.Labels == nil {
+			cfg.containerConfig.Labels = map[string]string{}
+		}
+		maps.Copy(cfg.containerConfig.Labels, labels)
+	}
+}
+
 // RunWithBindMount adds a bind mount to the container.
 func RunWithBindMount(hostPath, containerPath string) RunContainerOption {
 	return func(cfg *runContainerConfig) {
@@ -454,23 +465,20 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 		_, _ = cli.ContainerRemove(context.Background(), resp.ID, client.ContainerRemoveOptions{Force: true})
 	}()
 
-	// Attach before starting so we don't miss any output. Docker
-	// multiplexes stdout/stderr with 8-byte frame headers when the
+	// Start before attaching. Podman's Docker-compatible API rejects attach for
+	// a created container, while Docker supports both orderings. Request logs
+	// when attaching so output written between start and attach is not lost.
+	// Docker multiplexes stdout/stderr with 8-byte frame headers when the
 	// container is not using a TTY.
-	attach, err := cli.ContainerAttach(ctx, resp.ID, client.ContainerAttachOptions{
-		Stream: true,
-		Stdout: true,
-		Stderr: true,
-		Stdin:  cfg.stdin != nil,
-	})
+	attach, err := startAndAttach(ctx, resp.ID, cfg.stdin != nil, cli)
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "failed to attach to container")
+		return nil, nil, err
 	}
 	defer attach.Close()
-
-	if _, err := cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
-		return nil, nil, errors.Wrap(err, "failed to start container")
-	}
+	// StdCopy below doesn't observe ctx, so close the attach connection on
+	// cancellation to unblock it rather than waiting for the container to exit.
+	stopClose := context.AfterFunc(ctx, func() { attach.Close() })
+	defer stopClose()
 
 	// Write stdin data if provided, then close the write side so the
 	// container sees EOF.
@@ -485,6 +493,9 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 
 	var stdout, stderr bytes.Buffer
 	if _, err := stdcopy.StdCopy(&stdout, &stderr, attach.Reader); err != nil {
+		if ctx.Err() != nil {
+			return nil, nil, errors.Wrap(ctx.Err(), "failed to read container output")
+		}
 		return nil, nil, errors.Wrap(err, "failed to read container output")
 	}
 
@@ -505,6 +516,29 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 	}
 
 	return stdout.Bytes(), stderr.Bytes(), nil
+}
+
+type containerStarter interface {
+	ContainerStart(ctx context.Context, id string, opts client.ContainerStartOptions) (client.ContainerStartResult, error)
+	ContainerAttach(ctx context.Context, id string, opts client.ContainerAttachOptions) (client.ContainerAttachResult, error)
+}
+
+// startAndAttach starts a container before attaching to its streams. Podman's
+// Docker-compatible API does not support attaching to a created container. The
+// Logs option ensures output produced between these two calls is replayed.
+func startAndAttach(ctx context.Context, id string, stdin bool, cli containerStarter) (client.ContainerAttachResult, error) {
+	if _, err := cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
+		return client.ContainerAttachResult{}, errors.Wrap(err, "failed to start container")
+	}
+
+	rsp, err := cli.ContainerAttach(ctx, id, client.ContainerAttachOptions{
+		Stream: true,
+		Stdout: true,
+		Stderr: true,
+		Stdin:  stdin,
+		Logs:   true,
+	})
+	return rsp, errors.Wrap(err, "failed to attach to container")
 }
 
 // CopyFromContainer copies files from a container to an afero filesystem.

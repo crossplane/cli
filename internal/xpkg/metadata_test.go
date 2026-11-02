@@ -296,7 +296,7 @@ func readCRD(t *testing.T, fs afero.Fs, name string) *extv1.CustomResourceDefini
 		t.Fatalf("unmarshal %s: %v", name, err)
 	}
 	// Downstream schema generators identify CRD documents by apiVersion/kind
-	// (see internal/schemas/generator's goCollectOpenAPIs), so every CRD
+	// (see internal/schemas/generator's collectCRDOpenAPIs), so every CRD
 	// CRDFilesystem writes - including ones derived from an XRD - must carry
 	// them, even though xcrd.ForCompositeResource/ForCompositeResourceClaim
 	// don't set them on the object they return.

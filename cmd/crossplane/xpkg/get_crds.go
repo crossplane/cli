@@ -30,9 +30,9 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/load"
 	"github.com/crossplane/cli/v2/cmd/crossplane/validate"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
+	"github.com/crossplane/cli/v2/pkg/load"
 
 	_ "embed"
 )

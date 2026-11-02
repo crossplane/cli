@@ -17,12 +17,14 @@ limitations under the License.
 package dependency
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/internal/async"
@@ -47,7 +49,7 @@ type updateCacheCmd struct {
 
 	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                                               optional:""             predictor:"yaml_file" short:"f" type:"path"`
 	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."                                     name:"schemas-dir"`
-	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python). Overrides the project's schemas.languages; defaults to all."                           name:"schema-languages"`
+	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python, rust). Overrides the project's schemas.languages; defaults to all."                     name:"schema-languages"`
 	K8sVersion      string   `help:"Kubernetes version to generate core API schemas for, such as v1.33.0. Replaces the project's Kubernetes dependency for this run; never written to the file." name:"k8s-version"`
 }
 
@@ -68,20 +70,10 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 		return err
 	}
 
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	client, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-		clixpkg.WithImageConfigs(proj.Spec.ImageConfigs),
-	)
+	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot create xpkg client")
 	}
-	resolver := clixpkg.NewResolver(client)
 
 	opts := []dependency.ManagerOption{
 		dependency.WithProjectFile(projFile),
@@ -93,7 +85,6 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 			proj.Spec.Schemas.GetLanguages(),
 		)),
 		dependency.WithXpkgClient(client),
-		dependency.WithResolver(resolver),
 	}
 
 	if c.GitToken != "" {

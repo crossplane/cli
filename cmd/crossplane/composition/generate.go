@@ -17,6 +17,7 @@ limitations under the License.
 package composition
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -88,20 +89,10 @@ func (c *generateCmd) AfterApply(cfg *config.Config) error {
 
 	c.proj = proj
 	c.apisFS = afero.NewBasePathFs(c.projFS, proj.Spec.Paths.APIs)
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	client, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-		clixpkg.WithImageConfigs(proj.Spec.ImageConfigs),
-	)
+	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot create xpkg client")
 	}
-	resolver := clixpkg.NewResolver(client)
 
 	c.depManager = dependency.NewManager(proj, c.projFS,
 		dependency.WithProjectFile(filepath.Base(c.ProjectFile)),
@@ -113,7 +104,6 @@ func (c *generateCmd) AfterApply(cfg *config.Config) error {
 			proj.Spec.Schemas.GetLanguages(),
 		)),
 		dependency.WithXpkgClient(client),
-		dependency.WithResolver(resolver),
 	)
 	return nil
 }

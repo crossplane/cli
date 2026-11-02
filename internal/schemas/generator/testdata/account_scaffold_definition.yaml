@@ -35,6 +35,13 @@ spec:
                       type: string
                       description: |
                         The name of the account to be scaffolded.
+                    members:
+                      type: array
+                      description: |
+                        Member principals for the account.
+                      items:
+                        type: string
+                        format: email
                   required:
                     - name
               required:

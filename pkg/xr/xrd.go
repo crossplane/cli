@@ -64,6 +64,10 @@ func ApplyCRDDefaults(xr map[string]any, apiVersion string, crd extv1.CustomReso
 		return errors.Errorf("the specified API version '%s' does not exist in the XRD", apiVersion)
 	}
 
+	if version.Schema == nil || version.Schema.OpenAPIV3Schema == nil {
+		return errors.Errorf("the specified API version '%s' has no schema", apiVersion)
+	}
+
 	if err := extv1.Convert_v1_JSONSchemaProps_To_apiextensions_JSONSchemaProps(version.Schema.OpenAPIV3Schema, &k, nil); err != nil {
 		return err
 	}

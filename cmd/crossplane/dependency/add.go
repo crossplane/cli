@@ -17,6 +17,7 @@ limitations under the License.
 package dependency
 
 import (
+	"cmp"
 	"context"
 	"strings"
 
@@ -45,9 +46,9 @@ type addCmd struct {
 	CacheDir string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
 	Package  string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
 
-	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                     optional:""             predictor:"yaml_file" short:"f" type:"path"`
-	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."           name:"schemas-dir"`
-	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python). Overrides the project's schemas.languages; defaults to all." name:"schema-languages"`
+	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                           optional:""             predictor:"yaml_file" short:"f" type:"path"`
+	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."                 name:"schemas-dir"`
+	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python, rust). Overrides the project's schemas.languages; defaults to all." name:"schema-languages"`
 
 	// Flags for specific dependency types.
 	APIOnly bool   `help:"Mark an xpkg dependency as API-only (not a runtime dependency)." name:"api-only"`
@@ -71,20 +72,10 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 		return err
 	}
 
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	client, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-		clixpkg.WithImageConfigs(proj.Spec.ImageConfigs),
-	)
+	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot create xpkg client")
 	}
-	resolver := clixpkg.NewResolver(client)
 
 	m := dependency.NewManager(proj, projFS,
 		dependency.WithProjectFile(projFile),
@@ -96,7 +87,6 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 			proj.Spec.Schemas.GetLanguages(),
 		)),
 		dependency.WithXpkgClient(client),
-		dependency.WithResolver(resolver),
 	)
 
 	dep, err := c.buildDependency()

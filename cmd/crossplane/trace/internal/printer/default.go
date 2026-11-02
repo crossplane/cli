@@ -34,8 +34,8 @@ import (
 	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource"
-	"github.com/crossplane/cli/v2/cmd/crossplane/common/resource/xpkg"
+	"github.com/crossplane/cli/v2/pkg/resource"
+	"github.com/crossplane/cli/v2/pkg/resource/xpkg"
 )
 
 const (

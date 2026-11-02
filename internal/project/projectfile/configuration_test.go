@@ -179,7 +179,7 @@ func TestLoad(t *testing.T) {
 		"UnsupportedLanguage": {
 			file:      "crossplane.yaml",
 			content:   testMeta,
-			languages: []string{"rust"},
+			languages: []string{"cobol"},
 			wantErr:   true,
 		},
 		"NotAConfiguration": {

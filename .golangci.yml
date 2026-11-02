@@ -138,8 +138,9 @@ linters:
         rangeValCopy:
           sizeThreshold: 32
     gomoddirectives:
-      # Allow replace for the local ./apis module.
-      replace-local: true
+      replace-allow-list:
+        # TODO(adamwg): Remove once upjet v2.6.0 is released; see go.mod.
+        - github.com/crossplane/upjet/v2
     govet:
       disable:
         - shadow

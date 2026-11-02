@@ -26,7 +26,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -79,10 +78,10 @@ func BuildWithFunctionIdentifier(i functions.Identifier) BuilderOption {
 }
 
 // BuildWithMaxConcurrency sets the maximum concurrency for building embedded
-// functions.
+// functions. Zero means 1: a build with no slots would never start.
 func BuildWithMaxConcurrency(n uint) BuilderOption {
 	return func(b *Builder) {
-		b.maxConcurrency = n
+		b.maxConcurrency = max(1, n)
 	}
 }
 
@@ -214,16 +213,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 		return nil, errors.Wrap(err, "failed to resolve functions")
 	}
 
-	apisSource := projectFS
-	apiExcludes := []string{
-		project.Spec.Paths.Examples,
-		project.Spec.Paths.Functions,
-		project.Spec.Paths.Operations,
-	}
-	if project.Spec.Paths.APIs != "/" {
-		apisSource = afero.NewBasePathFs(projectFS, project.Spec.Paths.APIs)
-		apiExcludes = []string{}
-	}
+	apisSource := afero.NewBasePathFs(projectFS, project.Spec.Paths.APIs)
 
 	// Not all projects have operations; ignore them if not present.
 	operationsSource := afero.NewMemMapFs()
@@ -246,7 +236,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 		xpv1.CompositionGroupVersionKind.String(),
 		extv1alpha1.ManagedResourceActivationPolicyGroupVersionKind.String(),
 	}
-	if err := collectResources(packageFS, apisSource, apiGVKs, apiExcludes); err != nil {
+	if err := collectResources(packageFS, apisSource, apiGVKs); err != nil {
 		o.eventCh.SendEvent("Collecting resources", async.EventStatusFailure)
 		return nil, errors.Wrap(err, "failed to collect API resources")
 	}
@@ -256,7 +246,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 		xpv1alpha1.WatchOperationGroupVersionKind.String(),
 		xpv1alpha1.CronOperationGroupVersionKind.String(),
 	}
-	if err := collectResources(packageFS, operationsSource, opsGVKs, nil); err != nil {
+	if err := collectResources(packageFS, operationsSource, opsGVKs); err != nil {
 		o.eventCh.SendEvent("Collecting resources", async.EventStatusFailure)
 		return nil, errors.Wrap(err, "failed to collect operation resources")
 	}
@@ -679,16 +669,10 @@ func gzipOpener(fsys afero.Fs, path, tempDir string) (tarball.Opener, error) {
 	}, nil
 }
 
-func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string, exclude []string) error {
+func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string) error {
 	return afero.Walk(fromFS, "/", func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return err
-		}
-
-		for _, excl := range exclude {
-			if strings.HasPrefix(path, excl) {
-				return filepath.SkipDir
-			}
 		}
 
 		if info.IsDir() {

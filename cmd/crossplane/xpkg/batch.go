@@ -41,6 +41,8 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/parser"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/parser/examples"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/parser/yaml"
+
+	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
 const (
@@ -281,7 +283,7 @@ func (c *batchCmd) pushWithRetry(logger logging.Logger, imgs []packageImage, s s
 	retryMsg := ""
 	for i := range tries {
 		logger.Info(fmt.Sprintf("Pushing xpkg to %s.%s", t, retryMsg))
-		err := pushImages(logger, imgs, t, nil)
+		err := pushImages(logger, terminal.NewNopSpinnerPrinter(), imgs, t, nil)
 		if err == nil {
 			break
 		}

@@ -18,12 +18,16 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/alecthomas/kong"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/afero"
 	"github.com/willabides/kongplete"
@@ -48,6 +52,7 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/xrd"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/maturity"
+	isimulate "github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
@@ -117,7 +122,7 @@ func main() {
 	flagVal, err := configFlag(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "crossplane: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitUsageError)
 	}
 	cfgPath := config.ResolvePath(flagVal)
 
@@ -159,12 +164,55 @@ func main() {
 
 	// Set up a spinner printer for commands to use. This helps ensure output
 	// consistency across commands.
-	sp := terminal.NewSpinnerPrinter(os.Stderr, term.IsTerminal(os.Stderr.Fd()))
+	tty := term.IsTerminal(os.Stderr.Fd())
+	sp := terminal.NewSpinnerPrinter(os.Stderr, tty)
 	ctx.BindTo(sp, (*terminal.SpinnerPrinter)(nil))
 
+	// Cancel the context on the first SIGINT or SIGTERM so in-flight work
+	// unwinds and deferred cleanup (e.g. render's containers and network)
+	// runs. A second signal exits immediately without waiting for cleanup.
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	stopExitOnSignal := context.AfterFunc(sigCtx, func() { exitOnSignal(tty) })
+	ctx.BindTo(sigCtx, (*context.Context)(nil))
+
 	err = ctx.Run()
+	interrupted := sigCtx.Err() != nil
+	stopExitOnSignal()
+	stop()
+	// A silent ExitError is a result, such as changes found, not an error,
+	// so it exits with its code and prints nothing.
+	code, silent := isimulate.SilentExit(err)
+	if interrupted {
+		// Exit with the conventional 128+SIGINT status.
+		if err != nil && !silent {
+			fmt.Fprintf(os.Stderr, "crossplane: %v\n", err)
+		}
+		os.Exit(130)
+	}
+	if silent {
+		os.Exit(code)
+	}
+	// An error is printed and exits 1, or with its ExitCoder's code.
 	ctx.FatalIfErrorf(err)
 }
+
+// exitOnSignal waits for SIGINT or SIGTERM, then exits with status 130
+// without waiting for cleanup. A spinner may still own the terminal, so when
+// stderr is a terminal it first shows the cursor and disables bracketed
+// paste, which would otherwise be left hidden and enabled.
+func exitOnSignal(tty bool) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	<-sig
+	if tty {
+		_, _ = fmt.Fprint(os.Stderr, ansi.ShowCursor+ansi.ResetModeBracketedPaste)
+	}
+	os.Exit(130)
+}
+
+// exitUsageError is the status kong exits with on a parse error. Kong does
+// not export it, so it is mirrored here for flag errors found before Parse.
+const exitUsageError = 80
 
 // configFlag scans argv for the --config flag and returns its value or "" if
 // the config flag is not present.
@@ -181,7 +229,7 @@ func configFlag(args []string) (string, error) {
 			return v, nil
 		}
 
-		if i+1 < len(args) {
+		if i+1 < len(args) && args[i+1] != "" {
 			return args[i+1], nil
 		}
 

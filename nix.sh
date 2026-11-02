@@ -8,6 +8,10 @@
 #
 # The first run downloads dependencies into /nix/store (cached in a Docker
 # volume). Subsequent runs reuse the cache. To reset: docker volume rm crossplane-cli-nix
+#
+# Runs can be concurrent (e.g. from different git worktrees). They share the Nix
+# store but each uses its own Docker data root, so kind node images are cached
+# per slot (/nix/docker, /nix/docker-1, ...) and may be pulled again in slot 1+.
 
 set -e
 
@@ -16,17 +20,36 @@ set -e
 
 if [ "${NIX_SH_CONTAINER:-}" = "1" ]; then
 	# Install tools this entrypoint script needs. It needs Docker to setup
-	# Docker in Docker for E2E tests, and rsync to copy build the build result
-	# (cp doesn't work well on MacOS volumes). Installed packages persist across
-	# runs thanks to the crossplane-cli-nix volume.
-	if ! command -v docker &>/dev/null || ! command -v rsync &>/dev/null; then
-		nix-env -iA nixpkgs.docker nixpkgs.rsync
+	# Docker in Docker for E2E tests, rsync to copy build the build result
+	# (cp doesn't work well on MacOS volumes), and flock to claim a Docker data
+	# root below. Installed packages persist across runs thanks to the
+	# crossplane-cli-nix volume.
+	if ! command -v docker &>/dev/null || ! command -v rsync &>/dev/null || ! command -v flock &>/dev/null; then
+		nix-env -iA nixpkgs.docker nixpkgs.rsync nixpkgs.util-linux
 	fi
 
 	# Start the Docker daemon, storing its data in the crossplane-cli-nix volume
 	# for persistence across container runs. This gives us a consistent Docker
-	# environment with cached images (e.g., kind node images).
-	dockerd --data-root=/nix/docker >/tmp/dockerd.log 2>&1 &
+	# environment with cached images (e.g., kind node images). A Docker data
+	# root can only be used by one daemon at a time, so concurrent runs (e.g.
+	# from different worktrees) each claim the first free slot. The lock is
+	# held on fd 9 until this container exits, so it can't go stale. Slot 0 is
+	# /nix/docker; others are /nix/docker-<n>. Run dockerd from / so its
+	# children don't use the bind-mounted checkout as their working directory;
+	# a crashing child would otherwise leave a core file there.
+	mkdir -p /nix/docker-locks
+	slot=0
+	while :; do
+		exec 9>"/nix/docker-locks/${slot}"
+		flock -n 9 && break
+		slot=$((slot + 1))
+	done
+	data_root=/nix/docker
+	if [ "${slot}" -gt 0 ]; then
+		data_root="/nix/docker-${slot}"
+	fi
+	echo "nix.sh: using Docker data root ${data_root}" >&2
+	(cd / && exec dockerd --data-root="${data_root}" >/tmp/dockerd.log 2>&1 9>&-) &
 
 	attempts=0
 	until docker info >/dev/null 2>&1; do
@@ -43,6 +66,14 @@ if [ "${NIX_SH_CONTAINER:-}" = "1" ]; then
 	# by the host user. Git refuses to operate in directories owned by other
 	# users.
 	git config --global --add safe.directory /crossplane-cli
+	# In a worktree, git also checks the ownership of the mounted worktree
+	# and git directories, which are mounted at their host paths.
+	if [ -n "${WORKTREE_DIR:-}" ]; then
+		git config --global --add safe.directory /crossplane-cli/.git
+		git config --global --add safe.directory "${WORKTREE_DIR}"
+		git config --global --add safe.directory "${WORKTREE_GIT_DIR}"
+		git config --global --add safe.directory "${WORKTREE_COMMON_DIR}"
+	fi
 
 	# Record the current time. After nix runs, we'll find files newer than this
 	# marker and chown them to the host user.
@@ -70,7 +101,9 @@ if [ "${NIX_SH_CONTAINER:-}" = "1" ]; then
 	# Fix ownership of any files nix created or modified. The container runs as
 	# root, so without this, generated files would be root-owned on the host.
 	# Using -newer is surgical - we only chown files touched during this run.
-	find /crossplane-cli -newer "${marker}" -exec chown "${HOST_UID}:${HOST_GID}" {} + 2>/dev/null || true
+	# In a worktree this also covers the shared git directory, which git
+	# commands run by nix may have written to.
+	find /crossplane-cli "${WORKTREE_COMMON_DIR:-/crossplane-cli}" -newer "${marker}" -exec chown "${HOST_UID}:${HOST_GID}" {} + 2>/dev/null || true
 	rm -f "${marker}"
 
 	exit 0
@@ -108,10 +141,26 @@ if [ -t 1 ]; then
 	INTERACTIVE_FLAGS="-it"
 fi
 
+# In a linked git worktree, .git is a file pointing at the main checkout's
+# .git directory, which isn't visible inside the container. Mount that
+# directory at its host path and overlay a .git file with an absolute gitdir
+# so git (and Nix's flake evaluation) can resolve the repository.
+WORKTREE_FLAGS=()
+if [ -f .git ]; then
+	worktree_dir=$(pwd -P)
+	git_dir=$(git rev-parse --absolute-git-dir)
+	git_common_dir=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)
+	git_file=$(mktemp)
+	trap 'rm -f "${git_file}"' EXIT
+	echo "gitdir: ${git_dir}" >"${git_file}"
+	WORKTREE_FLAGS=(-e "WORKTREE_DIR=${worktree_dir}" -e "WORKTREE_GIT_DIR=${git_dir}" -e "WORKTREE_COMMON_DIR=${git_common_dir}" -v "${worktree_dir}:${worktree_dir}" -v "${git_common_dir}:${git_common_dir}" -v "${git_file}:/crossplane-cli/.git:ro")
+fi
+
 # Run with --privileged for Docker-in-Docker (required for kind clusters).
 docker run --rm --privileged --cgroupns=host ${INTERACTIVE_FLAGS} \
 	-v "$(pwd):/crossplane-cli" \
 	-v "crossplane-cli-nix:/nix" \
+	${WORKTREE_FLAGS[@]+"${WORKTREE_FLAGS[@]}"} \
 	-w /crossplane-cli \
 	-e "NIX_SH_CONTAINER=1" \
 	-e "NIX_CONFIG=${NIX_CONFIG}" \

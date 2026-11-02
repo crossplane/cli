@@ -57,8 +57,7 @@ type Manager struct {
 	gitCloner       git.Cloner
 	gitAuthProvider git.AuthProvider
 
-	client   runtimexpkg.Client
-	resolver *clixpkg.Resolver
+	client clixpkg.Client
 
 	updateMutex sync.Mutex
 
@@ -77,8 +76,7 @@ type managerOptions struct {
 	schemaGenerators []generator.Interface
 	schemaRunner     runner.SchemaRunner
 	gitAuthProvider  git.AuthProvider
-	client           runtimexpkg.Client
-	resolver         *clixpkg.Resolver
+	client           clixpkg.Client
 }
 
 // WithProjectFile sets the path to the project file.
@@ -116,19 +114,11 @@ func WithGitAuthProvider(p git.AuthProvider) ManagerOption {
 	}
 }
 
-// WithXpkgClient sets the runtime xpkg.Client used to fetch and parse
-// xpkg dependencies.
-func WithXpkgClient(c runtimexpkg.Client) ManagerOption {
+// WithXpkgClient sets the xpkg client used to resolve version constraints and
+// to fetch and parse xpkg dependencies.
+func WithXpkgClient(c clixpkg.Client) ManagerOption {
 	return func(opts *managerOptions) {
 		opts.client = c
-	}
-}
-
-// WithResolver sets the package reference resolver used to translate
-// semver constraints into concrete tags before calling Client.Get.
-func WithResolver(r *clixpkg.Resolver) ManagerOption {
-	return func(opts *managerOptions) {
-		opts.resolver = r
 	}
 }
 
@@ -165,7 +155,6 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 		gitCloner:       &git.DefaultCloner{},
 		gitAuthProvider: options.gitAuthProvider,
 		client:          options.client,
-		resolver:        options.resolver,
 		visited:         make(map[string]struct{}),
 	}
 }
@@ -174,7 +163,7 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 // the ref has no tag, has an exact semver version, or is not a valid
 // constraint, it is returned unchanged.
 func (m *Manager) ResolveRef(ref string) (name.Reference, error) {
-	resolved, _, err := m.resolver.Resolve(context.Background(), ref)
+	resolved, _, err := m.client.Resolve(context.Background(), ref)
 	return resolved, err
 }
 
@@ -192,7 +181,7 @@ func (m *Manager) addPackage(ctx context.Context, ref string, refresh bool) (*sc
 	// consult the visited set before recursing.
 	m.claim(ref)
 
-	resolvedRef, version, err := m.resolver.Resolve(ctx, ref)
+	resolvedRef, version, err := m.client.Resolve(ctx, ref)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot resolve %s", ref)
 	}
@@ -281,7 +270,7 @@ func dependencyRepo(dep pkgmetav1.Dependency) string {
 
 // xpkgRef formats an OCI reference from a repository and a version that may be
 // a digest, an exact tag, or a semver constraint (resolved later by the
-// resolver).
+// xpkg client).
 func xpkgRef(repo, version string) string {
 	if _, err := conregv1.NewHash(version); err == nil {
 		return fmt.Sprintf("%s@%s", repo, version)

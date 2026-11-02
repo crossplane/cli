@@ -26,7 +26,6 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
-	"io/fs"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -38,18 +37,12 @@ import (
 	"github.com/oapi-codegen/oapi-codegen/v2/pkg/codegen"
 	"github.com/spf13/afero"
 	"golang.org/x/tools/go/ast/astutil"
-	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kube-openapi/pkg/spec3"
 	"k8s.io/kube-openapi/pkg/validation/spec"
-	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
-	xpv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
-
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
-	"github.com/crossplane/cli/v2/internal/crd"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 )
 
@@ -97,8 +90,13 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
+	golang.org/x/net v0.38.0 // indirect
+	golang.org/x/text v0.23.0 // indirect
+	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
+	k8s.io/utils v0.0.0-20241104100929-3ea5e8cea738 // indirect
 	sigs.k8s.io/json v0.0.0-20241010143419-9aa6b5e7a4b3 // indirect
+	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.6.0 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
@@ -139,6 +137,8 @@ github.com/oapi-codegen/runtime v1.1.0 h1:rJpoNUawn5XTvekgfkvSZr0RqEnoYpFkyvrzfW
 github.com/oapi-codegen/runtime v1.1.0/go.mod h1:BeSfBkWWWnAnGdyS+S/GnlbmHKzf8/hwkvelJZDeKA8=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/spf13/pflag v1.0.5 h1:iy+VFUOCP1a+8yFto/drg2CJ5u0yRoB7fZw3DKv/JXA=
+github.com/spf13/pflag v1.0.5/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
 github.com/spkg/bom v0.0.0-20160624110644-59b7046e48ad/go.mod h1:qLr4V1qq6nMqFKkMo8ZTx3f+BZEkzsRUY10Xsm2mwU0=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
@@ -214,6 +214,7 @@ import (
 	"time"
 
 	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	{{- range .ExternalImports}}
 	{{ . }}
@@ -229,6 +230,7 @@ var (
 	_ json.RawMessage = nil
 	_ = fmt.Errorf
 	_ = runtime.JSONMerge
+	_ openapi_types.Email
 )
 `
 
@@ -247,7 +249,7 @@ func (goGenerator) Language() string {
 
 // GenerateFromCRD generates Go schemas for the CRDs in the given filesystem.
 func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
-	openAPIs, err := goCollectOpenAPIs(fromFS)
+	openAPIs, err := collectCRDOpenAPIs(fromFS)
 	if err != nil {
 		return nil, err
 	}
@@ -280,8 +282,13 @@ func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 		}
 	}
 
-	// Generate separate files for each K8s package
+	// Generate separate files for each K8s package. meta/v1 resolves to the
+	// real apimachinery package when runtimeObjects is on (see
+	// tryReplaceK8sTypeWithMetaPath), so the local mirror would be unused.
 	for pkg, schemas := range k8sSchemasByPackage {
+		if pkg == k8sPkgMetaV1 && g.runtimeObjects {
+			continue
+		}
 		if err := g.generateSharedK8sPackage(schemaFS, pkg, schemas); err != nil {
 			return nil, err
 		}
@@ -290,12 +297,12 @@ func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 	// Generate models for the non-k8s schemas.
 	for _, oapi := range openAPIs {
 		code, err := generateGo(oapi.spec, oapi.version,
-			goRemoveValidationOnlyCombinators,
+			removeValidationOnlyCombinators,
 			goRenameTypes,
 			goRenameEnums,
 			goReplaceNumberWithInt,
 			goRemoveRequired,
-			goReferenceK8sTypesForCRDs,
+			goReferenceK8sTypesForCRDs(g.runtimeObjects),
 			goRemoveK8s,
 			goKeepOnlyComponents,
 		)
@@ -364,13 +371,13 @@ func (g goGenerator) generateSharedK8sPackage(schemaFS afero.Fs, pkg string, sch
 	// autoscaling use goReferenceK8sTypesForCRDs (non-core path) to
 	// reference the CRD meta.v1 package at
 	// dev.crossplane.io/models/io/k8s/meta/v1.
-	refMutator := goReferenceK8sTypes
+	refMutator := goReferenceK8sTypes(g.runtimeObjects)
 	if pkg != k8sPkgMetaV1 {
-		refMutator = goReferenceK8sTypesForCRDs
+		refMutator = goReferenceK8sTypesForCRDs(g.runtimeObjects)
 	}
 
 	code, err := generateGo(pkgSpec, goPkg.version,
-		goRemoveValidationOnlyCombinators,
+		removeValidationOnlyCombinators,
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,
@@ -407,110 +414,6 @@ func (g goGenerator) generateSharedK8sPackage(schemaFS afero.Fs, pkg string, sch
 	}
 
 	return writeGoCode(schemaFS, goPkg, code)
-}
-
-type goOpenAPI struct {
-	crd     *extv1.CustomResourceDefinition
-	version string
-	spec    *spec3.OpenAPI
-}
-
-func goCollectOpenAPIs(fromFS afero.Fs) ([]goOpenAPI, error) { //nolint:gocognit // Hard to split this up, and it's not too long to read.
-	crdFS := afero.NewMemMapFs()
-	baseFolder := "workdir"
-
-	if err := crdFS.MkdirAll(baseFolder, 0o755); err != nil {
-		return nil, err
-	}
-
-	var openAPIs []goOpenAPI
-	return openAPIs, afero.Walk(fromFS, "", func(path string, info fs.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info.IsDir() {
-			return nil
-		}
-		// Ignore files without yaml extensions.
-		ext := filepath.Ext(path)
-		if ext != ".yaml" && ext != ".yml" {
-			return nil
-		}
-
-		var u metav1.TypeMeta
-		bs, err := afero.ReadFile(fromFS, path)
-		if err != nil {
-			return errors.Wrapf(err, "failed to read file %q", path)
-		}
-		err = yaml.Unmarshal(bs, &u)
-		if err != nil {
-			return errors.Wrapf(err, "failed to parse file %q", path)
-		}
-
-		switch u.GroupVersionKind().Kind {
-		case xpv1.CompositeResourceDefinitionKind:
-			// Process the XRD and get the paths
-			xrPath, claimPath, err := crd.ProcessXRD(crdFS, bs, path, baseFolder)
-			if err != nil {
-				return err
-			}
-
-			if xrPath != "" {
-				bs, err := afero.ReadFile(crdFS, xrPath)
-				if err != nil {
-					return errors.Wrapf(err, "failed to read file %q", xrPath)
-				}
-
-				var c extv1.CustomResourceDefinition
-				if err := yaml.Unmarshal(bs, &c); err != nil {
-					return errors.Wrapf(err, "failed to unmarshal CRD file %q", xrPath)
-				}
-
-				oapis, err := crd.ToOpenAPI(&c)
-				if err != nil {
-					return err
-				}
-				for version, oapi := range oapis {
-					openAPIs = append(openAPIs, goOpenAPI{spec: oapi, version: version, crd: &c})
-				}
-			}
-			if claimPath != "" {
-				bs, err := afero.ReadFile(crdFS, claimPath)
-				if err != nil {
-					return errors.Wrapf(err, "failed to read file %q", claimPath)
-				}
-
-				var c extv1.CustomResourceDefinition
-				if err := yaml.Unmarshal(bs, &c); err != nil {
-					return errors.Wrapf(err, "failed to unmarshal CRD file %q", claimPath)
-				}
-
-				oapis, err := crd.ToOpenAPI(&c)
-				if err != nil {
-					return err
-				}
-				for version, oapi := range oapis {
-					openAPIs = append(openAPIs, goOpenAPI{spec: oapi, version: version, crd: &c})
-				}
-			}
-
-		case "CustomResourceDefinition":
-			var c extv1.CustomResourceDefinition
-			if err := yaml.Unmarshal(bs, &c); err != nil {
-				return errors.Wrapf(err, "failed to unmarshal CRD file %q", path)
-			}
-
-			oapis, err := crd.ToOpenAPI(&c)
-			if err != nil {
-				return err
-			}
-			for version, oapi := range oapis {
-				openAPIs = append(openAPIs, goOpenAPI{spec: oapi, version: version, crd: &c})
-			}
-		}
-		return nil
-	})
 }
 
 // generateGoMutex prevents concurrent calls to `codegen.Generate` in
@@ -696,6 +599,8 @@ package %s
 import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // GroupVersion is the API group and version for the types in this package.
@@ -707,6 +612,16 @@ var SchemeBuilder = &runtime.SchemeBuilder{}
 
 // AddToScheme registers this package's types with the given runtime.Scheme.
 var AddToScheme = SchemeBuilder.AddToScheme
+
+func init() {
+	// Needed for runtime.NewParameterCodec to encode ListOptions for this
+	// GroupVersion; without it, client.List with query options and
+	// client.Watch fail.
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		k8smetav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
+}
 `, version, group, version)
 
 	formatted, err := format.Source([]byte(code))
@@ -880,85 +795,6 @@ func goRetypeSchema(schema *spec.Schema, oldType, newType string) {
 	}
 }
 
-// goRemoveValidationOnlyCombinators removes anyOf/oneOf combinators that carry
-// no structural type information. Kubernetes structural schemas allow these
-// junctors only for validation (e.g. "exactly one of endpointSelector and
-// nodeSelector must be set"), where each variant contains only `required`
-// constraints and empty property schemas. oapi-codegen generates a union
-// member type named <TypeName><index> for each variant, so a schema with both
-// anyOf and oneOf produces colliding type names (two <TypeName>0). The
-// variants don't affect the generated Go structs, so we drop them.
-// Combinators with typed variants (e.g. x-kubernetes-int-or-string's
-// anyOf: [{type: integer}, {type: string}]) are kept.
-func goRemoveValidationOnlyCombinators(s *spec3.OpenAPI) {
-	for _, schema := range s.Components.Schemas {
-		goRemoveSchemaValidationOnlyCombinators(schema)
-	}
-}
-
-func goRemoveSchemaValidationOnlyCombinators(schema *spec.Schema) {
-	if schema == nil {
-		return
-	}
-
-	if goCombinatorIsValidationOnly(schema.AnyOf) {
-		schema.AnyOf = nil
-	}
-	if goCombinatorIsValidationOnly(schema.OneOf) {
-		schema.OneOf = nil
-	}
-
-	for i := range schema.AllOf {
-		goRemoveSchemaValidationOnlyCombinators(&schema.AllOf[i])
-	}
-	for i := range schema.AnyOf {
-		goRemoveSchemaValidationOnlyCombinators(&schema.AnyOf[i])
-	}
-	for i := range schema.OneOf {
-		goRemoveSchemaValidationOnlyCombinators(&schema.OneOf[i])
-	}
-	for name, prop := range schema.Properties {
-		goRemoveSchemaValidationOnlyCombinators(&prop)
-		schema.Properties[name] = prop
-	}
-	if schema.Items != nil && schema.Items.Schema != nil {
-		goRemoveSchemaValidationOnlyCombinators(schema.Items.Schema)
-	}
-	if schema.AdditionalProperties != nil && schema.AdditionalProperties.Schema != nil {
-		goRemoveSchemaValidationOnlyCombinators(schema.AdditionalProperties.Schema)
-	}
-}
-
-// goCombinatorIsValidationOnly returns true if all the given anyOf/oneOf
-// variants constrain validation without describing any structure.
-func goCombinatorIsValidationOnly(variants []spec.Schema) bool {
-	if len(variants) == 0 {
-		return false
-	}
-	for i := range variants {
-		if !goSchemaIsValidationOnly(&variants[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func goSchemaIsValidationOnly(s *spec.Schema) bool {
-	if len(s.Type) > 0 || s.Ref.String() != "" || s.Format != "" ||
-		s.Items != nil || s.AdditionalProperties != nil ||
-		len(s.Enum) > 0 || s.Default != nil ||
-		len(s.AllOf) > 0 || len(s.AnyOf) > 0 || len(s.OneOf) > 0 || s.Not != nil {
-		return false
-	}
-	for name := range s.Properties {
-		prop := s.Properties[name]
-		if !goSchemaIsValidationOnly(&prop) {
-			return false
-		}
-	}
-	return true
-}
-
 // goRemoveRequired removes the required fields from schemas. We want all fields
 // in our generated models to be optional (so functions can set only the fields
 // they wish to own).
@@ -985,31 +821,36 @@ func goRemovePropertiesRequired(props map[string]spec.Schema) {
 	}
 }
 
-// goReferenceK8sTypes converts all references to k8s meta/v1 schemas in the
-// given spec to references to the shared Go models we generate for the k8s
-// schemas.
-func goReferenceK8sTypes(s *spec3.OpenAPI) {
-	for _, schema := range s.Components.Schemas {
-		goReferenceK8sType(schema)
-		goReferenceK8sTypesProperties(schema.Properties)
+// goReferenceK8sTypes returns a mutator that converts all references to k8s
+// meta/v1 schemas in the given spec to references to the shared Go models we
+// generate for the k8s schemas. When useRealMeta is true, meta/v1 resolves to
+// the real k8s.io/apimachinery package instead, which client.Object requires.
+func goReferenceK8sTypes(useRealMeta bool) func(*spec3.OpenAPI) {
+	return func(s *spec3.OpenAPI) {
+		for _, schema := range s.Components.Schemas {
+			goReferenceK8sType(schema, useRealMeta)
+			goReferenceK8sTypesProperties(schema.Properties, useRealMeta)
+		}
 	}
 }
 
 // goReferenceK8sTypesForCRDs is like goReferenceK8sTypes but uses different
 // import paths appropriate for CRDs. For CRDs, we only need to handle meta.v1
 // differently since CRDs might use meta.k8s.io group.
-func goReferenceK8sTypesForCRDs(s *spec3.OpenAPI) {
-	for _, schema := range s.Components.Schemas {
-		goReferenceK8sTypeWithMetaPath(schema, false)
-		goReferenceK8sTypesPropertiesWithMetaPath(schema.Properties, false)
+func goReferenceK8sTypesForCRDs(useRealMeta bool) func(*spec3.OpenAPI) {
+	return func(s *spec3.OpenAPI) {
+		for _, schema := range s.Components.Schemas {
+			goReferenceK8sTypeWithMetaPath(schema, false, useRealMeta)
+			goReferenceK8sTypesPropertiesWithMetaPath(schema.Properties, false, useRealMeta)
+		}
 	}
 }
 
-func goReferenceK8sType(schema *spec.Schema) {
-	goReferenceK8sTypeWithMetaPath(schema, true)
+func goReferenceK8sType(schema *spec.Schema, useRealMeta bool) {
+	goReferenceK8sTypeWithMetaPath(schema, true, useRealMeta)
 }
 
-func goReferenceK8sTypeWithMetaPath(schema *spec.Schema, useCorePath bool) {
+func goReferenceK8sTypeWithMetaPath(schema *spec.Schema, useCorePath, useRealMeta bool) {
 	// Helper function to check if a reference is a k8s type
 	isK8sRef := func(ref string) bool {
 		return strings.Contains(ref, k8sPkgMetaV1) ||
@@ -1023,7 +864,7 @@ func goReferenceK8sTypeWithMetaPath(schema *spec.Schema, useCorePath bool) {
 	// Handle direct reference
 	ref := schema.Ref.String()
 	if isK8sRef(ref) {
-		tryReplaceK8sTypeWithMetaPath(schema, ref, useCorePath)
+		tryReplaceK8sTypeWithMetaPath(schema, ref, useCorePath, useRealMeta)
 		// Clear the original reference after replacement
 		schema.Ref = spec.Ref{}
 	}
@@ -1040,56 +881,61 @@ func goReferenceK8sTypeWithMetaPath(schema *spec.Schema, useCorePath bool) {
 	if allK8s && len(schema.AllOf) > 0 {
 		// Use the first AllOf ref for the replacement
 		ref := schema.AllOf[0].Ref.String()
-		tryReplaceK8sTypeWithMetaPath(schema, ref, useCorePath)
+		tryReplaceK8sTypeWithMetaPath(schema, ref, useCorePath, useRealMeta)
 		schema.AllOf = nil
 	} else {
 		// Process each AllOf individually
 		for i := range schema.AllOf {
-			goReferenceK8sTypeWithMetaPath(&schema.AllOf[i], useCorePath)
+			goReferenceK8sTypeWithMetaPath(&schema.AllOf[i], useCorePath, useRealMeta)
 		}
 	}
 
 	// Also check OneOf and AnyOf
 	for i := range schema.OneOf {
-		goReferenceK8sTypeWithMetaPath(&schema.OneOf[i], useCorePath)
+		goReferenceK8sTypeWithMetaPath(&schema.OneOf[i], useCorePath, useRealMeta)
 	}
 	for i := range schema.AnyOf {
-		goReferenceK8sTypeWithMetaPath(&schema.AnyOf[i], useCorePath)
+		goReferenceK8sTypeWithMetaPath(&schema.AnyOf[i], useCorePath, useRealMeta)
 	}
 }
 
-func goReferenceK8sTypesProperties(props map[string]spec.Schema) {
-	goReferenceK8sTypesPropertiesWithMetaPath(props, true)
+func goReferenceK8sTypesProperties(props map[string]spec.Schema, useRealMeta bool) {
+	goReferenceK8sTypesPropertiesWithMetaPath(props, true, useRealMeta)
 }
 
-func goReferenceK8sTypesPropertiesWithMetaPath(props map[string]spec.Schema, useCorePath bool) {
+func goReferenceK8sTypesPropertiesWithMetaPath(props map[string]spec.Schema, useCorePath, useRealMeta bool) {
 	for name, prop := range props {
-		goReferenceK8sTypeWithMetaPath(&prop, useCorePath)
-		goReferenceK8sTypesPropertiesWithMetaPath(prop.Properties, useCorePath)
+		goReferenceK8sTypeWithMetaPath(&prop, useCorePath, useRealMeta)
+		goReferenceK8sTypesPropertiesWithMetaPath(prop.Properties, useCorePath, useRealMeta)
 		if prop.Items != nil {
-			goReferenceK8sTypeWithMetaPath(prop.Items.Schema, useCorePath)
-			goReferenceK8sTypesPropertiesWithMetaPath(prop.Items.Schema.Properties, useCorePath)
+			goReferenceK8sTypeWithMetaPath(prop.Items.Schema, useCorePath, useRealMeta)
+			goReferenceK8sTypesPropertiesWithMetaPath(prop.Items.Schema.Properties, useCorePath, useRealMeta)
 		}
 		if prop.AdditionalProperties != nil && prop.AdditionalProperties.Schema != nil {
-			goReferenceK8sTypeWithMetaPath(prop.AdditionalProperties.Schema, useCorePath)
-			goReferenceK8sTypesPropertiesWithMetaPath(prop.AdditionalProperties.Schema.Properties, useCorePath)
+			goReferenceK8sTypeWithMetaPath(prop.AdditionalProperties.Schema, useCorePath, useRealMeta)
+			goReferenceK8sTypesPropertiesWithMetaPath(prop.AdditionalProperties.Schema.Properties, useCorePath, useRealMeta)
 		}
 
 		props[name] = prop
 	}
 }
 
-func tryReplaceK8sTypeWithMetaPath(schema *spec.Schema, ref string, useCorePath bool) {
+func tryReplaceK8sTypeWithMetaPath(schema *spec.Schema, ref string, useCorePath, useRealMeta bool) {
 	lastDot := strings.LastIndex(ref, ".")
 	if lastDot == -1 {
 		return
 	}
 	t := ref[lastDot+1:]
 
-	// Determine the correct alias and path for meta.v1
+	// useRealMeta always resolves meta.v1 to the real apimachinery package,
+	// since client.Object needs its exact types, not a similar mirror.
 	metaAlias := "metacorev1"
 	metaPath := "dev.crossplane.io/models/io/k8s/core/meta/v1"
-	if !useCorePath {
+	switch {
+	case useRealMeta:
+		metaAlias = "k8smetav1"
+		metaPath = "k8s.io/apimachinery/pkg/apis/meta/v1"
+	case !useCorePath:
 		metaAlias = "metav1"
 		metaPath = "dev.crossplane.io/models/io/k8s/meta/v1"
 	}
@@ -1176,96 +1022,6 @@ func goKeepOnlyComponents(s *spec3.OpenAPI) {
 	}
 }
 
-// goAddDefaults adds default values for apiVersion and kind properties based on
-// x-kubernetes-group-version-kind extension.
-func goAddDefaults(s *spec3.OpenAPI) {
-	if s.Components == nil || s.Components.Schemas == nil {
-		return
-	}
-
-	for _, schema := range s.Components.Schemas {
-		processSchemaDefaults(schema)
-	}
-}
-
-func processSchemaDefaults(schema *spec.Schema) {
-	// Look for x-kubernetes-group-version-kind extension
-	rawExt, ok := schema.Extensions["x-kubernetes-group-version-kind"]
-	if !ok {
-		return
-	}
-
-	// Convert the extension to a usable format
-	gvkList := extractGVKList(rawExt)
-	if len(gvkList) == 0 {
-		return
-	}
-
-	// Extract group, version, and kind from the first GVK
-	group, version, kind := extractGVKInfo(gvkList[0])
-
-	// Construct apiVersion
-	apiVersion := constructAPIVersion(group, version)
-
-	// Add defaults to properties
-	addSchemaPropertyDefaultsGo(schema, apiVersion, kind)
-}
-
-func extractGVKList(rawExt any) []map[string]any {
-	var gvkList []map[string]any
-	switch ext := rawExt.(type) {
-	case []any:
-		for _, item := range ext {
-			if gvk, ok := item.(map[string]any); ok {
-				gvkList = append(gvkList, gvk)
-			}
-		}
-	case []map[string]any:
-		gvkList = ext
-	}
-	return gvkList
-}
-
-func extractGVKInfo(gvk map[string]any) (group, version, kind string) {
-	if g, ok := gvk["group"].(string); ok {
-		group = g
-	}
-	if v, ok := gvk["version"].(string); ok {
-		version = v
-	}
-	if k, ok := gvk["kind"].(string); ok {
-		kind = k
-	}
-	return group, version, kind
-}
-
-func constructAPIVersion(group, version string) string {
-	if group != "" {
-		return group + "/" + version
-	}
-	return version
-}
-
-func addSchemaPropertyDefaultsGo(schema *spec.Schema, apiVersion, kind string) {
-	if schema.Properties == nil {
-		return
-	}
-
-	// Add default to apiVersion property
-	if propSchema, ok := schema.Properties["apiVersion"]; ok {
-		propSchema.Default = apiVersion
-		propSchema.Enum = []any{apiVersion}
-		schema.Properties["apiVersion"] = propSchema
-	}
-
-	// Add default to kind property
-	if propSchema, ok := schema.Properties["kind"]; ok {
-		propSchema.Default = kind
-		propSchema.Enum = []any{kind}
-		schema.Properties["kind"] = propSchema
-	}
-}
-
 // removeSelfImports removes self-imports and removes
 // the package prefix from types that would use the self-import.
 func removeSelfImports(code string, pkg string) (string, error) {
@@ -1320,6 +1076,7 @@ func fixMissingImports(code string) (string, error) {
 	k8sImports := map[string]string{
 		"metacorev1":    "dev.crossplane.io/models/io/k8s/core/meta/v1",
 		"metav1":        "dev.crossplane.io/models/io/k8s/meta/v1",
+		"k8smetav1":     "k8s.io/apimachinery/pkg/apis/meta/v1",
 		"corev1":        "dev.crossplane.io/models/io/k8s/core/v1",
 		"resourcev1":    "dev.crossplane.io/models/io/k8s/resource/v1",
 		"runtimev1":     "dev.crossplane.io/models/io/k8s/runtime/v1",
@@ -1435,49 +1192,6 @@ func (g goGenerator) GenerateFromOpenAPI(_ context.Context, fromFS afero.Fs, _ r
 	return schemaFS, nil
 }
 
-// collectOpenAPISpecs walks through the filesystem to find and parse OpenAPI JSON files.
-func collectOpenAPISpecs(fromFS afero.Fs) ([]*spec3.OpenAPI, error) {
-	var openAPISpecs []*spec3.OpenAPI
-
-	err := afero.Walk(fromFS, "", func(path string, info fs.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info.IsDir() {
-			return nil
-		}
-
-		// Only process JSON files
-		if !strings.HasSuffix(strings.ToLower(path), ".json") {
-			return nil
-		}
-
-		// Read the file content
-		bs, err := afero.ReadFile(fromFS, path)
-		if err != nil {
-			return errors.Wrapf(err, "failed to read file %q", path)
-		}
-
-		// Parse as OpenAPI spec
-		var spec spec3.OpenAPI
-		if err := json.Unmarshal(bs, &spec); err != nil {
-			// Skip files that aren't valid OpenAPI specs
-			return nil //nolint:nilerr // See comment above.
-		}
-
-		// Check if it has components/schemas
-		if spec.Components == nil || len(spec.Components.Schemas) == 0 {
-			return nil
-		}
-
-		openAPISpecs = append(openAPISpecs, &spec)
-		return nil
-	})
-
-	return openAPISpecs, err
-}
-
 // initializeSchemaFS creates and initializes the schema filesystem with go.mod
 // and go.sum.
 func initializeSchemaFS() (afero.Fs, error) {
@@ -1520,9 +1234,14 @@ func generateK8sSharedSchemas(openAPISpecs []*spec3.OpenAPI, schemaFS afero.Fs, 
 		}
 	}
 
-	// Generate separate files for each K8s package
+	// Generate separate files for each K8s package. meta/v1 resolves to the
+	// real apimachinery package when runtimeObjects is on (see
+	// tryReplaceK8sTypeWithMetaPath), so the local mirror would be unused.
 	for pkg, schemas := range k8sSchemasByPackage {
 		if len(schemas) == 0 {
+			continue
+		}
+		if pkg == k8sPkgMetaV1 && g.runtimeObjects {
 			continue
 		}
 
@@ -1548,13 +1267,13 @@ func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaF
 	goPkg := getK8sPackageInfo(pkg)
 
 	code, err := generateGo(pkgSpec, goPkg.version,
-		goRemoveValidationOnlyCombinators,
+		removeValidationOnlyCombinators,
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,
 		goRemoveRequired,
-		goReferenceK8sTypes,
-		goAddDefaults,
+		goReferenceK8sTypes(g.runtimeObjects),
+		addGVKDefaults,
 	)
 	if err != nil {
 		return err
@@ -1732,15 +1451,15 @@ func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAP
 	maps.Copy(groupSpec.Components.Schemas, openAPISpec.Components.Schemas)
 
 	code, err := generateGo(groupSpec, version,
-		goRemoveValidationOnlyCombinators,
+		removeValidationOnlyCombinators,
 		goRenameTypes,
 		goRenameEnums,
 		goReplaceNumberWithInt,
 		goRemoveRequired,
-		goReferenceK8sTypes,
+		goReferenceK8sTypes(g.runtimeObjects),
 		goRemoveK8s,
 		goKeepOnlyComponents,
-		goAddDefaults,
+		addGVKDefaults,
 	)
 	if err != nil {
 		return err

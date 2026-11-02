@@ -186,6 +186,104 @@ func TestGenerateKCLFiles(t *testing.T) {
 	}
 }
 
+func TestSchemasInfo(t *testing.T) {
+	cases := map[string]struct {
+		reason string
+		args   struct {
+			lang           string
+			seedSchemas    map[string][]byte
+			seedSchemaDirs []string
+			paths          v1alpha1.ProjectPaths
+		}
+		want struct {
+			hasSchemas  bool
+			schemasPath string
+		}
+	}{
+		"NoSchemasDirectory": {
+			reason: "A project without models for the language has no schemas, but the path is computed all the same.",
+			args: struct {
+				lang           string
+				seedSchemas    map[string][]byte
+				seedSchemaDirs []string
+				paths          v1alpha1.ProjectPaths
+			}{lang: "rust", paths: v1alpha1.ProjectPaths{Functions: "functions", Schemas: "schemas"}},
+			want: struct {
+				hasSchemas  bool
+				schemasPath string
+			}{hasSchemas: false, schemasPath: "../../schemas/rust"},
+		},
+		"EmptySchemasDirectory": {
+			reason: "A schemas directory with nothing in it counts as no models.",
+			args: struct {
+				lang           string
+				seedSchemas    map[string][]byte
+				seedSchemaDirs []string
+				paths          v1alpha1.ProjectPaths
+			}{lang: "python", seedSchemaDirs: []string{"python"}, paths: v1alpha1.ProjectPaths{Functions: "functions", Schemas: "schemas"}},
+			want: struct {
+				hasSchemas  bool
+				schemasPath string
+			}{hasSchemas: false, schemasPath: "../../schemas/python"},
+		},
+		"GeneratedModels": {
+			reason: "A populated schemas directory means the function can depend on the models.",
+			args: struct {
+				lang           string
+				seedSchemas    map[string][]byte
+				seedSchemaDirs []string
+				paths          v1alpha1.ProjectPaths
+			}{lang: "rust", seedSchemas: map[string][]byte{"rust/Cargo.toml": nil}, paths: v1alpha1.ProjectPaths{Functions: "functions", Schemas: "schemas"}},
+			want: struct {
+				hasSchemas  bool
+				schemasPath string
+			}{hasSchemas: true, schemasPath: "../../schemas/rust"},
+		},
+		"ProjectPaths": {
+			reason: "The path follows the project's own functions and schemas directories.",
+			args: struct {
+				lang           string
+				seedSchemas    map[string][]byte
+				seedSchemaDirs []string
+				paths          v1alpha1.ProjectPaths
+			}{lang: "python", seedSchemas: map[string][]byte{"python/models/__init__.py": nil}, paths: v1alpha1.ProjectPaths{Functions: "src/functions", Schemas: "generated/models"}},
+			want: struct {
+				hasSchemas  bool
+				schemasPath string
+			}{hasSchemas: true, schemasPath: "../../../generated/models/python"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			schemasFS := seedFS(t, tc.args.seedSchemas)
+			for _, dir := range tc.args.seedSchemaDirs {
+				if err := schemasFS.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			paths := tc.args.paths
+			c := &generateCmd{
+				Name:      "my-func",
+				schemasFS: schemasFS,
+				proj:      &v1alpha1.Project{Spec: v1alpha1.ProjectSpec{Paths: &paths}},
+			}
+
+			hasSchemas, schemasPath, err := c.schemasInfo(tc.args.lang)
+			if err != nil {
+				t.Fatalf("\n%s\nschemasInfo(%q): %v", tc.reason, tc.args.lang, err)
+			}
+			got := struct {
+				hasSchemas  bool
+				schemasPath string
+			}{hasSchemas: hasSchemas, schemasPath: schemasPath}
+			if diff := cmp.Diff(tc.want, got, cmp.AllowUnexported(got)); diff != "" {
+				t.Errorf("\n%s\nschemasInfo(%q): -want, +got:\n%s", tc.reason, tc.args.lang, diff)
+			}
+		})
+	}
+}
+
 func TestGeneratePythonFiles(t *testing.T) {
 	cases := map[string]struct {
 		seedSchemas     map[string][]byte
@@ -225,6 +323,75 @@ func TestGeneratePythonFiles(t *testing.T) {
 			}
 			fs := afero.NewMemMapFs()
 			if err := c.generatePythonFiles(fs); err != nil {
+				t.Fatal(err)
+			}
+			assertFiles(t, fs, tc.wantFiles)
+			assertContains(t, fs, tc.wantContains, tc.wantNotContains)
+		})
+	}
+}
+
+func TestGenerateRustFiles(t *testing.T) {
+	cases := map[string]struct {
+		seedSchemas     map[string][]byte
+		seedSchemaDirs  []string
+		wantFiles       []string
+		wantContains    map[string][]byte
+		wantNotContains map[string][]byte
+	}{
+		"NoSchemas": {
+			wantFiles: []string{
+				".gitignore",
+				"Cargo.toml",
+				"README.md",
+				"rust-toolchain.toml",
+				"src/main.rs",
+				"src/function.rs",
+			},
+			wantContains: map[string][]byte{
+				"Cargo.toml": []byte(`name = "my-func"`),
+				"README.md":  []byte("# my-func"),
+			},
+			wantNotContains: map[string][]byte{
+				"Cargo.toml":      []byte("crossplane-models"),
+				"README.md":       []byte("crossplane-models"),
+				"src/function.rs": []byte("crossplane_models"),
+			},
+		},
+		"WithSchemas": {
+			seedSchemas: map[string][]byte{
+				"rust/Cargo.toml": nil,
+			},
+			wantContains: map[string][]byte{
+				"Cargo.toml":      []byte(`crossplane-models = { path = "../../schemas/rust" }`),
+				"README.md":       []byte("`../../schemas/rust`"),
+				"src/function.rs": []byte("use crossplane_models::"),
+			},
+		},
+		"EmptySchemasDirectory": {
+			seedSchemaDirs: []string{"rust"},
+			wantNotContains: map[string][]byte{
+				"Cargo.toml": []byte("crossplane-models"),
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			schemasFS := seedFS(t, tc.seedSchemas)
+			for _, dir := range tc.seedSchemaDirs {
+				if err := schemasFS.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			c := &generateCmd{
+				Name:      "my-func",
+				schemasFS: schemasFS,
+				proj:      testProject(),
+			}
+			fs := afero.NewMemMapFs()
+			if err := c.generateRustFiles(fs); err != nil {
 				t.Fatal(err)
 			}
 			assertFiles(t, fs, tc.wantFiles)

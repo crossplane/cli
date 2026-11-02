@@ -16,7 +16,7 @@ to the file (default `schemas`).
 For a project file, `--schemas-dir` overrides `paths.schemas`.
 
 Schemas are generated for all supported languages unless `--schema-languages`
-lists a subset (`go`, `json`, `kcl`, `python`).
+lists a subset (`go`, `json`, `kcl`, `python`, `rust`).
 For a project file, the flag overrides `spec.schemas.languages`.
 
 Package metadata can't declare Kubernetes core API dependencies.

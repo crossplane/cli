@@ -1,0 +1,84 @@
+//! A Crossplane composition function.
+
+use function_sdk_rust::proto::v1::function_runner_service_server::FunctionRunnerService;
+use function_sdk_rust::proto::v1::{RunFunctionRequest, RunFunctionResponse};
+use function_sdk_rust::response;
+use tonic::{Request, Response, Status};
+
+/// The composition function.
+#[derive(Debug, Default)]
+pub struct Function;
+
+#[tonic::async_trait]
+impl FunctionRunnerService for Function {
+    async fn run_function(
+        &self,
+        request: Request<RunFunctionRequest>,
+    ) -> Result<Response<RunFunctionResponse>, Status> {
+        let req = request.into_inner();
+        let tag = req.meta.as_ref().map(|m| m.tag.clone()).unwrap_or_default();
+        tracing::info!(tag, "running function");
+
+        let mut rsp = response::to(&req, response::DEFAULT_TTL);
+
+        // Add your composition logic here. For example, read the observed
+        // composite resource with function_sdk_rust::resource::get, and compose
+        // desired resources by updating rsp.desired.resources with
+        // function_sdk_rust::resource::update.
+{{- if .HasSchemas }}
+        //
+        // Both take any serde type, including the models generated for this
+        // project in the crossplane-models crate. A kind of
+        // platform.example.org/v1alpha1 is read like this:
+        //
+        //     use crossplane_models::org::example::platform::v1alpha1::XBucket;
+        //
+        //     let observed = req.observed.as_ref().and_then(|s| s.composite.as_ref());
+        //     let xr: XBucket = function_sdk_rust::resource::get(observed)
+        //         .map_err(|e| Status::invalid_argument(e.to_string()))?;
+{{- end }}
+
+        response::normal(&mut rsp, "Function completed successfully");
+
+        Ok(Response::new(rsp))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use function_sdk_rust::proto::v1::{Resource, State};
+    use function_sdk_rust::resource;
+
+    #[tokio::test]
+    async fn responds_to_an_observed_composite_resource() {
+        let mut composite = Resource::default();
+        resource::update(
+            &mut composite,
+            &serde_json::json!({
+                "apiVersion": "example.crossplane.io/v1alpha1",
+                "kind": "Example",
+                "metadata": {"name": "example"},
+                "spec": {},
+            }),
+        )
+        .unwrap();
+
+        let req = RunFunctionRequest {
+            observed: Some(State {
+                composite: Some(composite),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let rsp = Function
+            .run_function(Request::new(req))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let messages: Vec<_> = rsp.results.iter().map(|r| r.message.as_str()).collect();
+        assert_eq!(messages, ["Function completed successfully"]);
+    }
+}

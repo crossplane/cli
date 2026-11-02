@@ -20,7 +20,10 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // roMethods parses src and returns the set of "recv.method" names declared.
@@ -99,6 +102,10 @@ type ObjectMeta struct {
 	Name *string ` + "`json:\"name,omitempty\"`" + `
 }
 
+type ListMeta struct {
+	ResourceVersion *string ` + "`json:\"resourceVersion,omitempty\"`" + `
+}
+
 type Foo struct {
 	APIVersion *FooAPIVersion ` + "`json:\"apiVersion,omitempty\"`" + `
 	Kind       *FooKind       ` + "`json:\"kind,omitempty\"`" + `
@@ -109,7 +116,7 @@ type Foo struct {
 type FooList struct {
 	APIVersion *string      ` + "`json:\"apiVersion,omitempty\"`" + `
 	Kind       *string      ` + "`json:\"kind,omitempty\"`" + `
-	Metadata   *ObjectMeta  ` + "`json:\"metadata,omitempty\"`" + `
+	Metadata   *ListMeta    ` + "`json:\"metadata,omitempty\"`" + `
 	Items      *[]Foo       ` + "`json:\"items,omitempty\"`" + `
 }
 `,
@@ -192,6 +199,269 @@ type Foo struct {
 	}
 	if got := countMethod(t, code, "Foo", "GetMetadata"); got != 1 {
 		t.Errorf("Foo.GetMetadata declared %d times, want 1", got)
+	}
+}
+
+func TestRootMetaAccessors(t *testing.T) {
+	const src = `package v1alpha1
+
+type FooAPIVersion string
+type FooKind string
+
+type ObjectMeta struct {
+	Name *string ` + "`json:\"name,omitempty\"`" + `
+}
+
+type ListMeta struct {
+	ResourceVersion *string ` + "`json:\"resourceVersion,omitempty\"`" + `
+}
+
+type Foo struct {
+	APIVersion *FooAPIVersion ` + "`json:\"apiVersion,omitempty\"`" + `
+	Kind       *FooKind       ` + "`json:\"kind,omitempty\"`" + `
+	Metadata   *ObjectMeta    ` + "`json:\"metadata,omitempty\"`" + `
+}
+
+type FooList struct {
+	APIVersion *FooAPIVersion ` + "`json:\"apiVersion,omitempty\"`" + `
+	Kind       *FooKind       ` + "`json:\"kind,omitempty\"`" + `
+	Metadata   *ListMeta      ` + "`json:\"metadata,omitempty\"`" + `
+	Items      *[]Foo         ` + "`json:\"items,omitempty\"`" + `
+}
+`
+
+	type want struct {
+		// methods maps "Recv.Method" to whether it must be declared.
+		methods  map[string]bool
+		contains []string
+	}
+	cases := []struct {
+		name   string
+		args   string
+		want   want
+		reason string
+	}{
+		{
+			name: "ObjectMetaRoot",
+			args: src,
+			want: want{
+				methods: map[string]bool{
+					"Foo.GetName": true, "Foo.SetName": true,
+					"Foo.GetNamespace": true, "Foo.SetNamespace": true,
+					"Foo.GetUID": true, "Foo.SetUID": true,
+					"Foo.GetLabels": true, "Foo.SetLabels": true,
+					"Foo.GetOwnerReferences": true, "Foo.SetOwnerReferences": true,
+					"Foo.GetManagedFields": true, "Foo.SetManagedFields": true,
+					// A ListMeta-shaped root must not get ObjectMeta's methods.
+					"FooList.GetName": false, "FooList.SetName": false,
+					"FooList.GetLabels": false,
+				},
+				contains: []string{
+					"k8stypes.UID",
+					`k8stypes "k8s.io/apimachinery/pkg/types"`,
+				},
+			},
+			reason: "an ObjectMeta-shaped root must get the metav1.Object accessors, with GetUID returning k8stypes.UID, and a ListMeta-shaped root must not",
+		},
+		{
+			name: "ListMetaRoot",
+			args: src,
+			want: want{
+				methods: map[string]bool{
+					"FooList.GetResourceVersion": true, "FooList.SetResourceVersion": true,
+					"FooList.GetContinue": true, "FooList.SetContinue": true,
+					"FooList.GetRemainingItemCount": true, "FooList.SetRemainingItemCount": true,
+					// An ObjectMeta-shaped root must not get ListInterface's methods.
+					"Foo.GetContinue": false,
+				},
+			},
+			reason: "a ListMeta-shaped root must get the metav1.ListInterface accessors, and an ObjectMeta-shaped root must not",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, _, err := addRuntimeObjects(tc.args)
+			if err != nil {
+				t.Fatalf("addRuntimeObjects: %v", err)
+			}
+
+			declared := roMethods(t, code)
+			got := make(map[string]bool, len(tc.want.methods))
+			for m := range tc.want.methods {
+				got[m] = declared[m]
+			}
+			if diff := cmp.Diff(tc.want.methods, got); diff != "" {
+				t.Errorf("%s\nmethods declared (-want +got):\n%s", tc.reason, diff)
+			}
+
+			var missing []string
+			for _, frag := range tc.want.contains {
+				if !strings.Contains(code, frag) {
+					missing = append(missing, frag)
+				}
+			}
+			if diff := cmp.Diff([]string(nil), missing); diff != "" {
+				t.Errorf("%s\nfragments missing from generated code (-want +got):\n%s\n%s", tc.reason, diff, code)
+			}
+		})
+	}
+}
+
+func TestFixListItemsFields(t *testing.T) {
+	const src = `package v1alpha1
+
+type FooAPIVersion string
+type FooKind string
+
+type ObjectMeta struct {
+	Name *string ` + "`json:\"name,omitempty\"`" + `
+}
+
+type ListMeta struct {
+	ResourceVersion *string ` + "`json:\"resourceVersion,omitempty\"`" + `
+}
+
+type Foo struct {
+	APIVersion *FooAPIVersion ` + "`json:\"apiVersion,omitempty\"`" + `
+	Kind       *FooKind       ` + "`json:\"kind,omitempty\"`" + `
+	Metadata   *ObjectMeta    ` + "`json:\"metadata,omitempty\"`" + `
+}
+
+type FooList struct {
+	APIVersion *FooAPIVersion ` + "`json:\"apiVersion,omitempty\"`" + `
+	Kind       *FooKind       ` + "`json:\"kind,omitempty\"`" + `
+	Metadata   *ListMeta      ` + "`json:\"metadata,omitempty\"`" + `
+	Items      *[]Foo         ` + "`json:\"items,omitempty\"`" + `
+}
+`
+
+	code, err := applyRuntimeObjects(src, true)
+	if err != nil {
+		t.Fatalf("applyRuntimeObjects: %v", err)
+	}
+
+	if strings.Contains(code, "Items      *[]Foo") || strings.Contains(code, "Items *[]Foo") {
+		t.Errorf("expected Items to be rewritten from *[]Foo to []Foo, got:\n%s", code)
+	}
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", code, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("rewritten code does not parse: %v\n%s", err, code)
+	}
+	found := false
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Name.Name != "FooList" {
+				continue
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			for _, field := range st.Fields.List {
+				if !hasFieldName(field, "Items") {
+					continue
+				}
+				if _, ok := field.Type.(*ast.ArrayType); !ok {
+					t.Errorf("expected FooList.Items to be a plain slice, got %T", field.Type)
+				}
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("did not find FooList.Items field in rewritten code")
+	}
+}
+
+// TestItemsFieldDeepCopyIndependenceWithAliasedElement pins the shape the
+// plain fixture above doesn't cover: oapi-codegen aliases every root type to
+// a qualified name, and a List's Items field uses that alias. It must
+// resolve back to the struct, or DeepCopy shares item pointers with the
+// original instead of copying them.
+func TestItemsFieldDeepCopyIndependenceWithAliasedElement(t *testing.T) {
+	const src = `package v1alpha1
+
+type FooAPIVersion string
+type FooKind string
+
+type ObjectMeta struct {
+	Name *string ` + "`json:\"name,omitempty\"`" + `
+}
+
+type ListMeta struct {
+	ResourceVersion *string ` + "`json:\"resourceVersion,omitempty\"`" + `
+}
+
+type Foo struct {
+	APIVersion *FooAPIVersion ` + "`json:\"apiVersion,omitempty\"`" + `
+	Kind       *FooKind       ` + "`json:\"kind,omitempty\"`" + `
+	Metadata   *ObjectMeta    ` + "`json:\"metadata,omitempty\"`" + `
+	Name       *string        ` + "`json:\"name,omitempty\"`" + `
+}
+
+type QualifiedFoo = Foo
+
+type FooList struct {
+	APIVersion *FooAPIVersion  ` + "`json:\"apiVersion,omitempty\"`" + `
+	Kind       *FooKind        ` + "`json:\"kind,omitempty\"`" + `
+	Metadata   *ListMeta       ` + "`json:\"metadata,omitempty\"`" + `
+	Items      *[]QualifiedFoo ` + "`json:\"items,omitempty\"`" + `
+}
+`
+	code, err := applyRuntimeObjects(src, true)
+	if err != nil {
+		t.Fatalf("applyRuntimeObjects: %v", err)
+	}
+	if strings.Contains(code, "copy(out.Items, in.Items)") {
+		t.Errorf("expected element-wise DeepCopy for an aliased Items element, got a shallow copy:\n%s", code)
+	}
+	if !strings.Contains(code, "in.Items[i].DeepCopyInto(&out.Items[i])") {
+		t.Errorf("expected FooList's DeepCopyInto to deep-copy each aliased Items element, got:\n%s", code)
+	}
+}
+
+func TestItemsFieldDeepCopyIndependence(t *testing.T) {
+	const src = `package v1alpha1
+
+type FooAPIVersion string
+type FooKind string
+
+type ObjectMeta struct {
+	Name *string ` + "`json:\"name,omitempty\"`" + `
+}
+
+type ListMeta struct {
+	ResourceVersion *string ` + "`json:\"resourceVersion,omitempty\"`" + `
+}
+
+type Foo struct {
+	APIVersion *FooAPIVersion ` + "`json:\"apiVersion,omitempty\"`" + `
+	Kind       *FooKind       ` + "`json:\"kind,omitempty\"`" + `
+	Metadata   *ObjectMeta    ` + "`json:\"metadata,omitempty\"`" + `
+	Name       *string        ` + "`json:\"name,omitempty\"`" + `
+}
+
+type FooList struct {
+	APIVersion *FooAPIVersion ` + "`json:\"apiVersion,omitempty\"`" + `
+	Kind       *FooKind       ` + "`json:\"kind,omitempty\"`" + `
+	Metadata   *ListMeta      ` + "`json:\"metadata,omitempty\"`" + `
+	Items      *[]Foo         ` + "`json:\"items,omitempty\"`" + `
+}
+`
+	code, err := applyRuntimeObjects(src, true)
+	if err != nil {
+		t.Fatalf("applyRuntimeObjects: %v", err)
+	}
+	if !strings.Contains(code, "in.Items[i].DeepCopyInto(&out.Items[i])") {
+		t.Errorf("expected FooList's DeepCopyInto to deep-copy each Items element, got:\n%s", code)
 	}
 }
 

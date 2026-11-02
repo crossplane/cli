@@ -18,6 +18,7 @@ limitations under the License.
 package op
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -37,7 +38,6 @@ import (
 	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
@@ -50,6 +50,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/render"
 
 	_ "embed"
 )
@@ -102,8 +103,8 @@ func (c *Cmd) AfterApply() error {
 }
 
 // Run alpha render op.
-func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocognit // Orchestration is inherently complex.
-	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocognit // Orchestration is inherently complex.
+	ctx, cancel := context.WithTimeout(baseCtx, c.Timeout)
 	defer cancel()
 
 	// Load operation (extracts Operation template from CronOperation/WatchOperation)
@@ -218,7 +219,12 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 	if err != nil {
 		return errors.Wrap(err, "cannot start function runtimes")
 	}
-	defer render.StopFunctionRuntimes(log, fnAddrs)
+	defer func() {
+		if err := render.StopFunctionRuntimes(ctx, fnAddrs); err != nil {
+			log.Info("Error stopping function runtimes", "error", err)
+			render.WarnCleanupFailure(k.Stderr, err)
+		}
+	}()
 
 	// Build and execute the render request.
 	in := render.OperationInputs{
@@ -340,20 +346,10 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
 	}
 
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	xpkgClient, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-		clixpkg.WithImageConfigs(proj.Spec.ImageConfigs),
-	)
+	xpkgClient, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create xpkg client")
 	}
-	resolver := clixpkg.NewResolver(xpkgClient)
 
 	// Built here rather than alongside the schema manager below so the
 	// dependency manager generates dependency schemas the same way.
@@ -366,7 +362,6 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		dependency.WithProjectFile(filepath.Base(projFilePath)),
 		dependency.WithSchemaGenerators(generators),
 		dependency.WithXpkgClient(xpkgClient),
-		dependency.WithResolver(resolver),
 	)
 
 	var fns []pkgv1.Function

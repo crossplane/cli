@@ -25,7 +25,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
 	commonIO "github.com/crossplane/cli/v2/cmd/crossplane/convert/io"
-	"github.com/crossplane/cli/v2/cmd/crossplane/render"
+	"github.com/crossplane/cli/v2/pkg/render"
 	xrpkg "github.com/crossplane/cli/v2/pkg/xr"
 
 	_ "embed"

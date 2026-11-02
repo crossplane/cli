@@ -18,12 +18,14 @@ limitations under the License.
 package resource
 
 import (
+	"github.com/crossplane/cli/v2/cmd/crossplane/simulate"
 	"github.com/crossplane/cli/v2/cmd/crossplane/trace"
 	"github.com/crossplane/cli/v2/cmd/crossplane/validate"
 )
 
 // Cmd contains commands for working with Crossplane resources.
 type Cmd struct {
+	Simulate simulate.Cmd `cmd:"" help:"Preview what applying managed resources would do." maturity:"alpha"`
 	Trace    trace.Cmd    `cmd:"" help:"Trace a Crossplane resource for troubleshooting."`
 	Validate validate.Cmd `cmd:"" help:"Validate Crossplane resources."`
 }

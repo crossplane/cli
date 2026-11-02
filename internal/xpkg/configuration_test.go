@@ -162,7 +162,7 @@ func TestResolveConfigurationFunctions(t *testing.T) {
 				},
 			}
 
-			resolver := NewResolver(&fakeClient{tags: []string{"v1.0.0", "v0.5.0", "latest"}})
+			resolver := WrapClient(&fakeClient{tags: []string{"v1.0.0", "v0.5.0", "latest"}})
 			got, err := ResolveConfigurationFunctions(context.Background(), cfg, resolver)
 			if err != nil {
 				t.Fatal(err)

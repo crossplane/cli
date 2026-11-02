@@ -17,6 +17,7 @@ limitations under the License.
 package project
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -40,7 +41,6 @@ import (
 	xpkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
-	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
@@ -53,6 +53,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/render"
 
 	_ "embed"
 )
@@ -149,8 +150,6 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 		c.ControlPlaneName = "crossplane-" + c.proj.Name
 	}
 
-	concurrency := max(1, c.MaxConcurrency)
-
 	schemasFS := afero.NewBasePathFs(c.projFS, c.proj.Spec.Paths.Schemas)
 	generators := generator.Filter(
 		generator.AllLanguages(
@@ -161,20 +160,10 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	)
 	schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs))
 	schemaMgr := manager.New(schemasFS, generators, schemaRunner)
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	client, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-		clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs),
-	)
+	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs))
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot create xpkg client")
 	}
-	resolver := clixpkg.NewResolver(client)
 
 	depMgr := dependency.NewManager(c.proj, c.projFS,
 		dependency.WithProjectFile(c.ProjectFile),
@@ -182,7 +171,6 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 		dependency.WithSchemaGenerators(generators),
 		dependency.WithSchemaRunner(schemaRunner),
 		dependency.WithXpkgClient(client),
-		dependency.WithResolver(resolver),
 	)
 
 	// The builder may decompress function runtime tarballs into this directory;
@@ -195,7 +183,7 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	defer os.RemoveAll(tempDir) //nolint:errcheck // Best-effort cleanup of temporary files.
 
 	b := project.NewBuilder(
-		project.BuildWithMaxConcurrency(concurrency),
+		project.BuildWithMaxConcurrency(c.MaxConcurrency),
 		project.BuildWithFunctionIdentifier(functions.DefaultIdentifier),
 		project.BuildWithSchemaManager(schemaMgr),
 		project.BuildWithDependencyManager(depMgr),

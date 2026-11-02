@@ -18,6 +18,7 @@ limitations under the License.
 package xr
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -39,12 +40,10 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composed"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
-	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/render"
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
@@ -57,6 +56,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/render"
 	xrpkg "github.com/crossplane/cli/v2/pkg/xr"
 
 	_ "embed"
@@ -113,8 +113,8 @@ func (c *Cmd) AfterApply() error {
 }
 
 // Run render.
-func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocognit // Orchestration is inherently complex.
-	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocognit // Orchestration is inherently complex.
+	ctx, cancel := context.WithTimeout(baseCtx, c.Timeout)
 	defer cancel()
 
 	xr, err := render.LoadCompositeResource(c.fs, c.CompositeResource)
@@ -278,7 +278,12 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 	if err != nil {
 		return errors.Wrap(err, "cannot start function runtimes")
 	}
-	defer render.StopFunctionRuntimes(log, fnAddrs)
+	defer func() {
+		if err := render.StopFunctionRuntimes(ctx, fnAddrs); err != nil {
+			log.Info("Error stopping function runtimes", "error", err)
+			render.WarnCleanupFailure(k.Stderr, err)
+		}
+	}()
 
 	// Build and execute the render request.
 	in := render.CompositionInputs{
@@ -420,20 +425,6 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 	return c.loadFunctionsFromConfiguration(ctx, log, fs, fileName)
 }
 
-func (c *Cmd) newClientAndResolver(extraOpts ...clixpkg.ClientOption) (runtimexpkg.Client, *clixpkg.Resolver, error) {
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	opts := append([]clixpkg.ClientOption{clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir)}, extraOpts...)
-	xpkgClient, err := clixpkg.NewClient(clixpkg.NewRemoteFetcher(), opts...)
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "cannot create xpkg client")
-	}
-	return xpkgClient, clixpkg.NewResolver(xpkgClient), nil
-}
-
 func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config, projFS afero.Fs, projFilePath, projFileName string) ([]pkgv1.Function, error) {
 	log.Debug("Loading functions from project", "project-file", projFilePath)
 
@@ -442,9 +433,9 @@ func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, 
 		return nil, errors.Wrapf(err, "cannot parse project file %q", projFilePath)
 	}
 
-	xpkgClient, resolver, err := c.newClientAndResolver(clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
+	xpkgClient, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cannot create xpkg client")
 	}
 
 	generators := generator.AllLanguages(
@@ -456,7 +447,6 @@ func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, 
 		dependency.WithProjectFile(projFileName),
 		dependency.WithSchemaGenerators(generators),
 		dependency.WithXpkgClient(xpkgClient),
-		dependency.WithResolver(resolver),
 	)
 
 	var fns []pkgv1.Function
@@ -514,12 +504,12 @@ func (c *Cmd) loadFunctionsFromConfiguration(ctx context.Context, log logging.Lo
 		return nil, errors.Wrapf(err, "cannot parse configuration file %q", cfgFileName)
 	}
 
-	_, resolver, err := c.newClientAndResolver()
+	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())))
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cannot create xpkg client")
 	}
 
-	fns, err := clixpkg.ResolveConfigurationFunctions(ctx, cfgMeta, resolver)
+	fns, err := clixpkg.ResolveConfigurationFunctions(ctx, cfgMeta, client)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot resolve function dependencies from configuration file")
 	}

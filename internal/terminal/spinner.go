@@ -21,10 +21,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	bspinner "charm.land/bubbles/v2/spinner"
@@ -36,9 +34,6 @@ import (
 
 // SpinnerPrinter prints spinners to the console.
 type SpinnerPrinter interface {
-	// NewSuccessSpinner returns a new success spinner.
-	NewSuccessSpinner(msg string) *SuccessSpinner
-
 	// WrapWithSuccessSpinner adds spinners around message and run function.
 	WrapWithSuccessSpinner(msg string, f func() error) error
 
@@ -64,8 +59,24 @@ func NewSpinnerPrinter(out io.Writer, pretty bool) SpinnerPrinter {
 	}
 }
 
-func (p *defaultSpinnerPrinter) NewSuccessSpinner(msg string) *SuccessSpinner {
-	return newSuccessSpinner(p.out, msg)
+// NopSpinnerPrinter is a SpinnerPrinter that renders nothing; its Wrap
+// methods just run the wrapped function.
+type NopSpinnerPrinter struct{}
+
+// NewNopSpinnerPrinter returns a new NopSpinnerPrinter.
+func NewNopSpinnerPrinter() SpinnerPrinter {
+	return &NopSpinnerPrinter{}
+}
+
+// WrapWithSuccessSpinner runs f without rendering any spinner.
+func (p *NopSpinnerPrinter) WrapWithSuccessSpinner(_ string, f func() error) error {
+	return f()
+}
+
+// WrapAsyncWithSuccessSpinners runs fn without rendering any spinner.
+func (p *NopSpinnerPrinter) WrapAsyncWithSuccessSpinners(fn func(ch async.EventChannel) error) error {
+	var ch async.EventChannel
+	return fn(ch)
 }
 
 func (p *defaultSpinnerPrinter) WrapWithSuccessSpinner(msg string, f func() error) error {
@@ -281,26 +292,63 @@ func (m *MultiSpinner) Start() {
 		tea.WithInput(nil),
 		tea.WithoutSignalHandler(),
 		tea.WithOutput(m.out),
+		tea.WithEnvironment(noQueryEnviron()),
 	)
 
-	go runProgramWithSignalHandler(m.program)
+	go runProgram(m.program)
 }
 
-func runProgramWithSignalHandler(p *tea.Program) {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	defer func() {
-		signal.Stop(sigCh)
-		close(sigCh)
-	}()
-	go func() {
-		_, ok := <-sigCh
-		if ok {
-			_ = p.ReleaseTerminal()
-			os.Exit(130)
+// noQueryEnviron returns the process environment adjusted so bubbletea skips
+// querying the terminal for synchronized output (mode 2026) and grapheme
+// clustering (mode 2027) support. The spinners deliberately run without an
+// input reader (tea.WithInput(nil)) so the terminal stays in cooked mode and
+// Ctrl+C keeps reaching main's signal handler - but then nothing reads the
+// terminal's replies to those queries either, and the tty echoes them as
+// garbage like "^[[?2026;2$y". Bubbletea has no option to suppress the
+// queries; it only skips them for environments its heuristic distrusts, so
+// present one: an SSH session on a generic terminal.
+func noQueryEnviron() []string {
+	environ := os.Environ()
+	env := make([]string, 0, len(environ)+2)
+	hasColorterm, hadWTSession := false, false
+	for _, kv := range environ {
+		k, v, _ := strings.Cut(kv, "=")
+		switch k {
+		case "SSH_TTY":
+			continue // Re-added below.
+		case "COLORTERM":
+			hasColorterm = true
+		case "WT_SESSION":
+			// Windows Terminal is queried regardless of SSH. Dropping the
+			// variable also drops the truecolor support color detection infers
+			// from it, which COLORTERM restores.
+			hadWTSession = true
+			continue
+		case "TERM":
+			// Terminals bubbletea queries by name regardless of SSH. They all
+			// accept the generic profile, and declare COLORTERM themselves.
+			for _, t := range []string{"ghostty", "wezterm", "alacritty", "kitty", "rio"} {
+				if strings.Contains(v, t) {
+					kv = "TERM=xterm-256color"
+					break
+				}
+			}
 		}
-	}()
+		env = append(env, kv)
+	}
+	if hadWTSession && !hasColorterm {
+		env = append(env, "COLORTERM=truecolor")
+	}
+	return append(env, "SSH_TTY=/dev/null")
+}
 
+// runProgram runs p until it quits. It doesn't handle signals: main's
+// signal.NotifyContext does that once for all commands by cancelling the
+// command context. Spinner lifetime is handled once by the SpinnerPrinter
+// wrappers, which start the spinner, run the wrapped func, then stop it, so a
+// spinner stops when cancellation makes the wrapped func return. Exiting here
+// would skip the command's deferred cleanup.
+func runProgram(p *tea.Program) {
 	_, _ = p.Run()
 }
 
@@ -427,9 +475,10 @@ func (ss *SuccessSpinner) Start() {
 		tea.WithOutput(ss.out),
 		tea.WithInput(nil),
 		tea.WithoutSignalHandler(),
+		tea.WithEnvironment(noQueryEnviron()),
 	)
 
-	go runProgramWithSignalHandler(ss.program)
+	go runProgram(ss.program)
 }
 
 func (ss *SuccessSpinner) stop() {

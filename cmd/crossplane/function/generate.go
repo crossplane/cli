@@ -57,6 +57,9 @@ var (
 	kclTemplates embed.FS
 	//go:embed all:templates/python
 	pythonTemplates embed.FS
+	// The rust template contains a .gitignore, which embed skips without all.
+	//go:embed all:templates/rust
+	rustTemplates embed.FS
 	//go:embed templates/go-templating/*
 	goTemplatingTemplates embed.FS
 
@@ -70,7 +73,7 @@ var (
 type generateCmd struct {
 	Name         string `arg:""                    help:"Name of the function to generate. Must be a valid DNS-1035 label."`
 	PipelinePath string `arg:""                    help:"Path to a Composition YAML file to add a pipeline step to."        optional:""`
-	Language     string `default:"go-templating"   enum:"go,go-templating,kcl,python"                                       help:"Language to use for the function." short:"l"`
+	Language     string `default:"go-templating"   enum:"go,go-templating,kcl,python,rust"                                  help:"Language to use for the function." short:"l"`
 	ProjectFile  string `default:"${project_file}" help:"Path to project definition file."                                  short:"f"`
 
 	projFS            afero.Fs
@@ -180,6 +183,7 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 		"go-templating": c.generateGoTemplatingFiles,
 		"kcl":           c.generateKCLFiles,
 		"python":        c.generatePythonFiles,
+		"rust":          c.generateRustFiles,
 	}
 
 	generator, ok := generators[c.Language]
@@ -297,48 +301,85 @@ func (c *generateCmd) generateKCLFiles(fs afero.Fs) error {
 	return renderTemplates(fs, tmpls, tmplData)
 }
 
+// schemasInfo reports whether the project has generated models for a language
+// and the path at which a function of this project depends on them, relative
+// to the function's directory. A schemas directory that exists but is empty
+// counts as no models.
+func (c *generateCmd) schemasInfo(lang string) (bool, string, error) {
+	hasSchemas, err := afero.DirExists(c.schemasFS, lang)
+	if err != nil {
+		return false, "", errors.Wrapf(err, "cannot inspect %s schemas directory", lang)
+	}
+	if hasSchemas {
+		entries, err := afero.ReadDir(c.schemasFS, lang)
+		if err != nil {
+			return false, "", errors.Wrapf(err, "cannot read %s schemas directory", lang)
+		}
+		hasSchemas = len(entries) > 0
+	}
+
+	fnDir := filepath.Join("/", c.proj.Spec.Paths.Functions, c.Name)
+	relRoot, err := filepath.Rel(fnDir, "/")
+	if err != nil {
+		return false, "", errors.Wrap(err, "cannot determine path to schemas directory")
+	}
+
+	return hasSchemas, filepath.ToSlash(filepath.Join(relRoot, c.proj.Spec.Paths.Schemas, lang)), nil
+}
+
+// renderTemplateTree renders the templates in root into targetFS, and the
+// templates in root's sub directory into that directory of targetFS.
+// template.ParseFS does not walk subdirectories, so a scaffold laid out on two
+// levels is rendered in two passes.
+func renderTemplateTree(targetFS afero.Fs, templates fs.FS, root, sub string, data any) error {
+	tmpls := template.Must(template.ParseFS(templates, path.Join(root, "*.*")))
+	if err := renderTemplates(targetFS, tmpls, data); err != nil {
+		return err
+	}
+
+	if err := targetFS.Mkdir(sub, 0o755); err != nil {
+		return errors.Wrapf(err, "cannot create %s directory", sub)
+	}
+	tmpls = template.Must(template.ParseFS(templates, path.Join(root, sub, "*.*")))
+	return renderTemplates(afero.NewBasePathFs(targetFS, sub), tmpls, data)
+}
+
 type pythonTemplateData struct {
 	HasSchemas  bool
 	SchemasPath string
 }
 
 func (c *generateCmd) generatePythonFiles(targetFS afero.Fs) error {
-	hasSchemas, err := afero.DirExists(c.schemasFS, "python")
+	hasSchemas, schemasPath, err := c.schemasInfo("python")
 	if err != nil {
-		return errors.Wrap(err, "cannot inspect python schemas directory")
-	}
-	if hasSchemas {
-		entries, err := afero.ReadDir(c.schemasFS, "python")
-		if err != nil {
-			return errors.Wrap(err, "cannot read python schemas directory")
-		}
-		hasSchemas = len(entries) > 0
+		return err
 	}
 
-	// Compute the relative path from the function dir to schemas/python/.
-	fnDir := filepath.Join("/", c.proj.Spec.Paths.Functions, c.Name)
-	relRoot, err := filepath.Rel(fnDir, "/")
-	if err != nil {
-		return errors.Wrap(err, "cannot determine path to schemas directory")
-	}
-	schemasPath := filepath.ToSlash(filepath.Join(relRoot, c.proj.Spec.Paths.Schemas, "python"))
-
-	// template.ParseFS doesn't handle subdirectories, so we need to template
-	// the top-level directory and the 'function' sub-directory separately.
 	data := pythonTemplateData{
 		HasSchemas:  hasSchemas,
 		SchemasPath: schemasPath,
 	}
-	tmpls := template.Must(template.ParseFS(pythonTemplates, "templates/python/*.*"))
-	if err := renderTemplates(targetFS, tmpls, data); err != nil {
+	return renderTemplateTree(targetFS, pythonTemplates, "templates/python", "function", data)
+}
+
+type rustTemplateData struct {
+	Name        string
+	HasSchemas  bool
+	SchemasPath string
+}
+
+func (c *generateCmd) generateRustFiles(targetFS afero.Fs) error {
+	hasSchemas, schemasPath, err := c.schemasInfo("rust")
+	if err != nil {
 		return err
 	}
 
-	if err := targetFS.Mkdir("function", 0o755); err != nil {
-		return errors.Wrap(err, "cannot create function directory")
+	data := rustTemplateData{
+		Name:        c.Name,
+		HasSchemas:  hasSchemas,
+		SchemasPath: schemasPath,
 	}
-	tmpls = template.Must(template.ParseFS(pythonTemplates, "templates/python/function/*.*"))
-	return renderTemplates(afero.NewBasePathFs(targetFS, "function"), tmpls, data)
+	return renderTemplateTree(targetFS, rustTemplates, "templates/rust", "src", data)
 }
 
 type goTemplateData struct {

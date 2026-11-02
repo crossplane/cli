@@ -60,7 +60,7 @@ func ParseConfiguration(fs afero.Fs, filePath string) (*pkgmetav1.Configuration,
 
 // ResolveConfigurationFunctions extracts Function dependencies from a Configuration and resolves
 // their version constraints to concrete OCI references.
-func ResolveConfigurationFunctions(ctx context.Context, cfg *pkgmetav1.Configuration, resolver *Resolver) ([]pkgv1.Function, error) {
+func ResolveConfigurationFunctions(ctx context.Context, cfg *pkgmetav1.Configuration, client Client) ([]pkgv1.Function, error) {
 	fns := make([]pkgv1.Function, 0, len(cfg.Spec.DependsOn))
 	for _, dep := range cfg.Spec.DependsOn {
 		ref, ok := functionDepRef(dep)
@@ -72,7 +72,7 @@ func ResolveConfigurationFunctions(ctx context.Context, cfg *pkgmetav1.Configura
 			ref = fmt.Sprintf("%s:%s", ref, dep.Version)
 		}
 
-		resolved, _, err := resolver.Resolve(ctx, ref)
+		resolved, _, err := client.Resolve(ctx, ref)
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot resolve function dependency %q", ref)
 		}

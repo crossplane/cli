@@ -17,6 +17,7 @@ limitations under the License.
 package project
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -95,8 +96,6 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 		c.proj.Spec.Repository = ref.String()
 	}
 
-	concurrency := max(1, c.MaxConcurrency)
-
 	schemasFS := afero.NewBasePathFs(c.projFS, c.proj.Spec.Paths.Schemas)
 	generators := generator.Filter(
 		generator.AllLanguages(
@@ -107,20 +106,10 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 	)
 	schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs))
 	schemaMgr := manager.New(schemasFS, generators, schemaRunner)
-	cacheDir := c.CacheDir
-	if cacheDir == "" {
-		cacheDir = dependency.DefaultCacheDir()
-	}
-
-	client, err := clixpkg.NewClient(
-		clixpkg.NewRemoteFetcher(),
-		clixpkg.WithCacheDir(afero.NewOsFs(), cacheDir),
-		clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs),
-	)
+	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs))
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot create xpkg client")
 	}
-	resolver := clixpkg.NewResolver(client)
 
 	depMgr := dependency.NewManager(c.proj, c.projFS,
 		dependency.WithProjectFile(c.ProjectFile),
@@ -128,7 +117,6 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 		dependency.WithSchemaGenerators(generators),
 		dependency.WithSchemaRunner(schemaRunner),
 		dependency.WithXpkgClient(client),
-		dependency.WithResolver(resolver),
 	)
 
 	// The builder may decompress function runtime tarballs into this directory;
@@ -141,7 +129,7 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 	defer os.RemoveAll(tempDir) //nolint:errcheck // Best-effort cleanup of temporary files.
 
 	b := project.NewBuilder(
-		project.BuildWithMaxConcurrency(concurrency),
+		project.BuildWithMaxConcurrency(c.MaxConcurrency),
 		project.BuildWithFunctionIdentifier(functions.DefaultIdentifier),
 		project.BuildWithSchemaManager(schemaMgr),
 		project.BuildWithDependencyManager(depMgr),

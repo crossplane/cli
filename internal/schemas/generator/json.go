@@ -56,7 +56,7 @@ func (jsonGenerator) Language() string {
 
 // GenerateFromCRD generates jsonschemas for the CRDs in the given filesystem.
 func (jsonGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runner.SchemaRunner) (afero.Fs, error) {
-	openAPIs, err := goCollectOpenAPIs(fromFS)
+	openAPIs, err := collectCRDOpenAPIs(fromFS)
 	if err != nil {
 		return nil, err
 	}

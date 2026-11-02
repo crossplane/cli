@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/afero"
 	"sigs.k8s.io/yaml"
 
@@ -191,7 +192,7 @@ func UpsertConfigurationDependency(fs afero.Fs, file string, dep v1alpha1.XpkgDe
 	deps, _ := spec["dependsOn"].([]any)
 	replaced := false
 	for i, existing := range deps {
-		if m, ok := existing.(map[string]any); ok && metaDependencyRepo(m) == dep.Package {
+		if m, ok := existing.(map[string]any); ok && sameRepo(metaDependencyRepo(m), dep.Package) {
 			deps[i] = entry
 			replaced = true
 			break
@@ -207,6 +208,17 @@ func UpsertConfigurationDependency(fs afero.Fs, file string, dep v1alpha1.XpkgDe
 		return errors.Wrap(err, "failed to marshal package metadata")
 	}
 	return afero.WriteFile(fs, file, out, 0o644)
+}
+
+// sameRepo reports whether two package references name the same repository,
+// ignoring any tag or digest. Unparseable references are compared verbatim.
+func sameRepo(a, b string) bool {
+	ra, errA := name.ParseReference(a)
+	rb, errB := name.ParseReference(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return ra.Context().Name() == rb.Context().Name()
 }
 
 // metaDependencyRepo returns the package repository of a generic dependsOn

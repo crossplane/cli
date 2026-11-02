@@ -41,7 +41,7 @@ var (
 type simulateCmd struct {
 	simulate.Flags `embed:""`
 
-	Input []string `help:"Composite resource or claim file to simulate. Takes one path per flag; repeat it for more. - reads standard input." placeholder:"PATH" required:"" sep:"none" short:"f"`
+	Input []string `help:"Composite resource or claim file or directory to simulate. Takes one path per flag; repeat it for more. - reads standard input." placeholder:"PATH" required:"" sep:"none" short:"f"`
 }
 
 func (c *simulateCmd) Help() string {

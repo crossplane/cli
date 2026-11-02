@@ -27,4 +27,5 @@ type Cmd struct {
 	Convert  convert.Cmd `cmd:"" help:"Convert a Composition to a newer version."                       maturity:"beta"`
 	Generate generateCmd `cmd:"" help:"Generate a Composition for a CompositeResourceDefinition (XRD)." maturity:"beta"`
 	Render   xr.Cmd      `cmd:"" help:"Render a composite resource (XR)."`
+	Simulate simulateCmd `cmd:"" help:"Preview what applying changed Compositions would do."            maturity:"alpha"`
 }

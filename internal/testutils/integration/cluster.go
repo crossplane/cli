@@ -85,7 +85,7 @@ type Setup struct {
 	DeleteAfterSetup []string
 	// RBACRules, when set, makes Start also provision a user bound to a ClusterRole granting only these rules
 	// (plus the discovery and self-review access the apiserver's bootstrap RBAC grants every authenticated
-	// user), returned as Cluster.UserConfig.
+	// user), returned as Cluster.UserConfig. A non-nil empty slice provisions a user granted nothing more.
 	RBACRules []rbacv1.PolicyRule
 }
 

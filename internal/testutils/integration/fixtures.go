@@ -238,20 +238,27 @@ func awaitOneAdmissionDenial(ctx context.Context, c client.Client, canary *un.Un
 	for attempts := 1; ; attempts++ {
 		err := c.Create(ctx, canary.DeepCopy(), client.DryRunAll)
 
+		notEnforcing := func() error {
+			return fmt.Errorf("canary %s/%s was still accepted after %d attempts; no ValidatingAdmissionPolicy is enforcing: %w",
+				canary.GetKind(), canary.GetName(), attempts, ctx.Err())
+		}
+
 		switch {
 		case err != nil && strings.Contains(err.Error(), "ValidatingAdmissionPolicy"):
 			return nil
+		case ctx.Err() != nil:
+			// An expired wait usually surfaces as Create's context error, which is not an unrelated failure.
+			return notEnforcing()
 		case err != nil:
 			return fmt.Errorf("dry-run create of canary %s/%s failed for a reason unrelated to admission policy: %w",
 				canary.GetKind(), canary.GetName(), err)
 		}
 
-		if ctx.Err() != nil {
-			return fmt.Errorf("canary %s/%s was still accepted after %d attempts; no ValidatingAdmissionPolicy is enforcing: %w",
-				canary.GetKind(), canary.GetName(), attempts, ctx.Err())
+		select {
+		case <-ctx.Done():
+			return notEnforcing()
+		case <-time.After(100 * time.Millisecond):
 		}
-
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -397,14 +404,14 @@ func addUserWithRules(ctx context.Context, env *envtest.Environment, c client.Cl
 		return nil, fmt.Errorf("cannot create a client for user %s: %w", name, err)
 	}
 
-	// The authorizer learns of the binding through an informer, so wait until the user holds the first
-	// rule's first grant before running anything as the user.
-	first := rules[0]
-	review := &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{
-		ResourceAttributes: &authorizationv1.ResourceAttributes{
-			Group: first.APIGroups[0], Resource: first.Resources[0], Verb: first.Verbs[0],
-		},
-	}}
+	// The authorizer learns of the binding through an informer, so wait until the user holds one of the
+	// rules' grants before running anything as the user. Rules granting nothing leave nothing to wait for.
+	spec, ok := probeAccess(rules)
+	if !ok {
+		return cfg, nil
+	}
+
+	review := &authorizationv1.SelfSubjectAccessReview{Spec: spec}
 
 	for {
 		got, err := kube.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, review, metav1.CreateOptions{})
@@ -422,6 +429,34 @@ func addUserWithRules(ctx context.Context, env *envtest.Environment, c client.Cl
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+// probeAccess returns a self-review of one access that rules grant: the first resource rule's first
+// group, resource, verb and (if it restricts them) resource name, or else the first non-resource rule's
+// first URL and verb. It returns false when no rule grants anything.
+func probeAccess(rules []rbacv1.PolicyRule) (authorizationv1.SelfSubjectAccessReviewSpec, bool) {
+	for _, r := range rules {
+		if len(r.APIGroups) == 0 || len(r.Resources) == 0 || len(r.Verbs) == 0 {
+			continue
+		}
+
+		attrs := &authorizationv1.ResourceAttributes{Group: r.APIGroups[0], Resource: r.Resources[0], Verb: r.Verbs[0]}
+		if len(r.ResourceNames) > 0 {
+			attrs.Name = r.ResourceNames[0]
+		}
+
+		return authorizationv1.SelfSubjectAccessReviewSpec{ResourceAttributes: attrs}, true
+	}
+
+	for _, r := range rules {
+		if len(r.NonResourceURLs) > 0 && len(r.Verbs) > 0 {
+			return authorizationv1.SelfSubjectAccessReviewSpec{NonResourceAttributes: &authorizationv1.NonResourceAttributes{
+				Path: r.NonResourceURLs[0], Verb: r.Verbs[0],
+			}}, true
+		}
+	}
+
+	return authorizationv1.SelfSubjectAccessReviewSpec{}, false
 }
 
 // createResources creates all resources in the cluster

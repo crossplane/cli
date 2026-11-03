@@ -248,6 +248,44 @@ func TestDockerRenderEngineRender(t *testing.T) {
 	}
 }
 
+// TestDockerRenderEngineRenderLeavesRequest checks that Render rewrites
+// function addresses on its own copy, so concurrent Renders of one request
+// don't race on it.
+func TestDockerRenderEngineRenderLeavesRequest(t *testing.T) {
+	fns := func() []*renderv1alpha1.FunctionInput {
+		return []*renderv1alpha1.FunctionInput{{Name: "fn", Address: "localhost:9443"}}
+	}
+	reqs := map[string]func() *renderv1alpha1.RenderRequest{
+		"Composite": func() *renderv1alpha1.RenderRequest {
+			return &renderv1alpha1.RenderRequest{Input: &renderv1alpha1.RenderRequest_Composite{Composite: &renderv1alpha1.CompositeInput{Functions: fns()}}}
+		},
+		"Operation": func() *renderv1alpha1.RenderRequest {
+			return &renderv1alpha1.RenderRequest{Input: &renderv1alpha1.RenderRequest_Operation{Operation: &renderv1alpha1.OperationInput{Functions: fns()}}}
+		},
+	}
+
+	for name, newReq := range reqs {
+		t.Run(name, func(t *testing.T) {
+			e := &dockerRenderEngine{
+				image: "test-image",
+				log:   logging.NewNopLogger(),
+				runner: &mockContainerRunner{MockRun: func(context.Context, string, ...docker.RunContainerOption) ([]byte, []byte, error) {
+					return nil, nil, nil
+				}},
+			}
+
+			req := newReq()
+			if _, err := e.Render(t.Context(), req); err != nil {
+				t.Fatalf("Render(...): unexpected error: %v", err)
+			}
+
+			if diff := cmp.Diff(newReq(), req, protocmp.Transform()); diff != "" {
+				t.Errorf("Render(...): want the caller's request unchanged, -want, +got:\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestDockerRenderEngineSetup(t *testing.T) {
 	// These cases all exercise the early-return branch of Setup — where
 	// e.network is already non-empty, either because NewEngineFromFlags

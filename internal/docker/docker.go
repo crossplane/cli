@@ -336,6 +336,15 @@ type runContainerConfig struct {
 	hostConfig      *container.HostConfig
 	networkConfig   *network.NetworkingConfig
 	stdin           []byte
+	cli             client.APIClient
+}
+
+// RunWithClient makes RunContainer talk to Docker through cli, which it never
+// closes, instead of a client built from the environment.
+func RunWithClient(cli client.APIClient) RunContainerOption {
+	return func(cfg *runContainerConfig) {
+		cfg.cli = cli
+	}
 }
 
 // RunWithCommand sets the command to run in the container.
@@ -433,9 +442,13 @@ func RunContainer(ctx context.Context, img string, opts ...RunContainerOption) (
 		opt(cfg)
 	}
 
-	cli, err := NewClient()
-	if err != nil {
-		return nil, nil, err
+	cli := cfg.cli
+	if cli == nil {
+		c, err := NewClient()
+		if err != nil {
+			return nil, nil, err
+		}
+		cli = c
 	}
 
 	// Pull the image if it's not already present.

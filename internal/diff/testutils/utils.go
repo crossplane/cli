@@ -1,6 +1,8 @@
 package testutils
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr/testr"
@@ -21,6 +23,54 @@ const (
 	ColorYellow = "\x1b[33m"
 	ColorReset  = "\x1b[0m"
 )
+
+// color takes a multiline string, splits it by line, and adds the specified coloring to each line.
+// It returns a single string with all lines joined back together.
+func color(colorCode, input string) string {
+	lines := strings.Split(input, "\n")
+	coloredLines := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		// Handle the case of the last empty line after a newline
+		if line == "" && len(coloredLines) == len(lines)-1 {
+			coloredLines = append(coloredLines, "")
+			continue
+		}
+
+		coloredLines = append(coloredLines, colorCode+line+ColorReset)
+	}
+
+	return strings.Join(coloredLines, "\n")
+}
+
+// Green takes a multiline string, splits it by line, and adds green coloring to each line.
+// It returns a single string with all lines joined back together.
+func Green(input string) string {
+	return color(ColorGreen, input)
+}
+
+// Red takes a multiline string, splits it by line, and adds red coloring to each line.
+// It returns a single string with all lines joined back together.
+func Red(input string) string {
+	return color(ColorRed, input)
+}
+
+// Yellow takes a multiline string, splits it by line, and adds yellow coloring to each line.
+// It returns a single string with all lines joined back together.
+func Yellow(input string) string {
+	return color(ColorYellow, input)
+}
+
+// CompareIgnoringAnsi compares two strings after stripping ANSI special characters.
+func CompareIgnoringAnsi(expected, actual string) bool {
+	// Strip ANSI codes from both strings
+	ansiPattern := regexp.MustCompile("\x1b\\[[0-9;]*m")
+	expectedStripped := ansiPattern.ReplaceAllString(expected, "")
+	actualStripped := ansiPattern.ReplaceAllString(actual, "")
+
+	// Compare the stripped strings
+	return expectedStripped == actualStripped
+}
 
 // TestLogger coerces the T.Log into the shape of a Logr logger.
 func TestLogger(t *testing.T, verbose bool) logging.Logger {

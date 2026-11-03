@@ -1,0 +1,22 @@
+# ../../diff/resources/existing-xr-listing-uncontrolled-resources.yaml, tracking the in-cluster
+# removal-test-original-composition.yaml instead. Its resourceRefs still name two composed resources it
+# no longer controls: one ../../diff/resources/existing-other-xr.yaml now controls, and one whose
+# controller reference was removed. The harness appends the resources this XR does control.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: test-resource
+  namespace: default
+spec:
+  coolField: "existing-value"
+  crossplane:
+    compositionRef:
+      name: removal-test-composition
+    compositionUpdatePolicy: Automatic
+    resourceRefs:
+      - apiVersion: ns.nop.example.org/v1alpha1
+        kind: XDownstreamResource
+        name: other-resource
+      - apiVersion: ns.nop.example.org/v1alpha1
+        kind: XDownstreamResource
+        name: resource-without-controller

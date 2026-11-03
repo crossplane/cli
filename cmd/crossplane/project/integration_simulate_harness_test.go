@@ -16,12 +16,29 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file is the simulate harness: runSimulateArgvWith runs the real
-// `crossplane project simulate` command through kong against a case's
-// envtest cluster, started by internal/testutils/integration. A case that
-// the environment cannot run (no Docker daemon) skips with an env:<reason>.
+// This file is the simulate harness: the one function every integration
+// case funnels through. The cases are crossplane-diff's (origin/main
+// 6a140b6, plus later upstream additions through d93eb87), written as its comp and xr commands' CLI args plus an expected
+// exit code and output. runSimulate translates those args into
+// `crossplane composition simulate` args and runs the real command through
+// kong against the case's envtest cluster, started by
+// internal/testutils/integration, so no case table changes.
 //
-// testdata/README.md describes how to run the suite and read its coverage.
+// # Gap and environment skips
+//
+// Cases the current simulate surface cannot express are ported in full
+// and skipped, never dropped, so each names what it waits for:
+//
+//   - gap:<feature> — the simulate command lacks the feature this case
+//     needs. Grep the skip reasons to find what to enable as features
+//     land.
+//   - env:<reason> — the environment lacks something the case needs.
+//     The render engine runs functions as Docker containers, so without
+//     a Docker daemon no rendering case can run; cases that would not
+//     render cannot be told apart upfront, so they skip too.
+//
+// testdata/README.md describes how a case runs, the skips, and how to run
+// the suite and read its coverage.
 
 package project
 
@@ -41,8 +58,10 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/composition"
 	"github.com/crossplane/cli/v2/internal/config"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
+	"github.com/crossplane/cli/v2/internal/diff/ref"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/simulate"
@@ -53,8 +72,130 @@ import (
 // defaultTimeout is the --timeout the cases pass to simulate.
 const defaultTimeout = 60 * time.Second
 
-// runSimulateArgv runs `crossplane project simulate` with argv against cfg,
-// rendering with renderBinary when it is set.
+// simArgs mirrors the crossplane-diff flags the integration cases pass,
+// plus each command's positional files, so runSimulate can translate
+// them into composition (or project) simulate's flags.
+type simArgs struct {
+	Timeout                time.Duration `default:"1m"                                                         help:"How long to run before timing out."`
+	CrossplaneRenderBinary string        `help:"Local crossplane binary to render with."                       name:"crossplane-render-binary"`
+	Namespace              string        `help:"Namespace of the composite resources."`
+	Output                 string        `default:"diff"                                                       enum:"diff,json,yaml"                     help:"Output format (diff, json, or yaml)."                            name:"output"     short:"o"`
+	NoColor                bool          `help:"Disable colorized output."                                     name:"no-color"`
+	IgnorePaths            []string      `help:"Paths to ignore in diffs."                                     name:"ignore-paths"`
+	FunctionCredentials    string        `help:"Secret credentials to pass to Functions."                      name:"function-credentials"               placeholder:"PATH"`
+	EventualState          bool          `help:"Show eventual state after all reconciliation cycles complete." name:"eventual-state"`
+	DryRunOn               string        `default:"all"                                                        enum:"existing,all"                       help:"Which resources to verify against the apiserver with a dry run." name:"dry-run-on"`
+	Resource               []string      `help:"Composite resources to scope to."                              sep:","`
+	IncludeManual          bool          `help:"Include composites with a manual update policy."               name:"include-manual"`
+	AnalyzeUnchanged       bool          `help:"Analyze compositions identical to their in-cluster version."   name:"analyze-unchanged"`
+	AnalyzeOn              string        `help:"Smallest composition change that triggers impact analysis."    name:"analyze-on"`
+	Files                  []string      `arg:""                                                               help:"Input files."                       optional:""`
+}
+
+// parseSimulateArgs parses one case's CLI-style args. A parse failure is
+// fatal, as it was when kong parsed crossplane-diff's own commands.
+func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simArgs {
+	t.Helper()
+
+	var a simArgs
+	parser, err := kong.New(&a, kong.Name(string(testType)))
+	if err != nil {
+		t.Fatalf("failed to create kong parser: %v", err)
+	}
+
+	if _, err := parser.Parse(args); err != nil {
+		t.Fatalf("failed to parse args %v: %v", args, err)
+	}
+
+	return &a
+}
+
+// simulateGap returns the reason the parsed args cannot run against the
+// current simulate surface, or "" when they can. The runner calls it
+// before starting envtest, so a skipped case costs nothing, and
+// runSimulate never executes args it could not express.
+func simulateGap(_ DiffTestType, _ *simArgs) string {
+	return ""
+}
+
+// simulateArgv translates the parsed crossplane-diff args into composition
+// simulate's: the input files as -f, each --resource as a --name (and
+// --namespace), --include-manual as --include-pinned, and
+// --analyze-unchanged as its replacement --analyze-on=always. The output
+// is passed explicitly: crossplane-diff's default diff, since simulate
+// defaults to -o plan, and json or yaml as simulate.ProjectResult.
+func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
+	t.Helper()
+
+	cmd := "project"
+	if testType == CompositionDiffTest {
+		cmd = "composition"
+	}
+	argv := []string{
+		cmd, "simulate",
+		"--timeout=" + a.Timeout.String(),
+		"--output=" + a.Output,
+		"--dry-run-on=" + a.DryRunOn,
+	}
+	for _, f := range a.Files {
+		argv = append(argv, "-f", f)
+	}
+
+	for _, v := range a.Resource {
+		r, err := ref.Parse(v)
+		if err != nil {
+			t.Fatalf("cannot parse --resource %q: %v", v, err)
+		}
+		argv = append(argv, "--name="+ref.Format(r))
+	}
+	ns := a.Namespace
+	if ns != "" {
+		argv = append(argv, "--namespace="+ns)
+	}
+
+	if a.NoColor {
+		argv = append(argv, "--no-color")
+	}
+	for _, p := range a.IgnorePaths {
+		argv = append(argv, "--ignore-paths="+p)
+	}
+	if a.FunctionCredentials != "" {
+		argv = append(argv, "--function-credentials="+a.FunctionCredentials)
+	}
+	if a.EventualState {
+		argv = append(argv, "--eventual-state")
+	}
+	if a.IncludeManual {
+		argv = append(argv, "--include-pinned")
+	}
+
+	switch {
+	case a.AnalyzeOn != "":
+		argv = append(argv, "--analyze-on="+a.AnalyzeOn)
+	case a.AnalyzeUnchanged:
+		argv = append(argv, "--analyze-on=always")
+	}
+
+	return argv
+}
+
+// runSimulate runs one case's args through the real `crossplane project
+// simulate` command against cfg, and returns the exit code the command
+// would exit with, the error it would fail with, and everything it wrote,
+// including the error as main prints it.
+// Each call parses a fresh command, so a second run starts with cold
+// client caches just as a second CLI invocation would; the determinism
+// cases rely on it.
+func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []string, stdout, stderr io.Writer) (int, error) {
+	t.Helper()
+
+	a := parseSimulateArgs(t, testType, args)
+
+	return runSimulateArgv(t, cfg, simulateArgv(t, testType, a), a.CrossplaneRenderBinary, stdout, stderr)
+}
+
+// runSimulateArgv runs `crossplane <project|composition> simulate` with argv against cfg,
+// rendering with renderBinary when it is set, as runSimulate does.
 func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
@@ -70,13 +211,14 @@ func withRenderBinary(argv []string, bin string) []string {
 	return append(slices.Clip(argv), "--crossplane-binary="+bin)
 }
 
-// runSimulateArgvWith runs `crossplane project simulate` with argv against
+// runSimulateArgvWith runs `crossplane <project|composition> simulate` with argv against
 // cfg and hooks, whose RESTConfig and Terminal it sets.
 func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *simulate.Hooks, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
 	var cli struct {
-		Project Cmd `cmd:""`
+		Project     Cmd             `cmd:""`
+		Composition composition.Cmd `cmd:""`
 	}
 	parser, err := kong.New(&cli,
 		kong.Name("crossplane"),
@@ -111,6 +253,7 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *s
 	hooks.RESTConfig = cfg
 	hooks.Terminal = true
 	cli.Project.Simulate.Hooks = hooks
+	cli.Composition.Simulate.Hooks = hooks
 
 	err = kctx.Run()
 	// Exit as main does: a silent ExitError, such as changes found, exits

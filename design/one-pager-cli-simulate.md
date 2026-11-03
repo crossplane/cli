@@ -354,17 +354,21 @@ read.
 
 Startup is the one cost that hurts across runs: a diff server takes a few
 seconds to come up, and an edit-simulate-edit loop pays that on every run
-if containers are torn down at exit. So containers get deterministic
-names derived from the provider image digest, and a provider manifest
-annotated `simulate.crossplane.io/runtime-docker-cleanup: Orphan`, the same
-cleanup policy render's function containers take through their annotation,
-leaves its container running when the command exits: the next run finds a
-live server with a matching name and reuses it instead of starting a new
-one. Because the name carries the digest, a changed image never matches a
-stale server, and leftovers are easy to find and remove since they all
-follow one naming scheme and carry render-style managed-by and session
-labels. The default stays clean, start and tear down per run; Orphan is
-for the loops where those seconds add up.
+if containers are torn down at exit. So a provider manifest annotated
+`simulate.crossplane.io/runtime-docker-cleanup: Orphan`, the same cleanup
+policy render's function containers take through their annotation, leaves
+its container running when the command exits, under a deterministic
+`crossplane-diff-server-<digest12>` name derived from the provider image
+digest: the next run finds a live server with a matching name and reuses it
+instead of starting a new one. Because the name carries the digest, a
+changed image never matches a stale server. Only Orphan servers are shared
+this way; every other server gets a per-run suffix on that name, so
+concurrent runs never stop each other's servers, and a run that dies before
+cleaning up has its servers reclaimed by the next run through the lease
+mechanism render uses. All of them carry render-style managed-by and session
+labels, so leftovers are easy to find and remove. The default stays clean,
+start and tear down per run; Orphan is for the loops where those seconds
+add up.
 
 ### From Response to Printed Diff
 

@@ -28,6 +28,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,10 @@ const (
 	// orphaned leftovers are easy to find.
 	containerPrefix = "crossplane-diff-server-"
 
+	// runSuffixLength is the length of the random suffix that makes a
+	// container with the Remove policy this run's alone.
+	runSuffixLength = 8
+
 	readyPollInterval   = 500 * time.Millisecond
 	defaultReadyTimeout = 60 * time.Second
 )
@@ -77,7 +82,9 @@ const (
 	CleanupRemove = containerruntime.CleanupRemove
 
 	// CleanupOrphan leaves the container running, so a later run finds it by
-	// its deterministic name and reuses it without paying startup. Render's
+	// its deterministic name and reuses it without paying startup. Only an
+	// Orphan container gets that name: a Remove one's name is unique to its
+	// run, so no other run uses it, and its run can remove it. Render's
 	// function runtimes support a third policy, Stop; a stopped diff server
 	// serves nothing and restarting costs nearly as much as starting, so
 	// simulate omits it.
@@ -116,7 +123,8 @@ const (
 
 	// LabelKeySession identifies the run that created a container. Orphaned
 	// containers outlive their session by design; the label records which run
-	// created them.
+	// created them. A later run reclaims the containers of a run that died
+	// without cleaning up by this label, unless they are Orphan.
 	LabelKeySession = labelDomain + "/session"
 
 	// LabelKeyCleanup records the effective cleanup policy a container was
@@ -182,25 +190,44 @@ type Input struct {
 // diff servers run outside Docker, and routes resources to them.
 type Manager struct {
 	pkgs         runtimexpkg.Client
-	cli          containerruntime.Client
+	cli          DockerClient
 	log          logging.Logger
 	readyTimeout time.Duration
 	publishAddr  netip.Addr
 	session      string
+	leaseDir     string
 
-	mu      sync.Mutex
-	routes  map[schema.GroupKind]*Server
-	groups  map[string]*Server
-	servers []*Server
+	// run leases this run's containers, and reclaims what dead runs left.
+	run *containerruntime.Run
+
+	mu sync.Mutex
+	// leaked is set when a container Start may have created was not
+	// removed, so Stop keeps the run's lease for a later run to reclaim it.
+	leaked bool
+	// containers maps each container this run starts to the image of the
+	// first input that asked for it, so inputs whose packages share a digest
+	// share one diff server.
+	containers map[containerKey]string
+	routes     map[schema.GroupKind]*Server
+	groups     map[string]*Server
+	servers    []*Server
 }
 
 // Option configures a Manager.
 type Option func(*Manager)
 
-// WithDockerClient replaces the Docker client the manager runs containers
-// with, for testing. Nil (the default) means a real client built from the
-// environment.
-func WithDockerClient(cli containerruntime.Client) Option {
+// DockerClient is the Docker client a Manager runs its containers and
+// reclaims dead runs' containers with.
+type DockerClient interface {
+	containerruntime.Client
+	containerruntime.RunClient
+}
+
+// WithDockerClient makes the manager do everything it does on Docker through
+// cli: run and clean up its containers, and reclaim what dead runs left
+// behind. The manager never closes cli. Nil (the default) means clients
+// built from the environment.
+func WithDockerClient(cli DockerClient) Option {
 	return func(m *Manager) { m.cli = cli }
 }
 
@@ -211,26 +238,55 @@ func WithReadyTimeout(d time.Duration) Option {
 
 // WithSessionID sets the session label value for the containers the manager
 // creates, so callers orchestrating a larger run can scope cleanup to it.
-// Empty means a random per-process ID, matching render's session labels.
+// Empty means a random ID generated for this manager, which it leases (see
+// WithLeaseDir). A supplied ID is never leased, since other processes may
+// share it, so what a run with one leaves after a crash is not reclaimed.
 func WithSessionID(session string) Option {
 	return func(m *Manager) { m.session = session }
 }
 
+// WithLeaseDir makes the manager lease its run in dir, and reclaim what dead
+// runs leased there left behind, before it starts its first container. The
+// default, "", disables both. See containerruntime.Run.
+func WithLeaseDir(dir string) Option {
+	return func(m *Manager) { m.leaseDir = dir }
+}
+
 // NewManager returns a Manager that fetches provider packages with pkgs and
-// runs their images as local diff server containers.
+// runs their images as local diff server containers. NewManager does no I/O.
 func NewManager(pkgs runtimexpkg.Client, log logging.Logger, opts ...Option) *Manager {
 	m := &Manager{
 		pkgs:         pkgs,
 		log:          log,
 		readyTimeout: defaultReadyTimeout,
 		publishAddr:  netip.MustParseAddr("127.0.0.1"),
+		containers:   map[containerKey]string{},
 		routes:       map[schema.GroupKind]*Server{},
 		groups:       map[string]*Server{},
 	}
 	for _, opt := range opts {
 		opt(m)
 	}
+
+	leased := m.session == ""
+	if leased {
+		m.session = containerruntime.NewSessionID()
+	}
+	var runOpts []containerruntime.RunOption
+	if m.cli != nil {
+		runOpts = append(runOpts, containerruntime.WithRunClient(func() (containerruntime.RunClient, error) {
+			return sharedRunClient{m.cli}, nil
+		}))
+	}
+	m.run = containerruntime.NewRun(m.leaseDir, m.session, leased, log, runOpts...)
 	return m
+}
+
+// sharedRunClient is the manager's Docker client as its Run uses it. It hides
+// the client's Close, so the Run, which closes the clients it gets, leaves the
+// caller's open.
+type sharedRunClient struct {
+	containerruntime.RunClient
 }
 
 // Start inspects each provider image and runs a diff server container for
@@ -243,6 +299,21 @@ func NewManager(pkgs runtimexpkg.Client, log logging.Logger, opts ...Option) *Ma
 // reporting), with the package pull and the server start as separate steps
 // because the pull dominates a cold start.
 func (m *Manager) Start(ctx context.Context, inputs []Input, events async.EventChannel) ([]Skipped, error) {
+	// Only a run that starts containers touches Docker: a Development
+	// provider's server is the user's.
+	if slices.ContainsFunc(inputs, func(in Input) bool { return in.Runtime != RuntimeDevelopment }) {
+		// Idempotent: only the first call does anything. Best effort: a
+		// failure only risks leaking this run's containers if it dies. It
+		// holds mu, so Servers and Stop wait for it, up to the reap timeout,
+		// on purpose: reclaiming must finish before any container starts.
+		m.mu.Lock()
+		err := m.run.Acquire(ctx)
+		m.mu.Unlock()
+		if err != nil {
+			m.log.Info("Problem managing this run's diff server containers", "error", err)
+		}
+	}
+
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
@@ -255,11 +326,12 @@ func (m *Manager) Start(ctx context.Context, inputs []Input, events async.EventC
 			s, skip := m.startOne(ctx, in, events)
 			mu.Lock()
 			defer mu.Unlock()
-			if skip != nil {
+			switch {
+			case skip != nil:
 				skipped = append(skipped, *skip)
-				return
+			case s != nil:
+				m.register(s)
 			}
-			m.register(s)
 		}(in)
 	}
 	wg.Wait()
@@ -298,6 +370,8 @@ func (m *Manager) register(s *Server) {
 	}
 }
 
+// startOne returns neither a Server nor a Skipped for an input whose diff
+// server another input of this run already starts.
 func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChannel) (*Server, *Skipped) {
 	if in.Runtime == RuntimeDevelopment {
 		return m.connectDevelopment(ctx, in, events)
@@ -347,13 +421,26 @@ func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChan
 		cleanup = CleanupRemove
 	}
 
+	// Two inputs can name one package, e.g. by tag and by digest. Its
+	// server serves both: a second would only be started and torn down.
+	// Without a digest the packages cannot be told apart, so each starts.
+	if pkg.Digest != "" {
+		if first, ok := m.claim(containerKey{digest: pkg.Digest, cleanup: cleanup, publishAddr: publishAddr, target: in.Target}, image); !ok {
+			m.log.Debug("Sharing the diff server of another provider with the same package", "image", image, "shared-with", first)
+			return nil, nil
+		}
+	}
+
 	ctr := &containerruntime.Container{
 		Image: runImage,
-		Name:  containerName(pkg.Digest),
+		Name:  containerName(pkg.Digest, cleanup),
 		// --debug precedes the subcommand: it is the provider's global flag.
-		Cmd:         []string{"--debug", "internal", "diff-server", "--address", fmt.Sprintf(":%d", containerPort)},
-		Port:        containerPort,
-		Labels:      containerruntime.ContainerLabels(labelDomain, m.session, cleanup),
+		Cmd:    []string{"--debug", "internal", "diff-server", "--address", fmt.Sprintf(":%d", containerPort)},
+		Port:   containerPort,
+		Labels: containerruntime.ContainerLabels(labelDomain, m.run.ID(), cleanup),
+		// With a Domain, a name conflict with a concurrent run's container
+		// is judged by its labels, so concurrent Orphan runs share one.
+		Domain:      labelDomain,
 		BindAddress: publishAddr.String(),
 		Target:      in.Target,
 		Log:         m.log,
@@ -369,6 +456,11 @@ func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChan
 	running, err := ctr.Start(ctx)
 	if err != nil {
 		events.SendEvent(start, async.EventStatusFailure)
+		// Start may have created the container before failing, and no run
+		// finds a Remove container by its name again.
+		if cleanup != CleanupOrphan {
+			m.markLeaked()
+		}
 		return nil, &Skipped{Image: image, Reason: fmt.Sprintf("cannot start diff server container: %s", err)}
 	}
 
@@ -379,6 +471,7 @@ func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChan
 		if !running.Reused && cleanup != CleanupOrphan {
 			if serr := running.Stop(ctx, CleanupRemove); serr != nil {
 				m.log.Info("Cannot clean up failed diff server container", "container", running.ID, "err", serr)
+				m.markLeaked()
 			}
 		}
 		return nil, &Skipped{Image: image, Reason: err.Error()}
@@ -388,6 +481,34 @@ func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChan
 	server.GroupKinds = gks
 	m.log.Debug("Diff server ready", "image", image, "address", server.Address, "reused", running.Reused, "cleanup", cleanup)
 	return server, nil
+}
+
+// containerKey is what makes two inputs' diff server containers the same.
+type containerKey struct {
+	digest      string
+	cleanup     Cleanup
+	publishAddr netip.Addr
+	target      string
+}
+
+// claim records that image's input starts the container for k, and reports
+// true, unless another input already did, in which case it returns that
+// input's image and false.
+func (m *Manager) claim(k containerKey, image string) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if first, ok := m.containers[k]; ok {
+		return first, false
+	}
+	m.containers[k] = image
+	return image, true
+}
+
+// markLeaked records that this run may have left a container behind.
+func (m *Manager) markLeaked() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.leaked = true
 }
 
 // connectDevelopment connects to a diff server the user already runs, from
@@ -502,7 +623,9 @@ func (m *Manager) Servers() []*Server {
 // Stop closes connections and tears down containers according to each
 // server's cleanup policy: Remove tears the container down, Orphan leaves it
 // running so the next run finds it by name and skips startup. A development
-// server is the user's to stop, so only its connection is closed.
+// server is the user's to stop, so only its connection is closed. Stop then
+// gives up the run's lease, keeping its file for a later run to reclaim what
+// is left when a container could not be torn down.
 func (m *Manager) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -519,13 +642,22 @@ func (m *Manager) Stop(ctx context.Context) error {
 			errs = append(errs, errors.Wrapf(err, "cannot stop diff server container %s", s.ContainerID))
 		}
 	}
+	// Only render creates networks, so there are none to sweep.
+	errs = append(errs, m.run.Release(ctx, len(errs) == 0 && !m.leaked, ""))
 	return errors.Join(errs...)
 }
 
-func containerName(digest string) string {
+// containerName names the container for the package with digest. An Orphan
+// container's name is the digest's alone, so later runs find and reuse it.
+// Any other's has a random suffix, so no other run ever finds it by name and
+// uses a container this run removes when it exits.
+func containerName(digest string, cleanup Cleanup) string {
 	d := strings.TrimPrefix(digest, "sha256:")
 	if len(d) > 12 {
 		d = d[:12]
 	}
-	return containerPrefix + d
+	if cleanup == CleanupOrphan {
+		return containerPrefix + d
+	}
+	return containerPrefix + d + "-" + containerruntime.NewSessionID()[:runSuffixLength]
 }

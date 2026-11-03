@@ -35,6 +35,7 @@ import (
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/simulate/simtest"
+	"github.com/crossplane/cli/v2/internal/testutils/integration"
 )
 
 // fakeProviderRouter routes the composed XDownstreamResource kind, and only
@@ -66,7 +67,7 @@ type projectTestCase struct {
 	// setupFiles and crossplaneManagedResources set up the cluster, as in the
 	// other tables. Cases that fail before the cluster is used leave them empty.
 	setupFiles                 []string
-	crossplaneManagedResources []HierarchicalOwnershipRelation
+	crossplaneManagedResources []integration.HierarchicalOwnershipRelation
 	// project is a directory under testdata/project, copied to a temp dir so
 	// the build cannot dirty the tree.
 	project string
@@ -107,12 +108,12 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				"testdata/comp/resources/original-composition.yaml",
 				"testdata/comp/resources/functions.yaml",
 			},
-			crossplaneManagedResources: []HierarchicalOwnershipRelation{
-				composes(
+			crossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+				integration.Composes(
 					"testdata/comp/resources/existing-xr-1.yaml",
 					"testdata/comp/resources/existing-downstream-1.yaml",
 				),
-				composes(
+				integration.Composes(
 					"testdata/comp/resources/existing-xr-2.yaml",
 					"testdata/comp/resources/existing-downstream-2.yaml",
 				),
@@ -135,8 +136,8 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				"testdata/comp/resources/original-composition.yaml",
 				"testdata/comp/resources/functions.yaml",
 			},
-			crossplaneManagedResources: []HierarchicalOwnershipRelation{
-				composes(
+			crossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+				integration.Composes(
 					"testdata/comp/resources/existing-xr-1.yaml",
 					"testdata/comp/resources/existing-downstream-1.yaml",
 				),
@@ -162,8 +163,8 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				"testdata/comp/resources/functions.yaml",
 				"testdata/project/embedded/cluster-function.yaml",
 			},
-			crossplaneManagedResources: []HierarchicalOwnershipRelation{
-				composes(
+			crossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+				integration.Composes(
 					"testdata/comp/resources/existing-xr-1.yaml",
 					"testdata/comp/resources/existing-downstream-1.yaml",
 				),
@@ -188,10 +189,11 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				t.Skip(reason)
 			}
 
-			cfg := startIntegrationCluster(t, CompositionDiffTest, IntegrationTestCase{
-				setupFiles:                 tc.setupFiles,
-				crossplaneManagedResources: tc.crossplaneManagedResources,
-			}, defaultTimeout).cfg
+			cfg := integration.Start(t, integration.Setup{
+				CRDDirs:                    []string{"testdata/comp/crds"},
+				SetupFiles:                 tc.setupFiles,
+				CrossplaneManagedResources: tc.crossplaneManagedResources,
+			}).Config
 
 			argv := []string{
 				"project", "simulate", "--timeout=" + defaultTimeout.String(),

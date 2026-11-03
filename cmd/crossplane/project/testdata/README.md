@@ -17,15 +17,17 @@ cases run in parallel.
 ## Skips
 
 A case the environment cannot run skips with an `env:<reason>`: the
-render engine runs functions as Docker containers (no Docker daemon skips
-the case), and envtest needs `KUBEBUILDER_ASSETS` pointing at
-kube-apiserver/etcd binaries.
+render engine runs functions as Docker containers, so no Docker daemon
+skips the case. Each case starts its cluster with
+`internal/testutils/integration`'s `Start`, which fails the case, rather
+than skipping it, when `KUBEBUILDER_ASSETS` or `CROSSPLANE_CRDS_DIR` is
+unset.
 
 ## Running
 
 ```sh
 # Full suite (Docker + envtest assets required):
-CROSSPLANE_CRDS_DIR=<crossplane v2.4.1 cluster/crds> \
+CROSSPLANE_CRDS_DIR=<crossplane cluster/crds at go.mod's crossplane/apis version> \
 KUBEBUILDER_ASSETS=$(setup-envtest use -p path) \
 go test -tags integration -v ./cmd/crossplane/project/
 
@@ -35,10 +37,9 @@ go test -tags integration -run 'TestProjectSimulateIntegration/PlainProject' ./c
 
 The suite is behind the `integration` build tag, so `go test ./...` and
 `nix run .#test` do not compile it. `nix run .#integration-test` runs it
-with `CROSSPLANE_CRDS_DIR` (the pinned Crossplane v2.4.1 CRDs from
-`nix/crossplane-crds.nix`) and `KUBEBUILDER_ASSETS` set for you. Without
-Docker or envtest assets, the cases skip with an `env:` reason rather
-than fail.
+with `CROSSPLANE_CRDS_DIR` (the Crossplane CRDs `nix/crossplane-crds.nix`
+pins) and `KUBEBUILDER_ASSETS` set for you. Without Docker, the cases skip
+with an `env:` reason rather than fail.
 
 ## Coverage
 

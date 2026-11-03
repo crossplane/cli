@@ -21,7 +21,6 @@ package project
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
@@ -31,6 +30,7 @@ import (
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
+	"github.com/crossplane/cli/v2/internal/testutils/integration"
 )
 
 // TestSimulatePlanOutput runs project simulate's -o json simulate.ProjectResult
@@ -41,15 +41,16 @@ func TestSimulatePlanOutput(t *testing.T) {
 
 	tu.SetupKubeTestLogger(t)
 
-	compCase := IntegrationTestCase{
-		setupFiles: []string{
+	compCase := integration.Setup{
+		CRDDirs: []string{"testdata/comp/crds"},
+		SetupFiles: []string{
 			"testdata/comp/resources/xrd.yaml",
 			"testdata/comp/resources/original-composition.yaml",
 			"testdata/comp/resources/functions.yaml",
 		},
-		crossplaneManagedResources: []HierarchicalOwnershipRelation{
-			composes("testdata/comp/resources/existing-xr-1.yaml", "testdata/comp/resources/existing-downstream-1.yaml"),
-			composes("testdata/comp/resources/existing-xr-2.yaml", "testdata/comp/resources/existing-downstream-2.yaml"),
+		CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+			integration.Composes("testdata/comp/resources/existing-xr-1.yaml", "testdata/comp/resources/existing-downstream-1.yaml"),
+			integration.Composes("testdata/comp/resources/existing-xr-2.yaml", "testdata/comp/resources/existing-downstream-2.yaml"),
 		},
 	}
 
@@ -111,7 +112,7 @@ func TestSimulatePlanOutput(t *testing.T) {
 				t.Skip(reason)
 			}
 
-			cfg := startIntegrationCluster(t, CompositionDiffTest, compCase, defaultTimeout).cfg
+			cfg := integration.Start(t, compCase).Config
 
 			var stdout, stderr bytes.Buffer
 			argv := append(plainProjectArgv(t), tc.args...)
@@ -177,13 +178,10 @@ func summarize(r simulate.ProjectResult) planShape {
 // integrationEnvGap returns why the environment cannot run an integration
 // case, as an env: skip, or "" when it can.
 func integrationEnvGap() string {
-	switch {
-	case !dockerAvailable():
+	// integration.Start fails, rather than skips, a run without envtest's
+	// binaries or Crossplane's CRDs.
+	if !dockerAvailable() {
 		return "env: no Docker daemon for the function render engine"
-	case !envtestBinariesAvailable():
-		return "env: no envtest binaries (KUBEBUILDER_ASSETS unset)"
-	case os.Getenv("CROSSPLANE_CRDS_DIR") == "":
-		return "env: CROSSPLANE_CRDS_DIR unset (run via nix run .#test or set it to Crossplane's cluster/crds)"
 	}
 	return ""
 }
@@ -196,15 +194,16 @@ func TestSimulateNameRejected(t *testing.T) {
 
 	tu.SetupKubeTestLogger(t)
 
-	compCase := IntegrationTestCase{
-		setupFiles: []string{
+	compCase := integration.Setup{
+		CRDDirs: []string{"testdata/comp/crds"},
+		SetupFiles: []string{
 			"testdata/comp/resources/xrd.yaml",
 			"testdata/comp/resources/original-composition.yaml",
 			"testdata/comp/resources/functions.yaml",
 		},
-		crossplaneManagedResources: []HierarchicalOwnershipRelation{
-			composes("testdata/comp/resources/existing-xr-1.yaml", "testdata/comp/resources/existing-downstream-1.yaml"),
-			composes("testdata/comp/resources/existing-xr-2.yaml", "testdata/comp/resources/existing-downstream-2.yaml"),
+		CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+			integration.Composes("testdata/comp/resources/existing-xr-1.yaml", "testdata/comp/resources/existing-downstream-1.yaml"),
+			integration.Composes("testdata/comp/resources/existing-xr-2.yaml", "testdata/comp/resources/existing-downstream-2.yaml"),
 		},
 	}
 	// exitUsageError is kong's exit status for parse and Validate errors.
@@ -238,7 +237,7 @@ func TestSimulateNameRejected(t *testing.T) {
 				t.Skip(reason)
 			}
 
-			cfg := startIntegrationCluster(t, CompositionDiffTest, compCase, defaultTimeout).cfg
+			cfg := integration.Start(t, compCase).Config
 
 			var stdout, stderr bytes.Buffer
 			argv := append(plainProjectArgv(t), tc.args...)

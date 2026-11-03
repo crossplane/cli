@@ -7,13 +7,13 @@ import (
 	"os"
 	"testing"
 
-	"github.com/crossplane/cli/v2/internal/diff/testutils/envtestreaper"
+	"github.com/crossplane/cli/v2/internal/testutils/integration"
 )
 
 // TestMain runs before all tests.
 func TestMain(m *testing.M) {
 	// Kill envtest servers that an earlier run left behind when it died abnormally.
-	envtestreaper.Reap(func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) })
+	integration.ReapOrphanedEnvtest(func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) })
 
 	// Run all tests
 	exitCode := m.Run()

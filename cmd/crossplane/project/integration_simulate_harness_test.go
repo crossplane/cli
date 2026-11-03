@@ -18,8 +18,8 @@ limitations under the License.
 
 // This file is the simulate harness: runSimulateArgvWith runs the real
 // `crossplane project simulate` command through kong against a case's
-// envtest cluster. A case that the environment cannot run (no Docker
-// daemon, no envtest binaries) skips with an env:<reason>.
+// envtest cluster, started by internal/testutils/integration. A case that
+// the environment cannot run (no Docker daemon) skips with an env:<reason>.
 //
 // testdata/README.md describes how to run the suite and read its coverage.
 
@@ -148,17 +148,42 @@ var dockerAvailable = sync.OnceValue(func() bool {
 	return docker.Check(ctx) == nil
 })
 
-// envtestBinariesAvailable reports whether the envtest control plane's
-// binaries are reachable: KUBEBUILDER_ASSETS points at them, or the
-// setup-envtest default install path exists.
-func envtestBinariesAvailable() bool {
-	if dir := os.Getenv("KUBEBUILDER_ASSETS"); dir != "" {
-		if _, err := os.Stat(filepath.Join(dir, "kube-apiserver")); err == nil {
-			return true
-		}
+// localCrossplaneBinary returns the absolute path to a locally-built
+// `crossplane` binary at ../../../_output/bin/crossplane (relative to
+// cmd/crossplane/project, so the repo root's _output) when it exists, or ""
+// when it doesn't. The binary, when present, contains the
+// `crossplane internal render` subcommand introduced by upstream PR #7339
+// and is exec'd directly for fast in-process rendering. When absent, callers
+// pass the empty string through to the diff command, which falls through to
+// the docker render engine (slower but works wherever Docker does — including
+// CI's WITH DOCKER block in the go-test target).
+//
+// Local developers wanting the fast path can build the binary with:
+//
+//	go build -o _output/bin/crossplane github.com/crossplane/crossplane/v2/cmd/crossplane
+//
+// (run from the repo root). The path is overridable via the
+// CROSSPLANE_DIFF_RENDER_BINARY env var when a different layout is needed.
+//
+// Callers thread the returned path into the diff command via
+// --crossplane-binary=<path> rather than via a process-global env var,
+// so concurrent t.Parallel() tests don't race on shared state.
+func localCrossplaneBinary(t *testing.T) string {
+	t.Helper()
+
+	if override := os.Getenv("CROSSPLANE_DIFF_RENDER_BINARY"); override != "" {
+		return override
 	}
 
-	_, err := os.Stat("/usr/local/kubebuilder/bin/kube-apiserver")
+	absPath, err := filepath.Abs("../../../_output/bin/crossplane")
+	if err != nil {
+		t.Fatalf("cannot resolve crossplane binary path: %v", err)
+	}
 
-	return err == nil
+	if _, err := os.Stat(absPath); err != nil {
+		t.Logf("local crossplane binary not present at %s; falling back to docker render engine. Build it for faster iteration: go build -o _output/bin/crossplane github.com/crossplane/crossplane/v2/cmd/crossplane", absPath)
+		return ""
+	}
+
+	return absPath
 }

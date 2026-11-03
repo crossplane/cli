@@ -24,7 +24,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -70,7 +69,7 @@ func ownedBy(kind, name string) operationOpt {
 			APIVersion: opsv1alpha1.SchemeGroupVersion.String(),
 			Kind:       kind,
 			Name:       name,
-			Controller: ptr.To(true),
+			Controller: new(true),
 		}})
 		if kind == opsv1alpha1.WatchOperationKind {
 			op.SetLabels(map[string]string{opsv1alpha1.LabelWatchOperationName: name})
@@ -82,7 +81,7 @@ func appliedResource(apiVersion, kind, namespace, name string) operationOpt {
 	return func(op *opsv1alpha1.Operation) {
 		ref := opsv1alpha1.AppliedResourceRef{APIVersion: apiVersion, Kind: kind, Name: name}
 		if namespace != "" {
-			ref.Namespace = ptr.To(namespace)
+			ref.Namespace = new(namespace)
 		}
 
 		op.Status.AppliedResourceRefs = append(op.Status.AppliedResourceRefs, ref)
@@ -112,7 +111,9 @@ func kindNames(r *resource.Resource, depth int) []string {
 		line += " relation=" + r.Relation
 	}
 
-	out := []string{line}
+	out := make([]string, 0, len(r.Children)+1)
+	out = append(out, line)
+
 	for _, c := range r.Children {
 		out = append(out, kindNames(c, depth+1)...)
 	}

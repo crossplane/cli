@@ -74,16 +74,16 @@ type Cmd struct {
 	Name     string `arg:"" help:"Name of the Crossplane resource, if not passed as part of the resource."              optional:""              predictor:"k8s_resource_name"`
 
 	// TODO(phisco): add support for all the usual kubectl flags; configFlags := genericclioptions.NewConfigFlags(true).AddFlags(...)
-	Context                   string `default:""                                    help:"Kubernetes context."                         name:"context"                                                             predictor:"context"              short:"c"`
-	Namespace                 string `default:""                                    help:"Namespace of the resource."                  name:"namespace"                                                           predictor:"namespace"            short:"n"`
-	Output                    string `default:"default"                             enum:"default,wide,json,dot,yaml"                  help:"Output format. One of: default, wide, json, dot, yaml."              name:"output"                    short:"o"`
+	Context                   string `default:""                                    help:"Kubernetes context."                         name:"context"                                                                 predictor:"context"              short:"c"`
+	Namespace                 string `default:""                                    help:"Namespace of the resource."                  name:"namespace"                                                               predictor:"namespace"            short:"n"`
+	Output                    string `default:"default"                             enum:"default,wide,json,dot,yaml"                  help:"Output format. One of: default, wide, json, dot, yaml."                  name:"output"                    short:"o"`
 	ShowConnectionSecrets     bool   `help:"Show connection secrets in the output." name:"show-connection-secrets"                     short:"s"`
 	ShowOperations            string `default:"none"                                enum:"none,triggered,all"                          help:"Show operations related to each resource. One of: none, triggered, all." name:"show-operations"`
-	ShowPackageDependencies   string `default:"unique"                              enum:"unique,all,none"                             help:"Show package dependencies in the output. One of: unique, all, none." name:"show-package-dependencies"`
-	ShowPackageRevisions      string `default:"active"                              enum:"active,all,none"                             help:"Show package revisions in the output. One of: active, all, none."    name:"show-package-revisions"`
+	ShowPackageDependencies   string `default:"unique"                              enum:"unique,all,none"                             help:"Show package dependencies in the output. One of: unique, all, none."     name:"show-package-dependencies"`
+	ShowPackageRevisions      string `default:"active"                              enum:"active,all,none"                             help:"Show package revisions in the output. One of: active, all, none."        name:"show-package-revisions"`
 	ShowPackageRuntimeConfigs bool   `default:"false"                               help:"Show package runtime configs in the output." name:"show-package-runtime-configs"`
 	Concurrency               int    `default:"5"                                   help:"load concurrency"                            name:"concurrency"`
-	Watch                     bool   `default:"false"                               help:"Watch for changes until resource deletion."  name:"watch"                                                               short:"w"`
+	Watch                     bool   `default:"false"                               help:"Watch for changes until resource deletion."  name:"watch"                                                                   short:"w"`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
@@ -220,26 +220,8 @@ func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
 		return errors.Wrapf(err, errFmtGetResource, mapping.GroupVersionKind.Kind, nameDisplay, rootRef.Namespace)
 	}
 
-	for i := range resourceList.Items {
-		root := resourceList.Items[i]
-		itemKind, itemName, itemNamespace := root.Unstructured.GetKind(), root.Unstructured.GetName(), root.Unstructured.GetNamespace()
-		root, err = c.getResourceTree(ctx, root, mapping, client, logger)
-		if err != nil {
-			logger.Debug(errGetResource, "error", err)
-			return errors.Wrapf(err, errFmtGetResourceTree, itemKind, itemName, itemNamespace)
-		}
-
-		logger.Debug("Got resource tree", "root", root)
-
-		resourceList.Items[i] = root
-	}
-
-	// Attach related operations, if requested. Operations target Crossplane
-	// resources, not packages, so there's nothing to attach on package trees.
-	if !xpkg.IsPackageType(mapping.GroupVersionKind.GroupKind()) {
-		if err := c.enrichOperations(ctx, client, resourceList.Items...); err != nil {
-			return errors.Wrap(err, errGetOperations)
-		}
+	if err := c.getResourceTrees(ctx, resourceList, mapping, client, logger); err != nil {
+		return err
 	}
 
 	// Watch mode for a single resource
@@ -300,6 +282,34 @@ func (c *Cmd) getResourceAndName() (string, string, error) {
 
 	// Handle the case when resource format is invalid
 	return "", "", errors.New(errInvalidResource)
+}
+
+// getResourceTrees builds the resource tree of each resource in the list in
+// place, attaching the related operations if requested.
+func (c *Cmd) getResourceTrees(ctx context.Context, resourceList *resource.ResourceList, mapping *meta.RESTMapping, client client.Client, logger logging.Logger) error {
+	for i := range resourceList.Items {
+		root := resourceList.Items[i]
+		itemKind, itemName, itemNamespace := root.Unstructured.GetKind(), root.Unstructured.GetName(), root.Unstructured.GetNamespace()
+		root, err := c.getResourceTree(ctx, root, mapping, client, logger)
+		if err != nil {
+			logger.Debug(errGetResource, "error", err)
+			return errors.Wrapf(err, errFmtGetResourceTree, itemKind, itemName, itemNamespace)
+		}
+
+		logger.Debug("Got resource tree", "root", root)
+
+		resourceList.Items[i] = root
+	}
+
+	// Attach related operations, if requested. Operations target Crossplane
+	// resources, not packages, so there's nothing to attach on package trees.
+	if !xpkg.IsPackageType(mapping.GroupVersionKind.GroupKind()) {
+		if err := c.enrichOperations(ctx, client, resourceList.Items...); err != nil {
+			return errors.Wrap(err, errGetOperations)
+		}
+	}
+
+	return nil
 }
 
 // enrichOperations attaches the operations related to each resource in the

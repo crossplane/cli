@@ -319,6 +319,7 @@ func (r *RuntimeDocker) Start(ctx context.Context) (RuntimeContext, error) {
 		Port:        FunctionPort,
 		Env:         r.Env,
 		Labels:      functionContainerLabels(r.Session, r.Cleanup),
+		Domain:      labelDomain,
 		BindAddress: r.BindAddress,
 		Target:      r.Target,
 		Network:     r.Network,

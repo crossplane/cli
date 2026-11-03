@@ -46,9 +46,18 @@ type Container struct {
 	Image string
 
 	// Name of the container. When set, an existing container with this name
-	// is reused (and restarted if needed) instead of creating a new one.
-	// Empty means Docker assigns a random name and nothing is reused.
+	// is reused (and restarted if needed) instead of creating a new one,
+	// subject to Domain. Empty means Docker assigns a random name and nothing
+	// is reused.
 	Name string
+
+	// Domain is the annotation domain of Labels, e.g. DomainRender. When set
+	// with Name, Start reuses an existing container only when its labels say
+	// that's safe, and refuses one that another run will stop or remove; a
+	// run never stops or removes a container an earlier run labelled to keep
+	// longer. find has the full rules. Empty means any container with Name
+	// is reused.
+	Domain string
 
 	// Cmd is the command the container runs, e.g. a server subcommand and
 	// its flags.
@@ -113,8 +122,8 @@ type Client interface {
 	ContainerStart(ctx context.Context, containerID string, options client.ContainerStartOptions) (client.ContainerStartResult, error)
 }
 
-// CleanupClient is the subset of the Docker client Running.Stop uses to
-// clean up a container.
+// CleanupClient is the subset of the Docker client a Run uses to clean up a
+// container.
 type CleanupClient interface {
 	ContainerStop(ctx context.Context, containerID string, options client.ContainerStopOptions) (client.ContainerStopResult, error)
 	ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
@@ -139,7 +148,18 @@ type Running struct {
 	// rather than creating a new one.
 	Reused bool
 
-	cli CleanupClient
+	// keep is the cleanup policy of the container Start reused, when Stop
+	// must keep it at least that long: Orphan for a running container another
+	// run keeps, or the label of a stopped container Start took over. Empty
+	// means Stop applies the policy it's given.
+	keep Cleanup
+
+	// startedAt is when the container last started, as Start found it. A
+	// later start means another run took the container over.
+	startedAt string
+
+	cli Client
+	log logging.Logger
 }
 
 // Start ensures the container is running and returns a handle carrying the
@@ -164,7 +184,7 @@ func (c *Container) Start(ctx context.Context) (*Running, error) {
 	}
 
 	// Try to find an existing container with the supplied container name.
-	containerID, err := c.find(ctx, cli)
+	containerID, keep, err := c.find(ctx, cli, false)
 	if err != nil {
 		return nil, err
 	}
@@ -173,31 +193,70 @@ func (c *Container) Start(ctx context.Context) (*Running, error) {
 	// Create new container if not found.
 	if containerID == "" {
 		containerID, err = c.create(ctx, cli)
+		if err != nil && c.Domain != "" && c.Name != "" && errdefs.IsConflict(err) {
+			// Another run created a container with this name since find
+			// looked. Judge it by the same rules, so a near-simultaneous
+			// run gets the reason it can't share it, not Docker's conflict.
+			// It may not have started yet, so judge it as running.
+			var cerr error
+			containerID, keep, cerr = c.find(ctx, cli, true)
+			switch {
+			case cerr != nil:
+				return nil, cerr
+			case containerID != "":
+				reused, err = true, nil
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	addr, err := c.start(ctx, cli, containerID)
+	addr, startedAt, err := c.start(ctx, cli, containerID)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Running{Addr: addr, ID: containerID, Reused: reused, cli: cli}, nil
+	return &Running{Addr: addr, ID: containerID, Reused: reused, keep: keep, startedAt: startedAt, cli: cli, log: c.Log}, nil
 }
 
 // Stop finishes the container according to the cleanup policy: Orphan leaves
 // it running, Stop stops it with the grace period, and Remove stops it and
-// then force removes it even if the graceful stop fails.
+// then force removes it even if the graceful stop fails. When Start reused a
+// container whose cleanup policy keeps it longer than cleanup, that policy
+// applies instead. A container that has started again since Start, because
+// another run found it stopped and took it over, is left to that run.
 func (r *Running) Stop(ctx context.Context, cleanup Cleanup) error {
 	grace := int(StopGracePeriod / time.Second)
 	stopOpts := client.ContainerStopOptions{Timeout: &grace}
 
+	if r.keep != "" && retention(r.keep) > retention(cleanup) {
+		r.log.Debug("Applying the reused Docker container's cleanup policy, because it keeps the container longer than this run's", "container", r.ID, "cleanup", r.keep, "run-cleanup", cleanup)
+		cleanup = r.keep
+	}
+
+	if cleanup == CleanupStop || cleanup == CleanupRemove {
+		res, err := inspectContainer(ctx, r.cli, r.ID)
+		switch {
+		case errdefs.IsNotFound(err):
+			return nil
+		case err != nil:
+			return errors.Wrap(err, "cannot inspect Docker container")
+		case startedAt(res.Container.State) != r.startedAt:
+			r.log.Debug("Leaving Docker container another run started again after this one", "container", r.ID, "cleanup", cleanup)
+			return nil
+		}
+	}
+
+	// Two handles can share one container, e.g. two Functions with one name,
+	// so the other may have removed it already, or still be removing it: a
+	// forced removal conflicts only with one in progress. That handle reports
+	// its own failure.
 	switch cleanup {
 	case CleanupOrphan:
 		return nil
 	case CleanupStop:
-		if err := stopContainer(ctx, r.cli, r.ID, stopOpts); err != nil {
+		if err := stopContainer(ctx, r.cli, r.ID, stopOpts); err != nil && !errdefs.IsNotFound(err) {
 			return errors.Wrap(err, "cannot stop Docker container")
 		}
 	case CleanupRemove:
@@ -209,7 +268,7 @@ func (r *Running) Stop(ctx context.Context, cleanup Cleanup) error {
 		if err := stopContainer(ctx, r.cli, r.ID, stopOpts); err != nil {
 			stopErr = errors.Wrap(err, "cannot stop Docker container")
 		}
-		if err := removeContainer(ctx, r.cli, r.ID); err != nil {
+		if err := removeContainer(ctx, r.cli, r.ID); err != nil && !errdefs.IsNotFound(err) && !errdefs.IsConflict(err) {
 			return errors.Join(errors.Wrap(err, "cannot remove Docker container"), stopErr)
 		}
 	}
@@ -217,20 +276,104 @@ func (r *Running) Stop(ctx context.Context, cleanup Cleanup) error {
 	return nil
 }
 
-func (c *Container) find(ctx context.Context, cli Client) (string, error) {
+// retention ranks how long a cleanup policy keeps a container: Remove
+// shortest, then Stop, then any other, which includes the kept ones (see
+// keeps).
+func retention(cl Cleanup) int {
+	if cl == CleanupRemove {
+		return 0
+	}
+
+	if cl == CleanupStop {
+		return 1
+	}
+
+	return 2
+}
+
+// find returns the ID of the container named Name that Start may reuse, or
+// "" if there is none, and the policy Stop must keep it at least as long as
+// (see Running.keep). raced judges a container that isn't running as if it
+// were, because another run created it a moment ago.
+//
+// With a Domain, a container is reused only when it is stopped, it has no
+// <Domain>/cleanup label, it's running with a kept policy (Orphan, or one
+// this version doesn't know, and Running.Stop then always leaves it
+// running), or it's running with this container's <Domain>/session. A
+// container another session runs under the Stop or Remove policy is
+// refused, since that session stops or removes it when it exits. A stopped
+// container is restarted and taken over, and Running.Stop then applies
+// whichever of its <Domain>/cleanup label and the policy Stop is given
+// keeps it longer (Orphan, then Stop, then Remove), so a run never stops or
+// removes a container an earlier run labelled to keep longer. A name
+// conflict at create applies the same rules to the container that won the
+// name, judging it as running even if it hasn't started yet.
+//
+// Docker labels can't change, so a taken-over container keeps its creator's
+// labels: a later run that's refused it names the creator's session, not
+// the run that now owns it, and a container labelled Stop or Remove that a
+// taken-over Orphan run left running is refused to other sessions until
+// it's removed by hand. A stopped container is taken over even if the run
+// that created it is still running, but that run's Running.Stop then finds
+// it started again and leaves it. If the run that took it over is killed,
+// later runs don't reclaim it, since it carries the creator's session. Two runs that
+// take over the same stopped container at once both treat it as theirs. A
+// running container with no <Domain>/cleanup label (an older CLI's) is
+// reused, and Running.Stop treats it per the policy Stop is given.
+func (c *Container) find(ctx context.Context, cli Client, raced bool) (string, Cleanup, error) {
 	if c.Name == "" {
-		return "", nil
+		return "", "", nil
 	}
 
 	inspect, err := cli.ContainerInspect(ctx, c.Name, client.ContainerInspectOptions{})
 	if err != nil {
 		if errdefs.IsNotFound(err) {
-			return "", nil // Container doesn't exist, but that's not an error
+			return "", "", nil // Container doesn't exist, but that's not an error
 		}
-		return "", errors.Wrapf(err, "cannot inspect Docker container %q", c.Name)
+		return "", "", errors.Wrapf(err, "cannot inspect Docker container %q", c.Name)
+	}
+	found := inspect.Container
+	if c.Domain == "" {
+		return found.ID, "", nil
 	}
 
-	return inspect.Container.ID, nil
+	var labels map[string]string
+	if found.Config != nil {
+		labels = found.Config.Labels
+	}
+	if !raced && (found.State == nil || !found.State.Running) {
+		// Stopped: restart it and take it over, keeping it at least as long
+		// as its label asks. Docker can't relabel it.
+		return found.ID, Cleanup(labels[c.Domain+labelSuffixCleanup]), nil
+	}
+	session := labels[c.Domain+labelSuffixSession]
+	switch cl := Cleanup(labels[c.Domain+labelSuffixCleanup]); {
+	case cl == "":
+		// Created before render recorded cleanup policies: reuse it, as
+		// before.
+		return found.ID, "", nil
+	case keeps(cl):
+		// Kept by the run that created it, or by a policy this version
+		// doesn't know: share it, never stop or remove it.
+		return found.ID, CleanupOrphan, nil
+	default:
+		// Stop or Remove.
+		if session == c.Labels[c.Domain+labelSuffixSession] {
+			// This run's own, e.g. two Functions with one name.
+			return found.ID, "", nil
+		}
+		// Only render's Functions choose their container's name. Simulate
+		// names only Orphan diff servers, so it meets this only for a
+		// container an older CLI or a crashed run left.
+		hint := ""
+		if c.Domain == DomainRender {
+			hint = fmt.Sprintf("To share it between runs, set the %s/runtime-docker-cleanup annotation to %q on the Functions that name it, or drop the %s/runtime-docker-name annotation. ",
+				c.Domain, CleanupOrphan, c.Domain)
+		}
+		return "", "", errors.Errorf("Docker container %q is in use by another run (session %q), which will %s it when it exits (cleanup policy %q). "+
+			"%sIf it is left over from a crashed run or an older CLI, remove it with: docker rm -f %s",
+			c.Name, session, strings.ToLower(string(cl)), cl, hint, c.Name)
+	}
 }
 
 func (c *Container) create(ctx context.Context, cli Client) (string, error) {
@@ -357,11 +500,12 @@ func (c *Container) pullImage(ctx context.Context, cli Client, options client.Im
 	return nil
 }
 
-// start ensures the container is running and returns its address.
-func (c *Container) start(ctx context.Context, cli Client, containerID string) (string, error) {
+// start ensures the container is running and returns its address and when
+// it last started.
+func (c *Container) start(ctx context.Context, cli Client, containerID string) (string, string, error) {
 	// Start the container (idempotent - safe to call on running containers)
 	if _, err := cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{}); err != nil {
-		return "", errors.Wrap(err, "cannot start Docker container")
+		return "", "", errors.Wrap(err, "cannot start Docker container")
 	}
 
 	// When using a Docker network, containers are resolvable by name within
@@ -371,30 +515,30 @@ func (c *Container) start(ctx context.Context, cli Client, containerID string) (
 	if c.Network != "" {
 		inspect, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 		if err != nil {
-			return "", errors.Wrap(err, "cannot inspect Docker container")
+			return "", "", errors.Wrap(err, "cannot inspect Docker container")
 		}
 		if _, ok := inspect.Container.NetworkSettings.Networks[c.Network]; !ok {
-			return "", errors.Errorf("container %q is not connected to Docker network %q; verify the network exists and the container is attached to it", strings.TrimPrefix(inspect.Container.Name, "/"), c.Network)
+			return "", "", errors.Errorf("container %q is not connected to Docker network %q; verify the network exists and the container is attached to it", strings.TrimPrefix(inspect.Container.Name, "/"), c.Network)
 		}
 		hostname := strings.TrimPrefix(inspect.Container.Name, "/")
 		if hostname == "" {
-			return "", errors.Errorf("cannot determine hostname for container %q on network %q", containerID, c.Network)
+			return "", "", errors.Errorf("cannot determine hostname for container %q on network %q", containerID, c.Network)
 		}
 		addr := net.JoinHostPort(hostname, fmt.Sprintf("%d", c.Port))
 		c.Log.Debug("Container reachable on network", "network", c.Network, "address", addr)
-		return addr, nil
+		return addr, startedAt(inspect.Container.State), nil
 	}
 
 	// Inspect the container to get the actual allocated host port.
 	inspect, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
-		return "", errors.Wrap(err, "cannot inspect Docker container")
+		return "", "", errors.Wrap(err, "cannot inspect Docker container")
 	}
 
 	// Look up the specific container port instead of taking the first one
 	p := network.MustParsePort(fmt.Sprintf("%d/tcp", c.Port))
 	if len(inspect.Container.NetworkSettings.Ports[p]) == 0 {
-		return "", errors.Errorf("container %q has no published binding for port %s", c.Name, p.Port())
+		return "", "", errors.Errorf("container %q has no published binding for port %s", c.Name, p.Port())
 	}
 
 	binding := inspect.Container.NetworkSettings.Ports[p][0]
@@ -403,10 +547,10 @@ func (c *Container) start(ctx context.Context, cli Client, containerID string) (
 		host = binding.HostIP.String()
 	}
 	if host == "" {
-		return "", errors.Errorf("container %q has port binding for %s but no host address", c.Name, p.Port())
+		return "", "", errors.Errorf("container %q has port binding for %s but no host address", c.Name, p.Port())
 	}
 
-	return net.JoinHostPort(host, binding.HostPort), nil
+	return net.JoinHostPort(host, binding.HostPort), startedAt(inspect.Container.State), nil
 }
 
 func (c *Container) getPullOptions() (client.ImagePullOptions, error) {
@@ -434,6 +578,24 @@ func (c *Container) getPullOptions() (client.ImagePullOptions, error) {
 	return client.ImagePullOptions{
 		RegistryAuth: base64.StdEncoding.EncodeToString(token),
 	}, nil
+}
+
+// startedAt is when a container last started, or "" if Docker didn't say.
+func startedAt(s *container.State) string {
+	if s == nil {
+		return ""
+	}
+
+	return s.StartedAt
+}
+
+// inspectContainer inspects a container, bounding the request by
+// RemoveTimeout.
+func inspectContainer(ctx context.Context, cli Client, containerID string) (client.ContainerInspectResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, RemoveTimeout)
+	defer cancel()
+
+	return cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 }
 
 // stopContainer stops a container, bounding the request by StopTimeout.

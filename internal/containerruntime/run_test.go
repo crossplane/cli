@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -74,6 +75,12 @@ type host struct {
 	raced *container.Summary
 	// cannotRemove names the container the daemon fails to remove.
 	cannotRemove string
+	// removing names the container another client is removing, so a removal
+	// conflicts.
+	removing string
+	// starts counts each container's starts, which inspect reports as when
+	// it last started.
+	starts map[string]int
 	// vanished holds IDs that are listed but gone by the time they are
 	// stopped or removed, as when a concurrent reaper got there first.
 	vanished map[string]bool
@@ -145,7 +152,7 @@ func (h *host) containerInspect(_ context.Context, id string, _ client.Container
 	return client.ContainerInspectResult{Container: container.InspectResponse{
 		ID:              c.ID,
 		Name:            c.Names[0],
-		State:           &container.State{Running: c.State == running},
+		State:           &container.State{Running: c.State == running, StartedAt: strconv.Itoa(h.starts[c.ID])},
 		Config:          &container.Config{Labels: c.Labels},
 		NetworkSettings: &container.NetworkSettings{Networks: c.NetworkSettings.Networks},
 	}}, nil
@@ -179,6 +186,12 @@ func (h *host) containerStart(_ context.Context, id string, _ client.ContainerSt
 		return client.ContainerStartResult{}, err
 	}
 
+	if h.containers[i].State != running {
+		if h.starts == nil {
+			h.starts = map[string]int{}
+		}
+		h.starts[h.containers[i].ID]++
+	}
 	h.containers[i].State = running
 
 	return client.ContainerStartResult{}, nil
@@ -215,6 +228,9 @@ func (h *host) containerStop(_ context.Context, id string, _ client.ContainerSto
 func (h *host) containerRemove(_ context.Context, id string, opts client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
 	if id == h.cannotRemove {
 		return client.ContainerRemoveResult{}, errors.New("daemon says no")
+	}
+	if id == h.removing {
+		return client.ContainerRemoveResult{}, errors.Wrapf(errdefs.ErrConflict, "removal of container %s is already in progress", id)
 	}
 
 	i, err := h.container(id)

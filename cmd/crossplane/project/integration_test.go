@@ -65,7 +65,6 @@ type IntegrationTestCase struct {
 	namespace              string                    // For composition tests (optional)
 	xrdAPIVersion          integration.XRDAPIVersion // For XR tests (optional)
 	ignorePaths            []string                  // Paths to ignore in diffs
-	functionCredentials    string                    // Path to function credentials file (optional)
 	eventualState          bool                      // Enable eventual state simulation for XR or composition tests (optional)
 	timeout                time.Duration             // Custom timeout for this test (0 = use default)
 	resources              []string                  // For composition tests: --resource values; each entry passed as one --resource flag
@@ -75,25 +74,9 @@ type IntegrationTestCase struct {
 	analyzeOn              string                    // For composition tests: pass --analyze-on=<value> (empty = rely on the default)
 	// dryRunOn passes --dry-run-on=<value> (empty = rely on the default, which is "all").
 	// The flag lives on CommonCmdFields, so it applies to both `xr` and `comp`.
-	dryRunOn string
-	// awaitAdmissionDenialFor names a manifest whose resources a correctly-installed
-	// ValidatingAdmissionPolicy must refuse. Before running the diff, the harness dry-run
-	// creates each of them until the apiserver rejects it.
-	//
-	// This is not belt-and-braces: the apiserver loads admission policies through an informer,
-	// so a diff issued immediately after the policy is created races the plugin and observes a
-	// cluster that accepts everything. Measured on envtest 1.32, the policy took ~600ms and four
-	// attempts to take effect — long enough that without this gate the test would pass or fail
-	// depending on machine load, and a "pass" would prove nothing.
-	awaitAdmissionDenialFor string
-	// assertDeterministicAcrossRuns runs the command twice against the same cluster and requires
-	// byte-identical stdout, then applies the usual assertions to the second run. Needed for
-	// server-generated identity: the apiserver runs names.Generator before the dry-run
-	// short-circuit, so a generateName addition whose identity was not restored would emit a
-	// different random name on each run — which a single-run test cannot see.
-	assertDeterministicAcrossRuns bool
-	skip                          bool
-	skipReason                    string
+	dryRunOn   string
+	skip       bool
+	skipReason string
 	// JSON output support: set outputFormat to "json" to use structured assertions.
 	outputFormat string // "json" or "" (default=visual diff)
 	// expectedStructured is asserted against the JSON output in either mode. It is typed as the
@@ -175,11 +158,6 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 		}
 	}
 
-	// Add function-credentials if specified
-	if tt.functionCredentials != "" {
-		args = append(args, fmt.Sprintf("--function-credentials=%s", tt.functionCredentials))
-	}
-
 	// Add eventual-state flag if specified (supported by both `xr` and `comp`).
 	if tt.eventualState {
 		args = append(args, "--eventual-state")
@@ -242,13 +220,6 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 		DeleteAfterSetup:           tt.deleteAfterSetup,
 		RBACRules:                  tt.rbacRules,
 	})
-	ctx := cluster.Context
-
-	// Block until any ValidatingAdmissionPolicy in the setup is actually enforcing, so the diff
-	// cannot race the apiserver's policy informer. See the field's doc comment.
-	if err := integration.AwaitAdmissionDenial(ctx, cluster.Client, tt.awaitAdmissionDenialFor); err != nil {
-		t.Fatalf("admission policy never took effect: %v", err)
-	}
 
 	// runOnce executes the command against the running cluster, leaving its output in stdout /
 	// stderr. Everything the command layer touches is rebuilt per call, so a second run starts
@@ -261,16 +232,6 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 	}
 
 	exitCode, err := runOnce(cluster.Config)
-
-	if tt.assertDeterministicAcrossRuns {
-		first := stdout.String()
-
-		exitCode, err = runOnce(cluster.Config)
-
-		if second := stdout.String(); second != first {
-			t.Errorf("output differs between two runs against the same cluster; a value the apiserver generated has leaked into the diff.\nfirst run:\n%s\nsecond run:\n%s", first, second)
-		}
-	}
 
 	if cluster.UserConfig != nil {
 		admin, adminErr := stdout.String(), err

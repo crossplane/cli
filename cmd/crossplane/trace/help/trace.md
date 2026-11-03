@@ -54,11 +54,11 @@ The `--show-operations` flag controls the display of operations
 - `none` (default): hide operations.
 - `triggered`: show the WatchOperations watching each resource, with the
   Operations they created in response to changes to it as children.
-- `all`: additionally show the Operations that applied changes to each
-  resource, grouped under the CronOperation or WatchOperation that created
-  them, if any.
+- `all`: also show the Operations that applied changes to each resource,
+  grouped under the CronOperation or WatchOperation that created them, if
+  any.
 
-Operations are not part of the resource tree, they only relate to it, so the
+Operations aren't part of the resource tree, they only relate to it, so the
 default output marks them with an arrow (`├◀`) pointing at the resource they
 relate to. The structured output formats include the relation (`watching`,
 `triggered` or `applied`) as a `relation` field instead.
@@ -109,7 +109,7 @@ Show connection secret names alongside the resources:
 crossplane resource trace mykind my-res -n my-ns --show-connection-secrets
 ```
 
-Show all operations related to the resources, e.g. the WatchOperations
+Show all operations related to the resources, for example the WatchOperations
 watching them and the Operations that changed them:
 
 ```shell

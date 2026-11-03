@@ -180,33 +180,59 @@ func enrich(r *resource.Resource, s *snapshot, mode Mode) {
 // children and, in ModeAll, the Operations that applied changes to it grouped
 // under the WatchOperation or CronOperation that created them, if any.
 func relatedOperations(r *resource.Resource, s *snapshot, mode Mode) []*resource.Resource {
-	var related []*resource.Resource
+	a := &attacher{
+		branches: map[string]*resource.Resource{},
+		attached: map[string]bool{},
+	}
 
-	branches := map[string]*resource.Resource{}
-	branchFor := func(o client.Object, gvk schema.GroupVersionKind, relation string) *resource.Resource {
-		key := gvk.Kind + "/" + o.GetName()
-		if b, ok := branches[key]; ok {
-			return b
-		}
+	a.attachWatching(r, s)
 
-		b := asResource(o, gvk, relation)
-		branches[key] = b
-		related = append(related, b)
+	if mode == ModeAll {
+		a.attachApplied(r, s)
+	}
 
+	for _, b := range a.related {
+		sortByCreation(b.Children)
+	}
+
+	return a.related
+}
+
+// attacher accumulates the operations related to a resource.
+type attacher struct {
+	// related are the operations to attach to the resource.
+	related []*resource.Resource
+	// branches dedupes the WatchOperations and CronOperations in related.
+	branches map[string]*resource.Resource
+	// attached tracks the Operations already attached to a branch.
+	attached map[string]bool
+}
+
+// branchFor returns the existing branch for the given WatchOperation or
+// CronOperation, creating it with the given relation if needed.
+func (a *attacher) branchFor(o client.Object, gvk schema.GroupVersionKind, relation string) *resource.Resource {
+	key := gvk.Kind + "/" + o.GetName()
+	if b, ok := a.branches[key]; ok {
 		return b
 	}
 
-	attached := map[string]bool{}
+	b := asResource(o, gvk, relation)
+	a.branches[key] = b
+	a.related = append(a.related, b)
 
-	// WatchOperations watching this resource, with the Operations they
-	// created in response to changes to it as children.
+	return b
+}
+
+// attachWatching attaches the WatchOperations watching the given resource,
+// with the Operations they created in response to changes to it as children.
+func (a *attacher) attachWatching(r *resource.Resource, s *snapshot) {
 	for i := range s.watchOps {
 		wo := &s.watchOps[i]
 		if !watchMatches(wo.Spec.Watch, &r.Unstructured) {
 			continue
 		}
 
-		b := branchFor(wo, opsv1alpha1.WatchOperationGroupVersionKind, RelationWatching)
+		b := a.branchFor(wo, opsv1alpha1.WatchOperationGroupVersionKind, RelationWatching)
 
 		for j := range s.ops {
 			op := &s.ops[j]
@@ -215,50 +241,53 @@ func relatedOperations(r *resource.Resource, s *snapshot, mode Mode) []*resource
 			}
 
 			b.Children = append(b.Children, asResource(op, opsv1alpha1.OperationGroupVersionKind, RelationTriggered))
-			attached[op.GetName()] = true
+			a.attached[op.GetName()] = true
+		}
+	}
+}
+
+// attachApplied attaches the Operations that applied changes to the given
+// resource, grouped under the WatchOperation or CronOperation that created
+// them, if any.
+func (a *attacher) attachApplied(r *resource.Resource, s *snapshot) {
+	for i := range s.ops {
+		op := &s.ops[i]
+		if a.attached[op.GetName()] || !applied(op, &r.Unstructured) {
+			continue
+		}
+
+		a.attached[op.GetName()] = true
+		child := asResource(op, opsv1alpha1.OperationGroupVersionKind, RelationApplied)
+
+		if b := a.creatorBranch(op, s); b != nil {
+			appendChild(b, child)
+			continue
+		}
+
+		a.related = append(a.related, child)
+	}
+}
+
+// creatorBranch returns the branch for the WatchOperation or CronOperation
+// that created the given Operation, or nil if it was created by neither.
+func (a *attacher) creatorBranch(op *opsv1alpha1.Operation, s *snapshot) *resource.Resource {
+	owner := metav1.GetControllerOf(op)
+	if owner == nil || owner.APIVersion != opsv1alpha1.SchemeGroupVersion.String() {
+		return nil
+	}
+
+	switch owner.Kind {
+	case opsv1alpha1.WatchOperationKind:
+		if wo := s.watchOp(owner.Name); wo != nil {
+			return a.branchFor(wo, opsv1alpha1.WatchOperationGroupVersionKind, RelationApplied)
+		}
+	case opsv1alpha1.CronOperationKind:
+		if co, ok := s.cronOps[owner.Name]; ok {
+			return a.branchFor(&co, opsv1alpha1.CronOperationGroupVersionKind, RelationApplied)
 		}
 	}
 
-	if mode == ModeAll {
-		// Operations that applied changes to this resource, grouped under
-		// the WatchOperation or CronOperation that created them, if any.
-		for i := range s.ops {
-			op := &s.ops[i]
-			if attached[op.GetName()] || !applied(op, &r.Unstructured) {
-				continue
-			}
-
-			attached[op.GetName()] = true
-			child := asResource(op, opsv1alpha1.OperationGroupVersionKind, RelationApplied)
-
-			if owner := metav1.GetControllerOf(op); owner != nil && owner.APIVersion == opsv1alpha1.SchemeGroupVersion.String() {
-				switch owner.Kind {
-				case opsv1alpha1.WatchOperationKind:
-					if wo := s.watchOp(owner.Name); wo != nil {
-						b := branchFor(wo, opsv1alpha1.WatchOperationGroupVersionKind, RelationApplied)
-						appendChild(b, child)
-
-						continue
-					}
-				case opsv1alpha1.CronOperationKind:
-					if co, ok := s.cronOps[owner.Name]; ok {
-						b := branchFor(&co, opsv1alpha1.CronOperationGroupVersionKind, RelationApplied)
-						appendChild(b, child)
-
-						continue
-					}
-				}
-			}
-
-			related = append(related, child)
-		}
-	}
-
-	for _, b := range related {
-		sortByCreation(b.Children)
-	}
-
-	return related
+	return nil
 }
 
 // appendChild appends the child to the branch, dropping the child's relation

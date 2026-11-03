@@ -28,6 +28,7 @@ type dotLabel struct {
 	name       string
 	ready      string
 	synced     string
+	relation   string
 	error      string
 }
 
@@ -50,6 +51,11 @@ func (r *dotLabel) String() string {
 		"Ready: "+r.ready,
 		"Synced: "+r.synced,
 	)
+	if r.relation != "" {
+		out = append(out,
+			"Relation: "+r.relation,
+		)
+	}
 	if r.error != "" {
 		out = append(out,
 			"Error: "+r.error,
@@ -196,6 +202,7 @@ func printGraphQueue(g *dot.Graph, queue []*queueItem) {
 				name:       fmt.Sprintf("%s/%s", item.resource.Unstructured.GetKind(), item.resource.Unstructured.GetName()),
 				ready:      string(item.resource.GetCondition(xpv2.TypeReady).Status),
 				synced:     string(item.resource.GetCondition(xpv2.TypeSynced).Status),
+				relation:   item.resource.Relation,
 			}
 		}
 

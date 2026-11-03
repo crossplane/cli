@@ -36,6 +36,7 @@ import (
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/trace/internal/printer"
 	"github.com/crossplane/cli/v2/pkg/resource"
+	"github.com/crossplane/cli/v2/pkg/resource/xpkg"
 )
 
 // Bubble Tea messages for watch mode.
@@ -164,6 +165,12 @@ func (c *Cmd) watchProducer(ctx context.Context, logger logging.Logger, kClient 
 		tree, err := c.getResourceTree(ctx, current, mapping, kClient, logger)
 		if err != nil {
 			return err
+		}
+
+		if !xpkg.IsPackageType(mapping.GroupVersionKind.GroupKind()) {
+			if err := c.enrichOperations(ctx, kClient, tree); err != nil {
+				return errors.Wrap(err, errGetOperations)
+			}
 		}
 
 		logger.Debug("Got resource tree", "root", tree)

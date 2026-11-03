@@ -30,7 +30,12 @@ import (
 type Resource struct {
 	Unstructured unstructured.Unstructured `json:"object"`
 	Error        error                     `json:"error,omitempty"`
-	Children     []*Resource               `json:"children,omitempty"`
+
+	// Relation describes why this resource is in the tree when it's not
+	// actually part of it, e.g. an operation watching the parent resource.
+	Relation string `json:"relation,omitempty"`
+
+	Children []*Resource `json:"children,omitempty"`
 }
 
 // ResourceList struct represents a list of kubernetes resources.

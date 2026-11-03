@@ -111,6 +111,46 @@ jobs:
           file: result/coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  # The integration tests run CLI commands against an envtest API server. They
+  # run outside the Nix sandbox (and can reach the runner's Docker daemon), so
+  # they use the integration-test app rather than a check, and cache Go modules
+  # and build output themselves.
+  integration-tests:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: crossplane
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-integration-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-integration-
+
+      - name: Run Integration Tests
+        run: nix run .#integration-test --option warn-dirty false
+
+      - name: Publish Integration Test Coverage
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          flags: integration
+          file: coverage-integration.txt
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   # Build all artifacts
   build-artifacts:
     permissions:

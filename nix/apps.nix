@@ -11,8 +11,14 @@
 #   ''${SOME_VAR}        -> ${SOME_VAR}             (shell variable, escaped)
 #
 # Each app declares its tool dependencies via runtimeInputs, with inheritPath
-# set to false. This ensures apps only use explicitly declared tools.
+# set to false. This ensures apps only use explicitly declared tools. The
+# exception is integration-test, which keeps the host PATH (see there).
 { pkgs }:
+let
+  # envtest binaries for the integration tests; null only on systems
+  # without an envtest build, where the tests skip.
+  envtestAssets = import ./envtest-assets.nix { inherit pkgs; };
+in
 {
   # Run Go unit tests.
   test = _: {
@@ -25,7 +31,56 @@
         inheritPath = false;
         text = ''
           export CGO_ENABLED=0
+          export CROSSPLANE_CRDS_DIR="''${CROSSPLANE_CRDS_DIR:-${
+            import ./crossplane-crds.nix { inherit pkgs; }
+          }}"
           go test -covermode=count ./... "$@"
+        '';
+      }
+    );
+  };
+
+  # Run the integration tests: CLI commands against an envtest API server.
+  # envtest binaries and Crossplane's CRDs come from the Nix store. Unlike the
+  # sandboxed `test` check this runs outside the Nix sandbox, and it keeps the
+  # host PATH (Nix inputs first) so tests that run functions (#436's simulate
+  # tests) can reach the host's Docker and its credential helpers
+  # (docker-credential-*). CI runs it in the integration-tests job in
+  # .github/workflows/ci.yml.
+  integration-test = _: {
+    type = "app";
+    meta.description = "Run integration tests against envtest";
+    program = pkgs.lib.getExe (
+      pkgs.writeShellApplication {
+        name = "crossplane-cli-integration-test";
+        runtimeInputs = [ pkgs.unstable.go_1_26 ];
+        inheritPath = true;
+        text = ''
+          export CGO_ENABLED=0
+          export CROSSPLANE_CRDS_DIR="''${CROSSPLANE_CRDS_DIR:-${
+            import ./crossplane-crds.nix { inherit pkgs; }
+          }}"
+          ${pkgs.lib.optionalString (
+            envtestAssets != null
+          ) ''export KUBEBUILDER_ASSETS="''${KUBEBUILDER_ASSETS:-${envtestAssets}}"''}
+          # Integration tests are the test files with `//go:build integration`.
+          # Run every package that has one: its test files with the tag, minus
+          # those without it. go list applies Go's build-constraint rules.
+          # Unit tests in those packages run here too.
+          tests='{{range .TestGoFiles}}{{$.ImportPath}} {{.}}{{"\n"}}{{end}}{{range .XTestGoFiles}}{{$.ImportPath}} {{.}}{{"\n"}}{{end}}'
+          lists=$(mktemp -d)
+          go list -f "$tests" ./... | sort >"$lists/untagged"
+          go list -tags integration -f "$tests" ./... | sort >"$lists/tagged"
+          mapfile -t pkgs < <(comm -13 "$lists/untagged" "$lists/tagged" | cut -d' ' -f1 | sort -u)
+          rm -rf "$lists"
+          if [ "''${#pkgs[@]}" -eq 0 ]; then
+            echo "integration-test: found no packages with //go:build integration test files" >&2
+            exit 1
+          fi
+          # -coverpkg credits the tests' coverage to the packages they exercise;
+          # without it the profile only covers the test packages themselves.
+          go test -tags integration -covermode=count \
+            -coverpkg=./... -coverprofile=coverage-integration.txt "''${pkgs[@]}" "$@"
         '';
       }
     );
@@ -118,6 +173,10 @@
           pkgs.git
           pkgs.gnused
           pkgs.coreutils
+          pkgs.curl
+          pkgs.yq-go
+          pkgs.gnugrep
+          pkgs.diffutils
         ];
         inheritPath = false;
         text = ''
@@ -126,40 +185,117 @@
           echo "Running go mod tidy..."
           go mod tidy
 
-          # Refresh a module's vendor hash in nix/vendor-hashes.nix by resetting
-          # it to a placeholder and reading the real hash back from the build
+          # Refresh a hash (a Go vendor hash, or a fetcher's) by resetting it
+          # to a placeholder and reading the real hash back from the build
           # error - the same trick nix-update uses for Go vendor hashes.
           refresh() {
-            key="$1"   # attribute in nix/vendor-hashes.nix
-            attr="$2"  # flake package that builds that module's vendor dir
+            file="$1"  # .nix file holding the hash
+            key="$2"   # attribute in $file
+            attr="$3"  # flake package whose build checks that hash
             orig="" got=""
 
             # Remember the current value so we can restore it if anything fails.
-            orig=$(sed -n "s|.*$key = \"\(sha256-[^\"]*\)\";.*|\1|p" nix/vendor-hashes.nix | head -n1)
+            orig=$(sed -n "s|.*$key = \"\(sha256-[^\"]*\)\";.*|\1|p" "$file" | head -n1)
 
             # Set a placeholder so the build is forced to report the real hash.
-            sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"${pkgs.lib.fakeHash}\";|" nix/vendor-hashes.nix
+            sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"${pkgs.lib.fakeHash}\";|" "$file"
 
-            # --option eval-cache false: we just edited nix/vendor-hashes.nix,
-            # and Nix's flake eval cache can otherwise serve a stale evaluation
-            # that ignores the change and reports no/old hash.
+            # --option eval-cache false: we just edited $file, and Nix's flake
+            # eval cache can otherwise serve a stale evaluation that ignores
+            # the change and reports no/old hash.
             got=$(nix build ".#$attr" --no-link --option eval-cache false 2>&1 \
               | sed -n 's|.*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\).*|\1|p' \
               | head -n1 || true)
             if [ -z "$got" ]; then
               # Build failed for some other reason (e.g. network); restore the
               # previous value rather than leaving the placeholder committed.
-              sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"$orig\";|" nix/vendor-hashes.nix
-              echo "ERROR: could not determine vendor hash for '$key' (restored previous value)" >&2
+              sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"$orig\";|" "$file"
+              echo "ERROR: could not determine hash for '$key' in $file (restored previous value)" >&2
               exit 1
             fi
 
-            sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"$got\";|" nix/vendor-hashes.nix
+            sed -i "s|$key = \"sha256-[^\"]*\";|$key = \"$got\";|" "$file"
             echo "  $key = $got"
           }
 
           echo "Refreshing Go vendor hashes..."
-          refresh root crossplane-vendor
+          refresh nix/vendor-hashes.nix root crossplane-vendor
+
+          # Keep nix/crossplane-crds.nix at the crossplane/crossplane tag that
+          # go.mod's apis/v2 version names (apis/vX and vX tag the same commit).
+          echo "Syncing Crossplane CRDs with go.mod..."
+          mod=github.com/crossplane/crossplane/apis/v2
+          want=$(go list -m -f '{{if .Replace}}replaced{{else}}{{.Version}}{{end}}' "$mod")
+          if [ "$want" = replaced ]; then
+            echo "ERROR: $mod is replaced in go.mod; set rev and hash in nix/crossplane-crds.nix by hand" >&2
+            exit 1
+          fi
+          # A pseudo-version (...-yyyymmddhhmmss-<12 hex>) names a commit, not
+          # a tag, so there is no tag to pin; pin its commit by hand.
+          if [[ "$want" =~ [0-9]{14}-[0-9a-f]{12}$ ]]; then
+            echo "ERROR: $mod is at pseudo-version $want; set rev to its commit SHA and refresh hash in nix/crossplane-crds.nix by hand" >&2
+            exit 1
+          fi
+          have=$(sed -n 's|.*rev = "\([^"]*\)";.*|\1|p' nix/crossplane-crds.nix | head -n1)
+          if [ "$have" != "$want" ]; then
+            sed -i "s|rev = \"$have\";|rev = \"$want\";|" nix/crossplane-crds.nix
+            if ! (refresh nix/crossplane-crds.nix hash crossplane-crds); then
+              sed -i "s|rev = \"$want\";|rev = \"$have\";|" nix/crossplane-crds.nix
+              exit 1
+            fi
+            echo "  rev = $want"
+          fi
+
+          # Keep nix/envtest-assets.nix at the newest envtest release for the
+          # Kubernetes minor go.mod's k8s.io/api names (v0.35.x -> 1.35), with
+          # hashes from the index setup-envtest verifies downloads against.
+          echo "Syncing envtest assets with go.mod..."
+          file=nix/envtest-assets.nix
+          mod=k8s.io/api
+          want=$(go list -m -f '{{if .Replace}}replaced{{else}}{{.Version}}{{end}}' "$mod")
+          if [ "$want" = replaced ]; then
+            echo "ERROR: $mod is replaced in go.mod; set version and hashes in $file by hand" >&2
+            exit 1
+          fi
+          if [[ "$want" =~ [0-9]{14}-[0-9a-f]{12}$ ]] || ! [[ "$want" =~ ^v0\.([0-9]+)\. ]]; then
+            echo "ERROR: $mod is at $want, not a v0.<minor>.<patch> release; set version and hashes in $file by hand" >&2
+            exit 1
+          fi
+          minor="''${BASH_REMATCH[1]}"
+          index=$(curl -fsSL https://raw.githubusercontent.com/kubernetes-sigs/controller-tools/main/envtest-releases.yaml) || {
+            echo "ERROR: could not fetch the envtest release index ($file left unchanged)" >&2
+            exit 1
+          }
+          # Newest v1.<minor>.<patch> with no pre-release suffix.
+          version=$(yq '.releases | keys | .[]' <<<"$index" \
+            | sed -n "s|^v\(1\.$minor\.[0-9][0-9]*\)$|\1|p" | sort -t. -k3,3n | tail -n1)
+          if [ -z "$version" ]; then
+            echo "ERROR: no envtest release for Kubernetes 1.$minor in the index ($file left unchanged)" >&2
+            exit 1
+          fi
+          # Edit a copy and only replace $file once every hash is in hand, so
+          # a failure leaves the old file in place.
+          tmp=$(mktemp)
+          trap 'rm -f "$tmp"' EXIT
+          sed "s|version = \"[^\"]*\";|version = \"$version\";|" "$file" >"$tmp"
+          for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="''${p%/*}" arch="''${p#*/}"
+            hex=$(yq ".releases.\"v$version\".\"envtest-v$version-$os-$arch.tar.gz\".hash" <<<"$index")
+            if ! [[ "$hex" =~ ^[0-9a-f]{128}$ ]]; then
+              echo "ERROR: no sha512 for envtest v$version $os/$arch in the index ($file left unchanged)" >&2
+              exit 1
+            fi
+            sri=$(nix hash convert --hash-algo sha512 --to sri "$hex")
+            sed -i "/os = \"$os\";/{n;/arch = \"$arch\";/{n;s|hash = \"[^\"]*\";|hash = \"$sri\";|}}" "$tmp"
+            grep -q "hash = \"$sri\";" "$tmp" || {
+              echo "ERROR: could not set the $os/$arch hash in $file (left unchanged)" >&2
+              exit 1
+            }
+          done
+          if ! cmp -s "$tmp" "$file"; then
+            cat "$tmp" >"$file"
+            echo "  version = $version"
+          fi
 
           echo "Done"
         '';

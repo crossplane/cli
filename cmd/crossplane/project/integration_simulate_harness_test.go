@@ -78,6 +78,7 @@ type simArgs struct {
 	Output                 string        `default:"diff"                                                       enum:"diff,json,yaml"                     help:"Output format (diff, json, or yaml)."                            name:"output"     short:"o"`
 	NoColor                bool          `help:"Disable colorized output."                                     name:"no-color"`
 	IgnorePaths            []string      `help:"Paths to ignore in diffs."                                     name:"ignore-paths"`
+	FunctionCredentials    string        `help:"Secret credentials to pass to Functions."                      name:"function-credentials"               placeholder:"PATH"`
 	EventualState          bool          `help:"Show eventual state after all reconciliation cycles complete." name:"eventual-state"`
 	DryRunOn               string        `default:"all"                                                        enum:"existing,all"                       help:"Which resources to verify against the apiserver with a dry run." name:"dry-run-on"`
 	Resource               []string      `help:"Composite resources to scope to."                              sep:","`
@@ -114,12 +115,14 @@ func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simA
 func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
 	t.Helper()
 
-	cmd := "project"
+	var cmd string
 	switch testType {
 	case CompositionDiffTest:
 		cmd = "composition"
 	case XRDiffTest:
 		cmd = "xr"
+	default:
+		t.Fatalf("simulateArgv: no simulate command for test type %q", testType)
 	}
 	argv := []string{
 		cmd, "simulate",
@@ -148,6 +151,9 @@ func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
 	}
 	for _, p := range a.IgnorePaths {
 		argv = append(argv, "--ignore-paths="+p)
+	}
+	if a.FunctionCredentials != "" {
+		argv = append(argv, "--function-credentials="+a.FunctionCredentials)
 	}
 	if a.EventualState {
 		argv = append(argv, "--eventual-state")

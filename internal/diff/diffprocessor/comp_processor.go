@@ -282,8 +282,8 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 	totalXRErrors := len(output.Errors)
 
 	// Renders that reach one resource in ways no single diff (or provider plan) can represent, checked
-	// across every composition's composites as xr mode checks its inputs. A run-level error, as there:
-	// the report is still returned, so structured output stays valid.
+	// across every composition's composites. A run-level error: the report is still returned, so
+	// structured output stays valid.
 	overlaps := renderOverlapErrors(overlapGroups(composites))
 	for _, err := range overlaps {
 		output.Errors = append(output.Errors, dt.OutputError{Message: err.Error()})
@@ -295,7 +295,7 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 	// the caller still renders it (structured output stays valid). The renderer does not print errors,
 	// so the returned error names each failing resource. A run in which only some compositions failed
 	// still succeeds: each failure is in the report, under its composition. A render overlap fails the
-	// run, as in xr mode.
+	// run.
 	var errs []error
 
 	if totalXRErrors > 0 {
@@ -660,8 +660,7 @@ func withoutClaimedXRs(kept []*un.Unstructured, dropped []filteredXR, xrKind str
 
 // overlapGroups returns the groups of composites for the overlap check, without each composite another
 // one in the run manages (see managedBy): a nested XR, controlled by its parent, is still rendered and
-// reported, but as in xr mode, where such an input is rejected before the check, the parent's rendering
-// of what they share wins. A kept claim's backing XR is dropped (see withoutClaimedXRs), so it cannot
+// reported, but the parent's rendering of what they share wins. A kept claim's backing XR is dropped (see withoutClaimedXRs), so it cannot
 // exclude an XR nested under it here. Such a nested XR carries the crossplane.io/claim-name and
 // claim-namespace labels Crossplane copies onto composed resources, so withoutClaimedXRs drops it as bound
 // to the claim (see boundToClaim) before it is rendered; one lacking those labels reaches this check,

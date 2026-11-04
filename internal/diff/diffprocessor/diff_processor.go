@@ -51,7 +51,7 @@ type DiffProcessor interface {
 	// which only the render-overlap check consumes.
 	DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error)
 
-	// Initialize loads required resources like CRDs and environment configs
+	// Initialize prepares the processor's providers before the first diff.
 	Initialize(ctx context.Context) error
 
 	// Cleaner releases any resources held by the processor (e.g., Docker containers).

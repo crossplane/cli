@@ -27,7 +27,7 @@ import (
 	pkgvalidate "github.com/crossplane/cli/v2/pkg/validate"
 )
 
-// Exit codes for crossplane-diff CLI.
+// Exit codes for the diff commands.
 const (
 	// ExitCodeSuccess indicates no diff and no errors.
 	ExitCodeSuccess = 0

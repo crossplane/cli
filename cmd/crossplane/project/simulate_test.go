@@ -98,7 +98,7 @@ func TestSimulateFlags(t *testing.T) {
 			}, CompositionFlags: simulate.CompositionFlags{Namespace: "team-a", Name: []string{"db"}, IncludePinned: true}}},
 		},
 		"ParityFlags": {
-			reason: "The crossplane-diff parity flags should land on their fields.",
+			reason: "The diff flags should land on their fields.",
 			args: []string{
 				"--no-color", "--compact", "--max-nested-depth", "3", "--ignore-paths", "a.b", "--ignore-paths", "c.d",
 				"--eventual-state", "--max-recv-message-size", "16",

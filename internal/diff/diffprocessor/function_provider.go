@@ -187,7 +187,7 @@ func (p *ImageConfigFunctionProvider) Cleanup(ctx context.Context) error {
 	return p.inner.Cleanup(ctx)
 }
 
-// EnvMaxRecvMessageSize is the container env var crossplane-diff injects to
+// EnvMaxRecvMessageSize is the container env var the render containers get to
 // raise a function's gRPC max receive size. It is intentionally unprefixed and
 // function-agnostic, mirroring the SDK-wide TLS_SERVER_CERTS_DIR convention
 // shared by crossplane composition functions: functions that bind it honor it,

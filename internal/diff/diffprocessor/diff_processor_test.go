@@ -2862,7 +2862,7 @@ func TestDefaultDiffProcessor_RenderToStableState_SchemaPlumbing(t *testing.T) {
 	// resolveSchemaAndXRDForRender derives the schema from the XRD's
 	// spec.scope (LegacyCluster -> SchemaLegacy; anything else ->
 	// SchemaModern), so this test drives the schema decision via the
-	// XRD's scope field rather than mocking GetCompositeSchema.
+	// XRD's scope field rather than mocking the schema lookup.
 	tests := map[string]struct {
 		scope      string
 		wantSchema cmp.Schema

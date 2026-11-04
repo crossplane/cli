@@ -106,7 +106,7 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *s
 	}
 
 	// Inject the case's cluster in place of the kubeconfig, and render the
-	// way crossplane-diff's tests did: with the local crossplane binary
+	// way the diff tests did: with the local crossplane binary
 	// when there is one, and colorized unless --no-color.
 	hooks.RESTConfig = cfg
 	hooks.Terminal = true

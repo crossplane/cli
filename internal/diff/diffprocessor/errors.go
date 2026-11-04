@@ -219,7 +219,7 @@ func NewAdmissionRejectionError(rejectedDesc string, obj *un.Unstructured, err e
 }
 
 // validationFailuresFromResult maps a pkgvalidate.ValidationResult into
-// the wire types crossplane-diff exposes through OutputError. Resources
+// the wire types the report exposes through OutputError. Resources
 // with status Valid are filtered out — ValidationFailures is "what went
 // wrong", not "the full audit log". Resources with status
 // DefaultingFailed are filtered out too: pkgvalidate.ResultError treats

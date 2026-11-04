@@ -33,8 +33,8 @@ import (
 )
 
 // TestSimulatePlanOutput runs project simulate's -o json simulate.ProjectResult
-// against the plain project fixture, which crossplane-diff's cases cannot
-// express. Each case passes simulate args directly rather than crossplane-diff's.
+// against the plain project fixture, which the diff cases cannot
+// express. Each case passes simulate args directly.
 func TestSimulatePlanOutput(t *testing.T) {
 	t.Parallel()
 

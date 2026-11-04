@@ -63,7 +63,7 @@ const (
 type CompDiffOutput struct {
 	Compositions []CompositionDiff
 	Errors       []OutputError // top-level errors (e.g., XRs that failed impact analysis)
-	// Warnings are non-fatal advisories raised during the run. Like the xr command's, they do not
+	// Warnings are non-fatal advisories raised during the run. They do not
 	// affect the exit code and are not attributed to a single composition — they are raised below the
 	// point where the owning composition is known. They have already been written to stderr when
 	// raised; this field carries them into structured output. The summary of unverified additions is

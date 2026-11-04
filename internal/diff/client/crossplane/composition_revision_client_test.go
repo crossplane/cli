@@ -410,7 +410,7 @@ func TestDefaultCompositionRevisionClient_GetLatestRevisionForComposition(t *tes
 }
 
 // TestDefaultCompositionRevisionClient_GetLatestRevisionForComposition_Selector covers the
-// selector-aware revision selection used by the xr command (issue #388, Bug B): under Automatic
+// selector-aware revision selection (issue #388, Bug B): under Automatic
 // policy with a compositionRevisionSelector, Crossplane picks the newest revision whose (inherited)
 // labels match the selector — not the newest revision overall.
 func TestDefaultCompositionRevisionClient_GetLatestRevisionForComposition_Selector(t *testing.T) {

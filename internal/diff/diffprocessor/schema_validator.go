@@ -106,7 +106,7 @@ func (v *DefaultSchemaValidator) ValidateResources(ctx context.Context, xr *un.U
 		// SchemaValidate's error return is reserved for setup
 		// failures (e.g. a CRD that can't be compiled into a
 		// validator). Wrap it as a SchemaValidationError so
-		// IsSchemaValidationError / DetermineExitCode classify it the
+		// DetermineExitCode classifies it the
 		// same way the pre-refactor SchemaValidation entry point
 		// did — exit code 2 (schema validation), not 1 (tool error).
 		// No Result is attached because the validator never produced

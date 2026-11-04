@@ -325,8 +325,6 @@ func replacing(opts DiffOptions, names ...string) DiffOptions {
 	return opts
 }
 
-// TestDefaultDiffRenderer_NilReplacedIsUnchanged pins that a hook reporting
-// nothing replaced renders exactly what no hook does.
 // The same kind and name in different namespaces must render in one order whatever the map order.
 func TestDefaultDiffRenderer_renderDiffList_SameKindNameDifferentNamespaces(t *testing.T) {
 	namespaces := []string{"ns-a", "ns-b", "ns-c", "ns-d", "ns-e", "ns-f", "ns-g", "ns-h"}
@@ -362,6 +360,8 @@ func TestDefaultDiffRenderer_renderDiffList_SameKindNameDifferentNamespaces(t *t
 	}
 }
 
+// TestDefaultDiffRenderer_NilReplacedIsUnchanged pins that a hook reporting
+// nothing replaced renders exactly what no hook does.
 func TestDefaultDiffRenderer_NilReplacedIsUnchanged(t *testing.T) {
 	groups := []dt.XRDiffGroup{
 		xrGroup("XNopResource", "first-xr", map[string]*dt.ResourceDiff{"b": modifiedDiffFor("Bucket", "b")}),

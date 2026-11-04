@@ -147,7 +147,7 @@ func (c *DefaultResourceClient) ListResources(ctx context.Context, gvk schema.Gr
 }
 
 // GetGVKsForGroupKind returns all available GroupVersionKinds for a given group and kind.
-// It maps only the specified group and kind, so stale discovery data in unrelated API groups is not consulted.
+// It uses the run's cached RESTMapper, so a kind the server starts serving mid-run is not seen.
 func (c *DefaultResourceClient) GetGVKsForGroupKind(_ context.Context, group, kind string) ([]schema.GroupVersionKind, error) {
 	mappings, err := c.mapper.RESTMappings(schema.GroupKind{Group: group, Kind: kind})
 	if err != nil {

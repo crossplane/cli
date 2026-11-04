@@ -248,7 +248,7 @@ func (c *Flags) simulate(ctx context.Context, logger logging.Logger, initClients
 		return errors.Wrap(err, "cannot initialize diff processor")
 	}
 
-	// Exit codes rank as crossplane-diff's do: a tool error (1) over schema
+	// Exit codes rank by severity: a tool error (1) over schema
 	// validation (2) over changes found (3) over success (0).
 	hasDiffs, err := diff(ctx)
 	switch dp.DetermineExitCode(err, hasDiffs) {
@@ -293,8 +293,7 @@ func (c *CompositionFlags) scope() (string, []k8stypes.NamespacedName, error) {
 }
 
 // processorOptions returns the diff processor options for this run. Both the
-// XR and composition processors get the same options, as crossplane-diff
-// does, so they share one advisory collector. fns are the project's
+// XR and composition processors get the same options, so they share one advisory collector. fns are the project's
 // functions, of which embedded are the locally built ones, and ics rewrite
 // the other functions' images.
 func (c *Flags) processorOptions(k *kong.Context, logger logging.Logger, creds []corev1.Secret, fns []pkgv1.Function, embedded map[string]project.EmbeddedDigest, ics []pkgv1beta1.ImageConfig) []dp.ProcessorOption {

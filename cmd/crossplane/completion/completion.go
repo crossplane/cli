@@ -11,10 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 	controllerClient "sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -109,15 +107,12 @@ func kubernetesResourceNamePredictor() complete.PredictFunc {
 			return nil
 		}
 
-		discoveryClient, err := discovery.NewDiscoveryClientForConfig(kubeconfig)
+		// If the previously completed argument (resource name) was used by its short form, we need to
+		// get the full resource name to be able to list the resources.
+		rmapper, err := kube.NewCachedRESTMapper(kubeconfig)
 		if err != nil {
 			return nil
 		}
-
-		d := memory.NewMemCacheClient(discoveryClient)
-		// If the previously completed argument (resource name) was used by its short form, we need to
-		// get the full resource name to be able to list the resources.
-		rmapper := restmapper.NewShortcutExpander(restmapper.NewDeferredDiscoveryRESTMapper(d), d, nil)
 
 		mapping, err := internal.MappingFor(rmapper, a.LastCompleted)
 		if err != nil {

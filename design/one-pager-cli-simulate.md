@@ -299,17 +299,42 @@ out of the flow above:
 
 ```go
 type simulateCmd struct {
-	ProjectFile    string        `short:"f" default:"crossplane-project.yaml" help:"Path to project definition."`
-	Namespace      string        `help:"Simulate only XRs in this namespace."`
-	Name           string        `help:"Simulate only the XR with this name."`
-	Providers      string        `help:"Provider manifests to run as diff servers, overriding cluster discovery."`
-	IncludePinned  bool          `help:"Also simulate XRs pinned to older composition revisions."`
-	SkipPlan        bool         `help:"Skip the provider plan; show only the cluster diff."`
-	SessionID       string       `help:"Session label for the containers this run creates."`
-	MaxIterations  uint          `default:"10" help:"Cap on requirement resolution passes per XR."`
-	Timeout        time.Duration `default:"2m" help:"Per XR render and plan timeout."`
-	MaxConcurrency uint          `default:"8" help:"XRs simulated concurrently."`
-	Output         string        `short:"o" enum:"plan,diff,json,yaml" default:"plan" help:"Output format."`
+	simulate.Flags            `embed:""`
+	simulate.CompositionFlags `embed:""`
+
+	MaxConcurrency uint   `default:"8" help:"Max concurrent function builds."`
+	ProjectFile    string `default:"crossplane-project.yaml" short:"f" help:"Path to project definition."`
+}
+
+// CompositionFlags select which composite resources a Composition change is
+// simulated against; only commands that simulate Compositions embed them.
+type CompositionFlags struct {
+	Namespace           string   `short:"n" help:"Only simulate composite resources in this namespace."`
+	Name                []string `sep:"," help:"Only simulate the composite resource with this [namespace/]name."`
+	IncludePinned       bool     `help:"Render every composite resource pinned by a Manual update policy."`
+	MinimizeComposition bool     `help:"Collapse each changed Composition to one line in -o diff output."`
+	AnalyzeOn           string   `default:"any-change" enum:"spec-change,any-change,always" help:"Smallest Composition change that triggers impact analysis."`
+}
+
+// Flags are shared with resource simulate. The render backend flags
+// (--crossplane-version, --crossplane-image, ...) and --session-id come from
+// the embedded xprender.EngineFlags.
+type Flags struct {
+	Context             string        `short:"c" help:"Kubernetes context to simulate against."`
+	MaxIterations       int           `default:"20" help:"Max render iterations per composite resource."`
+	Timeout             time.Duration `default:"2m" help:"Max time to simulate one composite resource."`
+	Output              string        `short:"o" enum:"plan,diff,json,yaml" default:"plan" help:"Output format."`
+	NoColor             bool          `help:"Disable colorized output."`
+	Compact             bool          `help:"Show compact diffs with minimal context."`
+	MaxNestedDepth      int           `default:"10" help:"Maximum depth for nested XR recursion."`
+	IgnorePaths         []string      `help:"Paths to ignore in diffs."`
+	FunctionCredentials string        `type:"path" help:"Secret credentials to pass to Functions."`
+	EventualState       bool          `help:"Show eventual state after all reconciliation cycles complete."`
+	MaxRecvMessageSize  int           `help:"Max gRPC message size (MB) for render function containers."`
+	DryRunOn            string        `default:"all" enum:"existing,all" help:"Which resources to verify with a server-side dry run."`
+	SkipPlan            bool          `help:"Don't run provider diff servers; show only the cluster diff."`
+	Providers           string        `type:"path" help:"Provider manifests to run as diff servers, instead of cluster discovery."`
+	ImageConfigs        string        `type:"existingfile" help:"ImageConfig manifests that rewrite package paths for pulls."`
 }
 ```
 

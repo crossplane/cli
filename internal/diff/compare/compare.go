@@ -33,6 +33,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	t "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/plan"
 )
 
 // PathLastAppliedConfiguration is the ignore-path form of the annotation a client-side `kubectl
@@ -345,13 +346,6 @@ func removeNestedPath(obj map[string]any, path string) bool {
 	return false
 }
 
-// Clean returns a copy of obj with the fields a rendered diff omits removed: status, server-managed
-// metadata, a synthetic generated name, and the display-only and ignored paths in options. obj is not
-// modified.
-func Clean(obj *un.Unstructured, logger logging.Logger, options Options) *un.Unstructured {
-	return cleanupForDiff(obj.DeepCopy(), logger, options)
-}
-
 // cleanupForDiff removes fields that shouldn't be included in the diff. When options.ForVerdict is
 // set the display-only paths are left in the object, because the caller is asking whether the objects
 // differ rather than rendering them; see Options.ForVerdict.
@@ -405,15 +399,7 @@ func cleanupForDiff(obj *un.Unstructured, logger logging.Logger, options Options
 		modifications = append(modifications, stripSyntheticName(metadata, name, nameFound, generateName)...)
 
 		// Remove fields that change automatically or are server-side
-		fieldsToRemove := []string{
-			"resourceVersion",
-			"uid",
-			"generation",
-			"creationTimestamp",
-			"managedFields",
-			"selfLink",
-			"ownerReferences",
-		}
+		fieldsToRemove := plan.ServerManagedMetadata
 
 		// Track which fields were actually removed for debugging
 		var removedFields []string

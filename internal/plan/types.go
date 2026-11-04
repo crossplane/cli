@@ -157,6 +157,12 @@ func (p *ResourcePlan) ResourceRef() ResourceRef {
 	return ResourceRef{APIVersion: p.APIVersion, Kind: p.Kind, Name: p.Name, Namespace: p.Namespace}
 }
 
+// ServerManagedMetadata lists the metadata fields the API server sets and
+// changes on its own, which no diff or plan view carries.
+//
+//nolint:gochecknoglobals // A constant list; Go has no const slices.
+var ServerManagedMetadata = []string{"resourceVersion", "uid", "generation", "creationTimestamp", "managedFields", "selfLink", "ownerReferences"}
+
 // cleanView returns the redacted copy of u that a plan carries as before or
 // after: u without status, server-managed metadata, the last-applied
 // configuration annotation or composed resource references, the fields the
@@ -170,7 +176,7 @@ func cleanView(u *unstructured.Unstructured) *unstructured.Unstructured {
 	}
 	out := u.DeepCopy()
 	delete(out.Object, "status")
-	for _, f := range []string{"resourceVersion", "uid", "generation", "creationTimestamp", "managedFields", "selfLink", "ownerReferences"} {
+	for _, f := range ServerManagedMetadata {
 		unstructured.RemoveNestedField(out.Object, "metadata", f)
 	}
 	removeEmptied(out.Object, "metadata", "annotations", "kubectl.kubernetes.io/last-applied-configuration")

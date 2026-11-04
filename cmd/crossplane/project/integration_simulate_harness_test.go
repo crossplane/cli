@@ -50,6 +50,9 @@ import (
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
+// defaultTimeout is the --timeout the cases pass to simulate.
+const defaultTimeout = 60 * time.Second
+
 // runSimulateArgv runs `crossplane project simulate` with argv against cfg,
 // rendering with renderBinary when it is set.
 func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, stdout, stderr io.Writer) (int, error) {

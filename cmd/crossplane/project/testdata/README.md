@@ -3,8 +3,7 @@
 The `integration*_test.go` files in `cmd/crossplane/project` run
 `crossplane project simulate -f <project file>` against fixture projects
 under `testdata/project`, each against its own envtest cluster seeded from
-`testdata/comp/resources`. `TestDiffSingleResourceConcurrent` drives the
-diff processor directly with `testdata/diff`.
+`testdata/comp/resources`.
 
 ## How a case runs
 

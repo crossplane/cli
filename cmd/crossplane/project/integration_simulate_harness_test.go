@@ -55,15 +55,7 @@ import (
 func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
-	return runSimulateArgvRouted(t, cfg, argv, renderBinary, nil, stdout, stderr)
-}
-
-// runSimulateArgvRouted is runSimulateArgv with provider plans routed through
-// router, when it is non-nil, instead of started diff servers.
-func runSimulateArgvRouted(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, router simulate.Router, stdout, stderr io.Writer) (int, error) {
-	t.Helper()
-
-	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &simulate.Hooks{Router: router}, stdout, stderr)
+	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &simulate.Hooks{}, stdout, stderr)
 }
 
 // withRenderBinary returns argv rendering with the local crossplane binary
@@ -148,30 +140,25 @@ var dockerAvailable = sync.OnceValue(func() bool {
 	return docker.Check(ctx) == nil
 })
 
-// localCrossplaneBinary returns the absolute path to a locally-built
-// `crossplane` binary at ../../../_output/bin/crossplane (relative to
-// cmd/crossplane/project, so the repo root's _output) when it exists, or ""
-// when it doesn't. The binary, when present, contains the
-// `crossplane internal render` subcommand introduced by upstream PR #7339
-// and is exec'd directly for fast in-process rendering. When absent, callers
-// pass the empty string through to the diff command, which falls through to
-// the docker render engine (slower but works wherever Docker does — including
-// CI's WITH DOCKER block in the go-test target).
+// localCrossplaneBinary returns the absolute path to a locally built
+// `crossplane` binary at _output/bin/crossplane in the repo root, or "" when
+// there is none. With a binary, the render engine runs `crossplane internal
+// render` directly, which is faster; without one, callers pass "" and it
+// renders in a Docker container, which works wherever Docker does.
 //
-// Local developers wanting the fast path can build the binary with:
+// Build the binary from the repo root with:
 //
-//	go build -o _output/bin/crossplane github.com/crossplane/crossplane/v2/cmd/crossplane
+//	go build -o _output/bin/crossplane ./cmd/crossplane
 //
-// (run from the repo root). The path is overridable via the
-// CROSSPLANE_DIFF_RENDER_BINARY env var when a different layout is needed.
+// CROSSPLANE_RENDER_BINARY overrides the path.
 //
-// Callers thread the returned path into the diff command via
-// --crossplane-binary=<path> rather than via a process-global env var,
-// so concurrent t.Parallel() tests don't race on shared state.
+// Callers pass the path to the command as --crossplane-binary=<path> rather
+// than through a process-global env var, so parallel tests don't race on
+// shared state.
 func localCrossplaneBinary(t *testing.T) string {
 	t.Helper()
 
-	if override := os.Getenv("CROSSPLANE_DIFF_RENDER_BINARY"); override != "" {
+	if override := os.Getenv("CROSSPLANE_RENDER_BINARY"); override != "" {
 		return override
 	}
 
@@ -181,7 +168,7 @@ func localCrossplaneBinary(t *testing.T) string {
 	}
 
 	if _, err := os.Stat(absPath); err != nil {
-		t.Logf("local crossplane binary not present at %s; falling back to docker render engine. Build it for faster iteration: go build -o _output/bin/crossplane github.com/crossplane/crossplane/v2/cmd/crossplane", absPath)
+		t.Logf("local crossplane binary not present at %s; falling back to docker render engine. Build it for faster iteration: go build -o _output/bin/crossplane ./cmd/crossplane", absPath)
 		return ""
 	}
 

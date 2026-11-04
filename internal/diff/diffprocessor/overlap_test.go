@@ -189,14 +189,6 @@ func TestRenderOverlapErrors(t *testing.T) {
 		}
 	}
 
-	generated := func(groups []dt.XRDiffGroup) []dt.XRDiffGroup {
-		for i := range groups {
-			groups[i].NameGenerated = true
-		}
-
-		return groups
-	}
-
 	two := sharing("a", "b")
 
 	const (
@@ -205,10 +197,6 @@ func TestRenderOverlapErrors(t *testing.T) {
 			`reconcile it, so no diff predicts applying these inputs together — diff them separately`
 		disagreement = `cannot combine diffs: inputs XR/a, XR/b both produce resource "example.org/v1/Bucket/default/shared", ` +
 			`but differently, so no single diff is correct for both — diff them separately`
-		placeholder = `cannot combine diffs: inputs XR/g-(generated), XR/g-(generated) both produce resource ` +
-			`"example.org/v1/Bucket/default/shared" only because simulate gives XRs that share a generateName the ` +
-			`same placeholder name; the API server would name them differently, so they cannot be told apart here — diff ` +
-			`them separately`
 	)
 
 	tests := map[string]struct {
@@ -263,19 +251,6 @@ func TestRenderOverlapErrors(t *testing.T) {
 				return d
 			}),
 			want: []string{contention},
-		},
-		"SharedGenerateNameCannotBeToldApart": {
-			reason: "Both render under one placeholder, so even identical renderings must not merge.",
-			groups: generated(sharing("g-(generated)", "g-(generated)")(func(int) *dt.ResourceDiff {
-				return bucket(dt.DiffTypeModified, "parent", "u", "v")
-			})),
-			want: []string{placeholder},
-		},
-		"DifferentGenerateNamesAreJudgedOnTheirMerits": {
-			reason: "Different generateNames get different placeholders, so the overlap is an ordinary one.",
-			groups: generated(sharing("g-(generated)", "h-(generated)")(func(int) *dt.ResourceDiff {
-				return bucket(dt.DiffTypeModified, "parent", "u", "v")
-			})),
 		},
 		"OneObjectAtTwoVersionsContends": {
 			reason: "Served versions are views of one stored object, so different diff keys do not make different objects.",

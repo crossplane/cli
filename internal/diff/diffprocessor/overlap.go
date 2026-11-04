@@ -123,9 +123,6 @@ func knownForms(g dt.XRDiffGroup, res *un.Unstructured) []*un.Unstructured {
 // current) object's controller reference and compared by group, kind and name — never UID, which a
 // render synthesizes afresh for an XR that does not exist yet:
 //
-//   - Two inputs sharing a generateName, checked first: both render under one synthesized placeholder,
-//     so their resources collide here though the API server would name them apart, and merging even
-//     identical renderings would report one XR's changes for two.
 //   - Different controllers: contention. Crossplane's server-side apply refuses a second controller
 //     reference, so the first XR to create the object keeps it and every other fails to reconcile it.
 //     No diff predicts that, however alike the renderings.
@@ -207,16 +204,14 @@ func renderOverlapError(groups []dt.XRDiffGroup, producers []overlapProducer) er
 	inputs := make([]string, 0, len(producers))
 
 	var (
-		controllers       []string
-		allEqual          = true
-		identical         = true
-		sharedPlaceholder = false
-		placeholders      = make(map[string]bool)
-		seenController    = make(map[string]bool)
-		seenGroup         = make(map[int]bool)
-		keys              []string
-		seenKey           = make(map[string]bool)
-		first             = groups[producers[0].group].Diffs[producers[0].key]
+		controllers    []string
+		allEqual       = true
+		identical      = true
+		seenController = make(map[string]bool)
+		seenGroup      = make(map[int]bool)
+		keys           []string
+		seenKey        = make(map[string]bool)
+		first          = groups[producers[0].group].Diffs[producers[0].key]
 	)
 
 	for _, p := range producers {
@@ -232,11 +227,6 @@ func renderOverlapError(groups []dt.XRDiffGroup, producers []overlapProducer) er
 		if !seenGroup[p.group] {
 			seenGroup[p.group] = true
 			inputs = append(inputs, fmt.Sprintf("%s/%s", g.XR.Kind, g.XR.Name))
-
-			if g.NameGenerated {
-				sharedPlaceholder = sharedPlaceholder || placeholders[g.XR.Name]
-				placeholders[g.XR.Name] = true
-			}
 		}
 
 		// A nil entry is not expected; treat it as observable and as matching nothing, so a malformed
@@ -270,10 +260,6 @@ func renderOverlapError(groups []dt.XRDiffGroup, producers []overlapProducer) er
 	switch {
 	case allEqual:
 		return nil
-	case sharedPlaceholder:
-		return errors.Errorf("cannot combine diffs: inputs %s both produce resource %s only because simulate "+
-			"gives XRs that share a generateName the same placeholder name; the API server would name them "+
-			"differently, so they cannot be told apart here — diff them separately", strings.Join(inputs, ", "), key)
 	case len(controllers) > 1:
 		return errors.Errorf("cannot combine diffs: resource %s would be controlled by more than one XR (%s); "+
 			"Crossplane gives it to whichever of them creates it first, and the other fails to reconcile it, "+

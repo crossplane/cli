@@ -93,7 +93,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 	another.Name = "another-resource"
 	comp := plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "xnopresources.diff.example.org"}
 	changed := func(refs ...plan.ResourceRef) []simulate.CompositeResult {
-		var out []simulate.CompositeResult
+		out := make([]simulate.CompositeResult, 0, len(refs))
 		for _, r := range refs {
 			out = append(out, simulate.CompositeResult{Ref: r, Status: simulate.CompositeChanged, Composition: &comp})
 		}
@@ -235,7 +235,6 @@ func TestProjectSimulateIntegration(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 			code, err := runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulate.Hooks{Router: tc.router}, &stdout, &stderr)
-
 			if err != nil {
 				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
 			}

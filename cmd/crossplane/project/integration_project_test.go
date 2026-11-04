@@ -21,18 +21,20 @@ package project
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/structpb"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
+	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
-	"github.com/crossplane/cli/v2/internal/simulate/simtest"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
 )
 
@@ -70,9 +72,12 @@ type projectTestCase struct {
 	// the build cannot dirty the tree.
 	project string
 	// extraArgs follow the project file argument.
-	extraArgs          []string
-	expectedExitCode   int
-	expectedStructured simtest.Expectation
+	extraArgs        []string
+	expectedExitCode int
+	// expectedResult is the -o json output, reduced by summarize.
+	expectedResult planShape
+	// expectedChanges are the field changes of test-resource's XDownstreamResource plan.
+	expectedChanges []plan.FieldChange
 	// router, when set, routes provider plans instead of diff servers and
 	// the run does not pass --skip-plan.
 	router simulate.Router
@@ -82,6 +87,28 @@ func TestProjectSimulateIntegration(t *testing.T) {
 	t.Parallel()
 
 	region := &diffv1alpha1.FieldChange{Field: "spec.forProvider.region", Actual: strValue("us-east-1"), Planned: strValue("eu-west-1")}
+
+	xnop := plan.ResourceRef{APIVersion: "ns.diff.example.org/v1alpha1", Kind: "XNopResource", Namespace: "default", Name: "test-resource"}
+	another := xnop
+	another.Name = "another-resource"
+	comp := plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "xnopresources.diff.example.org"}
+	changed := func(refs ...plan.ResourceRef) []simulate.CompositeResult {
+		var out []simulate.CompositeResult
+		for _, r := range refs {
+			out = append(out, simulate.CompositeResult{Ref: r, Status: simulate.CompositeChanged, Composition: &comp})
+		}
+		return out
+	}
+	compositions := func(repointed int) []simulate.CompositionResult {
+		return []simulate.CompositionResult{{Ref: comp, RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: repointed}}}
+	}
+	// onePlans is the plans of a run over test-resource alone.
+	onePlans := []planEntry{
+		{Kind: "Composition", Name: comp.Name, Action: plan.ActionUpdate},
+		{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
+		{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionNoOp, Composite: "test-resource"},
+	}
+	val := func(v string) *plan.Value { return &plan.Value{Value: v} }
 
 	cases := map[string]projectTestCase{
 		"PlainProject": {
@@ -104,13 +131,22 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			project:          "plain",
 			extraArgs:        []string{"-n", "default"},
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructured: simtest.Expect().
-				WithComposition("xnopresources.diff.example.org").
-				WithCompositionModified().
-				WithAffectedResources(2, 2, 0, 0).
-				WithXRImpact("XNopResource", "test-resource", "default", "changed").
-				AndComp().
-				WithXRImpact("XNopResource", "another-resource", "default", "changed"),
+			expectedResult: planShape{
+				Summary:      plan.Summary{Update: 3, NoOp: 2},
+				Composites:   changed(another, xnop),
+				Compositions: compositions(2),
+				Plans: []planEntry{
+					{Kind: "Composition", Name: comp.Name, Action: plan.ActionUpdate},
+					{Kind: "XDownstreamResource", Name: "another-resource", Action: plan.ActionUpdate, Composite: "another-resource"},
+					{Kind: "XNopResource", Name: "another-resource", Action: plan.ActionNoOp, Composite: "another-resource"},
+					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
+					{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionNoOp, Composite: "test-resource"},
+				},
+			},
+			expectedChanges: []plan.FieldChange{
+				{Path: "spec.forProvider.configData", Actual: val("existing-value"), Planned: val("updated-existing-value")},
+				{Path: "spec.forProvider.resourceTier", Actual: val("basic"), Planned: val("premium")},
+			},
 		},
 		"ProviderPlanJoinsChanges": {
 			reason: "A provider plan routed for a composed resource joins that resource's changes.",
@@ -131,12 +167,17 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			router: fakeProviderRouter{fn: func(*diffv1alpha1.PlanRequest) (*diffv1alpha1.PlanResponse, error) {
 				return &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_UPDATE, Changes: []*diffv1alpha1.FieldChange{region}}, nil
 			}},
-			expectedStructured: simtest.Expect().
-				WithComposition("xnopresources.diff.example.org").
-				WithCompositionModified().
-				WithXRImpact("XNopResource", "test-resource", "default", "changed").
-				WithDownstreamResource("modified", "XDownstreamResource", "test-resource", "default").
-				WithFieldChange("spec.forProvider.region", "us-east-1", "eu-west-1"),
+			expectedResult: planShape{
+				Summary:      plan.Summary{Update: 2, NoOp: 1},
+				Composites:   changed(xnop),
+				Compositions: compositions(1),
+				Plans:        onePlans,
+			},
+			expectedChanges: []plan.FieldChange{
+				{Path: "spec.forProvider.region", Actual: val("us-east-1"), Planned: val("eu-west-1")},
+				{Path: "spec.forProvider.configData", Actual: val("existing-value"), Planned: val("updated-existing-value")},
+				{Path: "spec.forProvider.resourceTier", Actual: val("basic"), Planned: val("premium")},
+			},
 		},
 		"EmbeddedFunctionOverlay": {
 			reason: "A Composition step naming a function embedded in the project runs the project's function, not a same-named cluster Function, which would fail without step input.",
@@ -155,12 +196,15 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			project:          "embedded",
 			extraArgs:        []string{"-n", "default"},
 			expectedExitCode: dp.ExitCodeDiffDetected,
-			expectedStructured: simtest.Expect().
-				WithComposition("xnopresources.diff.example.org").
-				WithCompositionModified().
-				WithXRImpact("XNopResource", "test-resource", "default", "changed").
-				WithDownstreamResource("modified", "XDownstreamResource", "test-resource", "default").
-				WithFieldChange("spec.forProvider.configData", "existing-value", "embedded-existing-value"),
+			expectedResult: planShape{
+				Summary:      plan.Summary{Update: 2, NoOp: 1},
+				Composites:   changed(xnop),
+				Compositions: compositions(1),
+				Plans:        onePlans,
+			},
+			expectedChanges: []plan.FieldChange{
+				{Path: "spec.forProvider.configData", Actual: val("existing-value"), Planned: val("embedded-existing-value")},
+			},
 		},
 	}
 
@@ -187,9 +231,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				argv = append(argv, "--skip-plan")
 			}
 			argv = append(argv, tc.extraArgs...)
-			if tc.expectedStructured != nil {
-				argv = append(argv, "-o", "json")
-			}
+			argv = append(argv, "-o", "json")
 
 			var stdout, stderr bytes.Buffer
 			code, err := runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulate.Hooks{Router: tc.router}, &stdout, &stderr)
@@ -200,8 +242,22 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			if code != tc.expectedExitCode {
 				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, tc.expectedExitCode, code)
 			}
-			if tc.expectedStructured != nil {
-				simtest.AssertStructured(t, stdout.String(), tc.expectedStructured)
+
+			var res simulate.ProjectResult
+			if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+				t.Fatalf("\n%s\nsimulate -o json: output is not a simulate.ProjectResult: %v\n%s", tc.reason, err, stdout.String())
+			}
+			if diff := cmp.Diff(tc.expectedResult, summarize(res)); diff != "" {
+				t.Errorf("\n%s\nsimulate -o json: -want, +got:\n%s", tc.reason, diff)
+			}
+			var got []plan.FieldChange
+			for _, p := range res.Plans {
+				if p.Kind == "XDownstreamResource" && p.Name == "test-resource" {
+					got = p.Changes
+				}
+			}
+			if diff := cmp.Diff(tc.expectedChanges, got); diff != "" {
+				t.Errorf("\n%s\nsimulate -o json: XDownstreamResource changes -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

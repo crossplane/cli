@@ -168,9 +168,11 @@ func exitStatus(plans []*plan.ResourcePlan) error {
 	return nil
 }
 
-// setupKubeClient builds the client stack project simulate plans with: the
+// setupKubeClient builds the client stack resource simulate plans with: the
 // diff engine's core clients, whose REST mapper the kube client shares, and
-// its SchemaClient as the run's one CRD cache.
+// its SchemaClient as the run's one CRD cache. The diff engine's clients are
+// reused whole so the run keeps a single client stack and CRD cache, rather
+// than a second mapper and CRD getter beside them.
 func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMapper, isimulate.CRDs, string, error) {
 	kubeconfig, clientconfig, err := kube.RESTConfig(c.Context, c.Impersonation)
 	if err != nil {
@@ -181,7 +183,7 @@ func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMa
 
 	core, err := dcore.NewClients(kubeconfig)
 	if err != nil {
-		return nil, nil, nil, "", err
+		return nil, nil, nil, "", errors.Wrap(err, "cannot create Kubernetes clients")
 	}
 	crds := k8.NewSchemaClient(core, k8.NewTypeConverter(core, logger), logger)
 

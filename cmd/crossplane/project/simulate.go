@@ -74,7 +74,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config) (*simulate.Built, error) {
 	projFilePath, err := filepath.Abs(c.ProjectFile)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cannot get absolute path of project file")
 	}
 	projFS := afero.NewBasePathFs(afero.NewOsFs(), filepath.Dir(projFilePath))
 	projFileName := filepath.Base(projFilePath)
@@ -121,7 +121,7 @@ func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, s
 		Digests:        true,
 	})
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cannot load functions from project")
 	}
 	return &simulate.Built{Compositions: comps, Functions: fns, Digests: digests, Packages: &simulate.Packages{ICs: ics, Client: client, Proj: proj, DepMgr: depMgr}}, nil
 }

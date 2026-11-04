@@ -206,9 +206,6 @@ func TestSimulateNameRejected(t *testing.T) {
 			integration.Composes("testdata/comp/resources/existing-xr-2.yaml", "testdata/comp/resources/existing-downstream-2.yaml"),
 		},
 	}
-	// exitUsageError is kong's exit status for parse and Validate errors.
-	const exitUsageError = 80
-
 	cases := map[string]struct {
 		reason   string
 		args     []string
@@ -219,7 +216,7 @@ func TestSimulateNameRejected(t *testing.T) {
 			reason:   "namespace/name with --namespace is ambiguous and is rejected.",
 			args:     []string{"--namespace=default", "--name=default/test-resource"},
 			wantErr:  "can't be combined with --namespace",
-			wantCode: exitUsageError,
+			wantCode: simulate.ExitCodeUsage,
 		},
 		"NamePartiallyUnmatchedFailsBeforeRendering": {
 			reason:   "one --name no composite matches fails the run, and no plan is rendered.",

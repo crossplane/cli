@@ -20,6 +20,10 @@ import "errors"
 
 // Exit statuses the simulate commands share.
 const (
+	// ExitCodeUsage is the status kong exits with on a parse error. Kong does
+	// not export it, so it is mirrored here for the flag errors main finds
+	// before Parse.
+	ExitCodeUsage = 80
 	// ExitCodeSchemaValidation means only schema validation failed.
 	ExitCodeSchemaValidation = 2
 	// ExitCodeChanges is the status a simulate command exits with when the

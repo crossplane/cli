@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	testdiscovery "k8s.io/client-go/discovery/fake"
+	"k8s.io/client-go/restmapper"
 	kt "k8s.io/client-go/testing"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -108,7 +109,7 @@ func TestTypeConverter_GVKToGVR(t *testing.T) {
 				},
 			},
 			want: want{
-				err: errors.New("failed to discover resources for example.org/v1"),
+				err: errors.New("cannot find resource for example.org/v1, Kind=Resource"),
 			},
 		},
 		"ResourceNotFound": {
@@ -134,7 +135,7 @@ func TestTypeConverter_GVKToGVR(t *testing.T) {
 				},
 			},
 			want: want{
-				err: errors.New("no resource found for kind Resource in group version example.org/v1"),
+				err: errors.New("cannot find resource for example.org/v1, Kind=Resource"),
 			},
 		},
 	}
@@ -146,10 +147,14 @@ func TestTypeConverter_GVKToGVR(t *testing.T) {
 			}
 			discoveryClient.Resources = tc.resources
 
+			groups, err := restmapper.GetAPIGroupResources(discoveryClient)
+			if err != nil && len(tc.resources) > 0 {
+				t.Fatalf("GetAPIGroupResources(...): %v", err)
+			}
+
 			c := &DefaultTypeConverter{
-				discoveryClient: discoveryClient,
-				logger:          tu.TestLogger(t, false),
-				gvkToGVRMap:     make(map[schema.GroupVersionKind]schema.GroupVersionResource),
+				mapper: restmapper.NewDiscoveryRESTMapper(groups),
+				logger: tu.TestLogger(t, false),
 			}
 
 			gvr, err := c.GVKToGVR(tc.args.ctx, tc.args.gvk)
@@ -293,7 +298,7 @@ func TestTypeConverter_GetResourceNameForGVK(t *testing.T) {
 				},
 			},
 			want: want{
-				err: errors.New("failed to discover resources for example.org/v1"),
+				err: errors.New("cannot find resource for example.org/v1, Kind=Resource"),
 			},
 		},
 		"ResourceNotFound": {
@@ -319,7 +324,7 @@ func TestTypeConverter_GetResourceNameForGVK(t *testing.T) {
 				},
 			},
 			want: want{
-				err: errors.New("no resource found for kind Resource in group version example.org/v1"),
+				err: errors.New("cannot find resource for example.org/v1, Kind=Resource"),
 			},
 		},
 	}
@@ -331,10 +336,14 @@ func TestTypeConverter_GetResourceNameForGVK(t *testing.T) {
 			}
 			discoveryClient.Resources = tc.resources
 
+			groups, err := restmapper.GetAPIGroupResources(discoveryClient)
+			if err != nil && len(tc.resources) > 0 {
+				t.Fatalf("GetAPIGroupResources(...): %v", err)
+			}
+
 			c := &DefaultTypeConverter{
-				discoveryClient: discoveryClient,
-				logger:          tu.TestLogger(t, false),
-				gvkToGVRMap:     make(map[schema.GroupVersionKind]schema.GroupVersionResource),
+				mapper: restmapper.NewDiscoveryRESTMapper(groups),
+				logger: tu.TestLogger(t, false),
 			}
 
 			resourceName, err := c.GetResourceNameForGVK(tc.args.ctx, tc.args.gvk)

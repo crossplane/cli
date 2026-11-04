@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -36,19 +36,19 @@ type ResourceClient interface {
 
 // DefaultResourceClient implements the ResourceClient interface.
 type DefaultResourceClient struct {
-	dynamicClient   dynamic.Interface
-	discoveryClient discovery.DiscoveryInterface
-	converter       TypeConverter
-	logger          logging.Logger
+	dynamicClient dynamic.Interface
+	mapper        meta.RESTMapper
+	converter     TypeConverter
+	logger        logging.Logger
 }
 
 // NewResourceClient creates a new DefaultResourceClient instance.
 func NewResourceClient(clients *core.Clients, converter TypeConverter, logger logging.Logger) ResourceClient {
 	return &DefaultResourceClient{
-		dynamicClient:   clients.Dynamic,
-		discoveryClient: clients.Discovery,
-		converter:       converter,
-		logger:          logger,
+		dynamicClient: clients.Dynamic,
+		mapper:        clients.Mapper,
+		converter:     converter,
+		logger:        logger,
 	}
 }
 
@@ -147,89 +147,27 @@ func (c *DefaultResourceClient) ListResources(ctx context.Context, gvk schema.Gr
 }
 
 // GetGVKsForGroupKind returns all available GroupVersionKinds for a given group and kind.
-// It queries only the specified API group rather than all server APIs, avoiding issues
-// with stale discovery data in unrelated API groups.
+// It maps only the specified group and kind, so stale discovery data in unrelated API groups is not consulted.
 func (c *DefaultResourceClient) GetGVKsForGroupKind(_ context.Context, group, kind string) ([]schema.GroupVersionKind, error) {
-	// Get API groups (lightweight - doesn't fetch all resources)
-	apiGroups, err := c.discoveryClient.ServerGroups()
+	mappings, err := c.mapper.RESTMappings(schema.GroupKind{Group: group, Kind: kind})
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot get server groups")
+		return nil, errors.Wrapf(err, "cannot find versions of %s in group %q", kind, group)
 	}
 
-	// Find the target group and its versions
-	var targetGroup *metav1.APIGroup
-
-	for i := range apiGroups.Groups {
-		if apiGroups.Groups[i].Name == group {
-			targetGroup = &apiGroups.Groups[i]
-			break
-		}
-	}
-
-	if targetGroup == nil {
-		return nil, errors.Errorf("API group %q not found on server", group)
-	}
-
-	var gvks []schema.GroupVersionKind
-
-	// Query only the versions of the target group
-	for _, version := range targetGroup.Versions {
-		resourceList, err := c.discoveryClient.ServerResourcesForGroupVersion(version.GroupVersion)
-		if err != nil {
-			c.logger.Debug("Failed to get resources for group version", "groupVersion", version.GroupVersion, "error", err)
-			continue
-		}
-
-		for _, resource := range resourceList.APIResources {
-			if resource.Kind == kind {
-				gv, err := schema.ParseGroupVersion(version.GroupVersion)
-				if err != nil {
-					continue
-				}
-
-				gvk := schema.GroupVersionKind{
-					Group:   gv.Group,
-					Version: gv.Version,
-					Kind:    kind,
-				}
-				gvks = append(gvks, gvk)
-
-				break // Found the kind in this version, move to next version
-			}
-		}
+	gvks := make([]schema.GroupVersionKind, 0, len(mappings))
+	for _, m := range mappings {
+		gvks = append(gvks, m.GroupVersionKind)
 	}
 
 	return gvks, nil
 }
 
-// IsNamespacedResource determines if a given GVK represents a namespaced resource
-// by querying the cluster's discovery API.
+// IsNamespacedResource determines if a given GVK represents a namespaced resource.
 func (c *DefaultResourceClient) IsNamespacedResource(_ context.Context, gvk schema.GroupVersionKind) (bool, error) {
-	// Get the server resources for this group/version
-	groupVersion := gvk.GroupVersion().String()
-
-	resourceList, err := c.discoveryClient.ServerResourcesForGroupVersion(groupVersion)
+	mapping, err := c.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
-		return false, errors.Wrapf(err, "cannot get server resources for group version %s", groupVersion)
+		return false, errors.Wrapf(err, "cannot find resource scope for %s", gvk.String())
 	}
 
-	// Find the resource matching our kind
-	for _, resource := range resourceList.APIResources {
-		if resource.Kind == gvk.Kind {
-			// The Namespaced field indicates whether the resource is namespaced
-			c.logger.Debug("Determined resource scope from discovery",
-				"gvk", gvk.String(),
-				"namespaced", resource.Namespaced)
-
-			return resource.Namespaced, nil
-		}
-	}
-
-	// If we can't find the resource, this is an error condition that should fail the diff
-	availableKinds := make([]string, len(resourceList.APIResources))
-	for i, resource := range resourceList.APIResources {
-		availableKinds[i] = resource.Kind
-	}
-
-	return false, errors.Errorf("resource kind %s not found in discovery API for group version %s (available kinds: %v)", gvk.Kind, groupVersion, availableKinds)
+	return mapping.Scope.Name() == meta.RESTScopeNameNamespace, nil
 }

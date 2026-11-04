@@ -8,9 +8,11 @@ import (
 
 	"github.com/go-logr/logr/testr"
 	"github.com/go-logr/stdr"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
+	"k8s.io/client-go/restmapper"
 	kt "k8s.io/client-go/testing"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -104,4 +106,14 @@ func CreateFakeDiscoveryClient(resources map[string][]metav1.APIResource) discov
 	fakeDiscovery.Resources = apiResourceLists
 
 	return fakeDiscovery
+}
+
+// CreateFakeRESTMapper returns a RESTMapper over the same resources CreateFakeDiscoveryClient serves.
+func CreateFakeRESTMapper(resources map[string][]metav1.APIResource) meta.RESTMapper {
+	groups, err := restmapper.GetAPIGroupResources(CreateFakeDiscoveryClient(resources))
+	if err != nil {
+		panic(err)
+	}
+
+	return restmapper.NewDiscoveryRESTMapper(groups)
 }

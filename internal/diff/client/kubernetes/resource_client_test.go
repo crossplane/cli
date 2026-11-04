@@ -6,11 +6,11 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/fake"
 	kt "k8s.io/client-go/testing"
@@ -769,7 +769,7 @@ func TestResourceClient_ListResources(t *testing.T) {
 // createStaleDiscoveryClient creates a fake discovery client that simulates stale discovery
 // for external.metrics.k8s.io but works correctly for Crossplane API groups.
 // This reproduces the exact scenario from issue #153.
-func createStaleDiscoveryClient() discovery.DiscoveryInterface {
+func createStaleDiscoveryMapper() meta.RESTMapper {
 	// Create resources for Crossplane API groups
 	resources := map[string][]metav1.APIResource{
 		"apiextensions.crossplane.io/v1": {
@@ -784,9 +784,7 @@ func createStaleDiscoveryClient() discovery.DiscoveryInterface {
 	}
 
 	// Use the standard CreateFakeDiscoveryClient which sets up groups from resources
-	fakeDiscovery := tu.CreateFakeDiscoveryClient(resources)
-
-	return fakeDiscovery
+	return tu.CreateFakeRESTMapper(resources)
 }
 
 // TestResourceClient_GetGVKsForGroupKind_StaleDiscoveryResilience validates that the fix
@@ -801,11 +799,11 @@ func TestResourceClient_GetGVKsForGroupKind_StaleDiscoveryResilience(t *testing.
 	// Create a fake discovery client with multiple API groups including external.metrics.k8s.io
 	// In a real cluster, if external.metrics.k8s.io had stale discovery, ServerPreferredResources()
 	// would fail. Our fix avoids calling ServerPreferredResources() entirely.
-	discoveryClient := createStaleDiscoveryClient()
+	mapper := createStaleDiscoveryMapper()
 
 	c := &DefaultResourceClient{
-		discoveryClient: discoveryClient,
-		logger:          tu.TestLogger(t, false),
+		mapper: mapper,
+		logger: tu.TestLogger(t, false),
 	}
 
 	// Test that we can query Crossplane API groups successfully
@@ -908,7 +906,7 @@ func TestResourceClient_GetGVKsForGroupKind(t *testing.T) {
 			},
 		},
 		"KindNotFound": {
-			reason: "Should return empty list when kind doesn't exist in group",
+			reason: "Should return error when kind doesn't exist in group",
 			resources: map[string][]metav1.APIResource{
 				"apiextensions.crossplane.io/v1": {
 					{
@@ -917,9 +915,10 @@ func TestResourceClient_GetGVKsForGroupKind(t *testing.T) {
 					},
 				},
 			},
-			group: "apiextensions.crossplane.io",
-			kind:  "NonExistentKind",
-			want:  nil,
+			group:   "apiextensions.crossplane.io",
+			kind:    "NonExistentKind",
+			wantErr: true,
+			errMsg:  "no matches for kind \"NonExistentKind\"",
 		},
 		"GroupNotFound": {
 			reason: "Should return error when group doesn't exist",
@@ -934,7 +933,7 @@ func TestResourceClient_GetGVKsForGroupKind(t *testing.T) {
 			group:   "nonexistent.io",
 			kind:    "SomeKind",
 			wantErr: true,
-			errMsg:  "API group \"nonexistent.io\" not found on server",
+			errMsg:  "no matches for kind \"SomeKind\" in group \"nonexistent.io\"",
 		},
 		"IgnoresOtherGroups": {
 			reason: "Should only return GVKs from the specified group, ignoring others",
@@ -966,11 +965,11 @@ func TestResourceClient_GetGVKsForGroupKind(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			discoveryClient := tu.CreateFakeDiscoveryClient(tc.resources)
+			mapper := tu.CreateFakeRESTMapper(tc.resources)
 
 			c := &DefaultResourceClient{
-				discoveryClient: discoveryClient,
-				logger:          tu.TestLogger(t, false),
+				mapper: mapper,
+				logger: tu.TestLogger(t, false),
 			}
 
 			got, err := c.GetGVKsForGroupKind(t.Context(), tc.group, tc.kind)
@@ -1124,7 +1123,7 @@ func TestResourceClient_IsNamespacedResource(t *testing.T) {
 			},
 			want:    false,
 			wantErr: true,
-			errMsg:  "resource kind NonExistentResource not found in discovery API for group version example.org/v1",
+			errMsg:  "no matches for kind \"NonExistentResource\" in version \"example.org/v1\"",
 		},
 		"MultipleResourcesInGroup": {
 			reason: "Should find the correct resource when multiple resources exist in same group",
@@ -1159,14 +1158,14 @@ func TestResourceClient_IsNamespacedResource(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			discoveryClient := tu.CreateFakeDiscoveryClient(tc.resources)
+			mapper := tu.CreateFakeRESTMapper(tc.resources)
 			converter := tu.NewMockTypeConverter().Build()
 
 			c := &DefaultResourceClient{
-				dynamicClient:   nil, // Not needed for this test
-				converter:       converter,
-				discoveryClient: discoveryClient,
-				logger:          tu.TestLogger(t, false),
+				dynamicClient: nil, // Not needed for this test
+				converter:     converter,
+				mapper:        mapper,
+				logger:        tu.TestLogger(t, false),
 			}
 
 			got, err := c.IsNamespacedResource(t.Context(), tc.gvk)

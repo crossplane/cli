@@ -64,11 +64,6 @@ func NewDiffRenderer(logger logging.Logger, diffOpts DiffOptions) DiffRenderer {
 	}
 }
 
-// SetDiffOptions updates the diff options used by the renderer.
-func (r *DefaultDiffRenderer) SetDiffOptions(options DiffOptions) {
-	r.diffOpts = options
-}
-
 func getKindName(d *dt.ResourceDiff) string {
 	return fmt.Sprintf("%s/%s", d.Gvk.Kind, d.ResourceName)
 }

@@ -1000,8 +1000,8 @@ func TestDefaultDiffCalculator_CalculateDiff(t *testing.T) {
 					t.Errorf("CalculateDiff() error %q does not contain %q", err, tt.wantErrContains)
 				}
 
-				if got := IsSchemaValidationError(err); got != tt.wantSchemaValidationErr {
-					t.Errorf("IsSchemaValidationError() = %v, want %v; a cluster rejection must land in the schema-validation exit-code tier and a tool failure must not: %v",
+				if got := isOnlySchemaValidationErrors(err); got != tt.wantSchemaValidationErr {
+					t.Errorf("isOnlySchemaValidationErrors() = %v, want %v; a cluster rejection must land in the schema-validation exit-code tier and a tool failure must not: %v",
 						got, tt.wantSchemaValidationErr, err)
 				}
 
@@ -1506,8 +1506,14 @@ func TestDefaultDiffCalculator_CalculateDiffs(t *testing.T) {
 			)
 
 			// Call the function under test
-			// Use CalculateDiffs which includes removal detection
-			diffs, err := calculator.CalculateDiffs(ctx, tt.inputXR, tt.renderedOut)
+			// Removal detection is the second step, after the non-removal diffs.
+			diffs, rendered, err := calculator.CalculateNonRemovalDiffs(ctx, tt.inputXR, tt.renderedOut)
+			if err == nil {
+				var removed map[string]*dt.ResourceDiff
+
+				removed, err = calculator.CalculateRemovedResourceDiffs(ctx, tt.inputXR.GetUnstructured(), rendered)
+				maps.Copy(diffs, removed)
+			}
 
 			// Check error condition
 			if tt.wantErr {

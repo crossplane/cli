@@ -292,12 +292,6 @@ func fieldValidationErrorsFromUpstream(errs []pkgvalidate.FieldValidationError) 
 	return out
 }
 
-// IsSchemaValidationError checks if any error in the chain is a schema validation error.
-func IsSchemaValidationError(err error) bool {
-	var sve *SchemaValidationError
-	return errors.As(err, &sve)
-}
-
 // isOnlySchemaValidationErrors checks if ALL errors in the error tree are schema validation errors.
 // Returns false if there are any non-schema-validation errors in the chain.
 // This is used to determine exit code priority: tool errors take precedence over schema validation errors.

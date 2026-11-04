@@ -3,7 +3,6 @@ package diffprocessor
 import (
 	"context"
 	"fmt"
-	"maps"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,10 +26,6 @@ type DiffCalculator interface {
 	// CalculateDiff computes the diff for a single resource
 	CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured) (*dt.ResourceDiff, error)
 
-	// CalculateDiffs computes all diffs including removals for the rendered resources.
-	// This is the primary method that most code should use.
-	CalculateDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs) (map[string]*dt.ResourceDiff, error)
-
 	// CalculateNonRemovalDiffs computes diffs for modified/added resources and returns
 	// what was rendered. This is used by nested XR processing.
 	// Returns: (diffs map, rendered resources, error)
@@ -53,11 +48,6 @@ type DefaultDiffCalculator struct {
 	dryRunOn        DryRunOn
 	predictor       Defaulter
 	keepEqual       func(*un.Unstructured) bool
-}
-
-// SetDiffOptions updates the diff options used by the calculator.
-func (c *DefaultDiffCalculator) SetDiffOptions(options compare.Options) {
-	c.diffOptions = options
 }
 
 // NewDiffCalculator creates a new DefaultDiffCalculator. predictor predicts CRD defaults for the
@@ -367,27 +357,6 @@ func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr
 	}
 
 	return diffs, rendered, nil
-}
-
-// CalculateDiffs computes all diffs including removals for the rendered resources.
-// This is the primary method that most code should use.
-func (c *DefaultDiffCalculator) CalculateDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs) (map[string]*dt.ResourceDiff, error) {
-	// First calculate diffs for modified/added resources
-	diffs, rendered, err := c.CalculateNonRemovalDiffs(ctx, xr, desired)
-	if err != nil {
-		return nil, err
-	}
-
-	// Then detect removed resources
-	removedDiffs, err := c.CalculateRemovedResourceDiffs(ctx, xr.GetUnstructured(), rendered)
-	if err != nil {
-		return nil, err
-	}
-
-	// Merge removed diffs into the main diffs map
-	maps.Copy(diffs, removedDiffs)
-
-	return diffs, nil
 }
 
 // CalculateRemovedResourceDiffs identifies the composed resources Crossplane would garbage collect, and

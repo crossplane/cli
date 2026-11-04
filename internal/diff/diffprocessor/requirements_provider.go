@@ -67,15 +67,6 @@ func (p *RequirementsProvider) Initialize(_ context.Context) error {
 	return nil
 }
 
-// ClearCache clears all cached resources.
-func (p *RequirementsProvider) ClearCache() {
-	p.cacheMutex.Lock()
-	defer p.cacheMutex.Unlock()
-
-	p.resourceCache = make(map[string]*un.Unstructured)
-	p.logger.Debug("Resource cache cleared")
-}
-
 // cacheResources adds resources to the cache.
 func (p *RequirementsProvider) cacheResources(resources []*un.Unstructured) {
 	p.cacheMutex.Lock()

@@ -32,16 +32,6 @@ type DefinitionClient interface {
 
 	// IsClaimResource checks if the given resource is a claim type
 	IsClaimResource(ctx context.Context, resource *un.Unstructured) bool
-
-	// GetCompositeSchema returns the composite.Schema (Legacy or Modern) that
-	// applies to the given XR or claim GVK. The scope is read from the XRD's
-	// spec.scope field (NOT the XRD's own apiVersion, which the apiserver may
-	// rewrite during v1↔v2 conversion). spec.scope == "LegacyCluster" maps to
-	// SchemaLegacy (canonical fields under spec.*); "Cluster"/"Namespaced" map
-	// to SchemaModern (canonical fields under spec.crossplane.*). Mirrors the
-	// rule the render binary uses (selectSchema in crossplane's
-	// internal/render/composite/render.go).
-	GetCompositeSchema(ctx context.Context, gvk schema.GroupVersionKind) (ucomposite.Schema, error)
 }
 
 // DefaultDefinitionClient implements DefinitionClient.
@@ -352,31 +342,10 @@ func (c *DefaultDefinitionClient) IsClaimResource(ctx context.Context, resource 
 	return true
 }
 
-// GetCompositeSchema returns the composite.Schema (Legacy or Modern) for the
-// given XR or claim GVK by looking up the XRD and reading its spec.scope.
-// LegacyCluster → SchemaLegacy (canonical fields under spec.*); Cluster or
-// Namespaced → SchemaModern (canonical fields under spec.crossplane.*). Tries
-// the XR path first; falls back to the claim path so the helper works for both.
-// See the interface doc for why scope, not apiVersion, drives the decision.
-func (c *DefaultDefinitionClient) GetCompositeSchema(ctx context.Context, gvk schema.GroupVersionKind) (ucomposite.Schema, error) {
-	xrd, err := c.GetXRDForXR(ctx, gvk)
-	if err != nil {
-		// Not an XR GVK; try the claim path.
-		var claimErr error
-
-		xrd, claimErr = c.GetXRDForClaim(ctx, gvk)
-		if claimErr != nil {
-			return ucomposite.SchemaModern, errors.Wrapf(err, "no XRD found for %s (also tried claim: %v)", gvk.String(), claimErr)
-		}
-	}
-
-	return SchemaFromXRD(xrd), nil
-}
-
 // SchemaFromXRD picks the composite.Schema (Legacy or Modern) for the given
 // XRD by reading its spec.scope. Use this when you've already fetched the XRD
 // for another reason (e.g. forwarding it to the render binary) and want to
-// avoid the redundant cache lookup GetCompositeSchema would do.
+// avoid a second cache lookup.
 //
 // The rule mirrors the render binary's own selectSchema (see
 // crossplane/crossplane internal/render/composite/render.go): use spec.scope

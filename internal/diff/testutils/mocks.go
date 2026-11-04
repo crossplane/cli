@@ -647,7 +647,6 @@ func (m *MockCompositionClient) FindComposites(ctx context.Context, comp *un.Uns
 type MockFunctionClient struct {
 	InitializeFn               func(ctx context.Context) error
 	GetFunctionsFromPipelineFn func(ctx context.Context, comp *xpextv1.Composition) ([]pkgv1.Function, error)
-	ListFunctionsFn            func(ctx context.Context) ([]pkgv1.Function, error)
 }
 
 // Initialize implements crossplane.FunctionClient.
@@ -668,22 +667,12 @@ func (m *MockFunctionClient) GetFunctionsFromPipeline(ctx context.Context, comp 
 	return nil, errors.New("GetFunctionsFromPipeline not implemented")
 }
 
-// ListFunctions implements crossplane.FunctionClient.
-func (m *MockFunctionClient) ListFunctions(ctx context.Context) ([]pkgv1.Function, error) {
-	if m.ListFunctionsFn != nil {
-		return m.ListFunctionsFn(ctx)
-	}
-
-	return nil, errors.New("ListFunctions not implemented")
-}
-
 // MockDefinitionClient implements the crossplane.DefinitionClient interface.
 type MockDefinitionClient struct {
 	InitializeFn         func(ctx context.Context) error
 	GetXRDForClaimFn     func(ctx context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error)
 	GetXRDForXRFn        func(ctx context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error)
 	IsClaimResourceFn    func(ctx context.Context, resource *un.Unstructured) bool
-	GetCompositeSchemaFn func(ctx context.Context, gvk schema.GroupVersionKind) (cmp.Schema, error)
 }
 
 // Initialize implements crossplane.DefinitionClient.
@@ -720,15 +709,6 @@ func (m *MockDefinitionClient) IsClaimResource(ctx context.Context, resource *un
 	}
 
 	return false
-}
-
-// GetCompositeSchema implements crossplane.DefinitionClient.
-func (m *MockDefinitionClient) GetCompositeSchema(ctx context.Context, gvk schema.GroupVersionKind) (cmp.Schema, error) {
-	if m.GetCompositeSchemaFn != nil {
-		return m.GetCompositeSchemaFn(ctx, gvk)
-	}
-
-	return cmp.SchemaModern, errors.New("GetCompositeSchema not implemented")
 }
 
 // MockResourceTreeClient implements the crossplane.ResourceTreeClient interface.
@@ -774,7 +754,6 @@ func (m *MockCredentialClient) FetchCompositionCredentials(ctx context.Context, 
 // MockDiffCalculator is a mock implementation of DiffCalculator for testing.
 type MockDiffCalculator struct {
 	CalculateDiffFn                 func(context.Context, *un.Unstructured, *un.Unstructured) (*dt.ResourceDiff, error)
-	CalculateDiffsFn                func(context.Context, *cmp.Unstructured, render.CompositionOutputs) (map[string]*dt.ResourceDiff, error)
 	CalculateNonRemovalDiffsFn      func(context.Context, *cmp.Unstructured, render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error)
 	CalculateRemovedResourceDiffsFn func(context.Context, *un.Unstructured, types.RenderedResources) (map[string]*dt.ResourceDiff, error)
 }
@@ -783,15 +762,6 @@ type MockDiffCalculator struct {
 func (m *MockDiffCalculator) CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured) (*dt.ResourceDiff, error) {
 	if m.CalculateDiffFn != nil {
 		return m.CalculateDiffFn(ctx, composite, desired)
-	}
-
-	return nil, nil
-}
-
-// CalculateDiffs implements DiffCalculator.
-func (m *MockDiffCalculator) CalculateDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs) (map[string]*dt.ResourceDiff, error) {
-	if m.CalculateDiffsFn != nil {
-		return m.CalculateDiffsFn(ctx, xr, desired)
 	}
 
 	return nil, nil

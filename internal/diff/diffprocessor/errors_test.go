@@ -83,49 +83,6 @@ func TestSchemaValidationError_Unwrap(t *testing.T) {
 	}
 }
 
-func TestIsSchemaValidationError(t *testing.T) {
-	tests := map[string]struct {
-		err  error
-		want bool
-	}{
-		"DirectSchemaValidationError": {
-			err:  &SchemaValidationError{Message: "test"},
-			want: true,
-		},
-		"WrappedSchemaValidationError": {
-			err:  errors.Join(errors.New("outer"), &SchemaValidationError{Message: "inner"}),
-			want: true,
-		},
-		"NonSchemaValidationError": {
-			err:  errors.New("regular error"),
-			want: false,
-		},
-		"NilError": {
-			err:  nil,
-			want: false,
-		},
-		"DeeplyWrappedSchemaValidationError": {
-			err: errors.Join(
-				errors.New("level1"),
-				errors.Join(
-					errors.New("level2"),
-					&SchemaValidationError{Message: "deep"},
-				),
-			),
-			want: true,
-		},
-	}
-
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			got := IsSchemaValidationError(tc.err)
-			if got != tc.want {
-				t.Errorf("IsSchemaValidationError() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestNewSchemaValidationError(t *testing.T) {
 	wrappedErr := errors.New("wrapped")
 	err := NewSchemaValidationError("Kind/name", "message", wrappedErr)

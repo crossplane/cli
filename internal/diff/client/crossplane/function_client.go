@@ -26,9 +26,6 @@ type FunctionClient interface {
 	// GetFunctionsFromPipeline gets functions used in a composition pipeline, fetching each one the
 	// pipeline names from the cluster the first time it is asked for.
 	GetFunctionsFromPipeline(ctx context.Context, comp *apiextensionsv1.Composition) ([]pkgv1.Function, error)
-
-	// ListFunctions lists all functions in the cluster
-	ListFunctions(ctx context.Context) ([]pkgv1.Function, error)
 }
 
 // DefaultFunctionClient implements FunctionClient.
@@ -74,42 +71,6 @@ func (c *DefaultFunctionClient) Initialize(ctx context.Context) error {
 	c.logger.Debug("Function client initialized")
 
 	return nil
-}
-
-// ListFunctions lists all functions in the cluster.
-func (c *DefaultFunctionClient) ListFunctions(ctx context.Context) ([]pkgv1.Function, error) {
-	c.logger.Debug("Listing functions from cluster")
-
-	// TODO:  we don't actually use our cached GVKs here -- but there's only one version of Function
-	// and this part is strongly typed which will make a second version hard to handle
-
-	// Get all functions using the resource client
-	unFns, err := c.resourceClient.ListResources(ctx, functionGVK(), "")
-	if err != nil {
-		c.logger.Debug("Failed to list functions", "error", err)
-		return nil, errors.Wrap(err, "cannot list functions from cluster")
-	}
-
-	// Convert unstructured to typed
-	functions := make([]pkgv1.Function, 0, len(unFns))
-	for _, obj := range unFns {
-		fn := pkgv1.Function{}
-
-		err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &fn)
-		if err != nil {
-			c.logger.Debug("Failed to convert function from unstructured",
-				"name", obj.GetName(),
-				"error", err)
-
-			return nil, errors.Wrap(err, "cannot convert unstructured to Function")
-		}
-
-		functions = append(functions, fn)
-	}
-
-	c.logger.Debug("Successfully retrieved functions", "count", len(functions))
-
-	return functions, nil
 }
 
 // GetFunctionsFromPipeline gets functions used in a composition pipeline.

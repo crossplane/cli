@@ -37,9 +37,6 @@ type CompositionRevisionClient interface {
 	// GetCompositionRevision gets a composition revision by name
 	GetCompositionRevision(ctx context.Context, name string) (*apiextensionsv1.CompositionRevision, error)
 
-	// ListCompositionRevisions lists all composition revisions in the cluster
-	ListCompositionRevisions(ctx context.Context) ([]*apiextensionsv1.CompositionRevision, error)
-
 	// GetLatestRevisionForComposition finds the latest (highest-numbered) revision for a given
 	// composition whose labels match the provided selector. This mirrors how Crossplane selects a
 	// revision for an XR with an Automatic compositionUpdatePolicy: with a compositionRevisionSelector
@@ -133,46 +130,6 @@ func (c *DefaultCompositionRevisionClient) listCompositionRevisionsForCompositio
 	}
 
 	c.logger.Debug("Successfully retrieved composition revisions", "compositionName", compositionName, "count", len(revisions))
-
-	return revisions, nil
-}
-
-// ListCompositionRevisions lists all composition revisions in the cluster.
-func (c *DefaultCompositionRevisionClient) ListCompositionRevisions(ctx context.Context) ([]*apiextensionsv1.CompositionRevision, error) {
-	c.logger.Debug("Listing composition revisions from cluster")
-
-	// Define the composition revision GVK
-	gvk := schema.GroupVersionKind{
-		Group:   CrossplaneAPIExtGroup,
-		Version: "v1",
-		Kind:    CompositionRevisionKind,
-	}
-
-	// Get all composition revisions using the resource client
-	unRevisions, err := c.resourceClient.ListResources(ctx, gvk, "")
-	if err != nil {
-		c.logger.Debug("Failed to list composition revisions", "error", err)
-		return nil, errors.Wrap(err, "cannot list composition revisions from cluster")
-	}
-
-	// Convert unstructured to typed
-	revisions := make([]*apiextensionsv1.CompositionRevision, 0, len(unRevisions))
-	for _, obj := range unRevisions {
-		rev := &apiextensionsv1.CompositionRevision{}
-
-		err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, rev)
-		if err != nil {
-			c.logger.Debug("Failed to convert composition revision from unstructured",
-				"name", obj.GetName(),
-				"error", err)
-
-			return nil, errors.Wrap(err, "cannot convert unstructured to CompositionRevision")
-		}
-
-		revisions = append(revisions, rev)
-	}
-
-	c.logger.Debug("Successfully retrieved composition revisions", "count", len(revisions))
 
 	return revisions, nil
 }

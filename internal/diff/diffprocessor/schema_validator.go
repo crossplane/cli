@@ -50,11 +50,6 @@ func NewSchemaValidator(sClient k8.SchemaClient, rClient k8.ResourceClient, dCli
 	}
 }
 
-// GetCRDs returns the current CRDs.
-func (v *DefaultSchemaValidator) GetCRDs() []*extv1.CustomResourceDefinition {
-	return v.schemaClient.GetAllCRDs()
-}
-
 // ValidateResources validates resources using schema validation.
 func (v *DefaultSchemaValidator) ValidateResources(ctx context.Context, xr *un.Unstructured, composed []cpd.Unstructured) error {
 	v.logger.Debug("Validating resources",

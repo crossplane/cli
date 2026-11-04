@@ -319,7 +319,7 @@ func TestDefaultSchemaValidator_EnsureComposedResourceCRDs(t *testing.T) {
 			_ = validator.(*DefaultSchemaValidator).EnsureComposedResourceCRDs(ctx, tt.resources)
 
 			// Verify the CRD count
-			crds := validator.(*DefaultSchemaValidator).GetCRDs()
+			crds := schemaClient.GetAllCRDs()
 			if diff := cmp.Diff(tt.expectedCRDLen, len(crds)); diff != "" {
 				t.Errorf("EnsureComposedResourceCRDs() CRD count mismatch (-want +got):\n%s", diff)
 			}

@@ -403,24 +403,10 @@ func WithCrossplaneImage(image string) ProcessorOption {
 	}
 }
 
-// WithResourceManagerFactory sets the ResourceManager factory function.
-func WithResourceManagerFactory(factory func(k8.ResourceClient, xp.DefinitionClient, xp.ResourceTreeClient, logging.Logger, dt.Advisories) ResourceManager) ProcessorOption {
-	return func(config *ProcessorConfig) {
-		config.Factories.ResourceManager = factory
-	}
-}
-
 // WithSchemaValidatorFactory sets the SchemaValidator factory function.
 func WithSchemaValidatorFactory(factory func(k8.SchemaClient, k8.ResourceClient, xp.DefinitionClient, logging.Logger) SchemaValidator) ProcessorOption {
 	return func(config *ProcessorConfig) {
 		config.Factories.SchemaValidator = factory
-	}
-}
-
-// WithDefaulterFactory sets the Defaulter factory function.
-func WithDefaulterFactory(factory func(k8.SchemaClient, xp.DefinitionClient, DefaultingPolicy) Defaulter) ProcessorOption {
-	return func(config *ProcessorConfig) {
-		config.Factories.Defaulter = factory
 	}
 }
 

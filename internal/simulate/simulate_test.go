@@ -17,7 +17,9 @@ limitations under the License.
 package simulate
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"testing"
 	"time"
@@ -122,6 +124,74 @@ func TestPlanner(t *testing.T) {
 		}
 		if pc.got.GetActualResource() == nil {
 			t.Errorf("Plan(...): want the live resource sent as actual state")
+		}
+	})
+
+	t.Run("RoutedPlanRedactsSensitiveViews", func(t *testing.T) {
+		// The provider marks a field sensitive: its value must not reach the
+		// plan's before and after, which -o json and -o yaml print.
+		live := vpc("my-vpc", "10.0.0.0/16")
+		kube := fake.NewClientBuilder().WithScheme(s).WithObjects(live).Build()
+		sensitive := &diffv1alpha1.FieldValue{Kind: &diffv1alpha1.FieldValue_Absence{Absence: diffv1alpha1.Absence_ABSENCE_SENSITIVE}}
+		pc := &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{
+			Action:  diffv1alpha1.Action_ACTION_UPDATE,
+			Changes: []*diffv1alpha1.FieldChange{{Field: "spec.forProvider.cidrBlock", Actual: sensitive, Planned: sensitive}},
+		}}
+
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
+
+		for side, u := range map[string]*unstructured.Unstructured{"Before": got.Before, "After": got.After} {
+			v, _, _ := unstructured.NestedString(u.Object, "spec", "forProvider", "cidrBlock")
+			if v == "10.0.0.0/16" || v == "10.1.0.0/16" || v == "" {
+				t.Errorf("Plan(...).%s: want cidrBlock redacted, got %q", side, v)
+			}
+		}
+
+		// -o json prints the plan marshalled, so the clear values must be absent from those bytes.
+		out, err := json.Marshal(got)
+		if err != nil {
+			t.Fatalf("json.Marshal(Plan(...)): %v", err)
+		}
+
+		for _, secret := range []string{"10.0.0.0/16", "10.1.0.0/16"} {
+			if bytes.Contains(out, []byte(secret)) {
+				t.Errorf("json.Marshal(Plan(...)): want %q absent, got %s", secret, out)
+			}
+		}
+	})
+
+	t.Run("RoutedPlanAfterHasCRDDefaults", func(t *testing.T) {
+		// After means the desired state with CRD defaults applied on every
+		// path, so a provider-planned resource agrees with a fallback one.
+		crd := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "apiextensions.k8s.io/v1",
+			"kind":       "CustomResourceDefinition",
+			"metadata":   map[string]any{"name": "vpcs.ec2.aws.upbound.io"},
+			"spec": map[string]any{
+				"group": "ec2.aws.upbound.io",
+				"names": map[string]any{"kind": "VPC", "listKind": "VPCList", "plural": "vpcs", "singular": "vpc"},
+				"scope": "Cluster",
+				"versions": []any{map[string]any{
+					"name":   "v1beta1",
+					"served": true, "storage": true,
+					"schema": map[string]any{"openAPIV3Schema": map[string]any{
+						"type": "object",
+						"properties": map[string]any{"spec": map[string]any{
+							"type":       "object",
+							"properties": map[string]any{"deletionPolicy": map[string]any{"type": "string", "default": "Delete"}},
+						}},
+					}},
+				}},
+			},
+		}}
+		kube := fake.NewClientBuilder().WithScheme(s).Build()
+		crds, _ := newCRDs(t, crd)
+		pc := &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}
+
+		got := NewPlanner(kube, rm, crds, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("new-vpc", "10.0.0.0/16"))
+
+		if v, _, _ := unstructured.NestedString(got.After.Object, "spec", "deletionPolicy"); v != "Delete" {
+			t.Errorf("Plan(...).After: want the CRD default deletionPolicy Delete, got %q", v)
 		}
 	})
 

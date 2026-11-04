@@ -96,6 +96,26 @@ func redactPaths(current, desired *unstructured.Unstructured, paths []string) (*
 	return cur, des, nil
 }
 
+// redactViews redacts the paths changes mark sensitive, on either side, from
+// a plan's before and after objects, as annotateDiff does for the -o diff
+// text. A side that can't be redacted is dropped rather than printed.
+func redactViews(before, after *unstructured.Unstructured, changes []plan.FieldChange) (*unstructured.Unstructured, *unstructured.Unstructured) {
+	var paths []string
+	for _, c := range changes {
+		if (c.Actual != nil && c.Actual.Sensitive) || (c.Planned != nil && c.Planned.Sensitive) {
+			paths = append(paths, c.Path)
+		}
+	}
+	if len(paths) == 0 {
+		return before, after
+	}
+	b, a, err := redactPaths(before, after, paths)
+	if err != nil {
+		return nil, nil
+	}
+	return b, a
+}
+
 // A slot is a located value, how to replace it, and where it is among the
 // items an index or keyed segment matched, for pairing. The root has no set.
 type slot struct {

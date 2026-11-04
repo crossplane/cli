@@ -774,6 +774,18 @@ func TestPlanObjects(t *testing.T) {
 			wantBefore: redacted,
 			wantAfter:  redacted,
 		},
+		"ProviderSensitive": {
+			reason: "A path the provider marks sensitive is redacted in before and after, as in the changes.",
+			diff:   rdiff(cmGVK, "cm", dt.DiffTypeModified, data("old"), data("new")),
+			plans: map[string]*plan.ResourcePlan{rdiff(cmGVK, "cm", dt.DiffTypeModified, nil, nil).GetDiffKey(): {
+				Action: plan.ActionUpdate,
+				Changes: []plan.FieldChange{{
+					Path: "data.k", Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true},
+				}},
+			}},
+			wantBefore: obj(cmGVK, "cm", data("(sensitive value)")),
+			wantAfter:  obj(cmGVK, "cm", data("(sensitive value, changed)")),
+		},
 		"ProviderPlanned": {
 			reason: "A provider plan replaces the changes but keeps the engine's objects.",
 			diff:   rdiff(cmGVK, "cm", dt.DiffTypeModified, data("old"), data("new")),

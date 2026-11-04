@@ -172,16 +172,16 @@ func TestCleanView(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			in := &unstructured.Unstructured{Object: tc.in}
 			orig := in.DeepCopy()
-			got := cleanView(in)
+			got := CleanView(in)
 			if diff := cmp.Diff(tc.want, got.Object); diff != "" {
-				t.Errorf("\n%s\ncleanView(...): -want, +got:\n%s", tc.reason, diff)
+				t.Errorf("\n%s\nCleanView(...): -want, +got:\n%s", tc.reason, diff)
 			}
 			if diff := cmp.Diff(orig, in); diff != "" {
-				t.Errorf("\n%s\ncleanView(...) mutated its input: -want, +got:\n%s", tc.reason, diff)
+				t.Errorf("\n%s\nCleanView(...) mutated its input: -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}
-	if cleanView(nil) != nil {
-		t.Error("cleanView(nil): want nil")
+	if CleanView(nil) != nil {
+		t.Error("CleanView(nil): want nil")
 	}
 }

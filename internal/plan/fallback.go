@@ -42,7 +42,7 @@ func Fallback(desired, live *unstructured.Unstructured, reason string) *Resource
 	p := NewResourcePlan(desired)
 	p.Approximate = true
 	p.FallbackReason = reason
-	p.Before, p.After = cleanView(live), cleanView(desired)
+	p.Before, p.After = CleanView(live), CleanView(desired)
 
 	desiredSpec, _, _ := unstructured.NestedMap(desired.Object, "spec")
 
@@ -91,7 +91,8 @@ func (c cursor) field(k string) cursor {
 	// xpfieldpath.Field would trim its quotes. Parsing the path back
 	// (DisplayLevels) still trims them; see below.
 	//
-	// ponytail: fieldpath has no escaping, so some keys do not round-trip:
+	// TODO(jcogilvie): escape or replace fieldpath for keys that do not
+	// round-trip. fieldpath has no escaping, so:
 	//   - the path does not parse, so the change shows as one display level:
 	//     e.g. "a[b", "a]b", "a.b[0]", or the empty key (written "data.");
 	//   - the path parses silently as a different one: "a[b]c" comes back as
@@ -99,7 +100,7 @@ func (c cursor) field(k string) cursor {
 	//   - a leading or trailing quote is trimmed, and a key of only quote
 	//     characters trims to empty, so the key is lost.
 	// Either way the annotate marker for the change is missed; its values are
-	// still printed. Upgrade if a real key needs it.
+	// still printed.
 	seg := xpfieldpath.Segment{Type: xpfieldpath.SegmentField, Field: k}
 	next := cursor{segs: append(slices.Clip(c.segs), seg), fp: c.fp, inList: c.inList}
 	if !c.inList {

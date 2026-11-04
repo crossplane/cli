@@ -115,14 +115,15 @@ type ResourcePlan struct {
 
 	// Before is the live object the plan compares, nil for a create. After
 	// is the desired object, nil for a delete. They let a consumer match the
-	// plan to its input and render its own diff. For project simulate both
-	// are the cleaned views the cluster diff compares, with ignored paths,
-	// status and server-managed metadata removed, so they agree with Changes;
-	// both are nil when the cluster diff found the resource unchanged. For a
-	// provider-planned resource After is the manifest sent to the provider,
-	// not the provider's view of the result: computed values and provider
-	// defaults appear only in Changes. A Secret's data and stringData values
-	// are redacted (see RedactSecret).
+	// plan to its input and render its own diff. After is the desired state
+	// with the CRD's defaults applied, as the API server would admit it, on
+	// every path, whether a provider diff server planned the resource or not;
+	// computed values and provider defaults appear only in Changes. For
+	// project simulate both are the cleaned views the cluster diff compares,
+	// with ignored paths, status and server-managed metadata removed, so they
+	// agree with Changes; both are nil when the cluster diff found the
+	// resource unchanged. A Secret's data and stringData values, and the
+	// paths the provider marks sensitive, are redacted (see RedactSecret).
 	Before *unstructured.Unstructured `json:"before,omitempty"`
 	After  *unstructured.Unstructured `json:"after,omitempty"`
 }
@@ -163,14 +164,14 @@ func (p *ResourcePlan) ResourceRef() ResourceRef {
 //nolint:gochecknoglobals // A constant list; Go has no const slices.
 var ServerManagedMetadata = []string{"resourceVersion", "uid", "generation", "creationTimestamp", "managedFields", "selfLink", "ownerReferences"}
 
-// cleanView returns the redacted copy of u that a plan carries as before or
+// CleanView returns the redacted copy of u that a plan carries as before or
 // after: u without status, server-managed metadata, the last-applied
 // configuration annotation or composed resource references, the fields the
 // diff engine also strips. It deliberately skips the engine's synthetic-name
 // rule: resource simulate's objects carry real names, so a generateName-shaped
 // metadata.name is kept, and so is an already empty spec.crossplane. u is not
 // modified; nil stays nil.
-func cleanView(u *unstructured.Unstructured) *unstructured.Unstructured {
+func CleanView(u *unstructured.Unstructured) *unstructured.Unstructured {
 	if u == nil {
 		return nil
 	}

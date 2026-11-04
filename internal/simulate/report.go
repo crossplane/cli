@@ -272,6 +272,7 @@ func (a *assembler) addDiff(d *dt.ResourceDiff, composite *plan.ResourceRef) boo
 
 	// Redacted after the duplicate check, so two Secrets differing only in
 	// their redacted values are not mistaken for one change.
+	p.Before, p.After = redactViews(p.Before, p.After, p.Changes)
 	p.Changes = plan.RedactSecretChanges(d.Gvk, p.Changes)
 	a.plans = append(a.plans, p)
 

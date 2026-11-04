@@ -109,14 +109,17 @@ func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.
 	// removed.
 	plan.MergeExternalTags(desired, live)
 
+	// The fallback diffs desired against live verbatim, but live was
+	// defaulted by the API server on admission and applying the manifest
+	// would default it again. So defaulted fields the manifest omits must not
+	// plan as removals, and a plan's After is always the defaulted desired
+	// state, whichever path planned it.
+	defaulted := applyCRDDefaults(ctx, p.rmapper, p.crds, desired)
+
 	gk := desired.GroupVersionKind().GroupKind()
 	planClient, ok := p.router.Route(gk)
 	if !ok {
-		// The fallback diffs desired against live verbatim, but live was
-		// defaulted by the API server on admission and applying the manifest
-		// would default it again. Apply the CRD's defaults to desired first,
-		// so defaulted fields the manifest omits do not plan as removals.
-		return plan.Fallback(applyCRDDefaults(ctx, p.rmapper, p.crds, desired), live, fmt.Sprintf("no diff server for %s", gk))
+		return plan.Fallback(defaulted, live, fmt.Sprintf("no diff server for %s", gk))
 	}
 
 	pctx := ctx
@@ -131,12 +134,16 @@ func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.
 	rp, err := plan.Plan(pctx, planClient, desired, live, store)
 	if err != nil {
 		if plan.IsNotSupported(err) {
-			return plan.Fallback(applyCRDDefaults(ctx, p.rmapper, p.crds, desired), live, "the provider cannot compute a diff for this resource")
+			return plan.Fallback(defaulted, live, "the provider cannot compute a diff for this resource")
 		}
 		rp := plan.NewResourcePlan(desired)
 		rp.Error = fmt.Sprintf("diff server cannot plan: %s", err)
 		return rp
 	}
+	// Plan sends desired as written; its After is the defaulted view, and the
+	// views hide what the provider marks sensitive, as the changes do.
+	rp.After = plan.CleanView(defaulted)
+	rp.Before, rp.After = redactViews(rp.Before, rp.After, rp.Changes)
 	return rp
 }
 

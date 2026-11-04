@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -2153,6 +2154,55 @@ func TestDefaultCompositionClient_FindComposites_DefaultDiscovery(t *testing.T) 
 
 	if len(got) != 1 || got[0].GetName() != "xr-cluster" {
 		t.Errorf("DefaultDiscovery: expected [xr-cluster], got %v", got)
+	}
+}
+
+func TestDefaultCompositionClient_FindComposites_DefaultDiscovery_ListErrors(t *testing.T) {
+	compBuilder := tu.NewComposition("test-comp").WithCompositeTypeRef("example.org/v1", "XBucket")
+	comp := compBuilder.BuildAsUnstructured()
+	compTyped := compBuilder.Build()
+
+	xrd := tu.NewXRD("xbuckets.example.org", "example.org", "XBucket").
+		WithPlural("xbuckets").
+		WithClaimNames("Bucket", "buckets").
+		WithVersion("v1", true, true).
+		BuildAsUnstructured()
+
+	forbidden := apierrors.NewForbidden(schema.GroupResource{Group: "example.org", Resource: "xbuckets"}, "", errors.New("denied"))
+	notFound := apierrors.NewNotFound(schema.GroupResource{Group: "example.org", Resource: "xbuckets"}, "")
+
+	tests := map[string]struct {
+		xrErr, claimErr error
+		wantErr         bool
+	}{
+		"XRListForbidden":    {xrErr: forbidden, wantErr: true},
+		"ClaimListForbidden": {claimErr: forbidden, wantErr: true},
+		"XRListNotFound":     {xrErr: notFound},
+		"ClaimListNotFound":  {claimErr: notFound},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := &DefaultCompositionClient{
+				resourceClient: tu.NewMockResourceClient().
+					WithListResources(func(_ context.Context, gvk schema.GroupVersionKind, _ string) ([]*un.Unstructured, error) {
+						if gvk.Kind == "XBucket" {
+							return nil, tt.xrErr
+						}
+
+						return nil, tt.claimErr
+					}).
+					Build(),
+				definitionClient: tu.NewMockDefinitionClient().WithXRDForXR(xrd).Build(),
+				compositions:     map[string]*apiextensionsv1.Composition{"test-comp": compTyped},
+				logger:           tu.TestLogger(t, false),
+			}
+
+			_, err := c.FindComposites(t.Context(), comp, dtypes.FindCompositesOptions{})
+			if (err != nil) != tt.wantErr {
+				t.Errorf("FindComposites() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 

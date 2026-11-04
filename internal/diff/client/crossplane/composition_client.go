@@ -913,13 +913,18 @@ func (c *DefaultCompositionClient) findByListing(ctx context.Context, compositio
 		"gvk", xrGVK.String())
 
 	// List all resources of this XR type in the specified namespace
-	// Note: If namespace is specified and XRs are cluster-scoped, this will fail gracefully
-	// and we'll continue to search for Claims
+	// Note: If namespace is specified and XRs are cluster-scoped, the server answers NotFound,
+	// which is tolerated so we continue to search for Claims. Any other error (Forbidden, a
+	// timeout) fails the lookup: it must not read as "no composites use this composition".
 	xrs, err := c.resourceClient.ListResources(ctx, xrGVK, namespace)
 
 	var matchingResources []*un.Unstructured
 
 	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, errors.Wrapf(err, "cannot list XRs of type %s", xrGVK.String())
+		}
+
 		// Log the error but don't fail - we'll try to find Claims instead
 		c.logger.Debug("Cannot list XRs (will search for claims if XRD defines them)",
 			"xrGVK", xrGVK.String(),
@@ -976,6 +981,10 @@ func (c *DefaultCompositionClient) findByListing(ctx context.Context, compositio
 
 	claims, err := c.resourceClient.ListResources(ctx, claimGVK, namespace)
 	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, errors.Wrapf(err, "cannot list claims of type %s", claimGVK.String())
+		}
+
 		// Log error but don't fail - we still have the XRs
 		c.logger.Debug("Cannot list claims of type (will only return XRs)",
 			"claimGVK", claimGVK.String(),

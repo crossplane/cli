@@ -30,8 +30,10 @@ import (
 	gcmp "github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 
@@ -237,6 +239,64 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 			wantErr: true,
 			// The renderer prints no errors, so the returned one must name the composition.
 			wantErrContains: "failed to process all compositions: unable to process resource Composition/test-composition: cannot convert composition",
+		},
+		// A user without list RBAC must not read "no impact": only NotFound means net-new.
+		"FindCompositesForbiddenFailsComposition": {
+			namespace:    "default",
+			compositions: []*un.Unstructured{changedComp()},
+			setupMocks: func() xp.Clients {
+				comp := tu.NewMockCompositionClient().WithSuccessfulCompositionFetch(testComp).Build()
+				comp.FindCompositesFn = func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return nil, apierrors.NewForbidden(schema.GroupResource{Group: "example.org", Resource: "xresources"}, "", errors.New("denied"))
+				}
+
+				return xp.Clients{
+					Composition:  comp,
+					Definition:   tu.NewMockDefinitionClient().Build(),
+					Function:     tu.NewMockFunctionClient().Build(),
+					ResourceTree: tu.NewMockResourceTreeClient().Build(),
+				}
+			},
+			wantErr:         true,
+			wantErrContains: "denied",
+		},
+		// A NotFound from default discovery means a net-new composition: no affected composites, no error.
+		// The error is wrapped, as the composition client wraps it.
+		"FindCompositesNotFoundIsNetNew": {
+			namespace:    "default",
+			compositions: []*un.Unstructured{changedComp()},
+			setupMocks: func() xp.Clients {
+				comp := tu.NewMockCompositionClient().WithSuccessfulCompositionFetch(testComp).Build()
+				comp.FindCompositesFn = func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return nil, fmt.Errorf("cannot get composition %s: %w", "test-composition",
+						apierrors.NewNotFound(schema.GroupResource{Group: "apiextensions.crossplane.io", Resource: "compositions"}, "test-composition"))
+				}
+
+				return xp.Clients{
+					Composition:  comp,
+					Definition:   tu.NewMockDefinitionClient().Build(),
+					Function:     tu.NewMockFunctionClient().Build(),
+					ResourceTree: tu.NewMockResourceTreeClient().Build(),
+				}
+			},
+			verifyReport: func(t *testing.T, output *dt.CompDiffOutput) {
+				t.Helper()
+
+				i := slices.IndexFunc(output.Compositions, func(c dt.CompositionDiff) bool { return c.Name == "test-composition" })
+				if i < 0 {
+					t.Fatalf("Compositions: got %+v, want test-composition", output.Compositions)
+				}
+
+				got := output.Compositions[i]
+				if got.Error != nil {
+					t.Errorf("Compositions[test-composition].Error: got %+v, want nil", got.Error)
+				}
+
+				if got.AffectedResources.Total != 0 || len(got.ImpactAnalysis) != 0 {
+					t.Errorf("affected composites: got total %d, impact %+v, want none", got.AffectedResources.Total, got.ImpactAnalysis)
+				}
+			},
+			wantErr: false,
 		},
 		"SuccessfulDiff": {
 			namespace:    "default",

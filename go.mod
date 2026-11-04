@@ -29,7 +29,7 @@ require (
 	github.com/crossplane/crossplane/apis/v2 v2.4.3
 	github.com/crossplane/function-sdk-go v0.7.1
 	github.com/crossplane/upjet/v2 v2.5.1-0.20261005082904-c3b7d449d0d4
-	github.com/docker/cli v29.9.2+incompatible
+	github.com/docker/cli v29.9.3+incompatible
 	github.com/emicklei/dot v1.11.0
 	github.com/getkin/kin-openapi v0.152.0
 	github.com/go-git/go-billy/v5 v5.9.2
@@ -46,7 +46,7 @@ require (
 	github.com/oapi-codegen/oapi-codegen/v2 v2.8.2
 	github.com/pkg/errors v0.9.1
 	github.com/posener/complete v1.2.3
-	github.com/shirou/gopsutil/v4 v4.26.9
+	github.com/shirou/gopsutil/v4 v4.26.10
 	github.com/spf13/afero v1.15.0
 	github.com/willabides/kongplete v0.4.0
 	golang.org/x/mod v0.42.0
@@ -149,7 +149,7 @@ require (
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dprotaso/go-yit v0.0.0-20260209000607-dfb86291624d // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/ebitengine/purego v0.11.1 // indirect
+	github.com/ebitengine/purego v0.11.2 // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/evanphx/json-patch v5.9.11+incompatible // indirect

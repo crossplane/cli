@@ -34,9 +34,6 @@ func TestXRDiffGroupHasChanges(t *testing.T) {
 			if got := g.HasChanges(); got != tc.want {
 				t.Errorf("HasChanges(): want %t, got %t", tc.want, got)
 			}
-			if got := (&XRReport{Groups: []XRDiffGroup{g}}).HasChanges(); got != tc.want {
-				t.Errorf("XRReport.HasChanges(): want %t, got %t", tc.want, got)
-			}
 		})
 	}
 }

@@ -42,29 +42,9 @@ const (
 	diffHidden         = "# diff hidden: it holds sensitive values that can't be redacted"
 )
 
-// AnnotateXRReport returns r with each resource diff annotated with its
-// provider plan from plans (see ProviderPlans.For and annotateDiff), for the
-// -o diff renderer. It never mutates r: the result is a shallow copy with
-// cloned groups and diff maps, and each annotated diff is a copy with new
-// LineDiffs. A core Secret's data and stringData values are redacted with or
-// without plans. Otherwise empty plans return an equivalent copy, which
-// renders exactly as r does.
-func AnnotateXRReport(r *dt.XRReport, plans *ProviderPlans) *dt.XRReport {
-	if r == nil {
-		return nil
-	}
-
-	out := *r
-	out.Groups = slices.Clone(r.Groups)
-	for i := range out.Groups {
-		out.Groups[i].Diffs, _ = annotateDiffs(out.Groups[i].Diffs, plans)
-	}
-
-	return &out
-}
-
 // AnnotateCompReport returns o with each affected composite's diffs annotated
-// with their provider plans, as AnnotateXRReport does. An unchanged composite
+// with their provider plans (see ProviderPlans.For and annotateDiff), for the
+// -o diff renderer. It never mutates o. An unchanged composite
 // whose provider plans find drift becomes changed, so the composition
 // renderer lists and counts it.
 func AnnotateCompReport(o *dt.CompDiffOutput, plans *ProviderPlans) *dt.CompDiffOutput {

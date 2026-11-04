@@ -93,18 +93,22 @@ func textDiff(typ dt.DiffType, current, desired string) *dt.ResourceDiff {
 
 // render renders r as -o diff does with plans: annotated, and with the
 // Replaced hook set.
-func render(t *testing.T, r *dt.XRReport, plans map[string]*plan.ResourcePlan, opts renderer.DiffOptions) string {
+func render(t *testing.T, groups []dt.XRDiffGroup, plans map[string]*plan.ResourcePlan, opts renderer.DiffOptions) string {
 	t.Helper()
 
 	var stdout bytes.Buffer
 	opts.Stdout, opts.Stderr = &stdout, &bytes.Buffer{}
 	var ds []*dt.ResourceDiff
-	for _, g := range r.Groups {
+	for _, g := range groups {
 		ds = slices.AppendSeq(ds, maps.Values(g.Diffs))
 	}
 	pp := held(plans, ds...)
 	opts.Replaced = ReplacedBy(pp)
-	if err := renderer.NewDiffRenderer(logging.NewNopLogger(), opts).RenderDiffs(AnnotateXRReport(r, pp).Groups, nil, nil); err != nil {
+	annotated := slices.Clone(groups)
+	for i := range annotated {
+		annotated[i].Diffs, _ = annotateDiffs(annotated[i].Diffs, pp)
+	}
+	if err := renderer.NewDiffRenderer(logging.NewNopLogger(), opts).RenderDiffs(annotated, nil, nil); err != nil {
 		t.Fatalf("RenderDiffs(): %v", err)
 	}
 
@@ -120,8 +124,8 @@ func noColor() renderer.DiffOptions {
 func str(s string) *plan.Value { return &plan.Value{Value: s} }
 func unknown() *plan.Value     { return &plan.Value{Unknown: true} }
 func sensitive() *plan.Value   { return &plan.Value{Sensitive: true} }
-func report(ds ...*dt.ResourceDiff) *dt.XRReport {
-	return &dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(ds...)}}}
+func report(ds ...*dt.ResourceDiff) []dt.XRDiffGroup {
+	return []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(ds...)}}
 }
 
 func planFor(d *dt.ResourceDiff, a plan.Action, changes ...plan.FieldChange) map[string]*plan.ResourcePlan {
@@ -130,7 +134,7 @@ func planFor(d *dt.ResourceDiff, a plan.Action, changes ...plan.FieldChange) map
 	}}
 }
 
-func TestAnnotateXRReport(t *testing.T) {
+func TestAnnotateDiffs(t *testing.T) {
 	fp := func(m map[string]any) map[string]any { return map[string]any{"forProvider": m} }
 
 	modified := lineDiff(t, "db", dt.DiffTypeModified,
@@ -160,7 +164,7 @@ func TestAnnotateXRReport(t *testing.T) {
 
 	cases := map[string]struct {
 		reason string
-		in     *dt.XRReport
+		in     []dt.XRDiffGroup
 		plans  map[string]*plan.ResourcePlan
 		opts   renderer.DiffOptions
 		want   string
@@ -553,7 +557,7 @@ func TestAnnotateIdentity(t *testing.T) {
 	var want bytes.Buffer
 	opts := noColor()
 	opts.Stdout, opts.Stderr = &want, &bytes.Buffer{}
-	if err := renderer.NewDiffRenderer(logging.NewNopLogger(), opts).RenderDiffs(r.Groups, nil, nil); err != nil {
+	if err := renderer.NewDiffRenderer(logging.NewNopLogger(), opts).RenderDiffs(r, nil, nil); err != nil {
 		t.Fatalf("RenderDiffs(): %v", err)
 	}
 
@@ -596,18 +600,19 @@ func TestAnnotateDoesNotMutate(t *testing.T) {
 	}}}
 	wantXR, wantComp := cloneXR(xr), cloneComp(comp)
 
-	gotXR, gotComp := AnnotateXRReport(xr, held(plans, mod, eq)), AnnotateCompReport(comp, held(plans, mod, eq))
+	gotXR, _ := annotateDiffs(xr[0].Diffs, held(plans, mod, eq))
+	gotComp := AnnotateCompReport(comp, held(plans, mod, eq))
 
 	if diff := cmp.Diff(wantXR, xr); diff != "" {
-		t.Errorf("AnnotateXRReport(...) mutated its input: -want, +got:\n%s", diff)
+		t.Errorf("annotateDiffs(...) mutated its input: -want, +got:\n%s", diff)
 	}
 	if diff := cmp.Diff(wantComp, comp); diff != "" {
 		t.Errorf("AnnotateCompReport(...) mutated its input: -want, +got:\n%s", diff)
 	}
 
 	// The copies are annotated.
-	if got := gotXR.Groups[0].Diffs[eq.GetDiffKey()].DiffType; got != dt.DiffTypeModified {
-		t.Errorf("AnnotateXRReport(...): drifted diff type %q, want %q", got, dt.DiffTypeModified)
+	if got := gotXR[eq.GetDiffKey()].DiffType; got != dt.DiffTypeModified {
+		t.Errorf("annotateDiffs(...): drifted diff type %q, want %q", got, dt.DiffTypeModified)
 	}
 	c := gotComp.Compositions[0]
 	if c.ImpactAnalysis[0].Status != dt.XRStatusChanged || c.AffectedResources.Unchanged != 0 || c.AffectedResources.WithChanges != 1 {
@@ -647,14 +652,13 @@ func TestAnnotateCompReport(t *testing.T) {
 	}
 }
 
-func cloneXR(r *dt.XRReport) *dt.XRReport {
-	out := *r
-	out.Groups = nil
-	for _, g := range r.Groups {
+func cloneXR(r []dt.XRDiffGroup) []dt.XRDiffGroup {
+	out := make([]dt.XRDiffGroup, 0, len(r))
+	for _, g := range r {
 		g.Diffs = cloneDiffs(g.Diffs)
-		out.Groups = append(out.Groups, g)
+		out = append(out, g)
 	}
-	return &out
+	return out
 }
 
 func cloneComp(o *dt.CompDiffOutput) *dt.CompDiffOutput {

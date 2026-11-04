@@ -32,9 +32,8 @@ import (
 )
 
 var (
-	xnetGVK = schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XNetwork"}
-	cmGVK   = schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}
-	secGVK  = schema.GroupVersionKind{Version: "v1", Kind: "Secret"}
+	cmGVK  = schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}
+	secGVK = schema.GroupVersionKind{Version: "v1", Kind: "Secret"}
 
 	xrRef    = corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
 	xrPlan   = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
@@ -85,277 +84,14 @@ func held(plans map[string]*plan.ResourcePlan, ds ...*dt.ResourceDiff) *Provider
 	return &ProviderPlans{Plans: plans, Held: h}
 }
 
-func TestFromXRReport(t *testing.T) {
-	xrEqual := rdiff(xnetGVK, "prod", dt.DiffTypeEqual, nil, nil)
-	validation := dt.OutputError{
-		ResourceID: "XNetwork/prod",
-		Message:    "schema validation failed",
-		ValidationFailures: []dt.ResourceValidationFailure{{
-			APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Status: "invalid",
-			Errors: []dt.FieldValidationError{{Type: "schema", Field: "data.k", Message: "must be a string", Value: 7.0}},
-		}},
-	}
+// fromImpacts runs FromCompReport over one composition affecting the XRs
+// whose diffs are given, and returns the plans after the composition's own.
+func fromImpacts(plans *ProviderPlans, impacts ...dt.XRImpact) []*plan.ResourcePlan {
+	return FromCompReport(&dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{Name: "net", ImpactAnalysis: impacts}}}, plans, nil).Plans[1:]
+}
 
-	unverified := rdiff(cmGVK, "cm", dt.DiffTypeAdded, nil, map[string]any{})
-	unverified.DryRun = &dt.DryRunInfo{SkipReason: dt.DryRunSkipForbidden, Detail: "no create"}
-	dryRunReport := &dt.XRReport{
-		Groups:   []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(unverified)}},
-		Warnings: []dt.OutputWarning{{Message: "heads up", Context: map[string]string{"k": "v"}}},
-	}
-	// The derived summary's wording belongs to the result package; the mapper
-	// only has to carry it after the raised warnings.
-	derived := dt.XRDryRunWarnings(dryRunReport.Groups)
-	if len(derived) == 0 {
-		t.Fatal("XRDryRunWarnings(...): want a summary of the unverified addition")
-	}
-	dryRunWarnings := make([]Warning, 0, len(derived))
-	for _, w := range derived {
-		dryRunWarnings = append(dryRunWarnings, Warning{Message: w.Message, Context: w.Context})
-	}
-
-	cases := map[string]struct {
-		reason string
-		in     *dt.XRReport
-		want   ProjectResult
-	}{
-		"EachDiffType": {
-			reason: "Each DiffType maps to its action; a delete carries actual-only changes; the XR's own equal diff is a no-op plan.",
-			in: &dt.XRReport{Groups: []dt.XRDiffGroup{{
-				XR: xrRef,
-				Diffs: diffs(
-					xrEqual,
-					rdiff(cmGVK, "added", dt.DiffTypeAdded, nil, map[string]any{"data": map[string]any{"k": "v"}}),
-					rdiff(cmGVK, "modified", dt.DiffTypeModified,
-						map[string]any{"data": map[string]any{"k": "old"}},
-						map[string]any{"data": map[string]any{"k": "new"}}),
-					rdiff(cmGVK, "removed", dt.DiffTypeRemoved, map[string]any{"data": map[string]any{"k": "gone"}}, nil),
-				),
-			}}},
-			want: ProjectResult{
-				Result: plan.Result{
-					FormatVersion: plan.ResultFormatVersion,
-					Summary:       plan.Summary{Create: 1, Update: 1, Destroy: 1, NoOp: 1},
-					Plans: []*plan.ResourcePlan{
-						{
-							APIVersion: "v1", Kind: "ConfigMap", Name: "added", Action: plan.ActionCreate, Composite: &xrPlan,
-							Changes: []plan.FieldChange{{Path: "data.k", Planned: &plan.Value{Value: "v"}}},
-						},
-						{
-							APIVersion: "v1", Kind: "ConfigMap", Name: "modified", Action: plan.ActionUpdate, Composite: &xrPlan,
-							Changes: []plan.FieldChange{{Path: "data.k", Actual: &plan.Value{Value: "old"}, Planned: &plan.Value{Value: "new"}}},
-						},
-						{
-							APIVersion: "v1", Kind: "ConfigMap", Name: "removed", Action: plan.ActionDelete, Composite: &xrPlan,
-							Changes: []plan.FieldChange{{Path: "data.k", Actual: &plan.Value{Value: "gone"}}},
-						},
-						{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan},
-					},
-				},
-				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged}},
-				Notes:      notes(),
-			},
-		},
-		"Unchanged": {
-			reason: "An XR whose only diff is its own equal one is unchanged.",
-			in:     &dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(xrEqual)}}},
-			want: ProjectResult{
-				Result: plan.Result{
-					FormatVersion: plan.ResultFormatVersion,
-					Summary:       plan.Summary{NoOp: 1},
-					Plans: []*plan.ResourcePlan{
-						{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan},
-					},
-				},
-				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeUnchanged}},
-				Notes:      notes(),
-			},
-		},
-		"XRErrorWithValidationFailures": {
-			reason: "A failed XR is an errored composite with an error plan; its typed error keeps the validation failures and is not repeated as a run error.",
-			in: &dt.XRReport{
-				Groups: []dt.XRDiffGroup{{XR: xrRef, Err: &validation}},
-				Errors: []dt.OutputError{validation},
-			},
-			want: ProjectResult{
-				Result: plan.Result{
-					FormatVersion: plan.ResultFormatVersion,
-					Errored:       true,
-					Summary:       plan.Summary{Errored: 1},
-					Plans: []*plan.ResourcePlan{
-						{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Error: "schema validation failed", Composite: &xrPlan},
-					},
-				},
-				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeError}},
-				Errors: []Error{{
-					Ref:     &xrPlan,
-					Message: "schema validation failed",
-					ValidationFailures: []ValidationFailure{{
-						APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Status: "invalid",
-						Errors: []FieldValidationError{{Type: "schema", Field: "data.k", Message: "must be a string", Value: 7.0}},
-					}},
-				}},
-				Notes: notes(),
-			},
-		},
-		"RunErrors": {
-			reason: "Errors no group owns (overlaps, interruption) become resource-less errors and mark the result errored.",
-			in: &dt.XRReport{
-				Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(xrEqual)}},
-				Errors: []dt.OutputError{{Message: "inputs overlap"}, {Message: "interrupted"}},
-			},
-			want: ProjectResult{
-				Result: plan.Result{
-					FormatVersion: plan.ResultFormatVersion,
-					Errored:       true,
-					Summary:       plan.Summary{NoOp: 1},
-					Plans: []*plan.ResourcePlan{
-						{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan},
-					},
-				},
-				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeUnchanged}},
-				Errors:     []Error{{Message: "inputs overlap"}, {Message: "interrupted"}},
-				Notes:      notes(),
-			},
-		},
-		"Claim": {
-			reason: "A claim input keeps the claim's identity in its composite ref.",
-			in: &dt.XRReport{Groups: []dt.XRDiffGroup{{
-				XR:    corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "Network", Name: "mine", Namespace: "team"},
-				Diffs: diffs(rdiff(cmGVK, "cm", dt.DiffTypeAdded, nil, map[string]any{})),
-			}}},
-			want: ProjectResult{
-				Result: plan.Result{
-					FormatVersion: plan.ResultFormatVersion,
-					Summary:       plan.Summary{Create: 1},
-					Plans: []*plan.ResourcePlan{{
-						APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionCreate,
-						Composite: new(plan.ResourceRef{APIVersion: "example.org/v1", Kind: "Network", Name: "mine", Namespace: "team"}),
-					}},
-				},
-				Composites: []CompositeResult{{
-					Ref:    plan.ResourceRef{APIVersion: "example.org/v1", Kind: "Network", Name: "mine", Namespace: "team"},
-					Status: CompositeChanged,
-				}},
-				Notes: notes(),
-			},
-		},
-		"SecretRedaction": {
-			reason: "A Secret's data and stringData values are sensitive; its other fields are not.",
-			in: &dt.XRReport{Groups: []dt.XRDiffGroup{{
-				XR: xrRef,
-				Diffs: diffs(rdiff(secGVK, "creds", dt.DiffTypeModified,
-					map[string]any{"data": map[string]any{"pw": "b2xk"}, "type": "Opaque"},
-					map[string]any{"data": map[string]any{"pw": "bmV3"}, "stringData": map[string]any{"u": "me"}, "type": "kv"})),
-			}}},
-			want: ProjectResult{
-				Result: plan.Result{
-					FormatVersion: plan.ResultFormatVersion,
-					Summary:       plan.Summary{Update: 1},
-					Plans: []*plan.ResourcePlan{{
-						APIVersion: "v1", Kind: "Secret", Name: "creds", Action: plan.ActionUpdate, Composite: &xrPlan,
-						Changes: []plan.FieldChange{
-							{Path: "data.pw", Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
-							{Path: "stringData.u", Planned: &plan.Value{Sensitive: true}},
-							{Path: "type", Actual: &plan.Value{Value: "Opaque"}, Planned: &plan.Value{Value: "kv"}},
-						},
-					}},
-				},
-				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged}},
-				Notes:      notes(),
-			},
-		},
-		"SecretRedactionDottedKeys": {
-			reason: "Keys containing dots are written data[k] and are redacted too, in changes, before and after.",
-			in: &dt.XRReport{Groups: []dt.XRDiffGroup{{
-				XR: xrRef,
-				Diffs: diffs(func() *dt.ResourceDiff {
-					d := rdiff(secGVK, "creds", dt.DiffTypeModified,
-						map[string]any{"data": map[string]any{"tls.crt": "b2xk", ".dockerconfigjson": "b2xk"}},
-						map[string]any{"data": map[string]any{"tls.crt": "bmV3", ".dockerconfigjson": "bmV3"}})
-					d.Current.Raw, d.Desired.Raw = d.Current.Clean, d.Desired.Clean
-					return d
-				}()),
-			}}},
-			want: ProjectResult{
-				Result: plan.Result{
-					FormatVersion: plan.ResultFormatVersion,
-					Summary:       plan.Summary{Update: 1},
-					Plans: []*plan.ResourcePlan{{
-						APIVersion: "v1", Kind: "Secret", Name: "creds", Action: plan.ActionUpdate, Composite: &xrPlan,
-						Changes: []plan.FieldChange{
-							{Path: "data[.dockerconfigjson]", Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
-							{Path: "data[tls.crt]", Actual: &plan.Value{Sensitive: true}, Planned: &plan.Value{Sensitive: true}},
-						},
-					}},
-				},
-				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged}},
-				Notes:      notes(),
-			},
-		},
-		"Dedupe": {
-			reason: "A change two inputs reach identically is listed once, under the first; a differing render of it is still listed.",
-			in: &dt.XRReport{Groups: []dt.XRDiffGroup{
-				{XR: xrRef, Diffs: diffs(rdiff(cmGVK, "shared", dt.DiffTypeAdded, nil, map[string]any{"data": map[string]any{"k": "v"}}))},
-				{
-					XR:    corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "dev"},
-					Diffs: diffs(rdiff(cmGVK, "shared", dt.DiffTypeAdded, nil, map[string]any{"data": map[string]any{"k": "v"}})),
-				},
-				{
-					XR:    corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "qa"},
-					Diffs: diffs(rdiff(cmGVK, "shared", dt.DiffTypeAdded, nil, map[string]any{"data": map[string]any{"k": "other"}})),
-				},
-			}},
-			want: ProjectResult{
-				Result: plan.Result{
-					FormatVersion: plan.ResultFormatVersion,
-					Summary:       plan.Summary{Create: 2},
-					Plans: []*plan.ResourcePlan{
-						{
-							APIVersion: "v1", Kind: "ConfigMap", Name: "shared", Action: plan.ActionCreate, Composite: &xrPlan,
-							Changes: []plan.FieldChange{{Path: "data.k", Planned: &plan.Value{Value: "v"}}},
-						},
-						{
-							APIVersion: "v1", Kind: "ConfigMap", Name: "shared", Action: plan.ActionCreate,
-							Composite: new(plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "qa"}),
-							Changes:   []plan.FieldChange{{Path: "data.k", Planned: &plan.Value{Value: "other"}}},
-						},
-					},
-				},
-				Composites: []CompositeResult{
-					{Ref: xrPlan, Status: CompositeChanged},
-					{Ref: plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "dev"}, Status: CompositeChanged},
-					{Ref: plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "qa"}, Status: CompositeChanged},
-				},
-				Notes: notes(),
-			},
-		},
-		"DryRunAndWarnings": {
-			reason: "An unverified addition carries its DryRun, and the run's warnings precede the derived dry-run summary.",
-			in:     dryRunReport,
-			want: ProjectResult{
-				Result: plan.Result{
-					FormatVersion: plan.ResultFormatVersion,
-					Summary:       plan.Summary{Create: 1},
-					Plans: []*plan.ResourcePlan{{
-						APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionCreate, Composite: &xrPlan,
-						DryRun: &plan.Verification{SkipReason: "forbidden", Detail: "no create"},
-					}},
-				},
-				Composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged}},
-				Warnings:   append([]Warning{{Message: "heads up", Context: map[string]string{"k": "v"}}}, dryRunWarnings...),
-				Notes:      notes(),
-			},
-		},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			got := FromXRReport(tc.in, nil, nil)
-			if diff := cmp.Diff(tc.want, got, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Before", "After"), cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("%s\nFromXRReport(...): -want, +got:\n%s", tc.reason, diff)
-			}
-		})
-	}
+func impact(ref corev1.ObjectReference, ds ...*dt.ResourceDiff) dt.XRImpact {
+	return dt.XRImpact{ObjectReference: ref, Status: dt.XRStatusChanged, Diffs: diffs(ds...)}
 }
 
 func TestFromCompReport(t *testing.T) {
@@ -702,22 +438,7 @@ func TestProviderPlanMerge(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			xr := rdiff(xnetGVK, "prod", dt.DiffTypeEqual, nil, nil)
-			// Plans sort by kind, so the XR's own no-op plan comes last.
-			wantPlans := append(slices.Clone(tc.wantPlans), &plan.ResourcePlan{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod", Action: plan.ActionNoOp, Composite: &xrPlan})
-
-			gotXR := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(xr, tc.diff)}}}, held(tc.plans, tc.diff), tc.keep)
-			if diff := cmp.Diff(wantPlans, gotXR.Plans, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Before", "After"), cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("%s\nFromXRReport(...).Plans: -want, +got:\n%s", tc.reason, diff)
-			}
-			if got := gotXR.Composites[0].Status; got != tc.wantStatus {
-				t.Errorf("%s\nFromXRReport(...): want composite %q, got %q", tc.reason, tc.wantStatus, got)
-			}
-			if len(gotXR.Notes) != 0 {
-				t.Errorf("%s\nFromXRReport(...): want no note with provider plans, got %v", tc.reason, gotXR.Notes)
-			}
-
-			// The composition path merges the same way. An Unchanged impact
+			// An Unchanged impact
 			// carries diffs only when the engine kept equal ones.
 			status := dt.XRStatusUnchanged
 			if tc.diff.DiffType != dt.DiffTypeEqual {
@@ -799,24 +520,24 @@ func TestPlanObjects(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(tc.diff)}}}, held(tc.plans, tc.diff), nil)
-			if len(got.Plans) != 1 {
-				t.Fatalf("%s\nFromXRReport(...): want 1 plan, got %d", tc.reason, len(got.Plans))
+			got := fromImpacts(held(tc.plans, tc.diff), impact(xrRef, tc.diff))
+			if len(got) != 1 {
+				t.Fatalf("%s\nFromCompReport(...): want 1 plan, got %d", tc.reason, len(got))
 			}
-			if diff := cmp.Diff(tc.wantBefore, got.Plans[0].Before); diff != "" {
-				t.Errorf("%s\nFromXRReport(...).Before: -want, +got:\n%s", tc.reason, diff)
+			if diff := cmp.Diff(tc.wantBefore, got[0].Before); diff != "" {
+				t.Errorf("%s\nFromCompReport(...).Before: -want, +got:\n%s", tc.reason, diff)
 			}
-			if diff := cmp.Diff(tc.wantAfter, got.Plans[0].After); diff != "" {
-				t.Errorf("%s\nFromXRReport(...).After: -want, +got:\n%s", tc.reason, diff)
+			if diff := cmp.Diff(tc.wantAfter, got[0].After); diff != "" {
+				t.Errorf("%s\nFromCompReport(...).After: -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}
 
 	t.Run("SecretSourceUntouched", func(t *testing.T) {
 		d := rdiff(secGVK, "cm", dt.DiffTypeAdded, nil, data("v"))
-		FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(d)}}}, nil, nil)
+		fromImpacts(nil, impact(xrRef, d))
 		if diff := cmp.Diff(obj(secGVK, "cm", data("v")), d.Desired.Clean); diff != "" {
-			t.Errorf("FromXRReport(...): redaction must not modify the engine's view: -want, +got:\n%s", diff)
+			t.Errorf("FromCompReport(...): redaction must not modify the engine's view: -want, +got:\n%s", diff)
 		}
 	})
 }
@@ -827,8 +548,7 @@ func TestSecretDottedKeysRedactedInObjects(t *testing.T) {
 	d := rdiff(secGVK, "creds", dt.DiffTypeModified,
 		map[string]any{"data": map[string]any{"tls.crt": "b2xk", ".dockerconfigjson": "b2xk"}},
 		map[string]any{"data": map[string]any{"tls.crt": "bmV3", ".dockerconfigjson": "bmV3"}})
-	got := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xrRef, Diffs: diffs(d)}}}, nil, nil)
-	for _, p := range got.Plans {
+	for _, p := range fromImpacts(nil, impact(xrRef, d)) {
 		if p.Kind != "Secret" {
 			continue
 		}
@@ -868,10 +588,7 @@ func TestProviderPlanOnlyForItsRendering(t *testing.T) {
 	provider := []plan.FieldChange{{Path: "spec.forProvider.size", Planned: &plan.Value{Value: "2"}}}
 	plans := held(map[string]*plan.ResourcePlan{prod.GetDiffKey(): {Action: plan.ActionCreate, Changes: provider}}, prod)
 
-	got := FromXRReport(&dt.XRReport{Groups: []dt.XRDiffGroup{
-		{XR: xrRef, Diffs: diffs(prod)},
-		{XR: qaRef, Diffs: diffs(qa)},
-	}}, plans, nil)
+	got := fromImpacts(plans, impact(xrRef, prod), impact(qaRef, qa))
 
 	want := []*plan.ResourcePlan{
 		{
@@ -884,8 +601,8 @@ func TestProviderPlanOnlyForItsRendering(t *testing.T) {
 			Changes:   []plan.FieldChange{{Path: "data.k", Planned: &plan.Value{Value: "other"}}},
 		},
 	}
-	if diff := cmp.Diff(want, got.Plans, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Before", "After")); diff != "" {
-		t.Errorf("FromXRReport(...).Plans: want prod's plan with the provider's change and qa's without: -want, +got:\n%s", diff)
+	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(plan.ResourcePlan{}, "Before", "After")); diff != "" {
+		t.Errorf("FromCompReport(...).Plans: want prod's plan with the provider's change and qa's without: -want, +got:\n%s", diff)
 	}
 
 	// Another XR's removal of the resource is never planned, so never takes prod's create.

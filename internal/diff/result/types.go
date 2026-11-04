@@ -42,29 +42,6 @@ type XRDiffGroup struct {
 	Err   *OutputError
 }
 
-// XRReport is what one xr diff run produced: everything a DiffRenderer renders.
-type XRReport struct {
-	// Groups holds one entry per input XR/claim, in input order.
-	Groups []XRDiffGroup
-	// Errors is the run's union error list: every group's error, plus errors no single group owns
-	// (render overlaps, an interruption).
-	Errors []OutputError
-	// Warnings are the advisories the run raised, sorted.
-	Warnings []OutputWarning
-}
-
-// HasChanges reports whether any group has a non-equal diff. Groups may hold DiffTypeEqual entries
-// (e.g. the XR, stored for removal detection), which are not changes.
-func (r *XRReport) HasChanges() bool {
-	for _, group := range r.Groups {
-		if group.HasChanges() {
-			return true
-		}
-	}
-
-	return false
-}
-
 // HasChanges reports whether any diff in the group is not equal.
 func (g XRDiffGroup) HasChanges() bool {
 	for _, diff := range g.Diffs {

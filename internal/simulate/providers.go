@@ -26,7 +26,7 @@ import (
 )
 
 // PlanDiffs plans the engine's resource diffs against the provider diff
-// servers p routes to, keyed by diff key, for FromXRReport and FromCompReport
+// servers p routes to, keyed by diff key, for FromCompReport
 // to merge.
 //
 // Removals are not planned: a provider plans no deletes, so the engine's

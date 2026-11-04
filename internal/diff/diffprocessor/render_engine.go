@@ -267,11 +267,8 @@ func (e *EngineRenderFn) Render(ctx context.Context, log logging.Logger, in Rend
 // functions released it, so what that Setup wrote is visible to the unlocked
 // engine.Render that follows.
 //
-// ponytail: a composition with an empty pipeline starts nothing, so its render
-// is not ordered after the first Setup; rendered concurrently with that Setup,
-// it races on the docker engine's network field. Only the first Setup of a run
-// writes it, and only without a user-supplied network. Upgrade (e.g. a
-// once-guarded first Setup) if empty pipelines get diffed concurrently.
+// A composition with an empty pipeline starts nothing, so its render is not ordered after the first
+// Setup. Renders run one at a time, so that cannot race on the docker engine's network field today.
 func (e *EngineRenderFn) startFunctions(ctx context.Context, log logging.Logger, fns []pkgv1.Function) (map[string]string, error) {
 	// Starting functions is shared by the run, so a composite's XRTimeout neither bounds nor
 	// counts it, including the wait for another composite's start.

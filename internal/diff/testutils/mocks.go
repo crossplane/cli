@@ -669,10 +669,10 @@ func (m *MockFunctionClient) GetFunctionsFromPipeline(ctx context.Context, comp 
 
 // MockDefinitionClient implements the crossplane.DefinitionClient interface.
 type MockDefinitionClient struct {
-	InitializeFn         func(ctx context.Context) error
-	GetXRDForClaimFn     func(ctx context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error)
-	GetXRDForXRFn        func(ctx context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error)
-	IsClaimResourceFn    func(ctx context.Context, resource *un.Unstructured) bool
+	InitializeFn      func(ctx context.Context) error
+	GetXRDForClaimFn  func(ctx context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error)
+	GetXRDForXRFn     func(ctx context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error)
+	IsClaimResourceFn func(ctx context.Context, resource *un.Unstructured) bool
 }
 
 // Initialize implements crossplane.DefinitionClient.

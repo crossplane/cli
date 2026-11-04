@@ -205,7 +205,6 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 		compositions []*un.Unstructured
 		namespace    string
 		analyzeOn    AnalyzeOn
-		outputFormat renderer.OutputFormat
 		setupMocks   func() xp.Clients
 		// verifyOutput runs whether or not DiffComposition returns an error, since a failed composition
 		// is still reported, and so still rendered.
@@ -491,7 +490,7 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 			}
 
 			if tt.verifyOutput != nil {
-				tt.verifyOutput(t, renderCompReport(t, output, tt.outputFormat))
+				tt.verifyOutput(t, renderCompReport(t, output))
 			}
 		})
 	}
@@ -2175,9 +2174,9 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 	})
 }
 
-// renderCompReport renders a DiffComposition report in the given format (empty means the
-// human-readable diff) and returns what it wrote to stdout.
-func renderCompReport(t *testing.T, output *dt.CompDiffOutput, format renderer.OutputFormat) string {
+// renderCompReport renders a DiffComposition report as the human-readable diff and returns what it
+// wrote to stdout.
+func renderCompReport(t *testing.T, output *dt.CompDiffOutput) string {
 	t.Helper()
 
 	if output == nil {
@@ -2190,10 +2189,6 @@ func renderCompReport(t *testing.T, output *dt.CompDiffOutput, format renderer.O
 	opts.UseColors = false
 	opts.Stdout = &stdout
 	opts.Stderr = &bytes.Buffer{}
-
-	if format != "" {
-		opts.Format = format
-	}
 
 	logger := tu.TestLogger(t, false)
 

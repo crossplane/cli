@@ -21,9 +21,6 @@ type DiffOptions struct {
 	// written here: they are returned to the command, which prints them once.
 	Stderr io.Writer
 
-	// Format specifies the output format (diff, json, yaml)
-	Format OutputFormat
-
 	// UseColors determines whether to colorize the output
 	UseColors bool
 
@@ -61,10 +58,6 @@ type OutputFormat string
 const (
 	// OutputFormatDiff is the default human-readable diff format.
 	OutputFormatDiff OutputFormat = "diff"
-	// OutputFormatJSON outputs structured JSON.
-	OutputFormatJSON OutputFormat = "json"
-	// OutputFormatYAML outputs structured YAML.
-	OutputFormatYAML OutputFormat = "yaml"
 )
 
 // DefaultDiffOptions returns the default options with colors enabled.
@@ -72,7 +65,6 @@ func DefaultDiffOptions() DiffOptions {
 	return DiffOptions{
 		Stdout:         os.Stdout,
 		Stderr:         os.Stderr,
-		Format:         OutputFormatDiff,
 		UseColors:      true,
 		AddPrefix:      "+ ",
 		DeletePrefix:   "- ",

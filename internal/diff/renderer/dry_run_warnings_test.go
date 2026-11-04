@@ -75,17 +75,14 @@ func TestRenderers_EmitDryRunWarnings(t *testing.T) {
 	type renderFn func(opts DiffOptions) error
 
 	tests := map[string]struct {
-		format OutputFormat
 		render renderFn
 	}{
 		"XRText": {
-			format: OutputFormatDiff,
 			render: func(opts DiffOptions) error {
 				return NewDiffRenderer(tu.TestLogger(t, false), opts).RenderDiffs(xrGroups, nil, []dt.OutputWarning{raised})
 			},
 		},
 		"CompText": {
-			format: OutputFormatDiff,
 			render: func(opts DiffOptions) error {
 				logger := tu.TestLogger(t, false)
 				return NewDefaultCompDiffRenderer(logger, NewDiffRenderer(logger, opts), opts).RenderCompDiff(compOutput())
@@ -99,7 +96,6 @@ func TestRenderers_EmitDryRunWarnings(t *testing.T) {
 
 			opts := DefaultDiffOptions()
 			opts.UseColors = false
-			opts.Format = tc.format
 			opts.Stdout = &stdout
 			opts.Stderr = &stderr
 

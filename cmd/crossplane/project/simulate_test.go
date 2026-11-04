@@ -378,6 +378,37 @@ func TestSimulateBuildProjectRejectsComposition(t *testing.T) {
 	}
 }
 
+// TestSimulateBuildProjectErrors runs the project fixtures that fail before
+// the cluster is used.
+func TestSimulateBuildProjectErrors(t *testing.T) {
+	cases := map[string]struct {
+		reason  string
+		project string
+		want    string
+	}{
+		"MalformedProjectFile": {
+			reason:  "A project file that does not parse fails the run and the error names the file.",
+			project: "malformed",
+			want:    "crossplane-project.yaml",
+		},
+		"NoCompositions": {
+			reason:  "A valid project whose APIs path holds no Composition has nothing to simulate.",
+			project: "nocomps",
+			want:    "no Compositions found",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := &simulateCmd{ProjectFile: filepath.Join("testdata", "project", tc.project, "crossplane-project.yaml")}
+			_, err := c.buildProject(context.Background(), logging.NewNopLogger(), nil, &config.Config{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("\n%s\nbuildProject(%s): want error containing %q, got %v", tc.reason, tc.project, tc.want, err)
+			}
+		})
+	}
+}
+
 func TestSimulateNameFlagParse(t *testing.T) {
 	for name, args := range map[string][]string{
 		"Repeated":       {"--name=a/db", "--name=b/db"},

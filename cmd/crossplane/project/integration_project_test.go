@@ -23,7 +23,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
@@ -65,17 +64,16 @@ func strValue(s string) *diffv1alpha1.FieldValue {
 type projectTestCase struct {
 	reason string
 	// setupFiles and crossplaneManagedResources set up the cluster, as in the
-	// other tables. Cases that fail before the cluster is used leave them empty.
+	// other tables.
 	setupFiles                 []string
 	crossplaneManagedResources []integration.HierarchicalOwnershipRelation
 	// project is a directory under testdata/project, copied to a temp dir so
 	// the build cannot dirty the tree.
 	project string
 	// extraArgs follow the project file argument.
-	extraArgs             []string
-	expectedExitCode      int
-	expectedErrorContains string
-	expectedStructured    simtest.Expectation
+	extraArgs          []string
+	expectedExitCode   int
+	expectedStructured simtest.Expectation
 	// router, when set, routes provider plans instead of diff servers and
 	// the run does not pass --skip-plan.
 	router simulate.Router
@@ -89,18 +87,6 @@ func TestProjectSimulateIntegration(t *testing.T) {
 	region := &diffv1alpha1.FieldChange{Field: "spec.forProvider.region", Actual: strValue("us-east-1"), Planned: strValue("eu-west-1")}
 
 	cases := map[string]projectTestCase{
-		"MalformedProjectFile": {
-			reason:                "A project file that does not parse fails the run and the error names the file.",
-			project:               "malformed",
-			expectedExitCode:      dp.ExitCodeToolError,
-			expectedErrorContains: "crossplane-project.yaml",
-		},
-		"NoCompositions": {
-			reason:                "A valid project whose APIs path holds no Composition has nothing to simulate.",
-			project:               "nocomps",
-			expectedExitCode:      dp.ExitCodeToolError,
-			expectedErrorContains: "no Compositions found",
-		},
 		"PlainProject": {
 			reason: "A project with no dependencies or embedded functions simulates its Composition against cluster functions, like the same Composition in Composition mode.",
 			setupFiles: []string{
@@ -211,11 +197,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			code, err := runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulate.Hooks{Router: tc.router}, &stdout, &stderr)
 
-			if tc.expectedErrorContains != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.expectedErrorContains) {
-					t.Fatalf("\n%s\nsimulate: want error containing %q, got %v\nstderr:\n%s", tc.reason, tc.expectedErrorContains, err, stderr.String())
-				}
-			} else if err != nil {
+			if err != nil {
 				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
 			}
 			if code != tc.expectedExitCode {

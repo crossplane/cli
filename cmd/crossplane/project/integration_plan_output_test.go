@@ -27,7 +27,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
-	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
@@ -38,8 +37,6 @@ import (
 // express. Each case passes simulate args directly rather than crossplane-diff's.
 func TestSimulatePlanOutput(t *testing.T) {
 	t.Parallel()
-
-	tu.SetupKubeTestLogger(t)
 
 	compCase := integration.Setup{
 		CRDDirs: []string{"testdata/comp/crds"},
@@ -191,8 +188,6 @@ func integrationEnvGap() string {
 // combined with --namespace.
 func TestSimulateNameRejected(t *testing.T) {
 	t.Parallel()
-
-	tu.SetupKubeTestLogger(t)
 
 	compCase := integration.Setup{
 		CRDDirs: []string{"testdata/comp/crds"},

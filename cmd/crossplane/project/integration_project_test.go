@@ -31,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
-	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/simulate/simtest"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
@@ -81,8 +80,6 @@ type projectTestCase struct {
 
 func TestProjectSimulateIntegration(t *testing.T) {
 	t.Parallel()
-
-	tu.SetupKubeTestLogger(t)
 
 	region := &diffv1alpha1.FieldChange{Field: "spec.forProvider.region", Actual: strValue("us-east-1"), Planned: strValue("eu-west-1")}
 

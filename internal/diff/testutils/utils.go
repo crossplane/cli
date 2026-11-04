@@ -1,20 +1,17 @@
 package testutils
 
 import (
-	stdlog "log"
 	"slices"
 	"sync"
 	"testing"
 
 	"github.com/go-logr/logr/testr"
-	"github.com/go-logr/stdr"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/restmapper"
 	kt "k8s.io/client-go/testing"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
@@ -28,28 +25,6 @@ const (
 	ColorYellow = "\x1b[33m"
 	ColorReset  = "\x1b[0m"
 )
-
-// SetupKubeTestLogger sets the global logger for use of the Kube environment to the T.Log of this test.
-func SetupKubeTestLogger(t *testing.T) {
-	t.Helper()
-
-	// Create a logr.Logger that writes to testing.T.Log
-	testLogger := stdr.NewWithOptions(stdlog.New(testWriter{t}, "", 0), stdr.Options{LogCaller: stdr.All})
-
-	// Set the logger for controller-runtime
-	log.SetLogger(testLogger)
-}
-
-// testWriter adapts testing.T.Log to io.Writer.
-type testWriter struct {
-	t *testing.T
-}
-
-// Write logs the provided argument as a string to the T.Log.
-func (tw testWriter) Write(p []byte) (int, error) {
-	tw.t.Log(string(p))
-	return len(p), nil
-}
 
 // TestLogger coerces the T.Log into the shape of a Logr logger.
 func TestLogger(t *testing.T, verbose bool) logging.Logger {

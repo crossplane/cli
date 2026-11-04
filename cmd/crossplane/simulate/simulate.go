@@ -30,10 +30,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/restmapper"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -203,12 +200,10 @@ func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMa
 	}
 	_ = pkg.AddToScheme(cl.Scheme())
 
-	discoveryClient, err := discovery.NewDiscoveryClientForConfig(kubeconfig)
+	rmapper, err := kube.NewCachedRESTMapper(kubeconfig)
 	if err != nil {
 		return nil, nil, "", errors.Wrap(err, "cannot get discovery client")
 	}
-	d := memory.NewMemCacheClient(discoveryClient)
-	rmapper := restmapper.NewShortcutExpander(restmapper.NewDeferredDiscoveryRESTMapper(d), d, nil)
 
 	namespace, _, err := clientconfig.Namespace()
 	if err != nil {

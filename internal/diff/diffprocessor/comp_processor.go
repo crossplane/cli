@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -205,12 +206,15 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 		p.config.Logger.Debug("Processing composition", "name", compositionID)
 
 		// Resolve the affected XR set up-front. In --resource mode the preflight already produced it;
-		// in default-discovery mode we query the cluster (best-effort: net-new compositions yield empty).
+		// in default-discovery mode we query the cluster (a net-new composition yields empty; any other failure fails the composition).
 		// Either way the filtered XRs are recorded in ImpactAnalysis; scoped records which mode produced
 		// the set, so the renderer can decide how to present them.
 		scoped := len(resources) > 0
 
-		var affectedXRs []*un.Unstructured
+		var (
+			affectedXRs  []*un.Unstructured
+			discoveryErr error
+		)
 
 		switch {
 		case scoped:
@@ -221,19 +225,31 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 			discovered, findErr := p.compositionClient.FindComposites(ctx, comp, dtypes.FindCompositesOptions{Namespace: namespace})
 
 			switch {
-			case findErr != nil:
-				// Net-new composition (won't exist in cluster) → graceful empty result, same as before.
-				p.config.Logger.Debug("Cannot find composites using composition (likely net-new composition)",
+			case apierrors.IsNotFound(findErr):
+				// Net-new composition (won't exist in cluster) → graceful empty result. Only NotFound
+				// means that: a Forbidden or a timeout must not read as "no impact".
+				p.config.Logger.Debug("Cannot find composites using composition (net-new composition)",
 					"composition", compositionID, "error", findErr)
 
 				affectedXRs = nil
+			case findErr != nil:
+				discoveryErr = findErr
 			default:
 				affectedXRs = discovered
 			}
 		}
 
 		// Process this single composition and build the result
-		compResult, rendered, err := p.processSingleComposition(ctx, comp, affectedXRs, scoped)
+		var (
+			compResult *dt.CompositionDiff
+			rendered   []renderedComposite
+			err        = discoveryErr
+		)
+
+		if err == nil {
+			compResult, rendered, err = p.processSingleComposition(ctx, comp, affectedXRs, scoped)
+		}
+
 		composites = append(composites, rendered...)
 
 		if err != nil {

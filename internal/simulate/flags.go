@@ -19,8 +19,6 @@ package simulate
 import (
 	"time"
 
-	"github.com/spf13/afero"
-	corev1 "k8s.io/api/core/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
@@ -48,10 +46,8 @@ type Flags struct {
 	// noServersNoted is set once the "no diff servers" line is printed.
 	noServersNoted bool
 	// sel is Inputs.Selection, which Run copies in; zero without one.
-	sel CompositionFlags
-	// Validate loads this from --function-credentials.
-	functionCredentials []corev1.Secret
-	CacheDir            string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)." name:"cache-dir"`
+	sel      CompositionFlags
+	CacheDir string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)." name:"cache-dir"`
 
 	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context." predictor:"context"                                                          short:"c"`
 	MaxIterations int           `default:"20"                                                                    help:"Max render iterations per composite resource to resolve requirements."`
@@ -62,10 +58,10 @@ type Flags struct {
 	Compact             bool     `help:"Show compact diffs with minimal context."`
 	MaxNestedDepth      int      `default:"10"                                                                                          help:"Maximum depth for nested XR recursion."`
 	IgnorePaths         []string `help:"Paths to ignore in diffs (e.g., 'metadata.annotations[argocd.argoproj.io/tracking-id]')."`
-	FunctionCredentials string   `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."     placeholder:"PATH"                                                                    predictor:"yaml_file_or_directory"                                                      type:"path"`
+	FunctionCredentials string   `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."     placeholder:"PATH"                            predictor:"yaml_file_or_directory"                                                      type:"path"`
 	EventualState       bool     `help:"Show eventual state after all reconciliation cycles complete (useful with function-sequencer)."`
-	MaxRecvMessageSize  int      `env:"MAX_RECV_MESSAGE_SIZE"                                                                           help:"Max gRPC message size (MB) for render function containers (4 MB if undefined)."`
-	DryRunOn            string   `default:"all"                                                                                         enum:"existing,all"                                                                   help:"Which resources to verify with a server-side dry run: existing or all (default)."`
+	MaxRecvMessageSize  int      `help:"Max gRPC message size (MB) for render function containers (4 MB if undefined)."`
+	DryRunOn            string   `default:"all"                                                                                         enum:"existing,all"                           help:"Which resources to verify with a server-side dry run: existing or all (default)."`
 
 	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster diff."`
 	Providers    string `help:"YAML file or directory of Provider manifests to run as diff servers, instead of discovering them from the cluster." name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`
@@ -85,11 +81,11 @@ type CompositionFlags struct {
 	ns   string
 	refs []k8stypes.NamespacedName
 
-	Namespace           string   `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                                                                                     predictor:"namespace"                 short:"n"`
+	Namespace           string   `help:"Only simulate composite resources in this namespace. Defaults to all namespaces."                                                                                     predictor:"namespace"                short:"n"`
 	Name                []string `help:"Only simulate the composite resource with this [namespace/]name. Repeatable or comma-separated. A bare name pairs with --namespace, or is cluster scoped without it." sep:","`
 	IncludePinned       bool     `help:"Render every composite resource pinned by a Manual update policy against the new Composition."`
 	MinimizeComposition bool     `help:"Collapse each changed Composition to one line in -o diff output."`
-	AnalyzeOn           string   `default:""                                                                                                                                                                  enum:",spec-change,any-change,always" help:"Smallest Composition change that triggers impact analysis: spec-change, any-change (default) or always."`
+	AnalyzeOn           string   `default:"any-change"                                                                                                                                                        enum:"spec-change,any-change,always" help:"Smallest Composition change that triggers impact analysis: spec-change, any-change (default) or always."`
 }
 
 // Validate rejects bad --name/--namespace values. kong calls it during
@@ -127,14 +123,6 @@ func (c *Flags) Validate() error {
 		return errors.Errorf("--max-iterations must be at least 1, got %d", c.MaxIterations)
 	}
 
-	if c.FunctionCredentials != "" {
-		secrets, err := xprender.LoadCredentials(afero.NewOsFs(), c.FunctionCredentials)
-		if err != nil {
-			return errors.Wrapf(err, "cannot load function credentials from %q", c.FunctionCredentials)
-		}
-		c.functionCredentials = secrets
-	}
-
 	if c.Timeout <= 0 {
 		return errors.Errorf("--timeout must be greater than 0, got %s", c.Timeout)
 	}
@@ -149,9 +137,4 @@ func (c *Flags) Validate() error {
 	}
 
 	return nil
-}
-
-// Credentials returns the Secrets Validate loaded from --function-credentials.
-func (c *Flags) Credentials() []corev1.Secret {
-	return c.functionCredentials
 }

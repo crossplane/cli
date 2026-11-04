@@ -27,6 +27,8 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/charmbracelet/x/term"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/spf13/afero"
+	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8stypes "k8s.io/apimachinery/pkg/types"
@@ -53,6 +55,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/kube"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/terminal"
+	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
 
 // Packages is how a simulation fetches packages. Functions and providers go
@@ -294,7 +297,7 @@ func (c *CompositionFlags) scope() (string, []k8stypes.NamespacedName, error) {
 // does, so they share one advisory collector. fns are the project's
 // functions, of which embedded are the locally built ones, and ics rewrite
 // the other functions' images.
-func (c *Flags) processorOptions(k *kong.Context, logger logging.Logger, fns []pkgv1.Function, embedded map[string]project.EmbeddedDigest, ics []pkgv1beta1.ImageConfig) []dp.ProcessorOption {
+func (c *Flags) processorOptions(k *kong.Context, logger logging.Logger, creds []corev1.Secret, fns []pkgv1.Function, embedded map[string]project.EmbeddedDigest, ics []pkgv1beta1.ImageConfig) []dp.ProcessorOption {
 	c.SetDefaultCrossplaneDockerNetwork(fns)
 
 	opts := []dp.ProcessorOption{
@@ -313,8 +316,8 @@ func (c *Flags) processorOptions(k *kong.Context, logger logging.Logger, fns []p
 		opts = append(opts, dp.WithFunctionProviderFactory(functionProviderFactory(fns, embedded, ics)))
 	}
 
-	if len(c.functionCredentials) > 0 {
-		opts = append(opts, dp.WithFunctionCredentials(c.functionCredentials))
+	if len(creds) > 0 {
+		opts = append(opts, dp.WithFunctionCredentials(creds))
 	}
 	if c.MaxRecvMessageSize > 0 {
 		opts = append(opts, dp.WithMaxRecvMessageSize(c.MaxRecvMessageSize))
@@ -504,6 +507,15 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 		return errors.Wrap(err, "cannot connect to Docker, which project simulate needs to run functions")
 	}
 
+	var creds []corev1.Secret
+	if c.FunctionCredentials != "" {
+		var err error
+		creds, err = xprender.LoadCredentials(afero.NewOsFs(), c.FunctionCredentials)
+		if err != nil {
+			return errors.Wrapf(err, "cannot load function credentials from %q", c.FunctionCredentials)
+		}
+	}
+
 	// Load the kubeconfig before the slow function build, so a bad context
 	// fails fast.
 	restCfg, ns, err := c.restConfig()
@@ -527,7 +539,7 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 		return err
 	}
 
-	opts := append(c.processorOptions(k, logger, fns, digests, pkgs.ICs), dp.WithChangedFunctions(changed...), dp.WithXRTimeout(c.Timeout))
+	opts := append(c.processorOptions(k, logger, creds, fns, digests, pkgs.ICs), dp.WithChangedFunctions(changed...), dp.WithXRTimeout(c.Timeout))
 
 	// xrPlanner and servers are for rendering the plans; they stay nil with
 	// --skip-plan, and servers also when hooks.Router supplies the router.

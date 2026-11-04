@@ -27,8 +27,6 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
@@ -61,9 +59,8 @@ func TestSimulateFlags(t *testing.T) {
 	}
 
 	type want struct {
-		cmd     *simulateCmd
-		secrets []corev1.Secret
-		err     bool
+		cmd *simulateCmd
+		err bool
 	}
 
 	cases := map[string]struct {
@@ -121,7 +118,7 @@ func TestSimulateFlags(t *testing.T) {
 			}, CompositionFlags: simulate.CompositionFlags{MinimizeComposition: true, AnalyzeOn: "always"}}},
 		},
 		"FunctionCredentials": {
-			reason: "--function-credentials should load the Secrets in the file at parse time.",
+			reason: "--function-credentials should land on its field; Run loads the Secrets.",
 			args:   []string{"--function-credentials", creds},
 			want: want{
 				cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
@@ -132,16 +129,7 @@ func TestSimulateFlags(t *testing.T) {
 					DryRunOn:            "all",
 					FunctionCredentials: creds,
 				}},
-				secrets: []corev1.Secret{{
-					TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-					ObjectMeta: metav1.ObjectMeta{Name: "creds"},
-				}},
 			},
-		},
-		"FunctionCredentialsMissing": {
-			reason: "A missing credentials path should be rejected at parse time.",
-			args:   []string{"--function-credentials", filepath.Join(t.TempDir(), "nope.yaml")},
-			want:   want{err: true},
 		},
 		"UnknownDryRunOn": {
 			reason: "Unknown --dry-run-on values should be rejected.",
@@ -366,11 +354,11 @@ func TestSimulateFlags(t *testing.T) {
 			if tc.want.err {
 				return
 			}
+			if tc.want.cmd.AnalyzeOn == "" {
+				tc.want.cmd.AnalyzeOn = "any-change" // kong's default
+			}
 			if diff := cmp.Diff(tc.want.cmd, got, cmpopts.IgnoreFields(simulate.Flags{}, "Impersonation"), cmpopts.IgnoreUnexported(simulate.Flags{}, simulate.CompositionFlags{})); diff != "" {
 				t.Errorf("\n%s\nParse(%v): -want, +got:\n%s", tc.reason, tc.args, diff)
-			}
-			if diff := cmp.Diff(tc.want.secrets, got.Credentials(), cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("\n%s\nParse(%v): function credentials: -want, +got:\n%s", tc.reason, tc.args, diff)
 			}
 		})
 	}

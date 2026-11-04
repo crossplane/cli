@@ -37,8 +37,8 @@ import (
 func PlanDiffs(ctx context.Context, p *Planner, keep func(*unstructured.Unstructured) bool, diffs map[string]*dt.ResourceDiff) map[string]*plan.ResourcePlan {
 	plans := map[string]*plan.ResourcePlan{}
 
-	// ponytail: sequential, as resource simulate's loop is; parallelize with
-	// errgroup if large projects are slow.
+	// Plans run sequentially, like resource simulate.
+	// TODO(jcogilvie): plan the compositions in parallel with an errgroup.
 	for key, d := range diffs {
 		if d.DiffType == dt.DiffTypeRemoved || d.Desired.Raw == nil || !p.CanPlan(d.Gvk.GroupKind()) {
 			continue

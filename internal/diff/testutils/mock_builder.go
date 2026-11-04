@@ -277,12 +277,6 @@ func (b *MockResourceClientBuilder) WithListableResources(resources ...*un.Unstr
 	})
 }
 
-// WithIsNamespacedResource sets the IsNamespacedResource behavior.
-func (b *MockResourceClientBuilder) WithIsNamespacedResource(fn func(context.Context, schema.GroupVersionKind) (bool, error)) *MockResourceClientBuilder {
-	b.mock.IsNamespacedResourceFn = fn
-	return b
-}
-
 // WithNamespacedResource sets specific GVKs to be namespaced.
 //
 // Composes with WithClusterScopedResource: each call adds to the set of known
@@ -314,13 +308,15 @@ func (b *MockResourceClientBuilder) withResourceScopes(gvks []schema.GroupVersio
 
 	scopes := b.resourceScopes
 
-	return b.WithIsNamespacedResource(func(_ context.Context, gvk schema.GroupVersionKind) (bool, error) {
+	b.mock.IsNamespacedResourceFn = func(_ context.Context, gvk schema.GroupVersionKind) (bool, error) {
 		if isNamespaced, exists := scopes[gvk]; exists {
 			return isNamespaced, nil
 		}
 		// Default to error for unconfigured resources to make tests explicit
 		return false, errors.Errorf("IsNamespacedResource not configured for %s in mock", gvk.String())
-	})
+	}
+
+	return b
 }
 
 // Build returns the built mock.
@@ -738,21 +734,17 @@ func (b *MockCompositionClientBuilder) WithSuccessfulCompositionMatch(comp *xpex
 	})
 }
 
-// WithGetComposition sets the GetComposition behavior.
-func (b *MockCompositionClientBuilder) WithGetComposition(fn func(context.Context, string) (*xpextv1.Composition, error)) *MockCompositionClientBuilder {
-	b.mock.GetCompositionFn = fn
-	return b
-}
-
 // WithSuccessfulCompositionFetch sets up a successful composition fetch.
 func (b *MockCompositionClientBuilder) WithSuccessfulCompositionFetch(comp *xpextv1.Composition) *MockCompositionClientBuilder {
-	return b.WithGetComposition(func(_ context.Context, name string) (*xpextv1.Composition, error) {
+	b.mock.GetCompositionFn = func(_ context.Context, name string) (*xpextv1.Composition, error) {
 		if name == comp.GetName() {
 			return comp, nil
 		}
 
 		return nil, errors.New("composition not found")
-	})
+	}
+
+	return b
 }
 
 // WithSuccessfulCompositionFetches sets up successful composition fetches for multiple compositions.
@@ -762,24 +754,20 @@ func (b *MockCompositionClientBuilder) WithSuccessfulCompositionFetches(comps []
 		compositionMap[comp.GetName()] = comp
 	}
 
-	return b.WithGetComposition(func(_ context.Context, name string) (*xpextv1.Composition, error) {
+	b.mock.GetCompositionFn = func(_ context.Context, name string) (*xpextv1.Composition, error) {
 		if composition, found := compositionMap[name]; found {
 			return composition, nil
 		}
 
 		return nil, errors.New("composition not found")
-	})
-}
+	}
 
-// WithFindComposites sets the FindComposites behavior.
-func (b *MockCompositionClientBuilder) WithFindComposites(fn func(context.Context, *un.Unstructured, dtypes.FindCompositesOptions) ([]*un.Unstructured, error)) *MockCompositionClientBuilder {
-	b.mock.FindCompositesFn = fn
 	return b
 }
 
 // WithResourcesForComposition sets FindComposites (default-discovery mode) to return specific resources
 // for a given composition name and namespace. Refs-mode calls return an explicit error identifying this
-// helper as default-discovery only — use WithFindComposites directly if you need to mock both modes.
+// helper as default-discovery only — set the mock's FindCompositesFn directly if you need both modes.
 func (b *MockCompositionClientBuilder) WithResourcesForComposition(compositionName, namespace string, resources []*un.Unstructured) *MockCompositionClientBuilder {
 	if b.composites == nil {
 		b.composites = map[string][]*un.Unstructured{}
@@ -788,7 +776,7 @@ func (b *MockCompositionClientBuilder) WithResourcesForComposition(compositionNa
 	b.composites[compositionName+"/"+namespace] = resources
 
 	// The closure reads the map at call time, so registrations added after this one are visible too.
-	return b.WithFindComposites(func(_ context.Context, comp *un.Unstructured, opts dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
+	b.mock.FindCompositesFn = func(_ context.Context, comp *un.Unstructured, opts dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
 		if len(opts.Refs) > 0 {
 			return nil, errors.New("WithResourcesForComposition only handles default-discovery (empty Refs)")
 		}
@@ -798,34 +786,40 @@ func (b *MockCompositionClientBuilder) WithResourcesForComposition(compositionNa
 		}
 
 		return nil, errors.Errorf("no resources found for composition %s in namespace %s", comp.GetName(), opts.Namespace)
-	})
+	}
+
+	return b
 }
 
 // WithFindResourcesError sets FindComposites (default-discovery mode) to return an error. Refs-mode calls
-// return an explicit error identifying this helper as default-discovery only — use WithFindComposites
+// return an explicit error identifying this helper as default-discovery only — set the mock's FindCompositesFn
 // directly if you need to mock both modes.
 func (b *MockCompositionClientBuilder) WithFindResourcesError(errMsg string) *MockCompositionClientBuilder {
-	return b.WithFindComposites(func(_ context.Context, _ *un.Unstructured, opts dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
+	b.mock.FindCompositesFn = func(_ context.Context, _ *un.Unstructured, opts dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
 		if len(opts.Refs) > 0 {
 			return nil, errors.New("WithFindResourcesError only handles default-discovery (empty Refs)")
 		}
 
 		return nil, errors.New(errMsg)
-	})
+	}
+
+	return b
 }
 
 // WithCompositesByRef sets FindComposites (refs mode) to return the given resources for any
 // non-empty-Refs request. Default-discovery calls return an explicit error identifying this helper
-// as refs-only — use WithFindComposites directly if you need to mock both modes. Mirror of
+// as refs-only — set the mock's FindCompositesFn directly if you need both modes. Mirror of
 // WithResourcesForComposition for the refs-mode side.
 func (b *MockCompositionClientBuilder) WithCompositesByRef(matched ...*un.Unstructured) *MockCompositionClientBuilder {
-	return b.WithFindComposites(func(_ context.Context, _ *un.Unstructured, opts dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
+	b.mock.FindCompositesFn = func(_ context.Context, _ *un.Unstructured, opts dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
 		if len(opts.Refs) == 0 {
 			return nil, errors.New("WithCompositesByRef only handles refs-mode (non-empty Refs)")
 		}
 
 		return matched, nil
-	})
+	}
+
+	return b
 }
 
 // WithNoMatchingComposites sets FindComposites to return an empty matched set regardless of mode
@@ -833,9 +827,11 @@ func (b *MockCompositionClientBuilder) WithCompositesByRef(matched ...*un.Unstru
 // refs lookup should produce results. Mirrors WithNoMatchingComposition for the FindMatchingComposition
 // method.
 func (b *MockCompositionClientBuilder) WithNoMatchingComposites() *MockCompositionClientBuilder {
-	return b.WithFindComposites(func(context.Context, *un.Unstructured, dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
+	b.mock.FindCompositesFn = func(context.Context, *un.Unstructured, dtypes.FindCompositesOptions) ([]*un.Unstructured, error) {
 		return nil, nil
-	})
+	}
+
+	return b
 }
 
 // WithComposition is an alias for WithSuccessfulCompositionMatch for convenience.
@@ -916,12 +912,6 @@ func (b *MockDefinitionClientBuilder) WithSuccessfulInitialize() *MockDefinition
 	return b
 }
 
-// WithGetXRDForClaim sets the GetXRDForClaim behavior.
-func (b *MockDefinitionClientBuilder) WithGetXRDForClaim(fn func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error)) *MockDefinitionClientBuilder {
-	b.mock.GetXRDForClaimFn = fn
-	return b
-}
-
 // WithGetXRDForXR sets the GetXRDForXR behavior.
 func (b *MockDefinitionClientBuilder) WithGetXRDForXR(fn func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error)) *MockDefinitionClientBuilder {
 	b.mock.GetXRDForXRFn = fn
@@ -967,9 +957,11 @@ func (b *MockDefinitionClientBuilder) WithXRDForGVK(gvk schema.GroupVersionKind,
 
 // WithXRDForClaim sets the GetXRDForXR behavior to return the specified XR.
 func (b *MockDefinitionClientBuilder) WithXRDForClaim(unstructured *un.Unstructured) *MockDefinitionClientBuilder {
-	return b.WithGetXRDForClaim(func(_ context.Context, _ schema.GroupVersionKind) (*un.Unstructured, error) {
+	b.mock.GetXRDForClaimFn = func(_ context.Context, _ schema.GroupVersionKind) (*un.Unstructured, error) {
 		return unstructured, nil
-	})
+	}
+
+	return b
 }
 
 // WithIsClaimResource sets the IsClaimResource behavior.
@@ -1511,15 +1503,10 @@ func (b *CRDBuilder) WithSingular(singular string) *CRDBuilder {
 	return b
 }
 
-// WithScope sets the scope (Namespaced or Cluster) for the CRD.
-func (b *CRDBuilder) WithScope(scope extv1.ResourceScope) *CRDBuilder {
-	b.crd.Spec.Scope = scope
-	return b
-}
-
 // WithNamespaceScope sets the CRD to be namespace-scoped.
 func (b *CRDBuilder) WithNamespaceScope() *CRDBuilder {
-	return b.WithScope(extv1.NamespaceScoped)
+	b.crd.Spec.Scope = extv1.NamespaceScoped
+	return b
 }
 
 // WithDefaultVersion adds a default "v1" version to the CRD.

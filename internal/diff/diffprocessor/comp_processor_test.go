@@ -2398,6 +2398,13 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 			lookupErr: errors.New("revision gone"),
 			want:      want{Status: dt.XRStatusError, Pinned: true, Error: true},
 		},
+		// The lookup failure says nothing about the revision, so it must not raise the analysis scope
+		// of a composition that matches the cluster and calls no changed function.
+		"PinnedRevisionLookupErrorDoesNotRaiseScope": {
+			lookupErr: errors.New("revision gone"),
+			unrelated: true,
+			want:      want{Status: dt.XRStatusFiltered, FilterReason: dt.FilterReasonManualPolicy},
+		},
 	}
 
 	for name, tt := range cases {

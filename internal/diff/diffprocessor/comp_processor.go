@@ -479,7 +479,10 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// This holds even when the diffed composition itself calls no changed function and matches the
 	// cluster: an XR pinned to an older revision that does is analysed as a metadata-scope change.
 	pinnedXRs, pinnedKept, pinnedDropped := p.pinnedFunctionChangeXRs(ctx, keptXRs, droppedXRs)
-	if len(pinnedXRs) > 0 && analysisScope == ChangeScopeNone {
+	// A failed lookup does not raise the scope: it says nothing about whether the revision calls a
+	// changed function, and raising it would report unrelated drift as this composition's impact. The
+	// XR still carries its error when the analysis runs for another reason.
+	if analysisScope == ChangeScopeNone && anyResolved(pinnedXRs) {
 		analysisScope = ChangeScopeMetadata
 	}
 
@@ -822,6 +825,17 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 type pinnedResolution struct {
 	resolved dtypes.ResolvedComposition
 	err      error
+}
+
+// anyResolved reports whether any pinned lookup succeeded.
+func anyResolved(m map[string]pinnedResolution) bool {
+	for _, r := range m {
+		if r.err == nil {
+			return true
+		}
+	}
+
+	return false
 }
 
 // pinnedFunctionChangeXRs moves out of dropped the Manual XRs that stay pinned to a revision whose

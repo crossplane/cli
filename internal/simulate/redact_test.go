@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package plan
+package simulate
 
 import (
 	"testing"
@@ -240,19 +240,19 @@ func TestRedactPaths(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			before := []*unstructured.Unstructured{tc.args.current.DeepCopy(), tc.args.desired.DeepCopy()}
-			cur, des, err := RedactPaths(tc.args.current, tc.args.desired, tc.args.paths)
+			cur, des, err := redactPaths(tc.args.current, tc.args.desired, tc.args.paths)
 			if diff := cmp.Diff(tc.want.err, err != nil); diff != "" {
-				t.Errorf("\n%s\nRedactPaths(...): -want error, +got error (%v):\n%s", tc.reason, err, diff)
+				t.Errorf("\n%s\nredactPaths(...): -want error, +got error (%v):\n%s", tc.reason, err, diff)
 			}
 			if diff := cmp.Diff(tc.want.current, cur); diff != "" {
-				t.Errorf("\n%s\nRedactPaths(...): -want current, +got:\n%s", tc.reason, diff)
+				t.Errorf("\n%s\nredactPaths(...): -want current, +got:\n%s", tc.reason, diff)
 			}
 			if diff := cmp.Diff(tc.want.desired, des); diff != "" {
-				t.Errorf("\n%s\nRedactPaths(...): -want desired, +got:\n%s", tc.reason, diff)
+				t.Errorf("\n%s\nredactPaths(...): -want desired, +got:\n%s", tc.reason, diff)
 			}
 			after := []*unstructured.Unstructured{tc.args.current, tc.args.desired}
 			if diff := cmp.Diff(before, after); diff != "" {
-				t.Errorf("\n%s\nRedactPaths(...): changed its inputs:\n%s", tc.reason, diff)
+				t.Errorf("\n%s\nredactPaths(...): changed its inputs:\n%s", tc.reason, diff)
 			}
 		})
 	}
@@ -280,12 +280,12 @@ func TestSetPath(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			obj := &unstructured.Unstructured{Object: tc.in}
-			set := SetPath(obj, tc.path, u)
+			set := setPath(obj, tc.path, u)
 			if diff := cmp.Diff(tc.set, set); diff != "" {
-				t.Errorf("\n%s\nSetPath(...): -want set, +got:\n%s", tc.reason, diff)
+				t.Errorf("\n%s\nsetPath(...): -want set, +got:\n%s", tc.reason, diff)
 			}
 			if diff := cmp.Diff(tc.want, obj.Object); diff != "" {
-				t.Errorf("\n%s\nSetPath(...): -want, +got:\n%s", tc.reason, diff)
+				t.Errorf("\n%s\nsetPath(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

@@ -14,25 +14,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package plan
+package simulate
 
 import (
 	"fmt"
 	"reflect"
-	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
+
+	"github.com/crossplane/cli/v2/internal/plan"
 )
 
 // ChangedSensitive marks, on the new side, a sensitive value that differs
 // from the old side's, so a change made only to a secret still shows a line.
 const ChangedSensitive = "(sensitive value, changed)"
 
-// RedactPaths returns copies of current and desired with the value at each
+// redactPaths returns copies of current and desired with the value at each
 // path replaced by a placeholder: the sensitive-value marker on the old side,
 // and on the new side too when the old side holds an equal value or none;
 // otherwise ChangedSensitive. Each side is located on its own. A located map
@@ -53,7 +54,7 @@ const ChangedSensitive = "(sensitive value, changed)"
 // list of non-maps), a segment matches more than one location on a side, or
 // a map key holding brackets may be the one named, as fieldpath splits it.
 // The caller must then hide what the objects would print.
-func RedactPaths(current, desired *unstructured.Unstructured, paths []string) (*unstructured.Unstructured, *unstructured.Unstructured, error) {
+func redactPaths(current, desired *unstructured.Unstructured, paths []string) (*unstructured.Unstructured, *unstructured.Unstructured, error) {
 	cur, des := current.DeepCopy(), desired.DeepCopy()
 	root := func(u *unstructured.Unstructured) *slot {
 		if u == nil || u.Object == nil {
@@ -105,7 +106,7 @@ type slot struct {
 
 // replace replaces each present side with its placeholder.
 func replace(o, n *slot) error {
-	sensitive := FormatValue(&Value{Sensitive: true})
+	sensitive := plan.FormatValue(&plan.Value{Sensitive: true})
 	nv := sensitive
 	if o != nil && n != nil && !reflect.DeepEqual(o.v, n.v) {
 		nv = ChangedSensitive
@@ -191,7 +192,7 @@ func locateMap(v map[string]any, at string, segs []fieldpath.Segment) ([]*slot, 
 func locateList(v []any, at string, segs []fieldpath.Segment) ([]*slot, error) {
 	seg := segs[0]
 	if seg.Type == fieldpath.SegmentIndex {
-		// Every item, whatever the index: see RedactPaths.
+		// Every item, whatever the index: see redactPaths.
 		var out []*slot
 		for i := range v {
 			got, err := locate(&slot{v: v[i], set: func(x any) { v[i] = x }, at: fmt.Sprintf("%s[%d]", at, i)}, segs[1:])
@@ -262,31 +263,38 @@ func mapKey(m map[string]any, f string) (string, bool, error) {
 	return found, n == 1, nil
 }
 
-// SetPath sets the value at path in u to v, in place, at every location the
+// setPath sets the value at path in u to v, in place, at every location the
 // path reaches: a field, the item an index names, or every item a keyed
-// segment matches. Map levels are matched as RedactPaths matches them. A field
+// segment matches. Map levels are matched as redactPaths matches them. A field
 // absent from a map is created, with the map levels below it, when the rest
 // of the path is fields alone; a dotted key absent from u is so created as
 // nested levels. It sets nothing where the path doesn't parse, resolves to the
 // root, or meets a scalar, a missing item or the wrong kind of node, nor at a
 // map level more than one key matches. It reports whether it set a value.
-func SetPath(u *unstructured.Unstructured, path string, v any) bool {
+//
+// fieldpath.Pave.SetValue sets the same path strings, but it can't be used
+// throughout: it treats a dotted map key (tags.kubernetes.io/cluster/x) as
+// nested levels, so it would miss a present key that holds dots; it sets one
+// location, not every item a keyed segment matches; and it doesn't skip a map
+// level more than one key matches. setPath handles those and uses SetValue
+// only to create levels no key reaches.
+func setPath(u *unstructured.Unstructured, path string, v any) bool {
 	segs, err := fieldpath.Parse(path)
 	if err != nil {
 		return false
 	}
-	return SetSegments(u, segs, v)
+	return setSegments(u, segs, v)
 }
 
-// SetSegments sets v at the parsed path segs in u, as SetPath does.
-func SetSegments(u *unstructured.Unstructured, segs fieldpath.Segments, v any) bool {
+// setSegments sets v at the parsed path segs in u, as setPath does.
+func setSegments(u *unstructured.Unstructured, segs fieldpath.Segments, v any) bool {
 	if u == nil || u.Object == nil || len(segs) == 0 {
 		return false
 	}
 	return setIn(u.Object, segs, v)
 }
 
-// setIn sets v at segs, which are not empty, below node, as SetPath does.
+// setIn sets v at segs, which are not empty, below node, as setPath does.
 func setIn(node any, segs []fieldpath.Segment, v any) bool {
 	switch n := node.(type) {
 	case map[string]any:
@@ -297,7 +305,7 @@ func setIn(node any, segs []fieldpath.Segment, v any) bool {
 	return false
 }
 
-func setInMap(n map[string]any, segs []fieldpath.Segment, v any) bool {
+func setInMap(n map[string]any, segs fieldpath.Segments, v any) bool {
 	if segs[0].Type != fieldpath.SegmentField {
 		return false
 	}
@@ -321,26 +329,14 @@ func setInMap(n map[string]any, segs []fieldpath.Segment, v any) bool {
 	case found == 1:
 		return setIn(n[key], tail, v)
 	}
-	nested, ok := levels(segs, v)
-	if ok {
-		n[segs[0].Field] = nested
-	}
-	return ok
-}
-
-// levels returns v nested in a map per field of segs after the first, or
-// false when a segment is an index or a keyed item, which is never created.
-func levels(segs []fieldpath.Segment, v any) (any, bool) {
-	for i, s := range slices.Backward(segs) {
-		// fieldpath reads [key="b"] as the field key="b.
-		if s.Type != fieldpath.SegmentField || strings.Contains(s.Field, "=") {
-			return nil, false
-		}
-		if i > 0 {
-			v = map[string]any{s.Field: v}
+	// Nothing at these fields exists, so the plain setter's rules apply:
+	// create the missing levels. It can't address an index or keyed item.
+	for _, seg := range segs {
+		if seg.Type != fieldpath.SegmentField || strings.Contains(seg.Field, "=") {
+			return false
 		}
 	}
-	return v, true
+	return fieldpath.Pave(n).SetValue(segs.String(), v) == nil
 }
 
 func setInList(n []any, segs []fieldpath.Segment, v any) bool {

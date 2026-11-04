@@ -213,9 +213,9 @@ func annotateDiff(d *dt.ResourceDiff, pp *plan.ResourcePlan) *dt.ResourceDiff {
 
 // objectDiff returns d's line diff with the provider's values written into
 // copies of the Clean views, and whether it wrote any: every value a change
-// marks sensitive, on either side, replaced as plan.RedactPaths does, and
+// marks sensitive, on either side, replaced as redactPaths does, and
 // each computed value set to "(known after apply)" on the desired side, as
-// plan.SetPath sets it. The diff is made again from the copies, as
+// setPath sets it. The diff is made again from the copies, as
 // compare.GenerateDiff makes it, so no secret reaches the text. It returns an
 // error when a sensitive value can't be redacted: the caller must hide the
 // body. It also returns the desired copy the diff's new side marshals, nil
@@ -238,13 +238,13 @@ func objectDiff(d *dt.ResourceDiff, changes []plan.FieldChange) ([]diffmatchpatc
 	changed := len(paths) > 0
 	if changed {
 		var err error
-		if cur, des, err = plan.RedactPaths(cur, des, paths); err != nil {
+		if cur, des, err = redactPaths(cur, des, paths); err != nil {
 			return nil, nil, false, err
 		}
 	}
 	for _, c := range changes {
 		if c.Planned != nil && c.Planned.Unknown {
-			changed = plan.SetPath(des, c.Path, knownAfterApply) || changed
+			changed = setPath(des, c.Path, knownAfterApply) || changed
 		}
 	}
 	if !changed {
@@ -367,7 +367,7 @@ const probe = "CROSSPLANE-PROBE-7f3c"
 // are the field's, because sigsyaml writes keys sorted, so the lines before
 // and after a value don't depend on it, and the line diff keeps lines whole.
 //
-// ponytail: a field is found only where plan.SetPath reaches it, so a keyed
+// ponytail: a field is found only where setPath reaches it, so a keyed
 // item or index the desired side lacks gets no mark in a modified diff, and a
 // keyed segment matching several items marks the first "+" line from the
 // first match to the last. The header, the summary and -o plan still say
@@ -432,7 +432,7 @@ func scalarAt(des *unstructured.Unstructured, segs fieldpath.Segments) bool {
 // field at path is on, or false when des lacks it.
 func fieldLines(orig string, des *unstructured.Unstructured, segs fieldpath.Segments) (int, int, bool) {
 	c := des.DeepCopy()
-	if !plan.SetSegments(c, segs, probe) {
+	if !setSegments(c, segs, probe) {
 		return 0, 0, false
 	}
 	got, err := text(c)
@@ -448,6 +448,6 @@ func fieldLines(orig string, des *unstructured.Unstructured, segs fieldpath.Segm
 	for suf < len(a)-pre && suf < len(b)-pre && a[len(a)-1-suf] == b[len(b)-1-suf] {
 		suf++
 	}
-	// A field SetPath had to create holds no line of orig: it is absent.
+	// A field setPath had to create holds no line of orig: it is absent.
 	return pre, len(a) - suf, len(a)-suf > pre
 }

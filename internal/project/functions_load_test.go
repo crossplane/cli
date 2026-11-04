@@ -81,15 +81,13 @@ func TestLoadFunctions(t *testing.T) {
 	cases := map[string]struct {
 		reason     string
 		repository string
-		digests    bool
 	}{
-		"DigestsRequested": {
-			reason:     "Function dependencies should resolve through the given manager, and digests should be computed.",
+		"Explicit": {
+			reason:     "Function dependencies should resolve through the given manager.",
 			repository: "xpkg.example.com/acme/test",
-			digests:    true,
 		},
 		"RepositoryWithoutRegistry": {
-			reason:     "Render xr doesn't ask for digests, so a repository without an explicit registry, which digests reject, should load.",
+			reason:     "A repository without an explicit registry should load, as render xr needs.",
 			repository: "acme/test",
 		},
 	}
@@ -114,7 +112,6 @@ func TestLoadFunctions(t *testing.T) {
 			fns, digests, err := LoadFunctions(t.Context(), proj, projFS, depMgr, LoadFunctionsOptions{
 				Logger:  logging.NewNopLogger(),
 				Spinner: terminal.NewNopSpinnerPrinter(),
-				Digests: tc.digests,
 			})
 			if err != nil {
 				t.Fatalf("\n%s\nLoadFunctions(...): %v", tc.reason, err)
@@ -127,10 +124,9 @@ func TestLoadFunctions(t *testing.T) {
 			if diff := cmp.Diff([]string{src + ":v1.2.0"}, got); diff != "" {
 				t.Errorf("\n%s\nLoadFunctions(...): function packages -want, +got:\n%s", tc.reason, diff)
 			}
-			// The project has no embedded functions, so digests is empty
-			// when requested and nil when not.
-			if tc.digests != (digests != nil) || len(digests) != 0 {
-				t.Errorf("\n%s\nLoadFunctions(...): digests = %v, requested %t", tc.reason, digests, tc.digests)
+			// The project has no embedded functions.
+			if len(digests) != 0 {
+				t.Errorf("\n%s\nLoadFunctions(...): want no digests, got %v", tc.reason, digests)
 			}
 		})
 	}

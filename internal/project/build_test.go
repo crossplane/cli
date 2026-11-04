@@ -175,7 +175,7 @@ func TestBuilderBuild(t *testing.T) {
 				BuildWithFunctionIdentifier(functions.FakeIdentifier),
 			)
 
-			imgMap, err := b.Build(t.Context(), proj, projFS)
+			imgMap, _, err := b.Build(t.Context(), proj, projFS)
 			if err != nil {
 				t.Fatalf("Build: %v", err)
 			}
@@ -265,7 +265,7 @@ func TestBuilderDependsOn(t *testing.T) {
 		BuildWithFunctionIdentifier(functions.FakeIdentifier),
 	)
 
-	imgMap, err := b.Build(t.Context(), proj, projFS)
+	imgMap, _, err := b.Build(t.Context(), proj, projFS)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestBuilderZeroConcurrency(t *testing.T) {
 	// The semaphore send ignores ctx, so time the build out from here.
 	done := make(chan error, 1)
 	go func() {
-		_, err := b.Build(t.Context(), proj, projFS)
+		_, _, err := b.Build(t.Context(), proj, projFS)
 		done <- err
 	}()
 	select {
@@ -458,7 +458,7 @@ func TestBuilderBuildExplicitFunctions(t *testing.T) {
 
 	b := NewBuilder(BuildWithFunctionIdentifier(functions.FakeIdentifier))
 
-	imgMap, err := b.Build(t.Context(), proj, projFS)
+	imgMap, digests, err := b.Build(t.Context(), proj, projFS)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -475,6 +475,16 @@ func TestBuilderBuildExplicitFunctions(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("Build(...) function repos: -want, +got:\n%s", diff)
+	}
+
+	// Only the embedded function has a digest, under its repository.
+	gotDigests := map[string]string{}
+	for k, d := range digests {
+		gotDigests[k] = d.Repository.Name()
+	}
+	wantDigests := map[string]string{"example-testfn-explicit": proj.Spec.Repository + "_fn-explicit"}
+	if diff := cmp.Diff(wantDigests, gotDigests); diff != "" {
+		t.Errorf("Build(...) digests: -want, +got:\n%s", diff)
 	}
 }
 
@@ -510,7 +520,7 @@ func TestBuilderBuildTarballFunction(t *testing.T) {
 
 	b := NewBuilder(BuildWithFunctionIdentifier(functions.FakeIdentifier))
 
-	imgMap, err := b.Build(t.Context(), proj, projFS)
+	imgMap, _, err := b.Build(t.Context(), proj, projFS)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

@@ -229,7 +229,7 @@ func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 
 		eg.Go(func() error {
 			var buildErr error
-			imgMap, buildErr = b.Build(egCtx, c.proj, c.projFS,
+			imgMap, _, buildErr = b.Build(egCtx, c.proj, c.projFS,
 				project.BuildWithLogger(logger),
 				project.BuildWithEventChannel(ch),
 			)

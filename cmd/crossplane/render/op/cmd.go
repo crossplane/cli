@@ -400,7 +400,7 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 			project.BuildWithBaseImageCacheDir(functions.DefaultBaseImageCacheDir()),
 		)
 
-		imgMap, err := b.Build(ctx, proj, projFS,
+		imgMap, _, err := b.Build(ctx, proj, projFS,
 			project.BuildWithLogger(log),
 			project.BuildWithEventChannel(ch),
 		)

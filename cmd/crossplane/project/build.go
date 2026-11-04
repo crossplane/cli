@@ -140,7 +140,7 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 	var imgMap project.ImageTagMap
 	err = sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
 		var buildErr error
-		imgMap, buildErr = b.Build(ctx, c.proj, c.projFS,
+		imgMap, _, buildErr = b.Build(ctx, c.proj, c.projFS,
 			project.BuildWithLogger(logger),
 			project.BuildWithEventChannel(ch),
 		)

@@ -118,7 +118,6 @@ func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, s
 		Spinner:        sp,
 		Generators:     generators,
 		MaxConcurrency: c.MaxConcurrency,
-		Digests:        true,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot load functions from project")

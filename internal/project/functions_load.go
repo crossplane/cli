@@ -47,19 +47,14 @@ type LoadFunctionsOptions struct {
 	// built with, so both generate schemas the same way.
 	Generators []generator.Interface
 
-	// Digests computes the index digest of each embedded function, which
-	// needs a project repository with an explicit registry.
-	Digests bool
-
 	// MaxConcurrency is the most embedded functions built at once.
 	MaxConcurrency uint
 }
 
 // LoadFunctions resolves a project's function dependencies with depMgr and
 // builds its embedded functions, loading their images into the docker daemon.
-// It returns a Function for each dependency and each embedded function and,
-// when o.Digests is set, the index digest of each embedded function, as
-// EmbeddedFunctionDigests does.
+// It returns a Function for each dependency and each embedded function and the
+// index digest of each embedded function, as Build does.
 func LoadFunctions(ctx context.Context, proj *devv1alpha1.Project, projFS afero.Fs, depMgr *dependency.Manager, o LoadFunctionsOptions) ([]pkgv1.Function, map[string]EmbeddedDigest, error) {
 	log, sp := o.Logger, o.Spinner
 
@@ -93,7 +88,7 @@ func LoadFunctions(ctx context.Context, proj *devv1alpha1.Project, projFS afero.
 			BuildWithBaseImageCacheDir(functions.DefaultBaseImageCacheDir()),
 		)
 
-		imgMap, err := b.Build(ctx, proj, projFS,
+		imgMap, built, err := b.Build(ctx, proj, projFS,
 			BuildWithLogger(log),
 			BuildWithEventChannel(ch),
 		)
@@ -101,11 +96,7 @@ func LoadFunctions(ctx context.Context, proj *devv1alpha1.Project, projFS afero.
 			return err
 		}
 
-		if o.Digests {
-			if digests, err = EmbeddedFunctionDigests(imgMap, proj.Spec.Repository); err != nil {
-				return err
-			}
-		}
+		digests = built
 
 		embeddedFns, err := EmbeddedFunctionsToDaemon(ctx, imgMap)
 		fns = append(fns, embeddedFns...)

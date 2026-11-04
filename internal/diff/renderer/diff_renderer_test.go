@@ -450,6 +450,41 @@ func replacing(opts DiffOptions, names ...string) DiffOptions {
 
 // TestDefaultDiffRenderer_NilReplacedIsUnchanged pins that a hook reporting
 // nothing replaced renders exactly what no hook does.
+// The same kind and name in different namespaces must render in one order whatever the map order.
+func TestDefaultDiffRenderer_renderDiffList_SameKindNameDifferentNamespaces(t *testing.T) {
+	namespaces := []string{"ns-a", "ns-b", "ns-c", "ns-d", "ns-e", "ns-f", "ns-g", "ns-h"}
+
+	diffs := make(map[string]*dt.ResourceDiff, len(namespaces))
+
+	for _, ns := range namespaces {
+		d := modifiedDiffFor("Bucket", "same")
+		d.Namespace = ns
+		d.LineDiffs = []diffmatchpatch.Diff{{Type: diffmatchpatch.DiffInsert, Text: "namespace: " + ns}}
+		diffs[d.GetDiffKey()] = d
+	}
+
+	render := func() string {
+		var stdout bytes.Buffer
+
+		opts := DefaultDiffOptions()
+		opts.Stdout, opts.Stderr = &stdout, &bytes.Buffer{}
+
+		if _, err := NewDiffRenderer(tu.TestLogger(t, false), opts).(*DefaultDiffRenderer).renderDiffList(diffs); err != nil {
+			t.Fatalf("renderDiffList(): %v", err)
+		}
+
+		return stdout.String()
+	}
+
+	want := render()
+	// Map iteration order is randomized per range, so a missing tie-break differs within a few runs.
+	for range 50 {
+		if got := render(); got != want {
+			t.Fatalf("renderDiffList() output depends on map order:\n%q\nwant:\n%q", got, want)
+		}
+	}
+}
+
 func TestDefaultDiffRenderer_NilReplacedIsUnchanged(t *testing.T) {
 	groups := []dt.XRDiffGroup{
 		xrGroup("XNopResource", "first-xr", map[string]*dt.ResourceDiff{"b": modifiedDiffFor("Bucket", "b")}),

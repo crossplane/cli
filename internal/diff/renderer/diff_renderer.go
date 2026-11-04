@@ -87,10 +87,14 @@ type diffCounts struct {
 func (r *DefaultDiffRenderer) renderDiffList(diffs map[string]*dt.ResourceDiff) (diffCounts, error) {
 	stdout := r.diffOpts.Stdout
 
-	// Sort by GetKindName, which is how it's displayed to the user.
+	// Sort by GetKindName, which is how it's displayed to the user. The same kind and name in two
+	// namespaces display alike, so GetDiffKey breaks the tie: map order must not reach the output.
 	d := slices.AppendSeq(make([]*dt.ResourceDiff, 0, len(diffs)), maps.Values(diffs))
 	slices.SortFunc(d, func(a, b *dt.ResourceDiff) int {
-		return cmp.Compare(getKindName(a), getKindName(b))
+		return cmp.Or(
+			cmp.Compare(getKindName(a), getKindName(b)),
+			cmp.Compare(a.GetDiffKey(), b.GetDiffKey()),
+		)
 	})
 
 	var counts diffCounts

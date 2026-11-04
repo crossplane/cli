@@ -885,7 +885,8 @@ func (p *DefaultCompDiffProcessor) pinnedFunctionChangeXRs(ctx context.Context, 
 // pinnedRevisionCallsChangedFunction reports whether resolved is the pinned revision of xr and calls a
 // changed function. A resolution with no revision name (the composition itself) or for another type
 // (a claim, whose backing XR the render looks up under a different key) is not.
-// ponytail: a pinned claim stays deferred; route the backing XR's key to support it.
+// TODO(jcogilvie): a pinned claim stays deferred, so a legacy cluster-scoped XR's claim pinned to a
+// revision that calls a changed function is missed; route the backing XR's key to support it.
 func pinnedRevisionCallsChangedFunction(xr *un.Unstructured, resolved dtypes.ResolvedComposition, changed sets.Set[string]) bool {
 	if resolved.Composition == nil || resolved.RevisionName == "" {
 		return false

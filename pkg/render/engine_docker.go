@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/moby/moby/client"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -73,18 +74,25 @@ type dockerRenderEngine struct {
 	runner containerRunner
 
 	// networks creates and removes the temporary Docker network Setup owns.
-	// Production callers leave it nil and Setup builds a real client from the
-	// environment only when it needs to create a network. Tests substitute a
-	// fake to exercise the create-network branch without a real Docker
-	// daemon.
+	// When nil, Setup builds a client from the environment, only when it
+	// needs to create a network. A Session sets it from WithDockerClient.
 	networks networkClient
+
+	// dockerClient, when set, is the Docker client the render container is
+	// run through, and the daemon CheckContextSupport checks, instead of the
+	// environment's. A Session sets it, and networks, from WithDockerClient.
+	dockerClient client.APIClient
 }
 
 func (e *dockerRenderEngine) CheckContextSupport() error {
 	if runtime.GOOS == "windows" {
 		return errors.New("context handling via --context-values/--context-files/--include-context is not supported on Windows")
 	}
-	if host := os.Getenv("DOCKER_HOST"); host != "" && !strings.HasPrefix(host, "unix://") {
+	host := os.Getenv("DOCKER_HOST")
+	if e.dockerClient != nil {
+		host = e.dockerClient.DaemonHost()
+	}
+	if host != "" && !strings.HasPrefix(host, "unix://") {
 		return errors.New("context handling via --context-values/--context-files/--include-context requires a local Docker daemon or Crossplane controller binary")
 	}
 
@@ -156,7 +164,9 @@ func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (f
 // partial response AND a non-nil error containing stderr — letting callers
 // recover the partial output (e.g. RequiredResources) and iterate.
 func (e *dockerRenderEngine) Render(ctx context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
-	// Update any localhost function addresses if needed.
+	// Update any localhost function addresses if needed, on a copy: the
+	// caller's request may be rendering concurrently.
+	req = proto.CloneOf(req)
 	if cinput := req.GetComposite(); cinput != nil {
 		cinput.Functions = RewriteAddressesForDocker(cinput.GetFunctions())
 	}
@@ -179,6 +189,9 @@ func (e *dockerRenderEngine) Render(ctx context.Context, req *renderv1alpha1.Ren
 	}
 	if e.network != "" {
 		opts = append(opts, docker.RunWithNetworkName(e.network))
+	}
+	if e.dockerClient != nil {
+		opts = append(opts, docker.RunWithClient(e.dockerClient))
 	}
 
 	e.log.Debug("Running crossplane internal render in Docker", "image", e.image, "network", e.network)

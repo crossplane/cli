@@ -20,7 +20,7 @@ they're run:
 | `render.crossplane.io/runtime: "Development"` | Connect to a Function running locally, instead of using Docker, for example when developing or debugging a new Function. The Function must be listening at `localhost:9443` and running with the `--insecure` flag. |
 | `render.crossplane.io/runtime-development-target: "dns:///example.org:7443"` | Connect to a Function running somewhere other than `localhost:9443`. The target uses gRPC target syntax (for example, `dns:///example.org:7443` or `example.org:7443`). |
 | `render.crossplane.io/runtime-docker-cleanup: "Orphan"` | Don't stop the Function's Docker container after rendering. |
-| `render.crossplane.io/runtime-docker-name: "<name>"` | Create or reuse a container with the given name. Restart the container if needed. |
+| `render.crossplane.io/runtime-docker-name: "<name>"` | Create or reuse a container with the given name. Restart the container if needed. See below for when a running container is reused. |
 | `render.crossplane.io/runtime-docker-pull-policy: "Always"` | Always pull the Function's package, even if it already exists locally. Other supported values are `Never` or `IfNotPresent`. |
 | `render.crossplane.io/runtime-docker-publish-address: "0.0.0.0"` | Host address that Docker should publish the Function's container port to. Defaults to `127.0.0.1` (localhost only). Use `0.0.0.0` to publish to all host network interfaces, enabling access from remote machines. |
 | `render.crossplane.io/runtime-docker-target: "docker-host"` | Address that the render CLI should use to connect to the Function's Docker container. If not specified, uses the publish address. |
@@ -30,6 +30,23 @@ Use the standard `DOCKER_HOST`, `DOCKER_API_VERSION`, `DOCKER_CERT_PATH`, and
 to the Docker daemon. See the
 [Docker environment variables](https://docs.docker.com/engine/reference/commandline/cli/#environment-variables)
 reference.
+
+## Cleaning up after a crashed run
+
+If a run is killed before it cleans up (for example by `kill -9`), the next
+`composition render` or `operation render` run cleans up what it left behind,
+following each container's `runtime-docker-cleanup` policy. This doesn't apply
+to runs started with `--session-id`, to runs on Windows, or to a different
+`DOCKER_HOST`.
+
+If a container named by `runtime-docker-name` already exists:
+
+| Container | What this run does |
+|---|---|
+| Stopped | Restarts it. On exit it keeps it as long as either run's policy asks (`Orphan` > `Stop` > `Remove`). |
+| Running, `Orphan` | Shares it and leaves it running. |
+| Running, started by this run | Shares it. |
+| Running, `Stop` or `Remove`, started by another run | Fails, because that run will stop or remove it. Use `Orphan` to share a container between runs. |
 
 ## Project support
 

@@ -101,7 +101,7 @@ const (
 
 // labelDomain prefixes the labels simulate applies to the Docker containers
 // it creates.
-const labelDomain = "simulate.crossplane.io"
+const labelDomain = containerruntime.DomainSimulate
 
 // Labels applied to the Docker containers simulate creates, mirroring
 // render's, so leftovers (a crash, or an Orphan cleanup policy) can be

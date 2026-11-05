@@ -35,7 +35,7 @@ const FunctionPort = 9443
 
 // labelDomain prefixes the labels render applies to the Docker resources it
 // creates.
-const labelDomain = "render.crossplane.io"
+const labelDomain = containerruntime.DomainRender
 
 // Annotations that can be used to configure the Docker runtime.
 const (
@@ -319,6 +319,7 @@ func (r *RuntimeDocker) Start(ctx context.Context) (RuntimeContext, error) {
 		Port:        FunctionPort,
 		Env:         r.Env,
 		Labels:      functionContainerLabels(r.Session, r.Cleanup),
+		Domain:      labelDomain,
 		BindAddress: r.BindAddress,
 		Target:      r.Target,
 		Network:     r.Network,

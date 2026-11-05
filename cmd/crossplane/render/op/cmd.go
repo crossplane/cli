@@ -41,6 +41,7 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
+	"github.com/crossplane/cli/v2/internal/containerruntime"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/functions"
@@ -172,14 +173,22 @@ func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, 
 
 	c.SetDefaultCrossplaneDockerNetwork(fns)
 
-	engine := c.newEngine(&c.EngineFlags, log)
+	sess := render.NewSession(c.EngineFlags, log,
+		render.WithEngineFactory(c.newEngine),
+		render.WithLeaseDir(containerruntime.DefaultLeaseDir()),
+		// Leasing this run and reclaiming dead runs is best effort, and
+		// must not change this command's output.
+		render.WithWarn(func(err error) {
+			log.Debug("Cannot lease this run or reclaim dead runs' Docker resources", "error", err)
+		}),
+	)
 
 	seedCtx := len(c.ContextValues) > 0 || len(c.ContextFiles) > 0
 	captureCtx := c.IncludeContext
 
 	var ctxHandle *contextfn.Handle
 	if seedCtx || captureCtx {
-		if err := engine.CheckContextSupport(); err != nil {
+		if err := sess.CheckContextSupport(); err != nil {
 			return err
 		}
 
@@ -208,28 +217,23 @@ func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, 
 		}
 	}
 
-	cleanup, err := engine.Setup(ctx, fns)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-
-	// Start function runtimes to get their addresses.
-	fnAddrs, err := render.StartFunctionRuntimes(ctx, log, fns)
-	if err != nil {
-		return errors.Wrap(err, "cannot start function runtimes")
-	}
+	// Close stops the function runtimes, then removes what Setup created.
 	defer func() {
-		if err := render.StopFunctionRuntimes(ctx, fnAddrs); err != nil {
-			log.Info("Error stopping function runtimes", "error", err)
+		if err := sess.Close(ctx); err != nil {
+			log.Info("Error cleaning up render session", "error", err)
 			render.WarnCleanupFailure(k.Stderr, err)
 		}
 	}()
 
+	fnAddrs, err := sess.Start(ctx, fns)
+	if err != nil {
+		return err
+	}
+
 	// Build and execute the render request.
 	in := render.OperationInputs{
 		Operation:           op,
-		FunctionAddrs:       fnAddrs.Addresses(),
+		FunctionAddrs:       fnAddrs,
 		RequiredResources:   rrs,
 		RequiredSchemas:     rsc,
 		FunctionCredentials: fcreds,
@@ -239,7 +243,7 @@ func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, 
 		return errors.Wrap(err, "cannot build render request")
 	}
 
-	rsp, err := engine.Render(ctx, req)
+	rsp, err := sess.Render(ctx, req)
 	if err != nil {
 		return errors.Wrap(err, "cannot render operation")
 	}

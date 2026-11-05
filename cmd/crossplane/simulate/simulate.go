@@ -38,6 +38,7 @@ import (
 
 	"github.com/crossplane/crossplane/apis/v2/pkg"
 
+	"github.com/crossplane/cli/v2/internal/containerruntime"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/kube"
@@ -57,14 +58,14 @@ var helpDetail string
 type Cmd struct {
 	Filename string `help:"YAML files or directory with managed resources, or '-' for stdin (comma-separated)." predictor:"yaml_file_or_directory" required:"" short:"f"`
 
-	Providers    string        `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."       name:"providers"                                         optional:""                                     predictor:"yaml_file_or_directory" type:"path"`
-	ImageConfigs string        `help:"YAML file with ImageConfig manifests that rewrite provider image paths for local pulls. Defaults to the project's imageConfigs when a project file is present." name:"image-configs"                                     optional:""                                     predictor:"yaml_file"              type:"existingfile"`
-	ProjectFile  string        `help:"Path to a project definition file to read imageConfigs from. Defaults to ${project_file} when present."                                                         name:"project-file"                                      optional:""`
-	SessionID    string        `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID."                                placeholder:"ID"`
-	Context      string        `default:""                                                                                                                                                            help:"Kubernetes context."                               name:"context"                                  predictor:"context"                short:"c"`
-	CacheDir     string        `default:"~/.crossplane/cache"                                                                                                                                         help:"Cache directory for downloaded provider packages." name:"cache-dir"                                predictor:"directory"`
-	Timeout      time.Duration `default:"2m"                                                                                                                                                          help:"Per-resource plan timeout."`
-	Output       string        `default:"plan"                                                                                                                                                        enum:"plan,json,yaml"                                    help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
+	Providers    string        `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                  name:"providers"                                         optional:""                                     predictor:"yaml_file_or_directory" type:"path"`
+	ImageConfigs string        `help:"YAML file with ImageConfig manifests that rewrite provider image paths for local pulls. Defaults to the project's imageConfigs when a project file is present."                                            name:"image-configs"                                     optional:""                                     predictor:"yaml_file"              type:"existingfile"`
+	ProjectFile  string        `help:"Path to a project definition file to read imageConfigs from. Defaults to ${project_file} when present."                                                                                                    name:"project-file"                                      optional:""`
+	SessionID    string        `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-run ID. A supplied ID isn't leased, so its containers aren't reclaimed after a crash." placeholder:"ID"`
+	Context      string        `default:""                                                                                                                                                                                                       help:"Kubernetes context."                               name:"context"                                  predictor:"context"                short:"c"`
+	CacheDir     string        `default:"~/.crossplane/cache"                                                                                                                                                                                    help:"Cache directory for downloaded provider packages." name:"cache-dir"                                predictor:"directory"`
+	Timeout      time.Duration `default:"2m"                                                                                                                                                                                                     help:"Per-resource plan timeout."`
+	Output       string        `default:"plan"                                                                                                                                                                                                   enum:"plan,json,yaml"                                    help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
@@ -154,11 +155,16 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		return errors.Wrap(err, "cannot create package client")
 	}
 
-	mgr := diffserver.NewManager(pkgClient, logger, diffserver.WithSessionID(c.SessionID))
+	mgr := diffserver.NewManager(pkgClient, logger,
+		diffserver.WithSessionID(c.SessionID),
+		diffserver.WithLeaseDir(containerruntime.DefaultLeaseDir()),
+	)
+	// Stop before EnsureServers returns, so an interrupted startup still
+	// stops the servers it started. Stop is safe when none started.
+	defer isimulate.StopServers(ctx, k.Stderr, mgr)
 	if err := isimulate.EnsureServers(ctx, sp, k.Stderr, mgr, inputs); err != nil {
 		return err
 	}
-	defer isimulate.StopServers(ctx, k.Stderr, mgr)
 
 	plans := make([]*plan.ResourcePlan, 0, len(resources))
 	planner := isimulate.NewPlanner(kubeClient, rmapper, defaultNamespace, mgr, c.Timeout)

@@ -37,9 +37,10 @@ reference.
 ## Cleaning up after a crashed run
 
 If a run is killed before it cleans up (for example by `kill -9`), the next
-`composition render` or `operation render` run cleans up what it left behind,
-following each container's `runtime-docker-cleanup` policy. This doesn't apply
-to runs started with `--session-id`, to runs on Windows, or to a different
+`composition render` or `operation render` run, or `resource simulate` run
+that starts a diff server container, cleans up what it left behind, following
+each container's `runtime-docker-cleanup` policy. This doesn't apply to runs
+started with `--session-id`, to runs on Windows, or to a different
 `DOCKER_HOST`.
 
 If a container named by `runtime-docker-name` already exists:

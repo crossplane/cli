@@ -22,6 +22,11 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -37,10 +42,12 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/parser"
 
+	"github.com/crossplane/cli/v2/internal/containerruntime"
 	"github.com/crossplane/cli/v2/internal/containerruntime/fake"
 )
 
@@ -163,19 +170,47 @@ func (f *fakePkgClient) ListVersions(_ context.Context, _ string, _ ...runtimexp
 type fakeDocker struct {
 	mu       sync.Mutex
 	addr     string            // host:port every container's port binds to
-	existing map[string]string // name -> id of pre-existing containers
+	existing map[string]string // name -> id of containers, pre-existing or created
 	known    map[string]bool   // ids inspect resolves port bindings for
 	created  []string          // names passed to ContainerCreate
 	stopped  []string          // ids passed to ContainerStop
 	removed  []string          // ids passed to ContainerRemove
+	// labels holds each created container's labels, by name.
+	labels map[string]map[string]string
+	// listed are the containers ContainerList matches label filters against,
+	// as left behind by dead runs.
+	listed []container.Summary
+	// removeErr fails ContainerRemove; startErr fails ContainerStart.
+	removeErr, startErr error
+	// conflict names a container another run creates, with an Orphan
+	// policy, just before this run's ContainerCreate for that name.
+	conflict string
 }
 
 func newFakeDocker(addr string, existing map[string]string) *fakeDocker {
-	f := &fakeDocker{addr: addr, existing: existing, known: map[string]bool{}}
+	if existing == nil {
+		existing = map[string]string{}
+	}
+	f := &fakeDocker{addr: addr, existing: existing, known: map[string]bool{}, labels: map[string]map[string]string{}}
 	for _, id := range existing {
 		f.known[id] = true
 	}
 	return f
+}
+
+// session returns the session label of the container created with a name
+// starting with prefix.
+func (f *fakeDocker) session(t *testing.T, prefix string) string {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for name, l := range f.labels {
+		if strings.HasPrefix(name, prefix) {
+			return l[LabelKeySession]
+		}
+	}
+	t.Fatalf("no container created with a name starting with %q, got %v", prefix, f.created)
+	return ""
 }
 
 func (f *fakeDocker) client() *fake.Client {
@@ -184,7 +219,10 @@ func (f *fakeDocker) client() *fake.Client {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			if id, ok := f.existing[ref]; ok {
-				return client.ContainerInspectResult{Container: container.InspectResponse{ID: id}}, nil
+				return client.ContainerInspectResult{Container: container.InspectResponse{
+					ID:     id,
+					Config: &container.Config{Labels: f.labels[ref]},
+				}}, nil
 			}
 			if f.known[ref] {
 				host, port, err := net.SplitHostPort(f.addr)
@@ -207,13 +245,21 @@ func (f *fakeDocker) client() *fake.Client {
 		MockContainerCreate: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
+			if options.Name == f.conflict {
+				f.existing[options.Name] = "winner-id"
+				f.known["winner-id"] = true
+				f.labels[options.Name] = containerruntime.ContainerLabels(labelDomain, "0000000000000001", CleanupOrphan)
+				return client.ContainerCreateResult{}, errdefs.ErrConflict
+			}
 			id := "new-" + options.Name
 			f.created = append(f.created, options.Name)
+			f.existing[options.Name] = id
+			f.labels[options.Name] = options.Config.Labels
 			f.known[id] = true
 			return client.ContainerCreateResult{ID: id}, nil
 		},
 		MockContainerStart: func(_ context.Context, _ string, _ client.ContainerStartOptions) (client.ContainerStartResult, error) {
-			return client.ContainerStartResult{}, nil
+			return client.ContainerStartResult{}, f.startErr
 		},
 		MockContainerStop: func(_ context.Context, id string, _ client.ContainerStopOptions) (client.ContainerStopResult, error) {
 			f.mu.Lock()
@@ -224,10 +270,39 @@ func (f *fakeDocker) client() *fake.Client {
 		MockContainerRemove: func(_ context.Context, id string, _ client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
+			if f.removeErr != nil {
+				return client.ContainerRemoveResult{}, f.removeErr
+			}
 			f.removed = append(f.removed, id)
 			return client.ContainerRemoveResult{}, nil
 		},
+		MockContainerList: func(_ context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			var res client.ContainerListResult
+			for _, c := range f.listed {
+				if matchesLabels(options.Filters, c.Labels) {
+					res.Items = append(res.Items, c)
+				}
+			}
+			return res, nil
+		},
+		MockNetworkList: func(context.Context, client.NetworkListOptions) (client.NetworkListResult, error) {
+			return client.NetworkListResult{}, nil
+		},
 	}
+}
+
+// matchesLabels reports whether labels carry every label filter, as Docker
+// matches them.
+func matchesLabels(filters client.Filters, labels map[string]string) bool {
+	for v := range filters["label"] {
+		k, want, _ := strings.Cut(v, "=")
+		if labels[k] != want {
+			return false
+		}
+	}
+	return true
 }
 
 // readyServer serves a real PlanService on a loopback listener that answers
@@ -303,9 +378,8 @@ func TestManagerStart(t *testing.T) {
 			t.Errorf("Route(Bucket.s3): want no route for a kind the package does not ship")
 		}
 
-		wantName := containerPrefix + "0123456789ab"
-		if len(fd.created) != 1 || fd.created[0] != wantName {
-			t.Errorf("Start(...): want container %q started, got %v", wantName, fd.created)
+		if len(fd.created) != 1 || !runName.MatchString(fd.created[0]) {
+			t.Errorf("Start(...): want one container named like %s started, got %v", runName, fd.created)
 		}
 
 		if err := m.Stop(ctx); err != nil {
@@ -316,18 +390,111 @@ func TestManagerStart(t *testing.T) {
 		}
 	})
 
-	t.Run("ReusesContainerByName", func(t *testing.T) {
+	t.Run("OrphanReusesContainerByName", func(t *testing.T) {
 		fd := newFakeDocker(servePlanService(t), map[string]string{
 			containerPrefix + "0123456789ab": "existing-id",
 		})
 		m := NewManager(pkgs, log, WithDockerClient(fd.client()))
 
-		skipped, err := m.Start(ctx, Images([]string{"xpkg.example.org/provider-aws-ec2:v2.9.0"}), nil)
+		skipped, err := m.Start(ctx, []Input{{Image: "xpkg.example.org/provider-aws-ec2:v2.9.0", Cleanup: CleanupOrphan}}, nil)
 		if err != nil || len(skipped) != 0 {
 			t.Fatalf("Start(...): unexpected error or skips: %v %+v", err, skipped)
 		}
 		if len(fd.created) != 0 {
 			t.Errorf("Start(...): want the existing container reused, got new containers %v", fd.created)
+		}
+	})
+
+	t.Run("RemoveNeverReusesContainerByName", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), map[string]string{
+			containerPrefix + "0123456789ab": "kept-id",
+		})
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()))
+
+		if _, err := m.Start(ctx, Images([]string{"xpkg.example.org/provider-aws-ec2:v2.9.0"}), nil); err != nil {
+			t.Fatalf("Start(...): unexpected error: %v", err)
+		}
+		if len(fd.created) != 1 || !runName.MatchString(fd.created[0]) {
+			t.Errorf("Start(...): want a container of this run's own, named like %s, got %v", runName, fd.created)
+		}
+		if err := m.Stop(ctx); err != nil {
+			t.Fatalf("Stop(...): unexpected error: %v", err)
+		}
+		if slices.Contains(fd.removed, "kept-id") {
+			t.Errorf("Stop(...): removed the kept container another run left, got removes %v", fd.removed)
+		}
+	})
+
+	t.Run("ConcurrentRemoveRunsDoNotShareAServer", func(t *testing.T) {
+		// Two runs on one Docker daemon serving the same provider: the
+		// first to exit must not remove the server the other still uses.
+		fd := newFakeDocker(servePlanService(t), nil)
+		img := Images([]string{"xpkg.example.org/provider-aws-ec2:v2.9.0"})
+		m1 := NewManager(pkgs, log, WithDockerClient(fd.client()))
+		m2 := NewManager(pkgs, log, WithDockerClient(fd.client()))
+
+		if _, err := m1.Start(ctx, img, nil); err != nil {
+			t.Fatalf("m1.Start(...): unexpected error: %v", err)
+		}
+		if _, err := m2.Start(ctx, img, nil); err != nil {
+			t.Fatalf("m2.Start(...): unexpected error: %v", err)
+		}
+		if len(fd.created) != 2 || fd.created[0] == fd.created[1] {
+			t.Fatalf("Start(...): want each run to create its own container, got %v", fd.created)
+		}
+
+		if err := m1.Stop(ctx); err != nil {
+			t.Fatalf("m1.Stop(...): unexpected error: %v", err)
+		}
+		if want := []string{m1.Servers()[0].ContainerID}; !slices.Equal(fd.removed, want) {
+			t.Errorf("m1.Stop(...): want only m1's container removed %v, got %v", want, fd.removed)
+		}
+	})
+
+	t.Run("InputsOfOnePackageShareAServer", func(t *testing.T) {
+		// Two Provider manifests name one package, by tag and by digest.
+		const byTag, byDigest = "xpkg.example.org/provider-aws-ec2:v2.9.0", "xpkg.example.org/provider-aws-ec2@sha256:0123456789abcdef"
+		pkgs := &fakePkgClient{pkgs: map[string]*runtimexpkg.Package{
+			byTag:    pkgs.pkgs[byTag],
+			byDigest: pkgs.pkgs[byTag],
+		}}
+		fd := newFakeDocker(servePlanService(t), nil)
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()))
+
+		skipped, err := m.Start(ctx, Images([]string{byTag, byDigest}), nil)
+		if err != nil || len(skipped) != 0 {
+			t.Fatalf("Start(...): unexpected error or skips: %v %+v", err, skipped)
+		}
+		if _, ok := m.Route(schema.GroupKind{Group: "ec2.aws.upbound.io", Kind: "VPC"}); !ok {
+			t.Errorf("Route(VPC.ec2): want a route from the shared server")
+		}
+		if err := m.Stop(ctx); err != nil {
+			t.Fatalf("Stop(...): unexpected error: %v", err)
+		}
+		if len(fd.created) != 1 || !slices.Equal(fd.removed, []string{"new-" + fd.created[0]}) {
+			t.Errorf("Start and Stop: want one container started and removed, got created %v, removed %v", fd.created, fd.removed)
+		}
+	})
+
+	t.Run("ConcurrentOrphanRunsShareTheWinnersServer", func(t *testing.T) {
+		// Another run creates the Orphan container between this run's
+		// lookup and its create.
+		fd := newFakeDocker(servePlanService(t), nil)
+		fd.conflict = containerPrefix + "0123456789ab"
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()))
+
+		skipped, err := m.Start(ctx, []Input{{Image: "xpkg.example.org/provider-aws-ec2:v2.9.0", Cleanup: CleanupOrphan}}, nil)
+		if err != nil || len(skipped) != 0 {
+			t.Fatalf("Start(...): unexpected error or skips: %v %+v", err, skipped)
+		}
+		if got := m.Servers()[0].ContainerID; got != "winner-id" {
+			t.Errorf("Start(...): want the winner's container shared, got %q", got)
+		}
+		if err := m.Stop(ctx); err != nil {
+			t.Fatalf("Stop(...): unexpected error: %v", err)
+		}
+		if len(fd.stopped) != 0 || len(fd.removed) != 0 {
+			t.Errorf("Stop(...): want the shared Orphan container left running, got stops %v removes %v", fd.stopped, fd.removed)
 		}
 	})
 
@@ -477,6 +644,149 @@ func TestManagerStart(t *testing.T) {
 		}
 		if _, ok := m.Route(schema.GroupKind{Group: "ec2.aws.upbound.io", Kind: "VPC"}); ok {
 			t.Errorf("Route(VPC.ec2): want no route from a skipped development server")
+		}
+	})
+}
+
+// runName matches the name of a diff server container that is one run's
+// alone: the package digest, then a random suffix.
+var runName = regexp.MustCompile(`^` + containerPrefix + `0123456789ab-[0-9a-f]{8}$`)
+
+func TestManagerLease(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("run leases are not supported on Windows")
+	}
+
+	ctx := context.Background()
+	log := logging.NewNopLogger()
+	const (
+		img    = "xpkg.example.org/provider-aws-ec2:v2.9.0"
+		deadID = "dead00000000000a"
+		liveID = "1111111111111111"
+	)
+	pkgs := &fakePkgClient{pkgs: map[string]*runtimexpkg.Package{
+		img: parsePackage(t, pkgWithCapability, "sha256:0123456789abcdef"),
+	}}
+	leases := func(t *testing.T, dir string) []string {
+		t.Helper()
+		got, err := filepath.Glob(filepath.Join(dir, "*.lock"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range got {
+			got[i] = strings.TrimSuffix(filepath.Base(got[i]), ".lock")
+		}
+		return got
+	}
+
+	t.Run("LeasesTheRunUntilACleanStop", func(t *testing.T) {
+		dir := t.TempDir()
+		fd := newFakeDocker(servePlanService(t), nil)
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()), WithLeaseDir(dir))
+
+		if _, err := m.Start(ctx, Images([]string{img}), nil); err != nil {
+			t.Fatalf("Start(...): unexpected error: %v", err)
+		}
+		if got, want := leases(t, dir), []string{fd.session(t, containerPrefix)}; !slices.Equal(got, want) {
+			t.Errorf("Start(...): want a lease for the run its containers are labelled with %v, got %v", want, got)
+		}
+		if err := m.Stop(ctx); err != nil {
+			t.Fatalf("Stop(...): unexpected error: %v", err)
+		}
+		if got := leases(t, dir); len(got) != 0 {
+			t.Errorf("Stop(...): want the lease removed after a clean stop, got %v", got)
+		}
+	})
+
+	t.Run("KeepsTheLeaseWhenAContainerIsLeft", func(t *testing.T) {
+		cases := map[string]struct {
+			removeErr, startErr error
+			wantSkips           int
+			wantStopErr         bool
+		}{
+			// Stop cannot remove the run's container.
+			"RemoveFails": {removeErr: errors.New("daemon busy"), wantStopErr: true},
+			// The container was created, then failed to start: nothing in
+			// this run knows its ID to remove it.
+			"StartFails": {startErr: errors.New("port is already allocated"), wantSkips: 1},
+		}
+		for name, tc := range cases {
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				fd := newFakeDocker(servePlanService(t), nil)
+				fd.removeErr, fd.startErr = tc.removeErr, tc.startErr
+				m := NewManager(pkgs, log, WithDockerClient(fd.client()), WithLeaseDir(dir))
+
+				if skipped, err := m.Start(ctx, Images([]string{img}), nil); err != nil || len(skipped) != tc.wantSkips {
+					t.Fatalf("Start(...): want %d skips and no error, got %+v, %v", tc.wantSkips, skipped, err)
+				}
+				if err := m.Stop(ctx); (err != nil) != tc.wantStopErr {
+					t.Fatalf("Stop(...): want error %t, got %v", tc.wantStopErr, err)
+				}
+				if got := leases(t, dir); len(got) != 1 {
+					t.Errorf("Stop(...): want the lease kept for a later run to reclaim, got %v", got)
+				}
+			})
+		}
+	})
+
+	t.Run("ReclaimsDeadRunsBeforeStarting", func(t *testing.T) {
+		dir := t.TempDir()
+		// A lease no process holds: its run died.
+		if err := os.WriteFile(filepath.Join(dir, deadID+".lock"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fd := newFakeDocker(servePlanService(t), nil)
+		fd.listed = []container.Summary{
+			{ID: "dead-server", Labels: containerruntime.ContainerLabels(labelDomain, deadID, CleanupRemove)},
+			// A run with no dead lease here, such as a live one: left alone.
+			{ID: "live-server", Labels: containerruntime.ContainerLabels(labelDomain, liveID, CleanupRemove)},
+			{ID: "kept-server", Labels: containerruntime.ContainerLabels(labelDomain, deadID, CleanupOrphan)},
+		}
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()), WithLeaseDir(dir))
+
+		if _, err := m.Start(ctx, Images([]string{img}), nil); err != nil {
+			t.Fatalf("Start(...): unexpected error: %v", err)
+		}
+		if want := []string{"dead-server"}; !slices.Equal(fd.removed, want) {
+			t.Errorf("Start(...): want only the dead run's Remove container removed %v, got %v", want, fd.removed)
+		}
+		if slices.Contains(leases(t, dir), deadID) {
+			t.Errorf("Start(...): want the dead run's lease removed once reclaimed")
+		}
+	})
+
+	t.Run("SuppliedIDIsNotLeased", func(t *testing.T) {
+		dir := t.TempDir()
+		fd := newFakeDocker(servePlanService(t), nil)
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()), WithLeaseDir(dir), WithSessionID("0123456789abcdef"))
+
+		if _, err := m.Start(ctx, Images([]string{img}), nil); err != nil {
+			t.Fatalf("Start(...): unexpected error: %v", err)
+		}
+		if got := leases(t, dir); len(got) != 0 {
+			t.Errorf("Start(...): want no lease for a supplied session ID, got %v", got)
+		}
+		if got := fd.session(t, containerPrefix); got != "0123456789abcdef" {
+			t.Errorf("Start(...): want the supplied session label, got %q", got)
+		}
+	})
+
+	t.Run("DevelopmentOnlyRunTakesNoLease", func(t *testing.T) {
+		dir := t.TempDir()
+		m := NewManager(&fakePkgClient{}, log, WithLeaseDir(dir))
+
+		_, err := m.Start(ctx, []Input{{
+			Runtime:           RuntimeDevelopment,
+			Name:              "provider-aws-ec2",
+			DevelopmentTarget: servePlanService(t),
+			APIGroups:         []string{"ec2.aws.upbound.io"},
+		}}, nil)
+		if err != nil {
+			t.Fatalf("Start(...): unexpected error: %v", err)
+		}
+		if got := leases(t, dir); len(got) != 0 {
+			t.Errorf("Start(...): want no lease for a run that starts no containers, got %v", got)
 		}
 	})
 }

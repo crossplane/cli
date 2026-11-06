@@ -672,10 +672,8 @@ func hasMarker(v any) bool {
 			}
 		}
 	case []any:
-		for _, e := range v {
-			if hasMarker(e) {
-				return true
-			}
+		if slices.ContainsFunc(v, hasMarker) {
+			return true
 		}
 	}
 

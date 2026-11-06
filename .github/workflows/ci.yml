@@ -116,7 +116,7 @@ jobs:
   # they use the integration-test app rather than a check, and cache Go modules
   # and build output themselves.
   integration-tests:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout

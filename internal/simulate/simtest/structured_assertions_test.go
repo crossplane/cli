@@ -12,8 +12,8 @@ import (
 	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
-// resultJSON serializes r the way project simulate's -o json does.
-func resultJSON(t *testing.T, r simulate.ProjectResult) string {
+// resultJSON serializes r the way simulate's -o json does.
+func resultJSON(t *testing.T, r simulate.Result) string {
 	t.Helper()
 
 	out, err := json.Marshal(r)
@@ -55,7 +55,7 @@ func bucket(region string) *unstructured.Unstructured {
 
 // xrResult is an xr run: one changed XR (a modified Bucket, a created ConfigMap and a deleted Secret),
 // one unchanged XR, and one errored XR.
-func xrResult() simulate.ProjectResult {
+func xrResult() simulate.Result {
 	plans := []*plan.ResourcePlan{
 		{
 			APIVersion: "example.org/v1", Kind: "Bucket", Name: "bucket-a", Namespace: "default", Action: plan.ActionUpdate, Composite: &xrA,
@@ -81,7 +81,7 @@ func xrResult() simulate.ProjectResult {
 		{APIVersion: xrC.APIVersion, Kind: xrC.Kind, Name: xrC.Name, Namespace: xrC.Namespace, Error: "cannot get composition", Composite: &xrC},
 	}
 
-	return simulate.ProjectResult{
+	return simulate.Result{
 		Result: plan.Result{
 			Summary: plan.Summarize(plans),
 			Plans:   plans,
@@ -216,8 +216,8 @@ var (
 
 // compResult is a comp run over two compositions: comp-a reaches a changed, an unchanged and a deleting
 // composite; comp-b reaches only a composite whose analysis failed.
-func compResult() simulate.ProjectResult {
-	return simulate.ProjectResult{
+func compResult() simulate.Result {
+	return simulate.Result{
 		Result: plan.Result{
 			Plans: []*plan.ResourcePlan{
 				{
@@ -425,7 +425,7 @@ func TestAssertFieldsAndWarnings(t *testing.T) {
 }
 
 // TestAssertStructuredCombined checks that xr-style and composition-style sections of one Expect()
-// are asserted against a single simulate.ProjectResult, and that each still fails where it did on its own.
+// are asserted against a single simulate.Result, and that each still fails where it did on its own.
 func TestAssertStructuredCombined(t *testing.T) {
 	res := xrResult()
 	res.Compositions = []simulate.CompositionResult{{Ref: compA, RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1}}}

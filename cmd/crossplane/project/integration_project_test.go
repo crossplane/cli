@@ -218,9 +218,9 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, tc.expectedExitCode, code)
 			}
 
-			var res simulate.ProjectResult
+			var res simulate.Result
 			if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-				t.Fatalf("\n%s\nsimulate -o json: output is not a simulate.ProjectResult: %v\n%s", tc.reason, err, stdout.String())
+				t.Fatalf("\n%s\nsimulate -o json: output is not a simulate.Result: %v\n%s", tc.reason, err, stdout.String())
 			}
 			if diff := cmp.Diff(tc.expectedResult, summarize(res)); diff != "" {
 				t.Errorf("\n%s\nsimulate -o json: -want, +got:\n%s", tc.reason, diff)

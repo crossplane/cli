@@ -1,4 +1,4 @@
-// Package simtest asserts on project simulate's structured output, simulate.ProjectResult, through
+// Package simtest asserts on project simulate's structured output, simulate.Result, through
 // crossplane-diff's expectation builders.
 package simtest
 
@@ -14,7 +14,7 @@ type Expectation interface {
 	expectation() *Expected
 }
 
-// Expected is a fluent builder for test expectations on a simulate.ProjectResult, covering both xr-style sections
+// Expected is a fluent builder for test expectations on a simulate.Result, covering both xr-style sections
 // (summary, flat resources, errors, XR groups) and composition-style sections. Each section is asserted
 // only if it was expected.
 type Expected struct {
@@ -567,7 +567,7 @@ type XRImpactExpectation struct {
 	status              string   // "changed", "unchanged", "error", "filtered"
 	filterReason        string   // "manualPolicy", "revisionSelectorMismatch", "deleting"; only checked when set
 	errorContains       string   // substring of an "error" impact's Error; only checked when set
-	errorIDs            []string // resourceIDs the simulate.ProjectResult errors[] attributed to the XR must contain
+	errorIDs            []string // resourceIDs the simulate.Result errors[] attributed to the XR must contain
 	downstreamSummary   *expectedSummary
 	downstreamResources []*ResourceExpectation
 }

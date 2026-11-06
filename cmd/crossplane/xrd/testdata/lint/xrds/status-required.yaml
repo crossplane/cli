@@ -1,0 +1,42 @@
+# Breaks only xrd/status-fields-optional.
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xdatabases.example.org
+spec:
+  group: example.org
+  names:
+    kind: XDatabase
+    plural: xdatabases
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        required: [status]
+        properties:
+          spec:
+            type: object
+            required: [engine]
+            properties:
+              engine:
+                type: string
+          status:
+            type: object
+            required: [endpoint]
+            properties:
+              endpoint:
+                type: string
+              replicas:
+                type: array
+                x-kubernetes-list-type: atomic
+                items:
+                  type: object
+                  required: [host, port]
+                  properties:
+                    host:
+                      type: string
+                    port:
+                      type: integer

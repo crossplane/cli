@@ -1,0 +1,51 @@
+# Breaks only xrd/status-no-value-validation.
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xbuckets.example.org
+spec:
+  group: example.org
+  names:
+    kind: XBucket
+    plural: xbuckets
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              name:
+                type: string
+                maxLength: 63
+                pattern: '^[a-z0-9-]+$'
+          status:
+            type: object
+            minProperties: 1
+            properties:
+              arn:
+                type: string
+                pattern: '^arn:'
+              objects:
+                type: integer
+                minimum: 0
+                maximum: 1000000
+                multipleOf: 1
+              phase:
+                type: string
+                enum: [Ready, NotReady]
+                minLength: 1
+                maxLength: 8
+              regions:
+                type: array
+                x-kubernetes-list-type: set
+                minItems: 1
+                maxItems: 3
+                uniqueItems: true
+                items:
+                  type: string
+                  maxLength: 32

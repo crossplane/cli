@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+data:
+  a: b
+---
+apiVersion: example.org/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: not-crossplane

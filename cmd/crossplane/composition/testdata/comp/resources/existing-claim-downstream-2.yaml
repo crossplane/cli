@@ -1,0 +1,10 @@
+apiVersion: nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  annotations:
+    crossplane.io/composition-resource-name: nop-resource
+  name: test-claim-2-xr
+spec:
+  forProvider:
+    configData: claim-value-2
+    resourceTier: basic

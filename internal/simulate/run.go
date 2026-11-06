@@ -561,11 +561,13 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 		if ics, err = c.flagImageConfigs(); err != nil {
 			return err
 		}
-		var xc clixpkg.Client
-		if xc, err = clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(ics)); err != nil {
-			return errors.Wrap(err, "cannot create xpkg client")
+		built.Packages = &Packages{ICs: ics}
+		// Only planning fetches packages, so --skip-plan needs no cache.
+		if !c.SkipPlan {
+			if built.Packages.Client, err = clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(ics)); err != nil {
+				return errors.Wrap(err, "cannot create xpkg client")
+			}
 		}
-		built.Packages = &Packages{ICs: ics, Client: xc}
 	}
 	comps, fns, digests, pkgs := built.Compositions, built.Functions, built.Digests, built.Packages
 

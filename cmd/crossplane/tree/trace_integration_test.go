@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package trace
+package tree
 
 import (
 	"bytes"
@@ -61,7 +61,7 @@ func TestTraceIntegration(t *testing.T) {
 	// trace loads its kubeconfig the way kubectl does.
 	t.Setenv("KUBECONFIG", kubeconfig)
 
-	var c Cmd
+	var c TraceCmd
 
 	parser, err := kong.New(&c)
 	if err != nil {

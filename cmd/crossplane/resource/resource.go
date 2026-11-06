@@ -19,13 +19,16 @@ package resource
 
 import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/simulate"
-	"github.com/crossplane/cli/v2/cmd/crossplane/trace"
+	"github.com/crossplane/cli/v2/cmd/crossplane/tree"
 	"github.com/crossplane/cli/v2/cmd/crossplane/validate"
 )
 
 // Cmd contains commands for working with Crossplane resources.
 type Cmd struct {
-	Simulate simulate.Cmd `cmd:"" help:"Preview what applying managed resources would do." maturity:"alpha"`
-	Trace    trace.Cmd    `cmd:"" help:"Trace a Crossplane resource for troubleshooting."`
-	Validate validate.Cmd `cmd:"" help:"Validate Crossplane resources."`
+	Simulate  simulate.Cmd      `cmd:"" help:"Preview what applying managed resources would do."              maturity:"alpha"`
+	Trace     tree.TraceCmd     `cmd:"" help:"Trace a Crossplane resource for troubleshooting."`
+	Validate  validate.Cmd      `cmd:"" help:"Validate Crossplane resources."`
+	Suspend   tree.SuspendCmd   `cmd:"" help:"Suspend crossplane resource reconciliation."`
+	Resume    tree.ResumeCmd    `cmd:"" help:"Resume reconciliation for suspended crossplane resources."`
+	Reconcile tree.ReconcileCmd `cmd:"" help:"Trigger an immediate reconciliation for a crossplane resource."`
 }

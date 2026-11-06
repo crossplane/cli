@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package trace
+package tree
 
 import (
 	"bytes"
@@ -34,7 +34,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/trace/internal/printer"
+	"github.com/crossplane/cli/v2/cmd/crossplane/tree/internal/printer"
 	"github.com/crossplane/cli/v2/pkg/resource"
 )
 
@@ -100,7 +100,7 @@ func renderTreeToString(p printer.Printer, tree *resource.Resource) (string, err
 }
 
 // watchResourceTree watches the resource tree until it's deleted.
-func (c *Cmd) watchResourceTree(ctx context.Context, k *kong.Context, logger logging.Logger, kClient client.Client, root *resource.Resource, mapping *meta.RESTMapping, p printer.Printer) error {
+func (c *TraceCmd) watchResourceTree(ctx context.Context, k *kong.Context, logger logging.Logger, kClient client.Client, root *resource.Resource, mapping *meta.RESTMapping, p printer.Printer) error {
 	// Create a watch for the specific resource
 	opts := &client.ListOptions{
 		Namespace:     root.Unstructured.GetNamespace(),
@@ -136,7 +136,7 @@ func (c *Cmd) watchResourceTree(ctx context.Context, k *kong.Context, logger log
 }
 
 // watchProducer runs the watch loop and sends updates to Bubble Tea.
-func (c *Cmd) watchProducer(ctx context.Context, logger logging.Logger, kClient client.Client, root *resource.Resource, mapping *meta.RESTMapping, p printer.Printer, prog *tea.Program, w watch.Interface) {
+func (c *TraceCmd) watchProducer(ctx context.Context, logger logging.Logger, kClient client.Client, root *resource.Resource, mapping *meta.RESTMapping, p printer.Printer, prog *tea.Program, w watch.Interface) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -220,7 +220,7 @@ func (c *Cmd) watchProducer(ctx context.Context, logger logging.Logger, kClient 
 }
 
 // handleProducerError handles errors from the watch producer.
-func (c *Cmd) handleProducerError(prog *tea.Program, err error) {
+func (c *TraceCmd) handleProducerError(prog *tea.Program, err error) {
 	if apierrors.IsNotFound(err) {
 		prog.Send(treeQuitMsg{})
 		return

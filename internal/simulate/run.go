@@ -64,7 +64,7 @@ import (
 // through one set of ImageConfigs, so --image-configs rewrites both.
 type Packages struct {
 	ICs []pkgv1beta1.ImageConfig
-	// Client is set for a project, and otherwise by planOptions.
+	// Client is set by Run.
 	Client runtimexpkg.Client
 
 	// Proj and DepMgr are set for a project.
@@ -76,7 +76,7 @@ type Packages struct {
 // the processor options that plan each composite resource's composed
 // resources. Namespaced resources without a namespace plan in ns, the
 // kubeconfig's namespace. pkgs is the project's, or without a project has
-// only ICs and planOptions sets its Client. Run stops c.servers when it is set. Planning
+// only ICs and Client. Run stops c.servers when it is set. Planning
 // shares the engine's clients' REST mapper and CRD cache, so a run discovers
 // the cluster once and fetches each CRD at most once.
 func (c *Flags) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, clients *client.Clients, ns string, pkgs *Packages) ([]dp.ProcessorOption, error) {
@@ -90,13 +90,6 @@ func (c *Flags) planOptions(sigCtx context.Context, k *kong.Context, logger logg
 	if c.Hooks != nil && c.Hooks.Router != nil {
 		router = c.Hooks.Router
 	} else {
-		if pkgs.Client == nil {
-			client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(pkgs.ICs))
-			if err != nil {
-				return nil, errors.Wrap(err, "cannot create xpkg client")
-			}
-			pkgs.Client = client
-		}
 		c.servers = diffserver.NewManager(pkgs.Client, logger, diffserver.WithSessionID(c.SessionID))
 		router = c.servers
 	}
@@ -567,7 +560,11 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 		if err != nil {
 			return err
 		}
-		built.Packages = &Packages{ICs: ics}
+		client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(ics))
+		if err != nil {
+			return errors.Wrap(err, "cannot create xpkg client")
+		}
+		built.Packages = &Packages{ICs: ics, Client: client}
 	}
 	comps, fns, digests, pkgs := built.Compositions, built.Functions, built.Digests, built.Packages
 

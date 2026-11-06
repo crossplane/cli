@@ -108,7 +108,7 @@ jobs:
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           flags: unittests
-          file: result/coverage.txt
+          files: result/coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # The integration tests run CLI commands against an envtest API server. They
@@ -148,7 +148,7 @@ jobs:
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           flags: integration
-          file: coverage-integration.txt
+          files: coverage-integration.txt
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # Build all artifacts

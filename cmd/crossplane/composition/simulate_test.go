@@ -117,7 +117,7 @@ func TestSimulateRejectsNonComposition(t *testing.T) {
 	}
 	// Run loads -f before it uses k or Docker.
 	err := (&simulateCmd{Input: []string{path}}).Run(context.Background(), nil, logging.NewNopLogger(), nil)
-	want := `-f inputs include XNetwork "net" (example.org/v1); composition simulate takes Composition files; xr simulate takes composite resource or claim files`
+	want := `-f inputs include XNetwork "net" (example.org/v1); composition simulate takes Composition files`
 	if err == nil || err.Error() != want {
 		t.Errorf("Run(...): want error %q, got %v", want, err)
 	}

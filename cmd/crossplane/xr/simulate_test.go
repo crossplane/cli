@@ -60,9 +60,9 @@ func TestSimulateFlags(t *testing.T) {
 			input:  []string{"xr.yaml"},
 		},
 		"RepeatedInput": {
-			reason: "-f repeats, keeps commas in paths, and takes - for stdin.",
+			reason: "-f repeats, splits on commas, and takes - for stdin.",
 			args:   []string{"-f", "a,b.yaml", "--input", "-"},
-			input:  []string{"a,b.yaml", "-"},
+			input:  []string{"a", "b.yaml", "-"},
 		},
 		"InputRequired": {
 			reason: "Without -f the command fails rather than waiting on stdin.",

@@ -1,0 +1,11 @@
+# The composed resource of existing-xr.yaml, as composition selector-bound-a rendered it.
+apiVersion: ns.nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  name: selector-bound
+  namespace: default
+  annotations:
+    crossplane.io/composition-resource-name: nop-resource
+spec:
+  forProvider:
+    configData: a-existing-value

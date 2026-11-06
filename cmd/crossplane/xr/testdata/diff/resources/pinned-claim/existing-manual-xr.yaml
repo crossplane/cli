@@ -1,0 +1,17 @@
+# The backing XR of existing-manual.yaml, pinned to revision 1.
+apiVersion: pinned.diff.example.org/v1alpha1
+kind: XPinned
+metadata:
+  name: manual-claim-x1y2z
+spec:
+  coolField: existing-value
+  compositionUpdatePolicy: Manual
+  compositionRef:
+    name: xpinneds.pinned.diff.example.org
+  compositionRevisionRef:
+    name: xpinneds.pinned.diff.example.org-3d33597
+  claimRef:
+    apiVersion: pinned.diff.example.org/v1alpha1
+    kind: Pinned
+    name: manual-claim
+    namespace: existing-namespace

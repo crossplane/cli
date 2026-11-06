@@ -175,7 +175,7 @@ func TestBuilderBuild(t *testing.T) {
 				BuildWithFunctionIdentifier(functions.FakeIdentifier),
 			)
 
-			imgMap, err := b.Build(t.Context(), proj, projFS)
+			imgMap, _, err := b.Build(t.Context(), proj, projFS)
 			if err != nil {
 				t.Fatalf("Build: %v", err)
 			}
@@ -265,7 +265,7 @@ func TestBuilderDependsOn(t *testing.T) {
 		BuildWithFunctionIdentifier(functions.FakeIdentifier),
 	)
 
-	imgMap, err := b.Build(t.Context(), proj, projFS)
+	imgMap, _, err := b.Build(t.Context(), proj, projFS)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestBuilderZeroConcurrency(t *testing.T) {
 	// The semaphore send ignores ctx, so time the build out from here.
 	done := make(chan error, 1)
 	go func() {
-		_, err := b.Build(t.Context(), proj, projFS)
+		_, _, err := b.Build(t.Context(), proj, projFS)
 		done <- err
 	}()
 	select {
@@ -423,7 +423,7 @@ func TestResolveFunctions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolveFunctions: %v", err)
 			}
-			if diff := cmp.Diff(tc.want, got); diff != "" {
+			if diff := cmp.Diff(tc.want, got, cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("resolveFunctions(...): -want, +got:\n%s", diff)
 			}
 		})
@@ -458,7 +458,7 @@ func TestBuilderBuildExplicitFunctions(t *testing.T) {
 
 	b := NewBuilder(BuildWithFunctionIdentifier(functions.FakeIdentifier))
 
-	imgMap, err := b.Build(t.Context(), proj, projFS)
+	imgMap, digests, err := b.Build(t.Context(), proj, projFS)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -475,6 +475,16 @@ func TestBuilderBuildExplicitFunctions(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("Build(...) function repos: -want, +got:\n%s", diff)
+	}
+
+	// Only the embedded function has a digest, under its repository.
+	gotDigests := map[string]string{}
+	for k, d := range digests {
+		gotDigests[k] = d.Repository.Name()
+	}
+	wantDigests := map[string]string{"example-testfn-explicit": proj.Spec.Repository + "_fn-explicit"}
+	if diff := cmp.Diff(wantDigests, gotDigests); diff != "" {
+		t.Errorf("Build(...) digests: -want, +got:\n%s", diff)
 	}
 }
 
@@ -510,7 +520,7 @@ func TestBuilderBuildTarballFunction(t *testing.T) {
 
 	b := NewBuilder(BuildWithFunctionIdentifier(functions.FakeIdentifier))
 
-	imgMap, err := b.Build(t.Context(), proj, projFS)
+	imgMap, _, err := b.Build(t.Context(), proj, projFS)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -783,5 +793,59 @@ func writeRuntimeTarImage(t *testing.T, fsys afero.Fs, path, arch string, img v1
 	}
 	if err := gz.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadCompositions(t *testing.T) {
+	t.Parallel()
+
+	comp := compositionYAML("xdatabase-comp", "acme.example.com", "XDatabase")
+	xrd := xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase")
+
+	tcs := map[string]struct {
+		apisPath string
+		files    map[string]string
+		want     []string
+	}{
+		"DefaultAPIsPath": {
+			files: map[string]string{
+				"apis/db/comp.yaml":  comp,
+				"apis/db/xrd.yaml":   xrd,
+				"apis/db/notes.txt":  comp,
+				"examples/comp.yaml": compositionYAML("example-comp", "acme.example.com", "XDatabase"),
+				"other/comp.yaml":    compositionYAML("other-comp", "acme.example.com", "XDatabase"),
+			},
+			want: []string{"xdatabase-comp"},
+		},
+		"NoCompositions": {
+			files: map[string]string{"apis/xrd.yaml": xrd},
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			projFS := afero.NewMemMapFs()
+			for path, content := range tc.files {
+				if err := afero.WriteFile(projFS, path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			proj := &devv1alpha1.Project{Spec: devv1alpha1.ProjectSpec{Paths: &devv1alpha1.ProjectPaths{APIs: tc.apisPath}}}
+			proj.Default()
+
+			comps, err := LoadCompositions(proj, projFS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, 0, len(comps))
+			for _, c := range comps {
+				got = append(got, c.GetName())
+			}
+			if diff := cmp.Diff(tc.want, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("LoadCompositions(): -want, +got:\n%s", diff)
+			}
+		})
 	}
 }

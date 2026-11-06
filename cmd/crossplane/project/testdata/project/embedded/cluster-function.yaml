@@ -1,0 +1,9 @@
+---
+# A cluster Function with the same name as the project's embedded function. The
+# project's function must win; this one has no step input, so go-templating errors if it is used.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: example-itprojectrender
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0

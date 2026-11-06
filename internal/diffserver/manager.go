@@ -211,6 +211,9 @@ type Manager struct {
 	routes     map[schema.GroupKind]*Server
 	groups     map[string]*Server
 	servers    []*Server
+	// claimed holds the key of every input a Start has taken on. Its channel
+	// is closed once that start has returned, or when it is released.
+	claimed map[string]chan struct{}
 }
 
 // Option configures a Manager.
@@ -263,6 +266,7 @@ func NewManager(pkgs runtimexpkg.Client, log logging.Logger, opts ...Option) *Ma
 		containers:   map[containerKey]string{},
 		routes:       map[schema.GroupKind]*Server{},
 		groups:       map[string]*Server{},
+		claimed:      map[string]chan struct{}{},
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -298,6 +302,16 @@ type sharedRunClient struct {
 // client-side diff. Progress is reported per provider on events (nil means no
 // reporting), with the package pull and the server start as separate steps
 // because the pull dominates a cold start.
+//
+// Start is idempotent and safe for concurrent use. It skips every input a
+// previous Start has already handled, keyed by Image, or by Name for a
+// Development provider, so no input is ever started twice and a repeat
+// returns no Skipped for it. An input counts as handled once its start
+// returns, whether it started or was skipped. For an input another Start is
+// still starting, Start waits until that start returns or ctx ends, so once it
+// returns nil every input this Start was given has been started (and is
+// routed) or skipped. An input whose start ended because ctx ended is
+// released, so a later Start, or one waiting on it, retries it.
 func (m *Manager) Start(ctx context.Context, inputs []Input, events async.EventChannel) ([]Skipped, error) {
 	// Only a run that starts containers touches Docker: a Development
 	// provider's server is the user's.
@@ -315,27 +329,109 @@ func (m *Manager) Start(ctx context.Context, inputs []Input, events async.EventC
 	}
 
 	var (
-		wg      sync.WaitGroup
 		mu      sync.Mutex
 		skipped []Skipped
 	)
-	for _, in := range inputs {
-		wg.Add(1)
-		go func(in Input) {
-			defer wg.Done()
-			s, skip := m.startOne(ctx, in, events)
-			mu.Lock()
-			defer mu.Unlock()
-			switch {
-			case skip != nil:
-				skipped = append(skipped, *skip)
-			case s != nil:
-				m.register(s)
+	for {
+		fresh, pending := m.claim(inputs)
+		if len(fresh) == 0 && len(pending) == 0 {
+			return skipped, ctx.Err()
+		}
+		var wg sync.WaitGroup
+		for _, in := range fresh {
+			wg.Add(1)
+			go func(in Input) {
+				defer wg.Done()
+				s, skip := m.startOne(ctx, in, events)
+				mu.Lock()
+				if skip != nil {
+					skipped = append(skipped, *skip)
+				} else if s != nil {
+					m.register(s)
+				}
+				mu.Unlock()
+				// Settle after register, so a waiter finds the route.
+				m.settle(in, skip == nil || ctx.Err() == nil)
+			}(in)
+		}
+		wg.Wait()
+		for _, ch := range pending {
+			select {
+			case <-ch:
+			case <-ctx.Done():
+				return skipped, ctx.Err()
 			}
-		}(in)
+		}
+		if ctx.Err() != nil {
+			return skipped, ctx.Err()
+		}
+		// Claim again: an input another Start released is now ours to retry.
 	}
-	wg.Wait()
-	return skipped, ctx.Err()
+}
+
+// inputKey identifies an input across Starts. A Development provider has no
+// image; its manifest name identifies it.
+func inputKey(in Input) string {
+	if in.Image != "" {
+		return in.Image
+	}
+	return in.Name
+}
+
+// claim returns the inputs no Start has claimed yet, once each, and claims
+// them, plus the channels of the inputs another Start is still starting.
+func (m *Manager) claim(inputs []Input) ([]Input, []chan struct{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var (
+		fresh   []Input
+		pending []chan struct{}
+		seen    = map[string]bool{}
+	)
+	for _, in := range inputs {
+		k := inputKey(in)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if ch, ok := m.claimed[k]; ok {
+			select {
+			case <-ch: // Handled.
+			default:
+				pending = append(pending, ch)
+			}
+			continue
+		}
+		m.claimed[k] = make(chan struct{})
+		fresh = append(fresh, in)
+	}
+	return fresh, pending
+}
+
+// Unclaimed returns the inputs no Start has handled or is starting, without
+// claiming them, so a caller can skip work when Start has nothing to do.
+func (m *Manager) Unclaimed(inputs []Input) []Input {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Input
+	for _, in := range inputs {
+		if _, ok := m.claimed[inputKey(in)]; !ok {
+			out = append(out, in)
+		}
+	}
+	return out
+}
+
+// settle marks a claimed input handled, or releases it for a later Start, and
+// wakes the Starts waiting on it.
+func (m *Manager) settle(in Input, handled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := inputKey(in)
+	close(m.claimed[k])
+	if !handled {
+		delete(m.claimed, k)
+	}
 }
 
 // Images wraps plain image references into Inputs with no per-provider
@@ -425,12 +521,13 @@ func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChan
 	// server serves both: a second would only be started and torn down.
 	// Without a digest the packages cannot be told apart, so each starts.
 	if pkg.Digest != "" {
-		if first, ok := m.claim(containerKey{digest: pkg.Digest, cleanup: cleanup, publishAddr: publishAddr, target: in.Target}, image); !ok {
+		if first, ok := m.claimContainer(containerKey{digest: pkg.Digest, cleanup: cleanup, publishAddr: publishAddr, target: in.Target}, image); !ok {
 			m.log.Debug("Sharing the diff server of another provider with the same package", "image", image, "shared-with", first)
 			return nil, nil
 		}
 	}
 
+	key := containerKey{digest: pkg.Digest, cleanup: cleanup, publishAddr: publishAddr, target: in.Target}
 	ctr := &containerruntime.Container{
 		Image: runImage,
 		Name:  containerName(pkg.Digest, cleanup),
@@ -456,6 +553,7 @@ func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChan
 	running, err := ctr.Start(ctx)
 	if err != nil {
 		events.SendEvent(start, async.EventStatusFailure)
+		m.unclaimContainer(key, image)
 		// Start may have created the container before failing, and no run
 		// finds a Remove container by its name again.
 		if cleanup != CleanupOrphan {
@@ -467,6 +565,7 @@ func (m *Manager) startOne(ctx context.Context, in Input, events async.EventChan
 	server, err := m.connect(ctx, running, image, cleanup)
 	if err != nil {
 		events.SendEvent(start, async.EventStatusFailure)
+		m.unclaimContainer(key, image)
 		// An orphaned container is left behind even on failure, for debugging.
 		if !running.Reused && cleanup != CleanupOrphan {
 			if serr := running.Stop(ctx, CleanupRemove); serr != nil {
@@ -491,10 +590,10 @@ type containerKey struct {
 	target      string
 }
 
-// claim records that image's input starts the container for k, and reports
+// claimContainer records that image's input starts the container for k, and reports
 // true, unless another input already did, in which case it returns that
 // input's image and false.
-func (m *Manager) claim(k containerKey, image string) (string, bool) {
+func (m *Manager) claimContainer(k containerKey, image string) (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if first, ok := m.containers[k]; ok {
@@ -502,6 +601,16 @@ func (m *Manager) claim(k containerKey, image string) (string, bool) {
 	}
 	m.containers[k] = image
 	return image, true
+}
+
+// unclaimContainer releases image's claim on k after its start failed, so a
+// retry, or another input naming the same package, starts the container.
+func (m *Manager) unclaimContainer(k containerKey, image string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.containers[k] == image {
+		delete(m.containers, k)
+	}
 }
 
 // markLeaked records that this run may have left a container behind.

@@ -34,6 +34,7 @@ import (
 	"github.com/spf13/afero"
 	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -174,8 +175,11 @@ type Builder struct {
 // Build builds a project into a set of packages. It returns a map containing
 // images that were built from the project. The returned map will always include
 // one image with the ConfigurationTag, which is the configuration package built
-// from the APIs found in the project.
-func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, projectFS afero.Fs, opts ...BuildOption) (ImageTagMap, error) { //nolint:gocyclo // This is the main build orchestration.
+// from the APIs found in the project. It also returns the repository and index
+// digest of each embedded function, keyed by the function's name in the
+// cluster, as push computes them, so they match the digest a Function installed
+// from the pushed package pins.
+func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, projectFS afero.Fs, opts ...BuildOption) (ImageTagMap, map[string]name.Digest, error) { //nolint:gocyclo // This is the main build orchestration.
 	o := &buildOptions{
 		log: logging.NewNopLogger(),
 	}
@@ -210,7 +214,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 	// by listing subdirectories of the functions path.
 	fns, err := resolveFunctions(project, projectFS)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to resolve functions")
+		return nil, nil, errors.Wrap(err, "failed to resolve functions")
 	}
 
 	apisSource := afero.NewBasePathFs(projectFS, project.Spec.Paths.APIs)
@@ -219,7 +223,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 	operationsSource := afero.NewMemMapFs()
 	opsExist, err := afero.DirExists(projectFS, project.Spec.Paths.Operations)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if opsExist {
 		operationsSource = afero.NewBasePathFs(projectFS, project.Spec.Paths.Operations)
@@ -238,7 +242,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 	}
 	if err := collectResources(packageFS, apisSource, apiGVKs); err != nil {
 		o.eventCh.SendEvent("Collecting resources", async.EventStatusFailure)
-		return nil, errors.Wrap(err, "failed to collect API resources")
+		return nil, nil, errors.Wrap(err, "failed to collect API resources")
 	}
 
 	opsGVKs := []string{
@@ -248,7 +252,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 	}
 	if err := collectResources(packageFS, operationsSource, opsGVKs); err != nil {
 		o.eventCh.SendEvent("Collecting resources", async.EventStatusFailure)
-		return nil, errors.Wrap(err, "failed to collect operation resources")
+		return nil, nil, errors.Wrap(err, "failed to collect operation resources")
 	}
 	o.eventCh.SendEvent("Collecting resources", async.EventStatusSuccess)
 
@@ -257,7 +261,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 	// cheap on the steady-state path.
 	if b.dependencyManager != nil {
 		if err := b.dependencyManager.AddAll(ctx, o.eventCh); err != nil {
-			return nil, errors.Wrap(err, "failed to generate dependency schemas")
+			return nil, nil, errors.Wrap(err, "failed to generate dependency schemas")
 		}
 	}
 
@@ -266,16 +270,16 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 		o.eventCh.SendEvent("Generating schemas", async.EventStatusStarted)
 		if _, err := b.schemaManager.Generate(ctx, manager.NewFSSource(project.Spec.Paths.APIs, apisSource)); err != nil {
 			o.eventCh.SendEvent("Generating schemas", async.EventStatusFailure)
-			return nil, errors.Wrap(err, "failed to generate schemas")
+			return nil, nil, errors.Wrap(err, "failed to generate schemas")
 		}
 		o.eventCh.SendEvent("Generating schemas", async.EventStatusSuccess)
 	}
 
 	// Build the resolved functions.
 	o.log.Debug("Building functions")
-	imgMap, deps, err := b.buildFunctions(ctx, projectFS, project, fns, o.projectBasePath, o.eventCh)
+	imgMap, deps, digests, err := b.buildFunctions(ctx, projectFS, project, fns, o.projectBasePath, o.eventCh)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfg.Spec.DependsOn = append(cfg.Spec.DependsOn, deps...)
 
@@ -285,16 +289,16 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 
 	y, err := yaml.Marshal(cfg)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to marshal package metadata")
+		return nil, nil, errors.Wrap(err, "failed to marshal package metadata")
 	}
 	err = afero.WriteFile(packageFS, "/crossplane.yaml", y, 0o644)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to write package metadata")
+		return nil, nil, errors.Wrap(err, "failed to write package metadata")
 	}
 
 	pp, err := pyaml.New()
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to create parser")
+		return nil, nil, errors.Wrap(err, "failed to create parser")
 	}
 	builder := xpkg.New(
 		parser.NewFsBackend(packageFS, parser.FsDir("/")),
@@ -309,19 +313,19 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 	img, _, err := builder.Build(ctx)
 	if err != nil {
 		o.eventCh.SendEvent("Building configuration package", async.EventStatusFailure)
-		return nil, errors.Wrap(err, "failed to build package")
+		return nil, nil, errors.Wrap(err, "failed to build package")
 	}
 
 	imgTag, err := name.NewTag(fmt.Sprintf("%s:%s", project.Spec.Repository, ConfigurationTag))
 	if err != nil {
 		o.eventCh.SendEvent("Building configuration package", async.EventStatusFailure)
-		return nil, errors.Wrap(err, "failed to construct image tag")
+		return nil, nil, errors.Wrap(err, "failed to construct image tag")
 	}
 	imgMap[imgTag] = img
 
 	o.eventCh.SendEvent("Building configuration package", async.EventStatusSuccess)
 
-	return imgMap, nil
+	return imgMap, digests, nil
 }
 
 // resolveFunctions returns the list of functions to build for the project. If
@@ -355,10 +359,12 @@ func resolveFunctions(project *devv1alpha1.Project, projectFS afero.Fs) ([]devv1
 }
 
 // buildFunctions builds the given list of embedded functions.
-func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fns []devv1alpha1.Function, basePath string, eventCh async.EventChannel) (ImageTagMap, []xpmetav1.Dependency, error) {
+func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fns []devv1alpha1.Function, basePath string, eventCh async.EventChannel) (ImageTagMap, []xpmetav1.Dependency, map[string]name.Digest, error) {
 	var (
 		imgMap = make(map[name.Tag]v1.Image)
 		imgMu  sync.Mutex
+
+		digests = make(map[string]name.Digest, len(fns))
 	)
 
 	deps := make([]xpmetav1.Dependency, len(fns))
@@ -391,6 +397,10 @@ func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, projec
 			if err != nil {
 				return errors.Wrapf(err, "failed to get index digest for function image %q", fnName)
 			}
+			repo, err := name.NewRepository(fnRepo)
+			if err != nil {
+				return errors.Wrapf(err, "failed to construct repository for function image %q", fnName)
+			}
 			deps[i] = xpmetav1.Dependency{
 				APIVersion: new(xpkgv1.FunctionGroupVersionKind.GroupVersion().String()),
 				Kind:       new(xpkgv1.FunctionKind),
@@ -413,6 +423,9 @@ func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, projec
 				imgMap[imgTag] = img
 				imgMu.Unlock()
 			}
+			imgMu.Lock()
+			digests[xpkg.ToDNSLabel(repo.RepositoryStr())] = repo.Digest(dgst.String())
+			imgMu.Unlock()
 
 			eventCh.SendEvent(eventText, async.EventStatusSuccess)
 
@@ -421,10 +434,10 @@ func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, projec
 	}
 
 	if err := eg.Wait(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return imgMap, deps, nil
+	return imgMap, deps, digests, nil
 }
 
 // buildFunction builds the package images for a single function. It resolves
@@ -667,6 +680,34 @@ func gzipOpener(fsys afero.Fs, path, tempDir string) (tarball.Opener, error) {
 	return func() (io.ReadCloser, error) {
 		return os.Open(tmpPath) //nolint:gosec // tmpPath is a file we created in our own temp directory.
 	}, nil
+}
+
+// LoadCompositions returns the Compositions under a project's APIs path,
+// discovered the same way project build collects them.
+func LoadCompositions(project *devv1alpha1.Project, projectFS afero.Fs) ([]*unstructured.Unstructured, error) {
+	src := afero.NewBasePathFs(projectFS, project.Spec.Paths.APIs)
+	compFS := afero.NewMemMapFs()
+	if err := collectResources(compFS, src, []string{xpv1.CompositionGroupVersionKind.String()}); err != nil {
+		return nil, errors.Wrap(err, "failed to collect compositions")
+	}
+
+	var comps []*unstructured.Unstructured
+	err := afero.Walk(compFS, "/", func(path string, info fs.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		bs, err := afero.ReadFile(compFS, path)
+		if err != nil {
+			return errors.Wrapf(err, "failed to read file %q", path)
+		}
+		u := &unstructured.Unstructured{}
+		if err := yaml.Unmarshal(bs, &u.Object); err != nil {
+			return errors.Wrapf(err, "failed to parse file %q", path)
+		}
+		comps = append(comps, u)
+		return nil
+	})
+	return comps, err
 }
 
 func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string) error {

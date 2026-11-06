@@ -20,43 +20,54 @@ import (
 	"context"
 
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
 	xrpkg "github.com/crossplane/cli/v2/pkg/xr"
 )
 
-// crdDefaults caches the cluster's CRDs by group and kind, so the approximate
-// fallback can apply the API server's schema defaults to a desired manifest
-// before diffing it against the live resource. The live resource was defaulted
-// by the API server on admission, and applying the manifest would default it
-// again, so fields a manifest omits but the CRD defaults (deletionPolicy,
-// managementPolicies, ...) are not removals and must not plan as ones. Like
-// gather, this is best effort: a kind without a fetchable CRD simply diffs
-// undefaulted, and the miss is cached so a run over many resources of that
-// kind probes the cluster once.
-type crdDefaults struct {
-	cache map[schema.GroupKind]*extv1.CustomResourceDefinition
+// CRDs gets the CRD serving a kind. The diff engine's k8s.SchemaClient
+// satisfies it, so simulate and the engine share one per-run CRD cache: the
+// SchemaClient caches a CRD it finds and a CRD found not to exist, and nothing
+// else, so a failure a retry may fix (Forbidden, a 500, a timeout) is retried
+// on the next lookup.
+type CRDs interface {
+	GetCRD(ctx context.Context, gvk schema.GroupVersionKind) (*extv1.CustomResourceDefinition, error)
 }
 
-func newCRDDefaults() *crdDefaults {
-	return &crdDefaults{cache: map[schema.GroupKind]*extv1.CustomResourceDefinition{}}
-}
-
-// apply returns a copy of desired with its CRD's defaults applied, as the API
-// server would admit it, or desired itself when the cluster does not serve the
-// kind or its CRD yields no usable schema.
-func (c *crdDefaults) apply(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, desired *unstructured.Unstructured) *unstructured.Unstructured {
-	gvk := desired.GroupVersionKind()
-	crd, ok := c.cache[gvk.GroupKind()]
-	if !ok {
-		crd = fetchCRD(ctx, kubeClient, rmapper, gvk)
-		c.cache[gvk.GroupKind()] = crd
+// lookupCRD returns the CRD serving gvk, or nil when the cluster does not
+// serve the kind or holds no CRD for it. Those answers are definite. An error
+// is not: a retry may answer differently, so a caller must not cache it.
+func lookupCRD(ctx context.Context, rmapper meta.RESTMapper, crds CRDs, gvk schema.GroupVersionKind) (*extv1.CustomResourceDefinition, error) {
+	if _, err := rmapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil, nil
+		}
+		return nil, errors.Wrapf(err, "cannot map %s", gvk)
 	}
-	if crd == nil {
+	crd, err := crds.GetCRD(ctx, gvk)
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	return crd, err
+}
+
+// applyCRDDefaults returns a copy of desired with its CRD's defaults applied,
+// as the API server would admit it, or desired itself when the cluster does
+// not serve the kind, its CRD cannot be read or yields no usable schema. The
+// approximate fallback diffs the result against the live resource, which the
+// API server defaulted on admission, and applying the manifest would default
+// it again, so fields a manifest omits but the CRD defaults (deletionPolicy,
+// managementPolicies, ...) are not removals and must not plan as ones. Like
+// gather, this is best effort: a kind without a readable CRD simply diffs
+// undefaulted.
+func applyCRDDefaults(ctx context.Context, rmapper meta.RESTMapper, crds CRDs, desired *unstructured.Unstructured) *unstructured.Unstructured {
+	crd, err := lookupCRD(ctx, rmapper, crds, desired.GroupVersionKind())
+	if err != nil || crd == nil {
 		return desired
 	}
 
@@ -65,24 +76,4 @@ func (c *crdDefaults) apply(ctx context.Context, kubeClient client.Client, rmapp
 		return desired
 	}
 	return defaulted
-}
-
-// fetchCRD fetches the CRD serving gvk. nil means no defaulting is possible:
-// the kind is not served or its CRD is unreadable.
-func fetchCRD(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, gvk schema.GroupVersionKind) *extv1.CustomResourceDefinition {
-	mapping, err := rmapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-	if err != nil {
-		return nil
-	}
-
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"})
-	if err := kubeClient.Get(ctx, client.ObjectKey{Name: mapping.Resource.Resource + "." + gvk.Group}, u); err != nil {
-		return nil
-	}
-	crd := &extv1.CustomResourceDefinition{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, crd); err != nil {
-		return nil
-	}
-	return crd
 }

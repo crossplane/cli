@@ -46,16 +46,12 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/render/contextfn"
-	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/containerruntime"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project"
-	"github.com/crossplane/cli/v2/internal/project/functions"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
-	"github.com/crossplane/cli/v2/internal/schemas/manager"
-	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 	"github.com/crossplane/cli/v2/pkg/render"
@@ -476,51 +472,13 @@ func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, 
 		dependency.WithXpkgClient(xpkgClient),
 	)
 
-	var fns []pkgv1.Function
-	if err := sp.WrapWithSuccessSpinner("Resolving function dependencies", func() error {
-		var err error
-		fns, err = project.LoadFunctionDependencies(depMgr, proj)
-		return err
-	}); err != nil {
-		return nil, errors.Wrap(err, "cannot load project functions")
-	}
-
-	if err := sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
-		schemasFS := afero.NewBasePathFs(projFS, proj.Spec.Paths.Schemas)
-		schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(proj.Spec.ImageConfigs))
-		schemaMgr := manager.New(schemasFS, generators, schemaRunner)
-
-		tempDir, err := os.MkdirTemp("", "crossplane-build-")
-		if err != nil {
-			return errors.Wrap(err, "failed to create temporary build directory")
-		}
-		defer os.RemoveAll(tempDir) //nolint:errcheck // Best-effort cleanup of temporary files.
-
-		b := project.NewBuilder(
-			project.BuildWithMaxConcurrency(c.MaxConcurrency),
-			project.BuildWithFunctionIdentifier(functions.DefaultIdentifier),
-			project.BuildWithSchemaManager(schemaMgr),
-			project.BuildWithDependencyManager(depMgr),
-			project.BuildWithTempDir(tempDir),
-			project.BuildWithBaseImageCacheDir(functions.DefaultBaseImageCacheDir()),
-		)
-
-		imgMap, err := b.Build(ctx, proj, projFS,
-			project.BuildWithLogger(log),
-			project.BuildWithEventChannel(ch),
-		)
-		if err != nil {
-			return err
-		}
-
-		embeddedFns, err := project.EmbeddedFunctionsToDaemon(ctx, imgMap)
-		fns = append(fns, embeddedFns...)
-		return err
-	}); err != nil {
-		return nil, errors.Wrap(err, "cannot build embedded functions")
-	}
-
-	return fns, nil
+	fns, _, err := project.LoadFunctions(ctx, proj, projFS, depMgr, project.LoadFunctionsOptions{
+		Logger:         log,
+		Spinner:        sp,
+		Generators:     generators,
+		MaxConcurrency: c.MaxConcurrency,
+	})
+	return fns, err
 }
 
 func (c *Cmd) loadFunctionsFromConfiguration(ctx context.Context, log logging.Logger, cfgFS afero.Fs, cfgFileName string) ([]pkgv1.Function, error) {

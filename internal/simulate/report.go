@@ -1,0 +1,443 @@
+/*
+Copyright 2026 The Crossplane Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package simulate
+
+import (
+	"cmp"
+	"maps"
+	"reflect"
+	"slices"
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+
+	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/plan"
+)
+
+// noteProviderPlanNotRun says the cluster diff was not refined by provider
+// plans, so its plans say nothing about the cloud resources.
+const noteProviderPlanNotRun = "Provider plan not run."
+
+// Notes a caller sets on ProjectResult.Notes when no provider plans refined the
+// cluster diff, saying why. A result built from provider plans
+// carries no note: each approximate plan already says why it is approximate.
+const (
+	NoteProviderPlanSkipped = "Provider plan skipped (--skip-plan)."
+	NoteNoDiffServers       = "Provider plan not run: no provider diff server planned these resources."
+)
+
+// FromCompReport maps a composition diff run onto a ProjectResult: a plan and a
+// Compositions entry per Composition, and a Composites entry per affected
+// composite, with that composite's downstream plans grouped under it. plans
+// is the provider plans the run collected (nil means none ran), merged into the
+// engine's plan of a diff that renders its resource as the planned one did (see
+// ProviderPlans.For). keep is the filter PlanDiffs used: a kept equal diff no
+// provider planned is dropped, as one whose provider plan is a no-op is. nil
+// keeps none.
+func FromCompReport(o *dt.CompDiffOutput, plans *ProviderPlans, keep func(*unstructured.Unstructured) bool) ProjectResult {
+	if o == nil {
+		o = &dt.CompDiffOutput{}
+	}
+
+	a := newAssembler(plans, keep)
+	owned := make([]dt.OutputError, 0, len(o.Errors))
+	compositions := make([]CompositionResult, 0, len(o.Compositions))
+
+	for i := range o.Compositions {
+		comp := &o.Compositions[i]
+		ref := plan.ResourceRef{
+			APIVersion: apiextensionsv1.CompositionGroupVersionKind.GroupVersion().String(),
+			Kind:       apiextensionsv1.CompositionKind,
+			Name:       comp.Name,
+		}
+
+		cr := CompositionResult{Ref: ref, ImpactAnalysisSkipped: comp.ImpactAnalysisSkipped}
+		// A zero RevisionImpact means the comparison never ran; reporting
+		// it would claim the composition creates no revision.
+		if ri := comp.RevisionImpact; ri.Determined() {
+			cr.RevisionImpact = &RevisionImpact{
+				ChangeScope:         ri.ChangeScope,
+				CreatesRevision:     ri.CreatesRevision,
+				RepointedComposites: ri.RepointedComposites,
+				PredictedRevision:   ri.PredictedRevisionName,
+			}
+		}
+		compositions = append(compositions, cr)
+
+		switch {
+		case comp.Error != nil:
+			// A composition-level error is not in the run's Errors list.
+			a.addError(ref, *comp.Error, nil)
+		case comp.CompositionDiff != nil:
+			a.addDiff(comp.CompositionDiff, nil)
+		default:
+			// Unchanged, or changed only in fields masked from the diff.
+			a.plans = append(a.plans, &plan.ResourcePlan{
+				APIVersion: ref.APIVersion, Kind: ref.Kind, Name: ref.Name, Action: plan.ActionNoOp,
+			})
+		}
+
+		for _, impact := range comp.ImpactAnalysis {
+			xr := resourceRef(impact.ObjectReference)
+			c := compositeResult(impact)
+			c.Composition = &ref
+			if impact.Error != nil {
+				a.addError(xr, *impact.Error, &xr)
+				owned = append(owned, *impact.Error)
+			}
+			if a.addDiffs(impact.Diffs, &xr) && c.Status == CompositeUnchanged {
+				c.Status = CompositeChanged
+			}
+			a.composites = append(a.composites, c)
+		}
+	}
+
+	a.addRunErrors(o.Errors, owned)
+
+	res := a.result(slices.Concat(o.Warnings, dt.CompDryRunWarnings(o)))
+	res.Compositions = compositions
+
+	return res
+}
+
+// compositeResult maps an affected composite's impact onto its status. A
+// Manual-policy composite is deferred: applying changes nothing for it until
+// its revision advances, unless it was rendered against its pinned revision
+// because that calls a changed function. Other filtered composites are skipped.
+func compositeResult(impact dt.XRImpact) CompositeResult {
+	c := CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned || impact.FilterReason == dt.FilterReasonManualPolicy}
+
+	if impact.Pinned && impact.RenderedRevision != "" {
+		c.Detail = "rendered against pinned revision " + impact.RenderedRevision + " with the project's functions"
+	}
+
+	switch impact.Status {
+	case dt.XRStatusChanged:
+		c.Status = CompositeChanged
+	case dt.XRStatusUnchanged:
+		c.Status = CompositeUnchanged
+	case dt.XRStatusError:
+		c.Status = CompositeError
+	case dt.XRStatusFiltered:
+		c.Status = CompositeSkipped
+		if impact.FilterReason == dt.FilterReasonManualPolicy {
+			c.Status = CompositeDeferred
+		}
+		c.Reason = compositeReason(impact.FilterReason)
+		c.Detail = impact.FilterDetail
+	default:
+		c.Status = CompositeUnknown
+	}
+
+	return c
+}
+
+// compositeReason converts the engine's filter reason to the public enum. An
+// empty reason stays empty.
+func compositeReason(r dt.FilterReason) CompositeReason {
+	if r == "" {
+		return ""
+	}
+
+	switch r {
+	case dt.FilterReasonManualPolicy:
+		return CompositeReasonManualPolicy
+	case dt.FilterReasonRevisionSelectorMismatch:
+		return CompositeReasonRevisionSelectorMismatch
+	case dt.FilterReasonDeleting:
+		return CompositeReasonDeleting
+	default:
+		return CompositeReasonUnknown
+	}
+}
+
+// assembler accumulates one run's plans, composites and errors.
+type assembler struct {
+	// provider holds the provider plans to merge; nil when none
+	// ran.
+	provider *ProviderPlans
+	// keep reports the equal diffs kept only for a provider plan.
+	keep       func(*unstructured.Unstructured) bool
+	plans      []*plan.ResourcePlan
+	composites []CompositeResult
+	errors     []Error
+	// listed holds, per resource, the unredacted changes already planned,
+	// so a change two inputs reach identically is listed once.
+	listed map[string][]listedChange
+}
+
+type listedChange struct {
+	action       plan.Action
+	changes      []plan.FieldChange
+	dryRun       *plan.Verification
+	err          string
+	approximate  bool
+	replacePaths []string
+}
+
+func newAssembler(provider *ProviderPlans, keep func(*unstructured.Unstructured) bool) *assembler {
+	return &assembler{provider: provider, keep: keep, plans: []*plan.ResourcePlan{}, listed: map[string][]listedChange{}}
+}
+
+// addDiffs adds a plan per diff, in the structured renderer's canonical order.
+// It reports whether a provider plan changed any of them, which the engine's
+// verdict alone does not show.
+func (a *assembler) addDiffs(diffs map[string]*dt.ResourceDiff, composite *plan.ResourceRef) bool {
+	changed := false
+	for _, d := range slices.SortedFunc(maps.Values(diffs), diffOrder) {
+		changed = a.addDiff(d, composite) || changed
+	}
+
+	return changed
+}
+
+// addDiff adds the plan for d under composite, merged with its provider plan,
+// unless an identical change to the same resource is already listed (under
+// the first composite reaching it). Differing renders of one resource are all
+// listed, as the structured renderer's flat view lists them. It reports
+// whether the merged plan is a change, listed or not.
+func (a *assembler) addDiff(d *dt.ResourceDiff, composite *plan.ResourceRef) bool {
+	key := d.GetDiffKey()
+	p := merge(d, resourcePlan(d), a.provider.For(d), a.keep)
+	if p == nil {
+		return false
+	}
+	p.Composite = composite
+	changed := p.Error == "" && isChange(p.Action)
+
+	lc := listedChange{
+		action: p.Action, changes: p.Changes, dryRun: p.DryRun,
+		err: p.Error, approximate: p.Approximate, replacePaths: p.ReplacePaths,
+	}
+	if slices.ContainsFunc(a.listed[key], func(l listedChange) bool { return reflect.DeepEqual(l, lc) }) {
+		return changed
+	}
+	a.listed[key] = append(a.listed[key], lc)
+
+	// Redacted after the duplicate check, so two Secrets differing only in
+	// their redacted values are not mistaken for one change.
+	p.Before, p.After = redactViews(p.Before, p.After, p.Changes)
+	p.Changes = plan.RedactSecretChanges(d.Gvk, p.Changes)
+	a.plans = append(a.plans, p)
+
+	return changed
+}
+
+// merge returns the plan for d given its engine plan p and its provider plan
+// pp, or nil to drop it. The cluster diff decides what changes in the
+// cluster; the provider refines what that does to the external resource. An
+// equal diff keep reports true for was kept only for its provider plan, so
+// without one it is dropped.
+func merge(d *dt.ResourceDiff, p, pp *plan.ResourcePlan, keep func(*unstructured.Unstructured) bool) *plan.ResourcePlan {
+	switch {
+	case pp == nil && d.DiffType == dt.DiffTypeEqual && keep != nil && d.Desired.Raw != nil && keep(d.Desired.Raw):
+		return nil
+	case pp == nil:
+		return p
+	case pp.Error != "":
+		// An error plan, as the engine's own are, keeping the engine's
+		// identity (its name carries the "(generated)" display name) and
+		// DryRun.
+		p.Action, p.Changes, p.Error = "", nil, pp.Error
+		return p
+	case pp.Approximate:
+		// The engine's diff of the dry-run result beats Fallback's
+		// spec-only one.
+		p.Approximate = true
+		p.FallbackReason = pp.FallbackReason
+	case pp.Action == plan.ActionCreate, pp.Action == plan.ActionUpdate, pp.Action == plan.ActionReplace:
+		p.Action = pp.Action
+		p.Changes = unionChanges(pp.Changes, p.Changes)
+		p.ReplacePaths = pp.ReplacePaths
+	}
+
+	// An equal diff is kept only for its provider plan; when that finds no
+	// change either, the resource is no news.
+	if d.DiffType == dt.DiffTypeEqual && p.Action == plan.ActionNoOp {
+		return nil
+	}
+
+	return p
+}
+
+// unionChanges returns the provider's changes plus each engine change the
+// provider did not report. The provider only diffs the external resource's
+// parameters, so cluster-only changes (deletionPolicy, labels) come from the
+// engine. A provider change at or under an engine change's path, or the
+// reverse, reports it.
+func unionChanges(provider, engine []plan.FieldChange) []plan.FieldChange {
+	out := slices.Clone(provider)
+	for _, e := range engine {
+		if !slices.ContainsFunc(provider, func(c plan.FieldChange) bool { return pathCovers(c.Path, e.Path) || pathCovers(e.Path, c.Path) }) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// pathCovers reports whether child is parent or lies under it.
+func pathCovers(parent, child string) bool {
+	return child == parent || strings.HasPrefix(child, parent+".") || strings.HasPrefix(child, parent+"[")
+}
+
+// addError records e, failing the plan for ref. composite is the composite
+// the plan groups under, nil for a Composition.
+func (a *assembler) addError(ref plan.ResourceRef, e dt.OutputError, composite *plan.ResourceRef) {
+	a.plans = append(a.plans, &plan.ResourcePlan{
+		APIVersion: ref.APIVersion, Kind: ref.Kind, Name: ref.Name, Namespace: ref.Namespace,
+		Error: e.Message, Composite: composite,
+	})
+	a.errors = append(a.errors, planError(e, &ref))
+}
+
+// addRunErrors records the errors in all that no resource owns: all is the
+// run's union error list, and owned the errors already recorded against a
+// resource. Each owned entry consumes one equal entry of all.
+func (a *assembler) addRunErrors(all, owned []dt.OutputError) {
+	rest := slices.Clone(all)
+	for _, o := range owned {
+		if i := slices.IndexFunc(rest, func(e dt.OutputError) bool { return reflect.DeepEqual(e, o) }); i >= 0 {
+			rest = slices.Delete(rest, i, i+1)
+		}
+	}
+
+	for _, e := range rest {
+		a.errors = append(a.errors, planError(e, nil))
+	}
+}
+
+func (a *assembler) result(warnings []dt.OutputWarning) ProjectResult {
+	res := NewProjectResult(a.plans, a.composites, a.errors)
+	if a.provider == nil {
+		res.Notes = []string{noteProviderPlanNotRun}
+	}
+
+	for _, w := range warnings {
+		res.Warnings = append(res.Warnings, Warning{Message: w.Message, Context: w.Context})
+	}
+
+	return res
+}
+
+// resourcePlan maps one diff onto a plan. The engine's DiffType is the
+// verdict: it already discounts defaulting noise, so the action never depends
+// on whether any field changes remain.
+func resourcePlan(d *dt.ResourceDiff) *plan.ResourcePlan {
+	p := &plan.ResourcePlan{
+		APIVersion: d.Gvk.GroupVersion().String(),
+		Kind:       d.Gvk.Kind,
+		// ResourceName carries the "(generated)" display name.
+		Name:      d.ResourceName,
+		Namespace: d.Namespace,
+		DryRun:    verification(d.DryRun),
+		// The views the changes are diffed from. Clean is nil for an equal
+		// diff, so a kept-equal diff a provider plan upgrades carries
+		// neither: its Raw views are uncleaned, unlike every other plan's.
+		Before: plan.RedactSecret(d.Current.Clean),
+		After:  plan.RedactSecret(d.Desired.Clean),
+	}
+
+	switch d.DiffType {
+	case dt.DiffTypeAdded:
+		p.Action = plan.ActionCreate
+		p.Changes = fieldChanges(nil, d.Desired.Clean)
+	case dt.DiffTypeModified:
+		p.Action = plan.ActionUpdate
+		if d.Current.Clean != nil && d.Desired.Clean != nil {
+			p.Changes = fieldChanges(d.Current.Clean, d.Desired.Clean)
+		}
+	case dt.DiffTypeRemoved:
+		// A delete carries what is removed, like Terraform's "before".
+		p.Action = plan.ActionDelete
+		p.Changes = fieldChanges(d.Current.Clean, nil)
+	case dt.DiffTypeEqual:
+		// Clean is nil for an equal diff.
+		p.Action = plan.ActionNoOp
+	}
+
+	return p
+}
+
+// fieldChanges diffs the Clean views, which have ignored paths, status and
+// server-managed metadata already stripped, minus the fields the plan's
+// header already shows.
+func fieldChanges(actual, planned *unstructured.Unstructured) []plan.FieldChange {
+	changes := plan.FieldChanges(object(actual), object(planned))
+
+	return slices.DeleteFunc(changes, func(c plan.FieldChange) bool {
+		switch c.Path {
+		case "apiVersion", "kind", "metadata.name", "metadata.namespace":
+			return true
+		}
+
+		return false
+	})
+}
+
+func object(u *unstructured.Unstructured) map[string]any {
+	if u == nil {
+		return nil
+	}
+
+	return u.Object
+}
+
+// diffOrder is the structured renderer's canonical order: kind, then name,
+// then the full key.
+func diffOrder(a, b *dt.ResourceDiff) int {
+	return cmp.Or(
+		cmp.Compare(a.Gvk.Kind, b.Gvk.Kind),
+		cmp.Compare(a.ResourceName, b.ResourceName),
+		cmp.Compare(a.GetDiffKey(), b.GetDiffKey()),
+	)
+}
+
+func resourceRef(o corev1.ObjectReference) plan.ResourceRef {
+	return plan.ResourceRef{APIVersion: o.APIVersion, Kind: o.Kind, Name: o.Name, Namespace: o.Namespace}
+}
+
+func verification(d *dt.DryRunInfo) *plan.Verification {
+	if d == nil {
+		return nil
+	}
+
+	return &plan.Verification{
+		SkipReason:     string(d.SkipReason),
+		Detail:         d.Detail,
+		StorageVersion: d.StorageVersion,
+	}
+}
+
+func planError(e dt.OutputError, resource *plan.ResourceRef) Error {
+	out := Error{Ref: resource, Message: e.Message}
+
+	for _, f := range e.ValidationFailures {
+		vf := ValidationFailure{
+			APIVersion: f.APIVersion, Kind: f.Kind, Name: f.Name, Namespace: f.Namespace, Status: f.Status,
+		}
+		for _, fe := range f.Errors {
+			vf.Errors = append(vf.Errors, FieldValidationError{Type: fe.Type, Field: fe.Field, Message: fe.Message, Value: fe.Value})
+		}
+		out.ValidationFailures = append(out.ValidationFailures, vf)
+	}
+
+	return out
+}

@@ -24,17 +24,24 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/afero"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
+	"github.com/crossplane/crossplane/apis/v2/pkg"
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/containerruntime"
+	"github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -81,28 +88,38 @@ const (
 	defaultDevelopmentTarget = "localhost:9099"
 )
 
-// EnsureServers starts a diff server for each input behind the spinner, and
-// prints the inputs it skipped.
+// EnsureServers starts a diff server for each input mgr has not handled yet,
+// behind the spinner, and prints the inputs it skipped. When no input is new,
+// it waits for any still starting without starting the spinner.
 func EnsureServers(ctx context.Context, sp terminal.SpinnerPrinter, stderr io.Writer, mgr *diffserver.Manager, inputs []diffserver.Input) error {
 	var skipped []diffserver.Skipped
-	if err := sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
+	start := func(ch async.EventChannel) error {
 		var err error
 		skipped, err = mgr.Start(ctx, inputs, ch)
 		return err
-	}); err != nil {
+	}
+	var err error
+	if len(mgr.Unclaimed(inputs)) == 0 {
+		err = start(nil)
+	} else {
+		err = sp.WrapAsyncWithSuccessSpinners(start)
+	}
+	if err != nil {
 		return errors.Wrap(err, "cannot start diff servers")
 	}
-	for _, s := range skipped {
-		_, _ = fmt.Fprintf(stderr, "Not running a diff server for %s: %s\n", s.Image, s.Reason)
+	for _, sk := range skipped {
+		_, _ = fmt.Fprintf(stderr, "Not running a diff server for %s: %s\n", sk.Image, sk.Reason)
 	}
 	return nil
 }
 
 // StopServers stops every server mgr runs. It runs even when ctx was
-// cancelled by a signal, so an interrupted run still tears its containers
-// down.
+// cancelled, so an interrupted run still tears its containers down, bounded
+// by diffprocessor.CleanupTimeout.
 func StopServers(ctx context.Context, stderr io.Writer, mgr *diffserver.Manager) {
-	if err := mgr.Stop(context.WithoutCancel(ctx)); err != nil {
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), diffprocessor.CleanupTimeout)
+	defer cancel()
+	if err := mgr.Stop(sctx); err != nil {
 		_, _ = fmt.Fprintf(stderr, "Warning: cannot clean up diff servers: %s\n", err)
 	}
 }
@@ -282,4 +299,35 @@ func LoadImageConfigs(path string) ([]pkgv1beta1.ImageConfig, error) {
 		ics = append(ics, ic)
 	}
 	return ics, nil
+}
+
+// kubeScheme is built once and never mutated, so concurrent NewKubeClient
+// calls don't race on shared scheme maps.
+//
+//nolint:gochecknoglobals // Built once, read-only afterwards.
+var kubeScheme = sync.OnceValues(func() (*runtime.Scheme, error) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		return nil, err
+	}
+	if err := pkg.AddToScheme(s); err != nil {
+		return nil, err
+	}
+	return s, nil
+})
+
+// NewKubeClient returns a client for cfg that maps kinds with rmapper. Pass
+// the run's one mapper (the diff engine's core.Clients.Mapper), since
+// controller-runtime otherwise builds a mapper with a discovery cache of its
+// own.
+func NewKubeClient(cfg *rest.Config, rmapper meta.RESTMapper) (client.Client, error) {
+	sch, err := kubeScheme()
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot build scheme")
+	}
+	cl, err := client.New(cfg, client.Options{Scheme: sch, Mapper: rmapper})
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot init kubeclient")
+	}
+	return cl, nil
 }

@@ -13,8 +13,8 @@ Zone.Identifier
 build/
 
 # Nix build output symlinks
-result
-result-*
+/result
+/result-*
 
 # Exclude the ko data dir
 kodata/
@@ -48,3 +48,4 @@ AGENTS.md
 
 # Integration test coverage (nix run .#integration-test)
 /coverage-integration.txt
+/coverage-merged.txt

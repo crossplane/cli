@@ -790,3 +790,220 @@ func TestManagerLease(t *testing.T) {
 		}
 	})
 }
+
+func TestManagerStartIdempotent(t *testing.T) {
+	ctx := context.Background()
+	log := logging.NewNopLogger()
+	const img = "xpkg.example.org/provider-aws-ec2:v2.9.0"
+	pkgs := &fakePkgClient{pkgs: map[string]*runtimexpkg.Package{
+		img: parsePackage(t, pkgWithCapability, "sha256:0123456789abcdef"),
+	}}
+	const img2 = "xpkg.example.org/provider-aws-ec2-other:v2.9.0"
+	pkgs2 := &fakePkgClient{pkgs: map[string]*runtimexpkg.Package{
+		img:  pkgs.pkgs[img],
+		img2: parsePackage(t, pkgWithCapability, "sha256:fedcba9876543210"),
+	}}
+	vpc := schema.GroupKind{Group: "ec2.aws.upbound.io", Kind: "VPC"}
+
+	t.Run("RepeatStartsNothing", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()))
+		for i := range 2 {
+			skipped, err := m.Start(ctx, Images([]string{img, img}), nil)
+			if err != nil || len(skipped) != 0 {
+				t.Fatalf("Start #%d: unexpected error or skips: %v %+v", i, err, skipped)
+			}
+		}
+		if len(fd.created) != 1 || len(m.Servers()) != 1 {
+			t.Errorf("Start twice: want one container and one server, got containers %v servers %d", fd.created, len(m.Servers()))
+		}
+	})
+
+	t.Run("CancelledStartIsRetried", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()))
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := m.Start(cctx, Images([]string{img}), nil); err == nil {
+			t.Fatal("Start(cancelled): want the context error")
+		}
+		if _, ok := m.Route(vpc); ok || len(m.Servers()) != 0 {
+			t.Fatalf("Start(cancelled): want no server and no route, got %d servers", len(m.Servers()))
+		}
+		skipped, err := m.Start(ctx, Images([]string{img}), nil)
+		if err != nil || len(skipped) != 0 {
+			t.Fatalf("Start(retry): unexpected error or skips: %v %+v", err, skipped)
+		}
+		if _, ok := m.Route(vpc); !ok {
+			t.Errorf("Start(retry): want the input started after a cancelled Start")
+		}
+		if len(m.Servers()) != 1 {
+			t.Errorf("Start(retry): want one server, got %d", len(m.Servers()))
+		}
+	})
+
+	t.Run("ConcurrentStartWaitsForInFlight", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		cli := fd.client()
+		create := cli.MockContainerCreate
+		entered, unblock := make(chan struct{}), make(chan struct{})
+		cli.MockContainerCreate = func(ctx context.Context, o client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			close(entered)
+			<-unblock
+			return create(ctx, o)
+		}
+		m := NewManager(pkgs, log, WithDockerClient(cli))
+		first := make(chan error, 1)
+		go func() { _, err := m.Start(ctx, Images([]string{img}), nil); first <- err }()
+		<-entered
+		second := make(chan error, 1)
+		go func() { _, err := m.Start(ctx, Images([]string{img}), nil); second <- err }()
+		select {
+		case <-second:
+			t.Fatal("second Start returned while the first was still starting the input")
+		case <-time.After(100 * time.Millisecond):
+		}
+		close(unblock)
+		if err := <-first; err != nil {
+			t.Fatalf("first Start: %v", err)
+		}
+		if err := <-second; err != nil {
+			t.Fatalf("second Start: %v", err)
+		}
+		if _, ok := m.Route(vpc); !ok || len(fd.created) != 1 {
+			t.Errorf("want the input routed and started once, got containers %v", fd.created)
+		}
+	})
+
+	t.Run("ConcurrentStartsStartOnce", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		m := NewManager(pkgs, log, WithDockerClient(fd.client()))
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Go(func() {
+				if _, err := m.Start(ctx, Images([]string{img}), nil); err != nil {
+					t.Errorf("Start(...): unexpected error: %v", err)
+				}
+			})
+		}
+		wg.Wait()
+		if len(fd.created) != 1 || len(m.Servers()) != 1 {
+			t.Errorf("concurrent Starts: want one container and one server, got containers %v servers %d", fd.created, len(m.Servers()))
+		}
+	})
+
+	t.Run("WaiterRetriesCancelledStart", func(t *testing.T) {
+		// B claims img2 in the same claim that captures A's pending img, so
+		// holding img2's create pins B to waiting on A, then re-claiming img
+		// once A releases it.
+		fd := newFakeDocker(servePlanService(t), nil)
+		cli := fd.client()
+		create := cli.MockContainerCreate
+		entered, unblock := make(chan struct{}), make(chan struct{})
+		entered2, unblock2 := make(chan struct{}), make(chan struct{})
+		name, name2 := containerName(pkgs2.pkgs[img].Digest, CleanupOrphan), containerName(pkgs2.pkgs[img2].Digest, CleanupOrphan)
+		orphans := func(imgs ...string) []Input {
+			ins := Images(imgs)
+			for i := range ins {
+				ins[i].Cleanup = CleanupOrphan
+			}
+			return ins
+		}
+		var once sync.Once
+		cli.MockContainerCreate = func(ctx context.Context, o client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			switch o.Name {
+			case name:
+				first := false
+				once.Do(func() { first = true })
+				if first {
+					close(entered)
+					<-unblock
+				}
+			case name2:
+				close(entered2)
+				<-unblock2
+			}
+			return create(ctx, o)
+		}
+		m := NewManager(pkgs2, log, WithDockerClient(cli))
+		actx, cancel := context.WithCancel(ctx)
+		a := make(chan error, 1)
+		go func() { _, err := m.Start(actx, orphans(img), nil); a <- err }()
+		<-entered
+		b := make(chan error, 1)
+		go func() { _, err := m.Start(ctx, orphans(img, img2), nil); b <- err }()
+		<-entered2
+		cancel()
+		close(unblock)
+		if err := <-a; !errors.Is(err, context.Canceled) {
+			t.Errorf("cancelled Start: want context.Canceled, got %v", err)
+		}
+		close(unblock2)
+		if err := <-b; err != nil {
+			t.Fatalf("waiting Start: %v", err)
+		}
+		if _, ok := m.Route(vpc); !ok || len(fd.created) != 2 {
+			t.Errorf("want the waiter to retry and route the input, got containers %v", fd.created)
+		}
+	})
+
+	t.Run("WaiterHonoursOwnContext", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		cli := fd.client()
+		create := cli.MockContainerCreate
+		entered, unblock := make(chan struct{}), make(chan struct{})
+		cli.MockContainerCreate = func(ctx context.Context, o client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			close(entered)
+			<-unblock
+			return create(ctx, o)
+		}
+		m := NewManager(pkgs, log, WithDockerClient(cli))
+		a := make(chan error, 1)
+		go func() { _, err := m.Start(ctx, Images([]string{img}), nil); a <- err }()
+		<-entered
+		bctx, cancel := context.WithCancel(ctx)
+		b := make(chan error, 1)
+		go func() { _, err := m.Start(bctx, Images([]string{img}), nil); b <- err }()
+		cancel()
+		select {
+		case err := <-b:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("waiting Start: want context.Canceled, got %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("waiting Start did not return after its own ctx ended")
+		}
+		close(unblock)
+		if err := <-a; err != nil {
+			t.Fatalf("first Start: %v", err)
+		}
+		if _, ok := m.Route(vpc); !ok {
+			t.Error("first Start: want the input routed")
+		}
+	})
+
+	t.Run("StopHonoursDeadline", func(t *testing.T) {
+		fd := newFakeDocker(servePlanService(t), nil)
+		cli := fd.client()
+		cli.MockContainerStop = func(ctx context.Context, _ string, _ client.ContainerStopOptions) (client.ContainerStopResult, error) {
+			<-ctx.Done()
+			return client.ContainerStopResult{}, ctx.Err()
+		}
+		m := NewManager(pkgs, log, WithDockerClient(cli))
+		if _, err := m.Start(ctx, Images([]string{img}), nil); err != nil {
+			t.Fatalf("Start(...): unexpected error: %v", err)
+		}
+		sctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			_ = m.Stop(sctx)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("Stop(...): did not return after its deadline while Docker blocked")
+		}
+	})
+}

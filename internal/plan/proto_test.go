@@ -21,7 +21,6 @@ import (
 
 	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
 	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -202,7 +201,7 @@ func TestFromResponse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("\n%s\nFromResponse(...): unexpected error: %v", tc.reason, err)
 			}
-			if diff := cmp.Diff(tc.want.plan, got, cmpopts.IgnoreFields(ResourcePlan{}, "Desired")); diff != "" {
+			if diff := cmp.Diff(tc.want.plan, got); diff != "" {
 				t.Errorf("\n%s\nFromResponse(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})

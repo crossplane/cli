@@ -69,6 +69,10 @@ Development starts no containers, so it doesn't. This doesn't apply to runs
 started with `--session-id`, to runs on Windows, or to a different
 `DOCKER_HOST`.
 
+Provider packages are cached in `--cache-dir`, which defaults to
+`$CROSSPLANE_XPKG_CACHE` or the same xpkg cache directory as
+`project simulate` and `render`.
+
 The command exits with one of these statuses, so a CI pipeline can gate on
 the result:
 
@@ -112,7 +116,10 @@ repository, then simulate with a Provider manifest annotated with
 crossplane resource simulate -f resources.yaml --providers providers.yaml
 ```
 
-Emit machine-readable results for CI gating:
+Emit machine-readable results for CI gating. Each plan carries the live
+object as `before` (absent for a create) and the desired manifest as `after`,
+both without status, server-managed metadata and ignored paths, and with
+Secret values redacted:
 
 ```shell
 crossplane resource simulate -f resources.yaml -o json

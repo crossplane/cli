@@ -1,0 +1,6 @@
+apiVersion: dev.crossplane.io/v1alpha1
+kind: Project
+metadata:
+  name: it-project
+spec:
+  repository: xpkg.crossplane.io/example/it-project

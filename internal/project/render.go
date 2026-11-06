@@ -46,30 +46,13 @@ type Resolver interface {
 // LoadFunctionDependencies loads function manifests from a project's
 // dependencies, resolving version constraints using the provided resolver.
 func LoadFunctionDependencies(resolver Resolver, proj *devv1alpha1.Project) ([]pkgv1.Function, error) {
-	fns := make([]pkgv1.Function, 0, len(proj.Spec.Dependencies))
-	for _, dep := range proj.Spec.Dependencies {
-		if dep.Type != devv1alpha1.DependencyTypeXpkg {
-			continue
-		}
-		if dep.Xpkg == nil || dep.Xpkg.APIOnly {
-			continue
-		}
-		if dep.Xpkg.Kind != pkgv1.FunctionKind {
-			continue
-		}
+	refs, err := dependencyRefs(resolver, proj, pkgv1.FunctionKind)
+	if err != nil {
+		return nil, err
+	}
 
-		var ref string
-		if _, err := v1.NewHash(dep.Xpkg.Version); err == nil {
-			ref = fmt.Sprintf("%s@%s", dep.Xpkg.Package, dep.Xpkg.Version)
-		} else {
-			ref = fmt.Sprintf("%s:%s", dep.Xpkg.Package, dep.Xpkg.Version)
-		}
-
-		resolved, err := resolver.ResolveRef(ref)
-		if err != nil {
-			return nil, errors.Wrapf(err, "cannot resolve function dependency %s", ref)
-		}
-
+	fns := make([]pkgv1.Function, 0, len(refs))
+	for _, resolved := range refs {
 		f := pkgv1.Function{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: xpkg.ToDNSLabel(resolved.Context().RepositoryStr()),
@@ -84,6 +67,54 @@ func LoadFunctionDependencies(resolver Resolver, proj *devv1alpha1.Project) ([]p
 	}
 
 	return fns, nil
+}
+
+// LoadProviderDependencies returns the resolved image references of a
+// project's direct, non-apiOnly provider dependencies.
+func LoadProviderDependencies(resolver Resolver, proj *devv1alpha1.Project) ([]string, error) {
+	refs, err := dependencyRefs(resolver, proj, pkgv1.ProviderKind)
+	if err != nil {
+		return nil, err
+	}
+
+	images := make([]string, 0, len(refs))
+	for _, resolved := range refs {
+		images = append(images, resolved.Name())
+	}
+	return images, nil
+}
+
+// dependencyRefs resolves a project's direct, non-apiOnly xpkg dependencies
+// of the given kind, resolving version constraints using the provided
+// resolver.
+func dependencyRefs(resolver Resolver, proj *devv1alpha1.Project, kind string) ([]name.Reference, error) {
+	refs := make([]name.Reference, 0, len(proj.Spec.Dependencies))
+	for _, dep := range proj.Spec.Dependencies {
+		if dep.Type != devv1alpha1.DependencyTypeXpkg {
+			continue
+		}
+		if dep.Xpkg == nil || dep.Xpkg.APIOnly {
+			continue
+		}
+		if dep.Xpkg.Kind != kind {
+			continue
+		}
+
+		var ref string
+		if _, err := v1.NewHash(dep.Xpkg.Version); err == nil {
+			ref = fmt.Sprintf("%s@%s", dep.Xpkg.Package, dep.Xpkg.Version)
+		} else {
+			ref = fmt.Sprintf("%s:%s", dep.Xpkg.Package, dep.Xpkg.Version)
+		}
+
+		resolved, err := resolver.ResolveRef(ref)
+		if err != nil {
+			return nil, errors.Wrapf(err, "cannot resolve %s dependency %s", strings.ToLower(kind), ref)
+		}
+		refs = append(refs, resolved)
+	}
+
+	return refs, nil
 }
 
 // EmbeddedFunctionsToDaemon loads each compatible image in the ImageTagMap into

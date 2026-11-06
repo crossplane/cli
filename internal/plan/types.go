@@ -20,8 +20,13 @@ limitations under the License.
 package plan
 
 import (
+	"slices"
+	"strings"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	xpfieldpath "github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 )
 
 // Action is what applying a resource would do.
@@ -100,16 +105,203 @@ type ResourcePlan struct {
 	FallbackReason string `json:"fallbackReason,omitempty"`
 	// Error is set when no plan could be computed for this resource at all.
 	Error string `json:"error,omitempty"`
+	// Composite is the composite resource (XR or claim) this resource belongs
+	// to, set by project simulate. Plans with a Composite render grouped
+	// under it.
+	Composite *ResourceRef `json:"composite,omitempty"`
+	// DryRun is set when the resource's desired state could not be verified
+	// against the API server; nil means it was verified (or not applicable).
+	DryRun *Verification `json:"dryRun,omitempty"`
 
-	// Desired is the resource the plan is for. It is carried for rendering
-	// (the plan output shows the user's own manifest, annotated) and is not
-	// part of the serialized result.
-	Desired *unstructured.Unstructured `json:"-"`
+	// Before is the live object the plan compares, nil for a create. After
+	// is the desired object, nil for a delete. They let a consumer match the
+	// plan to its input and render its own diff. After is the desired state
+	// with the CRD's defaults applied, as the API server would admit it, on
+	// every path, whether a provider diff server planned the resource or not;
+	// computed values and provider defaults appear only in Changes. For
+	// project simulate both are the cleaned views the cluster diff compares,
+	// with ignored paths, status and server-managed metadata removed, so they
+	// agree with Changes; both are nil when the cluster diff found the
+	// resource unchanged. A Secret's data and stringData values, and the
+	// paths the provider marks sensitive, are redacted (see RedactSecret).
+	Before *unstructured.Unstructured `json:"before,omitempty"`
+	After  *unstructured.Unstructured `json:"after,omitempty"`
+}
+
+// ResourceRef identifies a resource.
+type ResourceRef struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	Namespace  string `json:"namespace,omitempty"`
+}
+
+// Verification records a server-side dry run that did not happen: its presence
+// means the dry run was not performed.
+type Verification struct {
+	// SkipReason says why the dry run was not performed.
+	SkipReason string `json:"skipReason,omitempty"`
+	// Detail is the underlying cause as reported by the cluster.
+	Detail string `json:"detail,omitempty"`
+	// StorageVersion is the CRD's storage version, set when it differs from
+	// the version the resource was requested at.
+	StorageVersion string `json:"storageVersion,omitempty"`
 }
 
 // GroupVersionKind returns the plan's resource type.
 func (p *ResourcePlan) GroupVersionKind() schema.GroupVersionKind {
 	return schema.FromAPIVersionAndKind(p.APIVersion, p.Kind)
+}
+
+// ResourceRef returns the plan's resource identity.
+func (p *ResourcePlan) ResourceRef() ResourceRef {
+	return ResourceRef{APIVersion: p.APIVersion, Kind: p.Kind, Name: p.Name, Namespace: p.Namespace}
+}
+
+// ServerManagedMetadata lists the metadata fields the API server sets and
+// changes on its own, which no diff or plan view carries.
+//
+//nolint:gochecknoglobals // A constant list; Go has no const slices.
+var ServerManagedMetadata = []string{"resourceVersion", "uid", "generation", "creationTimestamp", "managedFields", "selfLink", "ownerReferences"}
+
+// CleanView returns the redacted copy of u that a plan carries as before or
+// after: u without status, server-managed metadata, the last-applied
+// configuration annotation or composed resource references, the fields the
+// diff engine also strips. It deliberately skips the engine's synthetic-name
+// rule: resource simulate's objects carry real names, so a generateName-shaped
+// metadata.name is kept, and so is an already empty spec.crossplane. u is not
+// modified; nil stays nil.
+func CleanView(u *unstructured.Unstructured) *unstructured.Unstructured {
+	if u == nil {
+		return nil
+	}
+	out := u.DeepCopy()
+	delete(out.Object, "status")
+	for _, f := range ServerManagedMetadata {
+		unstructured.RemoveNestedField(out.Object, "metadata", f)
+	}
+	removeEmptied(out.Object, "metadata", "annotations", "kubectl.kubernetes.io/last-applied-configuration")
+	unstructured.RemoveNestedField(out.Object, "spec", "resourceRefs")
+	removeEmptied(out.Object, "spec", "crossplane", "resourceRefs")
+	return RedactSecret(out)
+}
+
+// removeEmptied removes obj's parent.child.key, then parent.child if that
+// left it empty.
+func removeEmptied(obj map[string]any, parent, child, key string) {
+	m, ok, _ := unstructured.NestedMap(obj, parent, child)
+	if !ok {
+		return
+	}
+	if _, ok := m[key]; !ok {
+		return
+	}
+	unstructured.RemoveNestedField(obj, parent, child, key)
+	if len(m) == 1 {
+		unstructured.RemoveNestedField(obj, parent, child)
+	}
+}
+
+// secretFields returns the fields of a core Secret that hold secret values.
+func secretFields() []string { return []string{"data", "stringData"} }
+
+func isCoreSecret(gvk schema.GroupVersionKind) bool {
+	return gvk.Group == "" && gvk.Kind == "Secret"
+}
+
+// RedactSecretChanges returns changes with the values of a core Secret's data
+// and stringData fields marked sensitive, as a copy. Changes to any other kind
+// are returned as is. It works on field changes, not the object, because
+// diffing two redacted Secrets would hide that a value changed.
+func RedactSecretChanges(gvk schema.GroupVersionKind, changes []FieldChange) []FieldChange {
+	if !isCoreSecret(gvk) {
+		return changes
+	}
+
+	out := slices.Clone(changes)
+	for i, c := range out {
+		if !isSecretValue(c.Path) {
+			continue
+		}
+		if c.Actual != nil {
+			out[i].Actual = &Value{Sensitive: true}
+		}
+		if c.Planned != nil {
+			out[i].Planned = &Value{Sensitive: true}
+		}
+	}
+
+	return out
+}
+
+func isSecretValue(path string) bool {
+	for _, field := range secretFields() {
+		if rest, ok := strings.CutPrefix(path, field); ok && (rest == "" || rest[0] == '.' || rest[0] == '[') {
+			return true
+		}
+	}
+
+	return false
+}
+
+// SecretPaths returns the path of each data and stringData key of each core
+// Secret in us, for RedactPaths, and of a data or stringData field that isn't
+// a map. Other objects, and nil, have none.
+func SecretPaths(us ...*unstructured.Unstructured) []string {
+	var out []string
+	for _, u := range us {
+		if u == nil || !isCoreSecret(u.GroupVersionKind()) {
+			continue
+		}
+		for _, field := range secretFields() {
+			v, ok := u.Object[field]
+			if !ok {
+				continue
+			}
+			m, ok := v.(map[string]any)
+			if !ok {
+				out = append(out, field)
+				continue
+			}
+			for k := range m {
+				out = append(out, xpfieldpath.Segments{xpfieldpath.Field(field), xpfieldpath.Field(k)}.String())
+			}
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// RedactSecret returns u with each data and stringData value replaced by the
+// sensitive-value marker when u is a core Secret, as a copy; any other object
+// is returned as is. Keys are kept, so a consumer still sees which keys exist.
+func RedactSecret(u *unstructured.Unstructured) *unstructured.Unstructured {
+	if u == nil {
+		return nil
+	}
+	if !isCoreSecret(u.GroupVersionKind()) {
+		return u
+	}
+
+	sensitive := FormatValue(&Value{Sensitive: true})
+	out := u.DeepCopy()
+	for _, field := range secretFields() {
+		v, ok := out.Object[field]
+		if !ok {
+			continue
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			// Malformed: redact the whole field rather than leak it.
+			out.Object[field] = sensitive
+			continue
+		}
+		for k := range m {
+			m[k] = sensitive
+		}
+	}
+
+	return out
 }
 
 // NewResourcePlan returns a ResourcePlan identifying the given desired
@@ -120,6 +312,5 @@ func NewResourcePlan(desired *unstructured.Unstructured) *ResourcePlan {
 		Kind:       desired.GetKind(),
 		Name:       desired.GetName(),
 		Namespace:  desired.GetNamespace(),
-		Desired:    desired,
 	}
 }

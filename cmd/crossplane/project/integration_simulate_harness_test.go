@@ -18,24 +18,19 @@ limitations under the License.
 
 // This file is the simulate harness: the one function every integration
 // case funnels through. The cases are crossplane-diff's (origin/main
-// 6a140b6, plus later upstream additions through d93eb87), written as its comp and xr commands' CLI args plus an expected
+// https://github.com/crossplane-contrib/crossplane-diff/commit/6a140b65a6bdb428add78680e6caee9f08b7f04b, plus later upstream additions through
+// https://github.com/crossplane-contrib/crossplane-diff/commit/d93eb87c6315cb2b44e4790e369eef3590c31dff), written as its comp and xr commands' CLI args plus an expected
 // exit code and output. runSimulate translates those args into
 // `crossplane composition simulate` args and runs the real command through
 // kong against the case's envtest cluster, started by
 // internal/testutils/integration, so no case table changes.
 //
-// # Gap and environment skips
+// # Environment skips
 //
-// Cases the current simulate surface cannot express are ported in full
-// and skipped, never dropped, so each names what it waits for:
-//
-//   - gap:<feature> — the simulate command lacks the feature this case
-//     needs. Grep the skip reasons to find what to enable as features
-//     land.
-//   - env:<reason> — the environment lacks something the case needs.
-//     The render engine runs functions as Docker containers, so without
-//     a Docker daemon no rendering case can run; cases that would not
-//     render cannot be told apart upfront, so they skip too.
+// A case the environment lacks something for is skipped with an
+// env:<reason>. The render engine runs functions as Docker containers, so
+// without a Docker daemon no rendering case can run; cases that would not
+// render cannot be told apart upfront, so they skip too.
 //
 // testdata/README.md describes how a case runs, the skips, and how to run
 // the suite and read its coverage.
@@ -109,24 +104,16 @@ func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simA
 	return &a
 }
 
-// simulateGap returns the reason the parsed args cannot run against the
-// current simulate surface, or "" when they can. The runner calls it
-// before starting envtest, so a skipped case costs nothing, and
-// runSimulate never executes args it could not express.
-func simulateGap(_ DiffTestType, _ *simArgs) string {
-	return ""
-}
-
 // simulateArgv translates the parsed crossplane-diff args into composition
 // simulate's: the input files as -f, each --resource as a --name (and
 // --namespace), --include-manual as --include-pinned, and
 // --analyze-unchanged as its replacement --analyze-on=always. The output
 // is passed explicitly: crossplane-diff's default diff, since simulate
-// defaults to -o plan, and json or yaml as simulate.ProjectResult.
+// defaults to -o plan, and json or yaml as simulate's -o json/yaml result type.
 func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
 	t.Helper()
 
-	// ponytail: only Composition cases run here; xr simulate adds its type.
+	// NOTE: only Composition cases run here; xr simulate adds its type.
 	if testType != CompositionDiffTest {
 		t.Fatalf("simulateArgv: no simulate command for test type %q", testType)
 	}

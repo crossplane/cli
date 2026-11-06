@@ -642,7 +642,7 @@ func walk(node any, toks fieldpath.Segments) (any, bool) {
 
 // valuesEqual compares a and b by value, so int 3 equals float64 3. Both are normalised through JSON,
 // which is how the plan's values arrive.
-// ponytail: integers beyond 2^53 lose precision in the round trip; compare them differently if one is ever asserted.
+// NOTE: integers beyond 2^53 lose precision in the round trip; compare them differently if one is ever asserted.
 func valuesEqual(a, b any) bool {
 	// A marker state matches no concrete value, nil included, at any depth.
 	if hasMarker(a) || hasMarker(b) {

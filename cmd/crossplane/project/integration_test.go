@@ -195,13 +195,6 @@ func runIntegrationTest(t *testing.T, testType DiffTestType, tt IntegrationTestC
 	// Add files as positional arguments
 	args = append(args, testFiles...)
 
-	// Skip cases the current simulate surface cannot express, before the cluster starts, so a
-	// skipped case costs nothing. The gap reasons are greppable; see the harness package comment.
-	if reason := simulateGap(testType, parseSimulateArgs(t, testType, args)); reason != "" {
-		t.Skip(reason)
-		return
-	}
-
 	// The render engine runs functions as Docker containers. Without a Docker daemon no rendering
 	// case can run; cases that would not render anyway cannot be told apart upfront, so they skip.
 	if !dockerAvailable() {

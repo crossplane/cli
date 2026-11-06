@@ -61,10 +61,11 @@ func Yellow(input string) string {
 	return color(ColorYellow, input)
 }
 
+var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
 // CompareIgnoringAnsi compares two strings after stripping ANSI special characters.
 func CompareIgnoringAnsi(expected, actual string) bool {
 	// Strip ANSI codes from both strings
-	ansiPattern := regexp.MustCompile("\x1b\\[[0-9;]*m")
 	expectedStripped := ansiPattern.ReplaceAllString(expected, "")
 	actualStripped := ansiPattern.ReplaceAllString(actual, "")
 

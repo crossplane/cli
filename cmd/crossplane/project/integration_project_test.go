@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package project
+package project_test
 
 import (
 	"bytes"
@@ -32,6 +32,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
+	"github.com/crossplane/cli/v2/internal/testutils/integration/simharness"
 )
 
 // projectTestCase is a `project simulate -f <project file>` run against a
@@ -89,18 +90,18 @@ func TestProjectSimulateIntegration(t *testing.T) {
 		"PlainProject": {
 			reason: "A project with no dependencies or embedded functions simulates its Composition against cluster functions, like the same Composition in Composition mode.",
 			setupFiles: []string{
-				"testdata/comp/resources/xrd.yaml",
-				"testdata/comp/resources/original-composition.yaml",
-				"testdata/comp/resources/functions.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/original-composition.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
 			},
 			crossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
 				integration.Composes(
-					"testdata/comp/resources/existing-xr-1.yaml",
-					"testdata/comp/resources/existing-downstream-1.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-xr-1.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-1.yaml",
 				),
 				integration.Composes(
-					"testdata/comp/resources/existing-xr-2.yaml",
-					"testdata/comp/resources/existing-downstream-2.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-xr-2.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-2.yaml",
 				),
 			},
 			project:          "plain",
@@ -126,14 +127,14 @@ func TestProjectSimulateIntegration(t *testing.T) {
 		"ProviderPlanJoinsChanges": {
 			reason: "A provider plan routed for a composed resource joins that resource's changes.",
 			setupFiles: []string{
-				"testdata/comp/resources/xrd.yaml",
-				"testdata/comp/resources/original-composition.yaml",
-				"testdata/comp/resources/functions.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/original-composition.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
 			},
 			crossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
 				integration.Composes(
-					"testdata/comp/resources/existing-xr-1.yaml",
-					"testdata/comp/resources/existing-downstream-1.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-xr-1.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-1.yaml",
 				),
 			},
 			project:          "providerdep",
@@ -157,15 +158,15 @@ func TestProjectSimulateIntegration(t *testing.T) {
 		"EmbeddedFunctionOverlay": {
 			reason: "A Composition step naming a function embedded in the project runs the project's function, not a same-named cluster Function, which would fail without step input.",
 			setupFiles: []string{
-				"testdata/comp/resources/xrd.yaml",
-				"testdata/comp/resources/original-composition.yaml",
-				"testdata/comp/resources/functions.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/original-composition.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
 				"testdata/project/embedded/cluster-function.yaml",
 			},
 			crossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
 				integration.Composes(
-					"testdata/comp/resources/existing-xr-1.yaml",
-					"testdata/comp/resources/existing-downstream-1.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-xr-1.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-1.yaml",
 				),
 			},
 			project:          "embedded",
@@ -192,13 +193,13 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			}
 
 			cfg := integration.Start(t, integration.Setup{
-				CRDDirs:                    []string{"testdata/comp/crds"},
+				CRDDirs:                    []string{"../../../internal/testutils/integration/testdata/comp/crds"},
 				SetupFiles:                 tc.setupFiles,
 				CrossplaneManagedResources: tc.crossplaneManagedResources,
 			}).Config
 
 			argv := []string{
-				"project", "simulate", "--timeout=" + defaultTimeout.String(),
+				"project", "simulate", "--timeout=" + simharness.DefaultTimeout.String(),
 				"-f", copyProjectFixture(t, tc.project),
 				"--cache-dir=" + t.TempDir(),
 			}
@@ -209,7 +210,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			argv = append(argv, "-o", "json")
 
 			var stdout, stderr bytes.Buffer
-			code, err := runSimulateArgvWith(t, cfg, withRenderBinary(argv, localCrossplaneBinary(t)), &simulate.Hooks{Router: tc.router}, &stdout, &stderr)
+			code, err := simharness.RunSimulateArgvWith(t, cfg, simharness.WithRenderBinary(argv, simharness.LocalCrossplaneBinary(t)), &simulate.Hooks{Router: tc.router}, &stdout, &stderr)
 			if err != nil {
 				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
 			}

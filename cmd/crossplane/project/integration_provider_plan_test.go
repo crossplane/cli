@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package project
+package project_test
 
 import (
 	"bytes"
@@ -39,6 +39,7 @@ import (
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
+	"github.com/crossplane/cli/v2/internal/testutils/integration/simharness"
 )
 
 // fakeProviderRouter routes the composed XDownstreamResource kind, and only
@@ -70,14 +71,14 @@ func TestSimulateProviderPlan(t *testing.T) {
 	t.Parallel()
 
 	xrCase := integration.Setup{
-		CRDDirs: []string{"testdata/diff/crds"},
+		CRDDirs: []string{"../../../internal/testutils/integration/testdata/diff/crds"},
 		SetupFiles: []string{
-			"testdata/diff/resources/xrd.yaml",
-			"testdata/diff/resources/composition.yaml",
-			"testdata/diff/resources/functions.yaml",
+			"../../../internal/testutils/integration/testdata/diff/resources/xrd.yaml",
+			"../../../internal/testutils/integration/testdata/diff/resources/composition.yaml",
+			"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
 		},
 		CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
-			integration.Composes("testdata/diff/resources/existing-xr.yaml", "testdata/diff/resources/existing-downstream-resource.yaml"),
+			integration.Composes("../../../internal/testutils/integration/testdata/diff/resources/existing-xr.yaml", "../../../internal/testutils/integration/testdata/diff/resources/existing-downstream-resource.yaml"),
 		},
 	}
 
@@ -217,7 +218,7 @@ func TestSimulateProviderPlan(t *testing.T) {
 		},
 		"Drift": {
 			reason:   "A provider-managed resource the cluster sees unchanged still shows the provider's change.",
-			xrFile:   "testdata/diff/unmodified-xr.yaml",
+			xrFile:   "../../../internal/testutils/integration/testdata/diff/unmodified-xr.yaml",
 			args:     []string{"-o", "plan"},
 			ownCRD:   true,
 			fn:       update(&diffv1alpha1.FieldChange{Field: "spec.forProvider.region", Actual: strValue("us-east-1"), Planned: strValue("eu-west-1")}),
@@ -245,12 +246,12 @@ func TestSimulateProviderPlan(t *testing.T) {
 
 			xr := tc.xrFile
 			if xr == "" {
-				xr = "testdata/diff/modified-xr.yaml"
+				xr = "../../../internal/testutils/integration/testdata/diff/modified-xr.yaml"
 			}
-			argv := append([]string{"xr", "simulate", "--timeout=" + defaultTimeout.String(), "-f", xr}, tc.args...)
+			argv := append([]string{"xr", "simulate", "--timeout=" + simharness.DefaultTimeout.String(), "-f", xr}, tc.args...)
 
 			var stdout, stderr bytes.Buffer
-			code, err := runSimulateArgv(t, cfg, argv, localCrossplaneBinary(t), fakeProviderRouter{fn: tc.fn}, &stdout, &stderr)
+			code, err := simharness.RunSimulateArgv(t, cfg, argv, simharness.LocalCrossplaneBinary(t), fakeProviderRouter{fn: tc.fn}, &stdout, &stderr)
 			if code != tc.wantCode {
 				t.Errorf("\n%s\nwant exit code %d, got %d (err %v)\nstdout:\n%s\nstderr:\n%s", tc.reason, tc.wantCode, code, err, stdout.String(), stderr.String())
 			}

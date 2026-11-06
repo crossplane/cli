@@ -1,7 +1,0 @@
-apiVersion: ns.diff.example.org/v1alpha1
-kind: XNopResource
-metadata:
-  name: first-resource
-  namespace: default
-spec:
-  coolField: "first-value"

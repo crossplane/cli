@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package project
+package project_test
 
 import (
 	"bytes"
@@ -34,6 +34,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
+	"github.com/crossplane/cli/v2/internal/testutils/integration/simharness"
 )
 
 // TestSimulatePlanOutput runs simulate's own output formats, -o plan and
@@ -44,26 +45,26 @@ func TestSimulatePlanOutput(t *testing.T) {
 	t.Parallel()
 
 	xrCase := integration.Setup{
-		CRDDirs: []string{"testdata/diff/crds"},
+		CRDDirs: []string{"../../../internal/testutils/integration/testdata/diff/crds"},
 		SetupFiles: []string{
-			"testdata/diff/resources/xrd.yaml",
-			"testdata/diff/resources/composition.yaml",
-			"testdata/diff/resources/functions.yaml",
+			"../../../internal/testutils/integration/testdata/diff/resources/xrd.yaml",
+			"../../../internal/testutils/integration/testdata/diff/resources/composition.yaml",
+			"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
 		},
 		CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
-			integration.Composes("testdata/diff/resources/existing-xr.yaml", "testdata/diff/resources/existing-downstream-resource.yaml"),
+			integration.Composes("../../../internal/testutils/integration/testdata/diff/resources/existing-xr.yaml", "../../../internal/testutils/integration/testdata/diff/resources/existing-downstream-resource.yaml"),
 		},
 	}
 	compCase := integration.Setup{
-		CRDDirs: []string{"testdata/comp/crds"},
+		CRDDirs: []string{"../../../internal/testutils/integration/testdata/comp/crds"},
 		SetupFiles: []string{
-			"testdata/comp/resources/xrd.yaml",
-			"testdata/comp/resources/original-composition.yaml",
-			"testdata/comp/resources/functions.yaml",
+			"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
+			"../../../internal/testutils/integration/testdata/comp/resources/original-composition.yaml",
+			"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
 		},
 		CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
-			integration.Composes("testdata/comp/resources/existing-xr-1.yaml", "testdata/comp/resources/existing-downstream-1.yaml"),
-			integration.Composes("testdata/comp/resources/existing-xr-2.yaml", "testdata/comp/resources/existing-downstream-2.yaml"),
+			integration.Composes("../../../internal/testutils/integration/testdata/comp/resources/existing-xr-1.yaml", "../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-1.yaml"),
+			integration.Composes("../../../internal/testutils/integration/testdata/comp/resources/existing-xr-2.yaml", "../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-2.yaml"),
 		},
 	}
 
@@ -72,8 +73,8 @@ func TestSimulatePlanOutput(t *testing.T) {
 	another.Name = "another-resource"
 	comp := plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "xnopresources.diff.example.org"}
 
-	xrArgs := []string{"-f", "testdata/diff/modified-xr.yaml"}
-	compArgs := []string{"-f", "testdata/comp/updated-composition.yaml", "--namespace=default"}
+	xrArgs := []string{"-f", "../../../internal/testutils/integration/testdata/diff/modified-xr.yaml"}
+	compArgs := []string{"-f", "../../../internal/testutils/integration/testdata/comp/updated-composition.yaml", "--namespace=default"}
 
 	cases := map[string]struct {
 		reason string
@@ -111,7 +112,7 @@ Note: Provider plan not run: no provider diff server planned these resources.
 		"XRCreatePlanText": {
 			reason: "-o plan prints a dotted annotation or label key, such as crossplane.io/composite, whole as one level.",
 			tt:     &integration.Setup{CRDDirs: xrCase.CRDDirs, SetupFiles: xrCase.SetupFiles},
-			args:   []string{"-f", "testdata/diff/new-xr.yaml"},
+			args:   []string{"-f", "../../../internal/testutils/integration/testdata/diff/new-xr.yaml"},
 			wantText: `XR: XNopResource.ns.diff.example.org default/test-resource
   [+] XDownstreamResource.ns.nop.example.org default/test-resource (create)
       metadata:
@@ -252,11 +253,11 @@ Note: Provider plan not run: no provider diff server planned these resources.
 			argv := append(plainProjectArgv(t), tc.args...)
 			switch {
 			case tc.compArgv:
-				argv = append([]string{"composition", "simulate", "--timeout=" + defaultTimeout.String()}, tc.args...)
+				argv = append([]string{"composition", "simulate", "--timeout=" + simharness.DefaultTimeout.String()}, tc.args...)
 			case tc.tt != nil:
-				argv = append([]string{"xr", "simulate", "--timeout=" + defaultTimeout.String()}, tc.args...)
+				argv = append([]string{"xr", "simulate", "--timeout=" + simharness.DefaultTimeout.String()}, tc.args...)
 			}
-			code, err := runSimulateArgv(t, cfg, argv, localCrossplaneBinary(t), nil, &stdout, &stderr)
+			code, err := simharness.RunSimulateArgv(t, cfg, argv, simharness.LocalCrossplaneBinary(t), nil, &stdout, &stderr)
 			if err != nil {
 				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
 			}
@@ -327,7 +328,7 @@ func summarize(r simulate.ProjectResult) planShape {
 func integrationEnvGap() string {
 	// integration.Start fails, rather than skips, a run without envtest's
 	// binaries or Crossplane's CRDs.
-	if !dockerAvailable() {
+	if !simharness.DockerAvailable() {
 		return "env: no Docker daemon for the function render engine"
 	}
 	return ""
@@ -356,7 +357,7 @@ func TestSimulatePinnedChangedFunction(t *testing.T) {
 		},
 		"PinnedXRWithUnchangedFunctionDeferred": {
 			reason:       "A Manual XR whose pinned revision calls no changed function stays deferred.",
-			composition:  "testdata/comp/resources/original-composition.yaml",
+			composition:  "../../../internal/testutils/integration/testdata/comp/resources/original-composition.yaml",
 			wantDeferred: true,
 		},
 	}
@@ -370,17 +371,17 @@ func TestSimulatePinnedChangedFunction(t *testing.T) {
 			}
 
 			cluster := integration.Start(t, integration.Setup{
-				CRDDirs: []string{"testdata/comp/crds"},
+				CRDDirs: []string{"../../../internal/testutils/integration/testdata/comp/crds"},
 				SetupFiles: []string{
-					"testdata/comp/resources/xrd.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
 					tc.composition,
-					"testdata/comp/resources/functions.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
 					"testdata/project/embedded/cluster-function.yaml",
 				},
 				CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
 					integration.Composes(
-						"testdata/comp/resources/existing-xr-manual.yaml",
-						"testdata/comp/resources/existing-downstream-manual.yaml",
+						"../../../internal/testutils/integration/testdata/comp/resources/existing-xr-manual.yaml",
+						"../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-manual.yaml",
 					),
 				},
 			})
@@ -395,14 +396,14 @@ func TestSimulatePinnedChangedFunction(t *testing.T) {
 			}
 			rev, _, _ := un.NestedString(xr.Object, "spec", "crossplane", "compositionRevisionRef", "name")
 
-			base := withRenderBinary([]string{
-				"project", "simulate", "--timeout=" + defaultTimeout.String(),
+			base := simharness.WithRenderBinary([]string{
+				"project", "simulate", "--timeout=" + simharness.DefaultTimeout.String(),
 				"-f", copyProjectFixture(t, "embedded"),
 				"--cache-dir=" + t.TempDir(), "--skip-plan", "-n", "default",
-			}, localCrossplaneBinary(t))
+			}, simharness.LocalCrossplaneBinary(t))
 
 			var stdout, stderr bytes.Buffer
-			code, err := runSimulateArgvWith(t, cfg, append(slices.Clip(base), "-o", "json"), &simulate.Hooks{}, &stdout, &stderr)
+			code, err := simharness.RunSimulateArgvWith(t, cfg, append(slices.Clip(base), "-o", "json"), &simulate.Hooks{}, &stdout, &stderr)
 			if err != nil {
 				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
 			}
@@ -443,7 +444,7 @@ func TestSimulatePinnedChangedFunction(t *testing.T) {
 			}
 
 			var text bytes.Buffer
-			if _, err := runSimulateArgvWith(t, cfg, base, &simulate.Hooks{}, &text, &stderr); err != nil {
+			if _, err := simharness.RunSimulateArgvWith(t, cfg, base, &simulate.Hooks{}, &text, &stderr); err != nil {
 				t.Fatalf("simulate -o plan: unexpected error: %v", err)
 			}
 			if os.Getenv("SIMULATE_DEMO") != "" {
@@ -464,15 +465,15 @@ func TestSimulateNameRejected(t *testing.T) {
 	t.Parallel()
 
 	compCase := integration.Setup{
-		CRDDirs: []string{"testdata/comp/crds"},
+		CRDDirs: []string{"../../../internal/testutils/integration/testdata/comp/crds"},
 		SetupFiles: []string{
-			"testdata/comp/resources/xrd.yaml",
-			"testdata/comp/resources/original-composition.yaml",
-			"testdata/comp/resources/functions.yaml",
+			"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
+			"../../../internal/testutils/integration/testdata/comp/resources/original-composition.yaml",
+			"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
 		},
 		CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
-			integration.Composes("testdata/comp/resources/existing-xr-1.yaml", "testdata/comp/resources/existing-downstream-1.yaml"),
-			integration.Composes("testdata/comp/resources/existing-xr-2.yaml", "testdata/comp/resources/existing-downstream-2.yaml"),
+			integration.Composes("../../../internal/testutils/integration/testdata/comp/resources/existing-xr-1.yaml", "../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-1.yaml"),
+			integration.Composes("../../../internal/testutils/integration/testdata/comp/resources/existing-xr-2.yaml", "../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-2.yaml"),
 		},
 	}
 	cases := map[string]struct {
@@ -507,7 +508,7 @@ func TestSimulateNameRejected(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 			argv := append(plainProjectArgv(t), tc.args...)
-			code, err := runSimulateArgv(t, cfg, argv, localCrossplaneBinary(t), nil, &stdout, &stderr)
+			code, err := simharness.RunSimulateArgv(t, cfg, argv, simharness.LocalCrossplaneBinary(t), nil, &stdout, &stderr)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("\n%s\nsimulate: want error containing %q, got %v (exit %d)", tc.reason, tc.wantErr, err, code)
 			}
@@ -527,7 +528,7 @@ func plainProjectArgv(t *testing.T) []string {
 	t.Helper()
 
 	return []string{
-		"project", "simulate", "--timeout=" + defaultTimeout.String(),
+		"project", "simulate", "--timeout=" + simharness.DefaultTimeout.String(),
 		"-f", copyProjectFixture(t, "plain"),
 		"--cache-dir=" + t.TempDir(),
 	}

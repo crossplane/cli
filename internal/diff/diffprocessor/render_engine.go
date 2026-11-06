@@ -19,9 +19,6 @@ package diffprocessor
 import (
 	"context"
 	"fmt"
-	"maps"
-	"slices"
-	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	kunstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -35,7 +32,7 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
-	"github.com/crossplane/cli/v2/internal/diff/dockerrun"
+	"github.com/crossplane/cli/v2/internal/containerruntime"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/pkg/render"
 )
@@ -67,56 +64,25 @@ type RenderInputs struct {
 	XRD *kunstructured.Unstructured
 }
 
-// EngineRenderFn is the default RenderFn implementation. It lazily starts
-// function runtimes on first use and reuses them across subsequent calls. It is
-// safe for concurrent use: mu guards only the function-startup bookkeeping, so
-// renders run in parallel and a function needed by concurrent renders is
-// started once.
+// EngineRenderFn is the default RenderFn implementation. It renders through one
+// render.Session, which lazily starts function runtimes on first use and reuses
+// them across subsequent calls. It is safe for concurrent use: the Session
+// serializes starting functions, so renders run in parallel and a function
+// needed by concurrent renders is started once.
 //
 // A single `xr` invocation can render against XRs from multiple compositions
-// whose function pipelines overlap but aren't identical. Engine.Setup
-// (crossplane/cli#159) accepts being called once per batch: the call that
-// creates a new environment — if any — returns a real cleanup; calls that
-// integrate fns into an environment that already exists (because a prior
-// Setup call established it, or because the engine was pre-configured to use
-// an externally-managed environment via --crossplane-docker-network) return a
-// no-op cleanup, as do calls on engines with nothing to clean up (the local
-// engine). We accumulate every returned cleanup in a slice and call them in
-// LIFO order on Cleanup without coordinating which one is real, per the
-// caller contract in the upstream Engine.Setup docstring.
+// whose function pipelines overlap but aren't identical. The Session accepts
+// each composition's functions in turn (crossplane/cli#159): it sets up the
+// engine's environment once, starts only the functions it has not started, and
+// on Close stops them all and runs the Setup cleanups. Function containers
+// follow their own cleanup annotations, as in render.
 type EngineRenderFn struct {
-	engine    render.Engine
-	cleanups  []func()
-	addrsList []*render.FunctionAddresses
-	// startedNames is the set of function names we've already passed to
-	// startRuntimes; used for dedup so we don't restart a function that's
-	// already running.
-	startedNames map[string]struct{}
-	// addrs is the merged Addresses() map from every startRuntimes call.
-	// Filtered to in.Functions when building each render request.
-	addrs map[string]string
-	// mu serializes starting functions (engine.Setup, startRuntimes) and
-	// tearing them down (Cleanup), and guards cleanups, addrsList,
-	// startedNames and addrs. It is never held across engine.Render.
-	mu  sync.Mutex
-	log logging.Logger
+	session *render.Session
 
 	// image is the fully-resolved render image reference the engine will pull,
 	// or "" when a local binary backend was selected. Written once at
-	// construction and never mutated, so it is read without holding mu.
+	// construction and never mutated.
 	image string
-
-	// startRuntimes / stopRuntimes are seams for testing. They default to the
-	// real render package functions.
-	startRuntimes func(ctx context.Context, log logging.Logger, fns []pkgv1.Function) (*render.FunctionAddresses, error)
-	stopRuntimes  func(ctx context.Context, fa *render.FunctionAddresses) error
-
-	// run ties the containers and render network this engine creates to this
-	// process, so that a later run reclaims them if this one dies without
-	// cleaning up (#525). Its ID is the engine's session ID, so everything the
-	// engine creates is labelled with it, and it removes all of it in Cleanup.
-	// nil disables all of that, for tests that stub the engine out.
-	run *dockerrun.Run
 }
 
 // NewEngineRenderFn constructs an EngineRenderFn.
@@ -138,8 +104,8 @@ type EngineRenderFn struct {
 // on pipeline fatal and surfaces both — see the comment there.
 //
 // The docker engine renders on a Docker network: by default one it creates in
-// its first Setup and removes in that Setup's cleanup, labelled with the run's
-// session. network, when set (--crossplane-docker-network, then
+// its first Setup and removes when the Session closes, labelled with the
+// Session's ID. network, when set (--crossplane-docker-network, then
 // CROSSPLANE_DOCKER_NETWORK, then a function annotation), names the user's
 // network instead, passed as
 // render.EngineFlags.CrossplaneDockerNetwork
@@ -147,7 +113,7 @@ type EngineRenderFn struct {
 // it AND annotates each fn at Setup time so its container joins it too —
 // closing both halves of the "crossplane-diff inside a container" case
 // (crossplane/cli#75). The engine never creates or removes that network, and
-// neither does the run: it carries no session label.
+// neither does the Session: it carries no session label.
 func NewEngineRenderFn(log logging.Logger, advisories dt.Advisories, binaryPath, version, image, network string) *EngineRenderFn {
 	// Normalize before the value reaches EngineFlags: upstream formats it into
 	// the tag verbatim and only v-prefixed tags are published, so the bare form
@@ -180,28 +146,30 @@ func NewEngineRenderFn(log logging.Logger, advisories dt.Advisories, binaryPath,
 		resolvedImage = render.CrossplaneImageFromFlags(&flags)
 	}
 
-	run := dockerrun.New(dockerrun.DefaultLeaseDir(), dockerrun.NewDockerClient, log, advisories)
-
-	flags.SessionID = run.ID()
-
 	return &EngineRenderFn{
-		engine:        render.NewEngineFromFlags(&flags, log),
-		image:         resolvedImage,
-		log:           log,
-		startRuntimes: render.StartFunctionRuntimes,
-		stopRuntimes:  render.StopFunctionRuntimes,
-		run:           run,
+		// A failure to lease the run or reclaim a dead run's Docker resources
+		// never stops a render, but it leaves resources behind, so it is
+		// reported.
+		session: render.NewSession(flags, log,
+			render.WithLeaseDir(containerruntime.DefaultLeaseDir()),
+			render.WithWarn(func(err error) {
+				advisories.Raise(dt.OutputWarning{
+					Message: "Cannot lease this run or reclaim Docker containers or networks left behind by an earlier run; the next run will retry",
+					Context: map[string]string{"error": err.Error()},
+				})
+			}),
+		),
+		image: resolvedImage,
 	}
 }
 
 // Render performs one render. It is safe for concurrent use: only starting
-// functions is serialized (see startFunctions); the render itself runs
-// unlocked, so concurrent renders proceed in parallel. Setup runs only on
-// invocations that introduce previously-unseen functions; renders whose fns
-// are all already running skip straight to building the request. See the
-// EngineRenderFn docstring for the per-batch Setup contract this relies on.
-func (e *EngineRenderFn) Render(ctx context.Context, log logging.Logger, in RenderInputs) (render.CompositionOutputs, error) {
-	fnAddrs, err := e.startFunctions(ctx, log, in.Functions)
+// functions is serialized (by the Session); the render itself runs unlocked,
+// so concurrent renders proceed in parallel. Setup runs only on invocations
+// that introduce previously-unseen functions; renders whose fns are all
+// already running skip straight to building the request.
+func (e *EngineRenderFn) Render(ctx context.Context, _ logging.Logger, in RenderInputs) (render.CompositionOutputs, error) {
+	fnAddrs, err := e.startFunctions(ctx, in.Functions)
 	if err != nil {
 		return render.CompositionOutputs{}, err
 	}
@@ -220,7 +188,7 @@ func (e *EngineRenderFn) Render(ctx context.Context, log logging.Logger, in Rend
 		return render.CompositionOutputs{}, errors.Wrap(err, "cannot build render request")
 	}
 
-	rsp, renderErr := e.engine.Render(ctx, req)
+	rsp, renderErr := e.session.Render(ctx, req)
 	// When a pipeline step returns SEVERITY_FATAL, the binary exits with a
 	// distinct code, surfaces a populated rsp, and returns an error. Treat
 	// this case as "we have partial output; preserve it AND the error so
@@ -259,106 +227,21 @@ func (e *EngineRenderFn) Render(ctx context.Context, log logging.Logger, in Rend
 }
 
 // startFunctions starts whichever of fns are not running yet and returns the
-// addresses of all of fns. It holds mu throughout, so concurrent callers that
-// need the same not-yet-started function start it once: the second waits, then
-// finds it running. Upstream's docker engine Setup is not safe for concurrent
-// use either (its first call records the network it creates), so Setup must be
-// serialized anyway. Every render takes mu after the Setup that started its
-// functions released it, so what that Setup wrote is visible to the unlocked
-// engine.Render that follows.
-//
-// A composition with an empty pipeline starts nothing, so its render is not ordered after the first
-// Setup. Renders run one at a time, so that cannot race on the docker engine's network field today.
-func (e *EngineRenderFn) startFunctions(ctx context.Context, log logging.Logger, fns []pkgv1.Function) (map[string]string, error) {
-	// Starting functions is shared by the run, so a composite's XRTimeout neither bounds nor
-	// counts it, including the wait for another composite's start.
+// addresses of all of fns. Starting functions is shared by the run, so a
+// composite's XRTimeout neither bounds nor counts it, including the wait for
+// another composite's start.
+func (e *EngineRenderFn) startFunctions(ctx context.Context, fns []pkgv1.Function) (map[string]string, error) {
 	var addrs map[string]string
 
 	err := OutsideXRDeadline(ctx, func(run context.Context) error {
 		var err error
 
-		addrs, err = e.startFunctionsLocked(run, log, fns)
+		addrs, err = e.session.Start(run, fns)
 
 		return err
 	})
 
 	return addrs, err
-}
-
-func (e *EngineRenderFn) startFunctionsLocked(ctx context.Context, log logging.Logger, fns []pkgv1.Function) (map[string]string, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.addrs == nil {
-		e.addrs = make(map[string]string)
-	}
-
-	if e.startedNames == nil {
-		e.startedNames = make(map[string]struct{})
-	}
-
-	// Identify functions we haven't started yet. Dedup is by function name —
-	// independent of whether the address map has an entry, so test stubs that
-	// return an empty *FunctionAddresses don't mistakenly re-trigger Start.
-	newFns := make([]pkgv1.Function, 0, len(fns))
-	for i := range fns {
-		if _, ok := e.startedNames[fns[i].GetName()]; ok {
-			continue
-		}
-
-		newFns = append(newFns, fns[i])
-	}
-
-	// Only call Setup when there's actually a new batch to integrate.
-	// Renders where all fns are already running (newFns is empty) have no
-	// work for the engine and would just accumulate no-op cleanups in the
-	// slice for the lifetime of the engine.
-	if len(newFns) > 0 {
-		if err := e.claimForRun(ctx, newFns); err != nil {
-			return nil, err
-		}
-
-		// Setup integrates newFns into the engine's environment. Whether
-		// this call creates the environment or only adds to one that
-		// already exists is the engine's concern; we just hold onto
-		// whatever cleanup it gives back and let Cleanup walk them LIFO.
-		cleanup, err := e.engine.Setup(ctx, newFns)
-		if err != nil {
-			return nil, errors.Wrap(err, "cannot setup render engine")
-		}
-
-		// Keep the cleanup even if starting fails: the network it removes can
-		// only go once Cleanup has removed the containers that did start
-		// (their cleanup policy leaves them to the run), and the engine keeps
-		// using the network it created in later Setups, so it must outlive
-		// a failed start.
-		e.cleanups = append(e.cleanups, cleanup)
-
-		fa, startErr := e.startRuntimes(ctx, log, newFns)
-		if startErr != nil {
-			return nil, errors.Wrap(startErr, "cannot start function runtimes")
-		}
-
-		e.addrsList = append(e.addrsList, fa)
-		for i := range newFns {
-			e.startedNames[newFns[i].GetName()] = struct{}{}
-		}
-
-		maps.Copy(e.addrs, fa.Addresses())
-	}
-
-	// Addresses for fns only — the binary needs addresses for this render's
-	// pipeline, not for every function we've ever started. Copied, because
-	// the render reads them after mu is released.
-	fnAddrs := make(map[string]string, len(fns))
-	for i := range fns {
-		name := fns[i].GetName()
-		if a, ok := e.addrs[name]; ok {
-			fnAddrs[name] = a
-		}
-	}
-
-	return fnAddrs, nil
 }
 
 // staleRenderBackendHint returns remediation text when err is
@@ -384,82 +267,11 @@ func (e *EngineRenderFn) staleRenderBackendHint(err error) string {
 		e.image, MinCrossplaneRenderVersion, e.image)
 }
 
-// claimForRun prepares the run before anything is created for fns (taking
-// this run's lease and reclaiming what dead runs left behind). It then gives
-// fns' containers the run's session, which is what lets a later run recognise
-// them, and leaves them for the run to remove (dockerrun.Run.Close) rather
-// than stopped one by one upstream. The engine's Setup would add the session
-// too, but keeps one a function already carries, which would hide its
-// container from the run, so it is set here. A container name a function
-// carries is dropped: the docker runtime reuses an existing container of that
-// name without relabelling it, so concurrent runs would share one container
-// that the first to finish removes, and a container another run created
-// would never carry this run's session. The annotations are copied: a
-// function may share its map with the caller's, e.g. a FunctionProvider's
-// cache, and Setup adds to them in place. A no-op when there is no run.
-func (e *EngineRenderFn) claimForRun(ctx context.Context, fns []pkgv1.Function) error {
-	if e.run == nil {
-		return nil
-	}
-
-	if err := e.run.Start(ctx); err != nil {
-		return errors.Wrap(err, "cannot prepare Docker resources for rendering")
-	}
-
-	for i := range fns {
-		annotations := maps.Clone(fns[i].GetAnnotations())
-		if annotations == nil {
-			annotations = make(map[string]string, 2)
-		}
-
-		delete(annotations, render.AnnotationKeyRuntimeNamedContainer)
-		annotations[render.AnnotationKeyRuntimeDockerSession] = e.run.ID()
-		annotations[render.AnnotationKeyRuntimeDockerCleanup] = string(render.AnnotationValueRuntimeDockerCleanupOrphan)
-		fns[i].SetAnnotations(annotations)
-	}
-
-	return nil
-}
-
 // Cleanup stops every function runtime started across the engine's lifetime,
-// then has the run remove every container labelled with its session, run the
-// cleanups accumulated from each engine.Setup call in LIFO order (removing the
-// network the engine created, now that nothing is attached), and remove any
-// of its networks still left. The run's own sweep also catches what upstream
-// fails to remove. Idempotent and safe to call when Render was never invoked.
+// runs the Setup cleanups (removing the network the engine created), and
+// releases the run's lease, keeping it when something may be left behind for a
+// later run to reclaim. Idempotent and safe to call when Render was never
+// invoked.
 func (e *EngineRenderFn) Cleanup(ctx context.Context) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	for _, fa := range e.addrsList {
-		// The run's sweep below removes whatever this leaves behind, and
-		// warns if it cannot.
-		if err := e.stopRuntimes(ctx, fa); err != nil {
-			e.log.Debug("Error stopping function runtimes", "error", err)
-		}
-	}
-
-	e.addrsList = nil
-	e.addrs = nil
-	e.startedNames = nil
-
-	// Run cleanups in LIFO order. Per the upstream Engine.Setup contract,
-	// at most one cleanup is real (the one that created the environment,
-	// if any); the rest are no-ops. LIFO matches the natural deferred-
-	// cleanup shape and is correct even if a future engine wants ordering.
-	release := func() {
-		for _, v := range slices.Backward(e.cleanups) {
-			v()
-		}
-	}
-
-	if e.run != nil {
-		e.run.Close(ctx, release)
-	} else {
-		release()
-	}
-
-	e.cleanups = nil
-
-	return nil
+	return e.session.Close(ctx)
 }

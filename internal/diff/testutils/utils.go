@@ -1,8 +1,6 @@
 package testutils
 
 import (
-	"slices"
-	"sync"
 	"testing"
 
 	"github.com/go-logr/logr/testr"
@@ -14,8 +12,6 @@ import (
 	kt "k8s.io/client-go/testing"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
-
-	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 // Colors for terminal output.
@@ -34,30 +30,6 @@ func TestLogger(t *testing.T, verbose bool) logging.Logger {
 	}
 
 	return logging.NewLogrLogger(testr.NewWithOptions(t, testr.Options{Verbosity: verbosity}))
-}
-
-// AdvisoryRecorder is a dt.Advisories that records every advisory raised on it, in order, so a test
-// in a package that cannot import diffprocessor's AdvisoryCollector (dockerrun, which it imports) can
-// assert what was raised. Unlike the collector it does not collapse repeats.
-type AdvisoryRecorder struct {
-	mu         sync.Mutex
-	advisories []dt.OutputWarning
-}
-
-// Raise records w.
-func (r *AdvisoryRecorder) Raise(w dt.OutputWarning) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.advisories = append(r.advisories, w)
-}
-
-// Advisories returns the advisories recorded so far, in the order they were raised.
-func (r *AdvisoryRecorder) Advisories() []dt.OutputWarning {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return slices.Clone(r.advisories)
 }
 
 // CreateFakeDiscoveryClient is a helper function to create a fake discovery client for testing.

@@ -644,12 +644,8 @@ func walk(node any, toks fieldpath.Segments) (any, bool) {
 // which is how the plan's values arrive.
 // ponytail: integers beyond 2^53 lose precision in the round trip; compare them differently if one is ever asserted.
 func valuesEqual(a, b any) bool {
-	// A marker state matches no concrete value, nil included.
-	if _, ok := a.(marker); ok {
-		return false
-	}
-
-	if _, ok := b.(marker); ok {
+	// A marker state matches no concrete value, nil included, at any depth.
+	if hasMarker(a) || hasMarker(b) {
 		return false
 	}
 
@@ -661,6 +657,29 @@ func valuesEqual(a, b any) bool {
 	}
 
 	return reflect.DeepEqual(na, nb)
+}
+
+// hasMarker reports whether v is a marker or a map or slice holding one. It runs before normalisation,
+// which would turn a marker into the plain string an expectation could spell out.
+func hasMarker(v any) bool {
+	switch v := v.(type) {
+	case marker:
+		return true
+	case map[string]any:
+		for _, e := range v {
+			if hasMarker(e) {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range v {
+			if hasMarker(e) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func normalise(v any) (any, error) {

@@ -20,6 +20,7 @@ import (
 	"context"
 	"os"
 
+	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/afero"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -55,11 +56,11 @@ type LoadFunctionsOptions struct {
 // builds its embedded functions, loading their images into the docker daemon.
 // It returns a Function for each dependency and each embedded function and the
 // index digest of each embedded function, as Build does.
-func LoadFunctions(ctx context.Context, proj *devv1alpha1.Project, projFS afero.Fs, depMgr *dependency.Manager, o LoadFunctionsOptions) ([]pkgv1.Function, map[string]EmbeddedDigest, error) {
+func LoadFunctions(ctx context.Context, proj *devv1alpha1.Project, projFS afero.Fs, depMgr *dependency.Manager, o LoadFunctionsOptions) ([]pkgv1.Function, map[string]name.Digest, error) {
 	log, sp := o.Logger, o.Spinner
 
 	var fns []pkgv1.Function
-	var digests map[string]EmbeddedDigest
+	var digests map[string]name.Digest
 	if err := sp.WrapWithSuccessSpinner("Resolving function dependencies", func() error {
 		var err error
 		fns, err = LoadFunctionDependencies(depMgr, proj)

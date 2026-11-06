@@ -28,6 +28,7 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-containerregistry/pkg/name"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -47,7 +48,6 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/plan"
-	"github.com/crossplane/cli/v2/internal/project"
 	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
 
@@ -248,7 +248,7 @@ func TestFunctionProviderFactory(t *testing.T) {
 		fn("fn-dep", "xpkg.crossplane.io/org/fn-dep:v1"),
 		fn("fn-own", "xpkg.crossplane.io/org/proj_fn-own:arm64"),
 	}
-	embedded := map[string]project.EmbeddedDigest{"fn-own": {}}
+	embedded := map[string]name.Digest{"fn-own": {}}
 
 	comp := &apiextensionsv1.Composition{
 		ObjectMeta: metav1.ObjectMeta{Name: "comp"},

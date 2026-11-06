@@ -32,7 +32,6 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
-	"github.com/crossplane/cli/v2/internal/project"
 )
 
 func TestChangedFunctions(t *testing.T) {
@@ -43,7 +42,7 @@ func TestChangedFunctions(t *testing.T) {
 		t.Fatal(err)
 	}
 	const fnName = "acme-proj-fn"
-	digests := map[string]project.EmbeddedDigest{fnName: {Repository: repo, Digest: local}}
+	digests := map[string]name.Digest{fnName: repo.Digest(local.String())}
 
 	fnWithPackage := func(pkg string) func(context.Context, schema.GroupVersionKind, string, string) (*un.Unstructured, error) {
 		return func(_ context.Context, gvk schema.GroupVersionKind, _, n string) (*un.Unstructured, error) {

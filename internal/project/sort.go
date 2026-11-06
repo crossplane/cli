@@ -51,10 +51,3 @@ func SortImages(imgMap ImageTagMap, repo string) (cfgImage v1.Image, fnImages ma
 
 	return cfgImage, fnImages, nil
 }
-
-// An EmbeddedDigest is the repository and index digest an embedded function
-// is pushed with.
-type EmbeddedDigest struct {
-	Repository name.Repository
-	Digest     v1.Hash
-}

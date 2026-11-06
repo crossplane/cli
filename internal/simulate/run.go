@@ -168,7 +168,7 @@ func (c *Flags) restConfig() (*rest.Config, string, error) {
 // Function is unchanged only when it exists, its package is from the same
 // repository, and it pins the local index digest; anything else, including a
 // tag-only package, counts as changed.
-func changedFunctions(ctx context.Context, rc k8client.ResourceClient, digests map[string]project.EmbeddedDigest) ([]string, error) {
+func changedFunctions(ctx context.Context, rc k8client.ResourceClient, digests map[string]name.Digest) ([]string, error) {
 	var changed []string
 	for fnName, d := range digests {
 		fn, err := rc.GetResource(ctx, pkgv1.FunctionGroupVersionKind, "", fnName)
@@ -181,7 +181,7 @@ func changedFunctions(ctx context.Context, rc k8client.ResourceClient, digests m
 		}
 		pkg, _, _ := un.NestedString(fn.Object, "spec", "package")
 		ref, err := name.NewDigest(pkg)
-		if err != nil || ref.Context().Name() != d.Repository.Name() || ref.DigestStr() != d.Digest.String() {
+		if err != nil || ref.Context().Name() != d.Context().Name() || ref.DigestStr() != d.DigestStr() {
 			changed = append(changed, fnName)
 		}
 	}
@@ -296,7 +296,7 @@ func (c *CompositionFlags) scope() (string, []k8stypes.NamespacedName, error) {
 // XR and composition processors get the same options, so they share one advisory collector. fns are the project's
 // functions, of which embedded are the locally built ones, and ics rewrite
 // the other functions' images.
-func (c *Flags) processorOptions(k *kong.Context, logger logging.Logger, creds []corev1.Secret, fns []pkgv1.Function, embedded map[string]project.EmbeddedDigest, ics []pkgv1beta1.ImageConfig) []dp.ProcessorOption {
+func (c *Flags) processorOptions(k *kong.Context, logger logging.Logger, creds []corev1.Secret, fns []pkgv1.Function, embedded map[string]name.Digest, ics []pkgv1beta1.ImageConfig) []dp.ProcessorOption {
 	c.SetDefaultCrossplaneDockerNetwork(fns)
 
 	opts := []dp.ProcessorOption{
@@ -341,7 +341,7 @@ func (c *Flags) processorOptions(k *kong.Context, logger logging.Logger, creds [
 // functions in place of the cluster's of the same name, with every image
 // except the embedded functions' rewritten by ics. Embedded functions run
 // from the images loaded into the Docker daemon, so they keep their package.
-func functionProviderFactory(fns []pkgv1.Function, embedded map[string]project.EmbeddedDigest, ics []pkgv1beta1.ImageConfig) func(xpclient.FunctionClient, logging.Logger) dp.FunctionProvider {
+func functionProviderFactory(fns []pkgv1.Function, embedded map[string]name.Digest, ics []pkgv1beta1.ImageConfig) func(xpclient.FunctionClient, logging.Logger) dp.FunctionProvider {
 	var deps, own []pkgv1.Function
 	for _, fn := range fns {
 		if _, ok := embedded[fn.GetName()]; ok {
@@ -580,7 +580,7 @@ type Built struct {
 	// Functions are the project's functions.
 	Functions []pkgv1.Function
 	// Digests are the locally built functions' digests, by cluster name.
-	Digests map[string]project.EmbeddedDigest
+	Digests map[string]name.Digest
 	// Packages is how the project's packages are fetched.
 	Packages *Packages
 }

@@ -179,7 +179,7 @@ type Builder struct {
 // digest of each embedded function, keyed by the function's name in the
 // cluster, as push computes them, so they match the digest a Function installed
 // from the pushed package pins.
-func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, projectFS afero.Fs, opts ...BuildOption) (ImageTagMap, map[string]EmbeddedDigest, error) { //nolint:gocyclo // This is the main build orchestration.
+func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, projectFS afero.Fs, opts ...BuildOption) (ImageTagMap, map[string]name.Digest, error) { //nolint:gocyclo // This is the main build orchestration.
 	o := &buildOptions{
 		log: logging.NewNopLogger(),
 	}
@@ -359,12 +359,12 @@ func resolveFunctions(project *devv1alpha1.Project, projectFS afero.Fs) ([]devv1
 }
 
 // buildFunctions builds the given list of embedded functions.
-func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fns []devv1alpha1.Function, basePath string, eventCh async.EventChannel) (ImageTagMap, []xpmetav1.Dependency, map[string]EmbeddedDigest, error) {
+func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fns []devv1alpha1.Function, basePath string, eventCh async.EventChannel) (ImageTagMap, []xpmetav1.Dependency, map[string]name.Digest, error) {
 	var (
 		imgMap = make(map[name.Tag]v1.Image)
 		imgMu  sync.Mutex
 
-		digests = make(map[string]EmbeddedDigest, len(fns))
+		digests = make(map[string]name.Digest, len(fns))
 	)
 
 	deps := make([]xpmetav1.Dependency, len(fns))
@@ -424,7 +424,7 @@ func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, projec
 				imgMu.Unlock()
 			}
 			imgMu.Lock()
-			digests[xpkg.ToDNSLabel(repo.RepositoryStr())] = EmbeddedDigest{Repository: repo, Digest: dgst}
+			digests[xpkg.ToDNSLabel(repo.RepositoryStr())] = repo.Digest(dgst.String())
 			imgMu.Unlock()
 
 			eventCh.SendEvent(eventText, async.EventStatusSuccess)

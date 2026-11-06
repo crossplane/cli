@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -370,6 +371,12 @@ func (h *httpSource) Resources(ctx context.Context) (afero.Fs, error) {
 		return nil, errors.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
+	// An HTML page would otherwise fail later with a misleading YAML parse
+	// error, so call it out here.
+	if mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); mediaType == "text/html" {
+		return nil, htmlResponseError(u)
+	}
+
 	if resp.ContentLength > maxHTTPSize {
 		return nil, errors.Errorf("content too large: %d bytes (max: %d)", resp.ContentLength, maxHTTPSize)
 	}
@@ -414,6 +421,27 @@ func (h *httpSource) getFilename(u *url.URL) string {
 	}
 
 	return filename
+}
+
+func htmlResponseError(u *url.URL) error {
+	if raw, ok := githubRawURL(u); ok {
+		return errors.Errorf("%s returned an HTML page instead of a YAML or JSON file; use the raw file URL instead: %s", u, raw)
+	}
+	return errors.Errorf("%s returned an HTML page instead of a YAML or JSON file; use the URL of the raw file", u)
+}
+
+// githubRawURL maps a GitHub file view URL
+// (https://github.com/<owner>/<repo>/blob/<ref>/<path>) to its
+// raw.githubusercontent.com equivalent.
+func githubRawURL(u *url.URL) (string, bool) {
+	if u.Host != "github.com" && u.Host != "www.github.com" {
+		return "", false
+	}
+	parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 4)
+	if len(parts) < 4 || parts[2] != "blob" || parts[3] == "" {
+		return "", false
+	}
+	return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", parts[0], parts[1], parts[3]), true
 }
 
 // NewHTTPSource returns a new HTTP-backed resource source.

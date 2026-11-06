@@ -18,9 +18,9 @@ import (
 	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
-// The assertions below read project simulate's structured output, simulate.ProjectResult, behind the builder API
+// The assertions below read project simulate's structured output, simulate.Result, behind the builder API
 // in structured_assertions.go. The builders speak crossplane-diff's vocabulary (added/modified/removed
-// changes, xrs[] entries, impactAnalysis[] entries); this file maps each onto its simulate.ProjectResult home:
+// changes, xrs[] entries, impactAnalysis[] entries); this file maps each onto its simulate.Result home:
 //
 //   - a change is a ResourcePlan, its type the plan's Action (create/update/delete);
 //   - a field value or old/new pair is read from the plan's leaf FieldChanges, a non-leaf path being
@@ -45,17 +45,17 @@ func changeAction(changeType string) plan.Action {
 }
 
 // statusFiltered is crossplane-diff's status for a composite left out of impact analysis, which
-// simulate.ProjectResult splits into deferred (Manual policy) and skipped (any other reason).
+// simulate.Result splits into deferred (Manual policy) and skipped (any other reason).
 const statusFiltered = "filtered"
 
-// AssertStructured checks a simulate.ProjectResult against expected, running each section only if it was
+// AssertStructured checks a simulate.Result against expected, running each section only if it was
 // expected. Accepts any builder level, so callers don't need And()/AndXR()/AndComp().
 func AssertStructured(t *testing.T, jsonOutput string, e Expectation) {
 	t.Helper()
 
 	expected := e.expectation()
 
-	var res simulate.ProjectResult
+	var res simulate.Result
 	if err := json.Unmarshal([]byte(jsonOutput), &res); err != nil {
 		t.Fatalf("failed to parse plan result JSON output: %v\nOutput was:\n%s", err, jsonOutput)
 	}
@@ -105,7 +105,7 @@ func AssertStructured(t *testing.T, jsonOutput string, e Expectation) {
 	}
 }
 
-func assertComposition(t *testing.T, res simulate.ProjectResult, want *CompositionExpectation) {
+func assertComposition(t *testing.T, res simulate.Result, want *CompositionExpectation) {
 	t.Helper()
 
 	i := slices.IndexFunc(res.Compositions, func(c simulate.CompositionResult) bool { return c.Ref.Name == want.name })
@@ -234,7 +234,7 @@ func assertRevisionImpact(t *testing.T, label string, got *simulate.RevisionImpa
 	}
 }
 
-func assertXRImpact(t *testing.T, res simulate.ProjectResult, label string, composites []simulate.CompositeResult, want *XRImpactExpectation) {
+func assertXRImpact(t *testing.T, res simulate.Result, label string, composites []simulate.CompositeResult, want *XRImpactExpectation) {
 	t.Helper()
 
 	i := slices.IndexFunc(composites, func(c simulate.CompositeResult) bool {
@@ -303,7 +303,7 @@ func assertXRImpact(t *testing.T, res simulate.ProjectResult, label string, comp
 	}
 }
 
-// statusMatches compares a composite's status with crossplane-diff's, whose "filtered" simulate.ProjectResult
+// statusMatches compares a composite's status with crossplane-diff's, whose "filtered" simulate.Result
 // splits into deferred and skipped.
 func statusMatches(got simulate.CompositeStatus, want string) bool {
 	if want == statusFiltered {
@@ -319,7 +319,7 @@ func statusMatches(got simulate.CompositeStatus, want string) bool {
 // Each expectation consumes the entry it matches, so two expectations can never both resolve to the
 // same entry, and the entry count is pinned once the test has an opinion on xrs[] at all. Without those
 // guards a duplicated identity satisfied every expectation that matched it (issues #477, #488).
-func assertXRExpectations(t *testing.T, res simulate.ProjectResult, expected []*XRExpectation) {
+func assertXRExpectations(t *testing.T, res simulate.Result, expected []*XRExpectation) {
 	t.Helper()
 
 	if len(expected) == 0 {

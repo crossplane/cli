@@ -38,7 +38,7 @@ import (
 )
 
 // TestSimulatePlanOutput runs simulate's own output formats, -o plan and
-// -o json's simulate.ProjectResult, for xr, composition and the plain project
+// -o json's simulate.Result, for xr, composition and the plain project
 // fixture, which crossplane-diff's cases cannot express. Each case passes
 // simulate args directly rather than crossplane-diff's.
 func TestSimulatePlanOutput(t *testing.T) {
@@ -134,7 +134,7 @@ Note: Provider plan not run: no provider diff server planned these resources.
 `,
 		},
 		"XRPlanJSON": {
-			reason: "-o json emits simulate.ProjectResult: the XR as a changed composite, with both its plans grouped under it.",
+			reason: "-o json emits simulate.Result: the XR as a changed composite, with both its plans grouped under it.",
 			tt:     &xrCase,
 			args:   append([]string{"-o", "json"}, xrArgs...),
 			wantResult: &planShape{
@@ -178,7 +178,7 @@ Note: Provider plan not run: no provider diff server planned these resources.
 `,
 		},
 		"CompPlanJSON": {
-			reason:   "-o json emits simulate.ProjectResult: the Composition's revision impact, both affected XRs as changed composites, and their plans.",
+			reason:   "-o json emits simulate.Result: the Composition's revision impact, both affected XRs as changed composites, and their plans.",
 			compArgv: true,
 			args:     append([]string{"-o", "json"}, compArgs...),
 			wantResult: &planShape{
@@ -272,9 +272,9 @@ Note: Provider plan not run: no provider diff server planned these resources.
 				return
 			}
 
-			var res simulate.ProjectResult
+			var res simulate.Result
 			if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-				t.Fatalf("\n%s\nsimulate -o json: output is not a simulate.ProjectResult: %v\n%s", tc.reason, err, stdout.String())
+				t.Fatalf("\n%s\nsimulate -o json: output is not a simulate.Result: %v\n%s", tc.reason, err, stdout.String())
 			}
 			if res.FormatVersion != plan.ResultFormatVersion || res.Errored {
 				t.Errorf("\n%s\nsimulate -o json: want formatVersion %q and not errored, got %q, errored %t", tc.reason, plan.ResultFormatVersion, res.FormatVersion, res.Errored)
@@ -286,7 +286,7 @@ Note: Provider plan not run: no provider diff server planned these resources.
 	}
 }
 
-// planShape is the part of a simulate.ProjectResult these cases pin: everything but
+// planShape is the part of a simulate.Result these cases pin: everything but
 // the field changes, dry-run details and notes, which the plan text cases and
 // the mapper's unit tests cover.
 type planShape struct {
@@ -303,7 +303,7 @@ type planEntry struct {
 	Composite  string
 }
 
-func summarize(r simulate.ProjectResult) planShape {
+func summarize(r simulate.Result) planShape {
 	s := planShape{Summary: r.Summary, Composites: r.Composites, Compositions: r.Compositions}
 	for _, p := range r.Plans {
 		e := planEntry{Kind: p.Kind, Name: p.Name, Action: p.Action}
@@ -407,9 +407,9 @@ func TestSimulatePinnedChangedFunction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
 			}
-			var res simulate.ProjectResult
+			var res simulate.Result
 			if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-				t.Fatalf("\n%s\nsimulate -o json: output is not a simulate.ProjectResult: %v\n%s", tc.reason, err, stdout.String())
+				t.Fatalf("\n%s\nsimulate -o json: output is not a simulate.Result: %v\n%s", tc.reason, err, stdout.String())
 			}
 			if len(res.Composites) != 1 {
 				t.Fatalf("\n%s\nsimulate -o json: want 1 composite, got %+v", tc.reason, res.Composites)

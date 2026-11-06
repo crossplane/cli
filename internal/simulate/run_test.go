@@ -344,7 +344,7 @@ func TestSimulateDiffOptions(t *testing.T) {
 }
 
 // TestSimulateRenderReports pins which renderer each -o value selects, for
-// both report types: ProjectResult for plan, json and yaml, and the engine's
+// both report types: Result for plan, json and yaml, and the engine's
 // human diff for diff.
 func TestSimulateRenderReports(t *testing.T) {
 	xr := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
@@ -361,16 +361,16 @@ func TestSimulateRenderReports(t *testing.T) {
 		ImpactAnalysis: []dt.XRImpact{{ObjectReference: xr, Status: dt.XRStatusUnchanged}},
 	}}}
 
-	// isPlanResult checks out decodes as a ProjectResult naming the composite.
+	// isPlanResult checks out decodes as a Result naming the composite.
 	isPlanResult := func(unmarshal func([]byte, any) error) func(*testing.T, string) {
 		return func(t *testing.T, out string) {
 			t.Helper()
-			var r ProjectResult
+			var r Result
 			if err := unmarshal([]byte(out), &r); err != nil {
-				t.Fatalf("output is not a ProjectResult: %v\n%s", err, out)
+				t.Fatalf("output is not a Result: %v\n%s", err, out)
 			}
 			if r.FormatVersion != plan.ResultFormatVersion || len(r.Composites) != 1 || r.Composites[0].Ref.Name != "prod" {
-				t.Errorf("want a ProjectResult for composite prod, got:\n%s", out)
+				t.Errorf("want a Result for composite prod, got:\n%s", out)
 			}
 		}
 	}
@@ -398,13 +398,13 @@ func TestSimulateRenderReports(t *testing.T) {
 			wantComp: contains("[=] Composition.apiextensions.crossplane.io net (no-op)\n    Applying this creates a new CompositionRevision, which 1 composite would adopt.", "XR: XNetwork.example.org prod", "Note: "),
 		},
 		"JSON": {
-			reason:   "-o json should print ProjectResult as JSON.",
+			reason:   "-o json should print Result as JSON.",
 			cmd:      Flags{Output: "json"},
 			wantXR:   isPlanResult(json.Unmarshal),
 			wantComp: isPlanResult(json.Unmarshal),
 		},
 		"YAML": {
-			reason:   "-o yaml should print ProjectResult as YAML.",
+			reason:   "-o yaml should print Result as YAML.",
 			cmd:      Flags{Output: "yaml"},
 			wantXR:   isPlanResult(func(b []byte, v any) error { return yaml.Unmarshal(b, v) }),
 			wantComp: isPlanResult(func(b []byte, v any) error { return yaml.Unmarshal(b, v) }),

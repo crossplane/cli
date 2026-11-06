@@ -66,7 +66,7 @@ const (
 	CompositeReasonUnknown CompositeReason = "unknown"
 )
 
-// CompositeResult is the per-composite outcome of a project simulate run.
+// CompositeResult is the per-composite outcome of a simulate run.
 type CompositeResult struct {
 	Ref    plan.ResourceRef `json:"ref"`
 	Status CompositeStatus  `json:"status"`
@@ -125,7 +125,7 @@ type CompositionResult struct {
 	// ImpactAnalysisSkipped means the composites that would adopt the
 	// Composition's revision were deliberately not simulated, so no
 	// changed, unchanged or error verdict exists for them. Composites the
-	// revision would not reach are still listed in ProjectResult.Composites.
+	// revision would not reach are still listed in Result.Composites.
 	ImpactAnalysisSkipped bool `json:"impactAnalysisSkipped,omitempty"`
 }
 
@@ -141,12 +141,11 @@ type RevisionImpact struct {
 	PredictedRevision string `json:"predictedRevision,omitempty"`
 }
 
-// ProjectResult is the serialized form of a project simulate run, for -o
-// json|yaml: resource simulate's plan.Result plus the composites,
-// compositions, errors, warnings and notes only a project run has. Its
-// summary serializes as Result.Summary plus a deferred count taken from
+// Result is the serialized form of a simulate run, for -o json|yaml:
+// plan.Result plus the composites, compositions, errors, warnings and notes a
+// diff run has. Its summary serializes as plan.Result's Summary plus a deferred count taken from
 // Composites.
-type ProjectResult struct {
+type Result struct {
 	plan.Result
 
 	Composites   []CompositeResult   `json:"composites,omitempty"`
@@ -158,17 +157,17 @@ type ProjectResult struct {
 	Notes []string `json:"notes,omitempty"`
 }
 
-// NewProjectResult assembles the ProjectResult for the given plans and
+// NewResult assembles the Result for the given plans and
 // composites; errs marks the result errored.
-func NewProjectResult(plans []*plan.ResourcePlan, composites []CompositeResult, errs []Error) ProjectResult {
-	res := ProjectResult{Result: plan.NewResult(plans), Composites: composites, Errors: errs}
+func NewResult(plans []*plan.ResourcePlan, composites []CompositeResult, errs []Error) Result {
+	res := Result{Result: plan.NewResult(plans), Composites: composites, Errors: errs}
 	res.Errored = res.Errored || len(errs) > 0
 	return res
 }
 
 // Deferred counts the composites pinned to a composition revision, which
 // applying changes nothing for. It does not count as a change.
-func (r ProjectResult) Deferred() int {
+func (r Result) Deferred() int {
 	n := 0
 	for _, c := range r.Composites {
 		if c.Status == CompositeDeferred {
@@ -182,7 +181,7 @@ func (r ProjectResult) Deferred() int {
 // ahead of the plans, which can be long, and with the deferred count inside
 // summary. YAML goes through it too. Decoding needs no counterpart: summary
 // decodes into Result.Summary, and Deferred is counted from Composites.
-func (r ProjectResult) MarshalJSON() ([]byte, error) {
+func (r Result) MarshalJSON() ([]byte, error) {
 	type summary struct {
 		plan.Summary
 
@@ -211,9 +210,9 @@ func (r ProjectResult) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// A Renderer writes a project simulate result to w in one output format.
+// A Renderer writes a simulate result to w in one output format.
 type Renderer interface {
-	Render(w io.Writer, r ProjectResult) error
+	Render(w io.Writer, r Result) error
 }
 
 // NewRenderer returns the Renderer for the given output format: one of
@@ -230,11 +229,11 @@ func NewRenderer(format string) (Renderer, error) {
 	return nil, errors.Errorf("unknown output format %q", format)
 }
 
-// jsonRenderer renders the ProjectResult as indented JSON.
+// jsonRenderer renders the Result as indented JSON.
 type jsonRenderer struct{}
 
 // Render writes the result to w as JSON.
-func (jsonRenderer) Render(w io.Writer, r ProjectResult) error {
+func (jsonRenderer) Render(w io.Writer, r Result) error {
 	out, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return errors.Wrap(err, "cannot marshal plans to JSON")
@@ -243,11 +242,11 @@ func (jsonRenderer) Render(w io.Writer, r ProjectResult) error {
 	return err
 }
 
-// yamlRenderer renders the ProjectResult as YAML.
+// yamlRenderer renders the Result as YAML.
 type yamlRenderer struct{}
 
 // Render writes the result to w as YAML.
-func (yamlRenderer) Render(w io.Writer, r ProjectResult) error {
+func (yamlRenderer) Render(w io.Writer, r Result) error {
 	out, err := yaml.Marshal(r)
 	if err != nil {
 		return errors.Wrap(err, "cannot marshal plans to YAML")
@@ -265,7 +264,7 @@ func (yamlRenderer) Render(w io.Writer, r ProjectResult) error {
 type planRenderer struct{}
 
 // Render writes the result to w in the human-readable plan format.
-func (planRenderer) Render(w io.Writer, r ProjectResult) error {
+func (planRenderer) Render(w io.Writer, r Result) error {
 	impacts := revisionImpactLines(r.Compositions)
 	if len(r.Composites) == 0 && !slices.ContainsFunc(r.Plans, func(p *plan.ResourcePlan) bool { return p.Composite != nil }) {
 		for _, p := range r.Plans {
@@ -316,7 +315,7 @@ func revisionImpactLines(comps []CompositionResult) map[plan.ResourceRef]string 
 // renderGrouped prints ungrouped plans first, then each composite (in
 // Composites order, then any only plans name) with its plans indented
 // beneath. A composite's own plan is omitted when it is a no-op.
-func renderGrouped(w io.Writer, r ProjectResult, impacts map[plan.ResourceRef]string) {
+func renderGrouped(w io.Writer, r Result, impacts map[plan.ResourceRef]string) {
 	var refs []plan.ResourceRef
 	byRef := map[plan.ResourceRef][]*plan.ResourcePlan{}
 	status := map[plan.ResourceRef]CompositeResult{}

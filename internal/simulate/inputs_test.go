@@ -141,6 +141,11 @@ spec:
 			paths:  []string{commaComp},
 			want:   want{names: []string{"comma"}},
 		},
+		"DuplicateName": {
+			reason: "Two Compositions with one name should be rejected.",
+			paths:  []string{comps, comps},
+			want:   want{err: `Composition "a" is defined more than once`},
+		},
 		"ProjectFile": {
 			reason: "A project file should be rejected with a pointer to project simulate.",
 			paths:  []string{proj},

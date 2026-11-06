@@ -102,5 +102,23 @@ func LoadInputs(paths []string, want Class) ([]*un.Unstructured, error) {
 			return nil, rejectInput(r, want)
 		}
 	}
+	if want == ClassComposition {
+		if err := RejectDuplicateNames(resources); err != nil {
+			return nil, err
+		}
+	}
 	return resources, nil
+}
+
+// RejectDuplicateNames returns an error if two of the Compositions share a
+// name, since both would be diffed against the same live Composition.
+func RejectDuplicateNames(comps []*un.Unstructured) error {
+	seen := map[string]bool{}
+	for _, c := range comps {
+		if seen[c.GetName()] {
+			return errors.Errorf("Composition %q is defined more than once; Composition names must be unique", c.GetName())
+		}
+		seen[c.GetName()] = true
+	}
+	return nil
 }

@@ -4,7 +4,7 @@ cluster selects for it and the functions installed in the cluster, and shows
 the difference from what's in the cluster. It doesn't change the cluster.
 
 `-f` (`--input`) names a file, or a directory of YAML files, of composite
-resources or claims to simulate, and is required. Repeat it for more; `-f -`
+resources or claims to simulate, and is required. Give a comma-separated list, or repeat it, for more; `-f -`
 reads standard input. Every resource in them must be a kind an XRD in the
 cluster defines as a composite resource or claim; to simulate a Composition, use
 `crossplane composition simulate`, to simulate a project, use

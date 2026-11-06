@@ -20,9 +20,13 @@ import (
 	"context"
 
 	"github.com/alecthomas/kong"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+
+	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/terminal"
 
@@ -41,7 +45,7 @@ var (
 type simulateCmd struct {
 	simulate.Flags `embed:""`
 
-	Input []string `help:"Composite resource or claim file or directory to simulate. Takes one path per flag; repeat it for more. - reads standard input." placeholder:"PATH" required:"" sep:"none" short:"f"`
+	Input []string `help:"Composite resource or claim file or directory to simulate. Takes a comma-separated list of paths, and can be repeated. - reads standard input." placeholder:"PATH" required:"" short:"f"`
 }
 
 func (c *simulateCmd) Help() string {
@@ -51,7 +55,20 @@ func (c *simulateCmd) Help() string {
 // Run previews the composite resources or claims -f names against the
 // cluster, with the cluster's Compositions and functions.
 func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter) error {
-	xrs, err := simulate.LoadInputs(c.Input, simulate.ClassComposite)
+	// Anything but a Composition or project file is a candidate composite
+	// resource or claim; checkComposites confirms it against the cluster's XRDs.
+	xrs, err := simulate.LoadInputs(c.Input, func(r *un.Unstructured) error {
+		gvk := r.GroupVersionKind()
+		switch {
+		case gvk == apiextensionsv1.CompositionGroupVersionKind:
+			return simulate.RejectInput(r, simulate.XRTakes+"; composition simulate takes Composition files")
+		case gvk.GroupVersion().String() == projectfile.APIVersion && gvk.Kind == projectfile.Kind:
+			return simulate.RejectInput(r, simulate.XRTakes+"; project simulate takes a project file")
+		case r.IsList() || gvk.Kind == "List":
+			return simulate.RejectInput(r, simulate.XRTakes)
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}

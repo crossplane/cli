@@ -1,0 +1,23 @@
+# Two XRs on the shared-child composition, in one namespace, with DIFFERENT specs, so a change to that
+# composition renders its fixed-name child differently for each. No one diff is correct for both.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: shared-child-owner-a
+  namespace: default
+spec:
+  coolField: value-a
+  crossplane:
+    compositionRef:
+      name: xnopresources-shared-child.diff.example.org
+---
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: shared-child-owner-b
+  namespace: default
+spec:
+  coolField: value-b
+  crossplane:
+    compositionRef:
+      name: xnopresources-shared-child.diff.example.org

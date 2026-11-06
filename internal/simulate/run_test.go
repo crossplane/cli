@@ -862,6 +862,12 @@ func TestProviderSource(t *testing.T) {
 			providers: "providers.yaml",
 			want:      providersFlag,
 		},
+		"FlagWithProject": {
+			reason:    "--providers wins even when a project is loaded.",
+			providers: "providers.yaml",
+			project:   true,
+			want:      providersFlag,
+		},
 		"Project": {
 			reason:  "Without --providers the project's provider dependencies start.",
 			project: true,

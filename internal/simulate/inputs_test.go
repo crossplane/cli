@@ -59,6 +59,24 @@ spec:
       kind: GoTemplate
       source: Inline
 `)
+	compsPipeline := write("pipelinedir/p.yaml", `apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: p
+spec:
+  compositeTypeRef:
+    apiVersion: example.org/v1
+    kind: XThing
+  mode: Pipeline
+  pipeline:
+  - step: render
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+`)
 	// A step input that isn't an object is the engine's to report, not the
 	// loader's.
 	listInput := write("listinput.yaml", `apiVersion: apiextensions.crossplane.io/v1
@@ -107,6 +125,11 @@ spec:
 			reason: "A directory of Compositions should load.",
 			paths:  []string{filepath.Dir(comps)},
 			want:   want{names: []string{"a"}},
+		},
+		"CompositionDirectoryPipelineInput": {
+			reason: "A directory's Compositions should load without their pipeline inputs as resources.",
+			paths:  []string{filepath.Dir(compsPipeline)},
+			want:   want{names: []string{"p"}},
 		},
 		"Compositions": {
 			reason: "Several Composition files should load in order.",

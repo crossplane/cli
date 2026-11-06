@@ -20,8 +20,11 @@ import (
 	"context"
 
 	"github.com/alecthomas/kong"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -52,8 +55,16 @@ func (c *simulateCmd) Help() string {
 // Run previews the Compositions -f names against the cluster, with the
 // cluster's functions.
 func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter) error {
-	comps, err := simulate.LoadInputs(c.Input, simulate.ClassComposition)
+	comps, err := simulate.LoadInputs(c.Input, func(r *un.Unstructured) error {
+		if r.GroupVersionKind() != apiextensionsv1.CompositionGroupVersionKind {
+			return simulate.RejectInput(r, "composition simulate takes Composition files")
+		}
+		return nil
+	})
 	if err != nil {
+		return err
+	}
+	if err := simulate.RejectDuplicateNames(comps); err != nil {
 		return err
 	}
 	return c.Flags.Run(sigCtx, k, logger, sp, &simulate.Inputs{Compositions: comps, Selection: &c.CompositionFlags})

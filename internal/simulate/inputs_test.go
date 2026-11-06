@@ -23,6 +23,9 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 )
 
 func TestLoadInputs(t *testing.T) {
@@ -149,7 +152,7 @@ spec:
 		"ProjectFile": {
 			reason: "A project file should be rejected with a pointer to project simulate.",
 			paths:  []string{proj},
-			want:   want{err: `-f inputs include Project "p" (dev.crossplane.io/v1alpha1); composition simulate takes Composition files; project simulate takes a project file`},
+			want:   want{err: `-f inputs include Project "p" (dev.crossplane.io/v1alpha1); composition simulate takes Composition files`},
 		},
 		"CompositionWithXR": {
 			reason: "Compositions mixed with other resources should be rejected.",
@@ -180,7 +183,15 @@ spec:
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := LoadInputs(tc.paths, ClassComposition)
+			got, err := LoadInputs(tc.paths, func(r *un.Unstructured) error {
+				if r.GroupVersionKind() != apiextensionsv1.CompositionGroupVersionKind {
+					return RejectInput(r, "composition simulate takes Composition files")
+				}
+				return nil
+			})
+			if err == nil {
+				err = RejectDuplicateNames(got)
+			}
 			if tc.want.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
 					t.Fatalf("\n%s\nLoadInputs(%v): want error containing %q, got %v", tc.reason, tc.paths, tc.want.err, err)

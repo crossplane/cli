@@ -23,61 +23,15 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
-	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
-
-	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	ld "github.com/crossplane/cli/v2/pkg/load"
 )
 
-// Class is a kind of -f input. Each simulate command takes one class, and
-// rejects the others with the same message.
-type Class int
-
-// The -f input classes.
-const (
-	// ClassUnknown is any resource no simulate command takes.
-	ClassUnknown Class = iota
-	// ClassProject is a project file, which project simulate takes.
-	ClassProject
-	// ClassComposition is a Composition, which composition simulate takes.
-	ClassComposition
-)
-
-// taker returns the command that takes class c and what it takes, or false
-// when no command takes c.
-func taker(c Class) (command, what string, ok bool) {
-	switch c {
-	case ClassProject:
-		return "project simulate", "a project file", true
-	case ClassComposition:
-		return "composition simulate", "Composition files", true
-	case ClassUnknown:
-	}
-	return "", "", false
-}
-
-// classify returns the class of the -f input r.
-func classify(r *un.Unstructured) Class {
+// RejectInput returns the error for an -f input r that the command doesn't
+// take. takes describes what the command does take, e.g. "composition
+// simulate takes Composition files".
+func RejectInput(r *un.Unstructured, takes string) error {
 	gvk := r.GroupVersionKind()
-	switch {
-	case gvk.GroupVersion().String() == projectfile.APIVersion && gvk.Kind == projectfile.Kind:
-		return ClassProject
-	case gvk == apiextensionsv1.CompositionGroupVersionKind:
-		return ClassComposition
-	default:
-		return ClassUnknown
-	}
-}
-
-// rejectInput returns the error for an -f input r that the command taking
-// want doesn't take, pointing at the command that does take it, if any.
-func rejectInput(r *un.Unstructured, want Class) error {
-	gvk := r.GroupVersionKind()
-	cmd, what, _ := taker(want)
-	msg := fmt.Sprintf("-f inputs include %s %q (%s); %s takes %s", gvk.Kind, r.GetName(), gvk.GroupVersion(), cmd, what)
-	if cmd, what, ok := taker(classify(r)); ok {
-		msg += fmt.Sprintf("; %s takes %s", cmd, what)
-	}
+	msg := fmt.Sprintf("-f inputs include %s %q (%s); %s", gvk.Kind, r.GetName(), gvk.GroupVersion(), takes)
 	if r.IsList() || gvk.Kind == "List" {
 		msg += "; pass its items as separate YAML documents instead of a List"
 	}
@@ -85,8 +39,8 @@ func rejectInput(r *un.Unstructured, want Class) error {
 }
 
 // LoadInputs loads the -f inputs at paths ("-" is stdin) and rejects any
-// that aren't of class want.
-func LoadInputs(paths []string, want Class) ([]*un.Unstructured, error) {
+// for which validate returns an error.
+func LoadInputs(paths []string, validate func(*un.Unstructured) error) ([]*un.Unstructured, error) {
 	// Pipeline step inputs are part of their Composition, not resources of
 	// their own.
 	loader, err := ld.NewExactCompositeLoader(paths, ld.WithoutPipelineInputs())
@@ -98,12 +52,7 @@ func LoadInputs(paths []string, want Class) ([]*un.Unstructured, error) {
 		return nil, errors.Wrap(err, "cannot load -f inputs")
 	}
 	for _, r := range resources {
-		if classify(r) != want {
-			return nil, rejectInput(r, want)
-		}
-	}
-	if want == ClassComposition {
-		if err := RejectDuplicateNames(resources); err != nil {
+		if err := validate(r); err != nil {
 			return nil, err
 		}
 	}

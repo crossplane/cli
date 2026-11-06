@@ -213,11 +213,8 @@ func changedFunctions(ctx context.Context, rc k8client.ResourceClient, digests m
 
 // diffCompositions returns the diff simulate runs for Compositions: their
 // impact on the composite resources in scope, rendered to k's writers.
-func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp.CompDiffProcessor, comps []*un.Unstructured, project bool) func(context.Context) (bool, error) {
-	msg := "cannot simulate Compositions"
-	if project {
-		msg = "cannot simulate project"
-	}
+// Errors are wrapped with msg.
+func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp.CompDiffProcessor, comps []*un.Unstructured, msg string) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
 		output, err := proc.DiffComposition(ctx, comps, c.sel.ns, c.sel.refs)
 
@@ -551,20 +548,24 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 	}
 
 	built := &Built{Compositions: in.Compositions}
+	msg := "cannot simulate Compositions"
+	if project {
+		msg = "cannot simulate project"
+	}
 	if project {
 		if built, err = in.Build(sigCtx); err != nil {
 			return err
 		}
 	} else {
-		ics, err := c.flagImageConfigs()
-		if err != nil {
+		var ics []pkgv1beta1.ImageConfig
+		if ics, err = c.flagImageConfigs(); err != nil {
 			return err
 		}
-		client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(ics))
-		if err != nil {
+		var xc clixpkg.Client
+		if xc, err = clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(ics)); err != nil {
 			return errors.Wrap(err, "cannot create xpkg client")
 		}
-		built.Packages = &Packages{ICs: ics, Client: client}
+		built.Packages = &Packages{ICs: ics, Client: xc}
 	}
 	comps, fns, digests, pkgs := built.Compositions, built.Functions, built.Digests, built.Packages
 
@@ -595,7 +596,7 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 	}
 	xrProc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
-	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, project))
+	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, msg))
 }
 
 // flagImageConfigs returns the ImageConfigs from --image-configs, or none.

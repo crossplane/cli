@@ -680,7 +680,11 @@ func TestSimulateRun(t *testing.T) {
 				tc.args.cmd.Output = "plan"
 			}
 			k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
-			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, !tc.args.files)
+			msg := "cannot simulate project"
+			if tc.args.files {
+				msg = "cannot simulate Compositions"
+			}
+			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, msg)
 			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), tc.args.initClients, tc.args.proc, diff)
 
 			if diff := cmp.Diff(tc.want.code, exitCode(err)); diff != "" {

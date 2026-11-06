@@ -644,6 +644,15 @@ func walk(node any, toks fieldpath.Segments) (any, bool) {
 // which is how the plan's values arrive.
 // ponytail: integers beyond 2^53 lose precision in the round trip; compare them differently if one is ever asserted.
 func valuesEqual(a, b any) bool {
+	// A marker state matches no concrete value, nil included.
+	if _, ok := a.(marker); ok {
+		return false
+	}
+
+	if _, ok := b.(marker); ok {
+		return false
+	}
+
 	na, errA := normalise(a)
 	nb, errB := normalise(b)
 
@@ -663,6 +672,24 @@ func normalise(v any) (any, error) {
 	var out any
 
 	return out, json.Unmarshal(raw, &out)
+}
+
+// marker stands in for a plan value that has no concrete value: unknown, sensitive or unresolved.
+// valuesEqual never matches it, and it prints readably in failure messages.
+type marker string
+
+// leaf is the value a plan.Value contributes to a comparison.
+func leaf(v *plan.Value) any {
+	switch {
+	case v.Unknown:
+		return marker("(known after apply)")
+	case v.Sensitive:
+		return marker("(sensitive)")
+	case v.Unresolved:
+		return marker("(unresolved)")
+	}
+
+	return v.Value
 }
 
 // valueAt returns the value at path on one side of a plan's changes: the planned side, or else the
@@ -694,6 +721,10 @@ func valueAt(t *testing.T, changes []plan.FieldChange, planned bool, path string
 
 		// An enclosing change holds the value inside its own.
 		if outer, ok := under(prefix, cp); ok && len(outer) > 0 {
+			if m, ok := leaf(v).(marker); ok {
+				return m, true
+			}
+
 			if inner, ok := walk(v.Value, outer); ok {
 				return inner, true
 			}
@@ -707,10 +738,10 @@ func valueAt(t *testing.T, changes []plan.FieldChange, planned bool, path string
 		}
 
 		if len(rel) == 0 {
-			return v.Value, true
+			return leaf(v), true
 		}
 
-		root = insert(root, rel, v.Value)
+		root = insert(root, rel, leaf(v))
 		found = true
 	}
 

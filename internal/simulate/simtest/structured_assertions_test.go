@@ -180,27 +180,78 @@ func TestValueAt(t *testing.T) {
 		{Path: "spec.list[0].x", Planned: val("x0")},
 		{Path: "spec.list[1].x", Actual: val("gone")},
 		{Path: "metadata.labels[app.io/name]", Planned: val("app")},
+		{Path: "spec.whole", Planned: val(map[string]any{"inner": map[string]any{"k": "v"}, "nul": nil})},
 	}
 
 	cases := map[string]struct {
-		path    string
-		planned bool
-		want    any
+		path      string
+		planned   bool
+		want      any
+		wantFound bool
 	}{
-		"Leaf":            {path: "spec.a", planned: true, want: "new-a"},
-		"LeafActual":      {path: "spec.a", want: "old-a"},
-		"Subtree":         {path: "spec", planned: true, want: map[string]any{"a": "new-a", "list": []any{map[string]any{"x": "x0"}}}},
-		"SubtreeActual":   {path: "spec.list", want: []any{nil, map[string]any{"x": "gone"}}},
-		"QuotedKey":       {path: "metadata.labels['app.io/name']", planned: true, want: "app"},
-		"Absent":          {path: "spec.b", planned: true, want: nil},
-		"PrefixIsNotPath": {path: "spec.list[0].xy", planned: true, want: nil},
+		"Leaf":                  {path: "spec.a", planned: true, want: "new-a", wantFound: true},
+		"LeafActual":            {path: "spec.a", want: "old-a", wantFound: true},
+		"Subtree":               {path: "spec", planned: true, want: map[string]any{"a": "new-a", "list": []any{map[string]any{"x": "x0"}}, "whole": map[string]any{"inner": map[string]any{"k": "v"}, "nul": nil}}, wantFound: true},
+		"SubtreeActual":         {path: "spec.list", want: []any{nil, map[string]any{"x": "gone"}}, wantFound: true},
+		"QuotedKey":             {path: "metadata.labels['app.io/name']", planned: true, want: "app", wantFound: true},
+		"Absent":                {path: "spec.b", planned: true, want: nil},
+		"InsideEnclosingChange": {path: "spec.whole.inner.k", planned: true, want: "v", wantFound: true},
+		"NullInsideEnclosing":   {path: "spec.whole.nul", planned: true, want: nil, wantFound: true},
+		"AbsentInsideEnclosing": {path: "spec.whole.other", planned: true, want: nil},
+		"PrefixIsNotPath":       {path: "spec.list[0].xy", planned: true, want: nil},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := valueAt(t, changes, tc.planned, tc.path); !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("valueAt(%q, planned=%t) = %#v, want %#v", tc.path, tc.planned, got, tc.want)
+			got, found := valueAt(t, changes, tc.planned, tc.path)
+			if !reflect.DeepEqual(got, tc.want) || found != tc.wantFound {
+				t.Errorf("valueAt(%q, planned=%t) = %#v, %t, want %#v, %t", tc.path, tc.planned, got, found, tc.want, tc.wantFound)
 			}
 		})
+	}
+}
+
+func TestAssertFieldsAndWarnings(t *testing.T) {
+	p := &plan.ResourcePlan{
+		Changes: []plan.FieldChange{
+			{Path: "spec.n", Planned: val(3)},
+			{Path: "spec.nul", Planned: val(nil)},
+		},
+	}
+	two := []simulate.Warning{{Message: "advisory"}}
+
+	cases := map[string]struct {
+		assert   func(*testing.T)
+		wantFail bool
+	}{
+		"AbsentIsNotNil": {assert: func(t *testing.T) {
+			t.Helper()
+			assertFields(t, "id", p, "added", map[string]any{"spec.missing": nil}, nil)
+		}, wantFail: true},
+		"ExplicitNil": {assert: func(t *testing.T) {
+			t.Helper()
+			assertFields(t, "id", p, "added", map[string]any{"spec.nul": nil}, nil)
+		}},
+		"IntEqualsFloat": {assert: func(t *testing.T) {
+			t.Helper()
+			assertFields(t, "id", p, "added", map[string]any{"spec.n": float64(3)}, nil)
+		}},
+		"IntDiffersFloat": {assert: func(t *testing.T) { t.Helper(); assertFields(t, "id", p, "added", map[string]any{"spec.n": 4.5}, nil) }, wantFail: true},
+		"DoubleExpectation": {assert: func(t *testing.T) {
+			t.Helper()
+			assertWarnings(t, two, []warningMatch{{messageContains: "advisory"}, {messageContains: "advisory"}}, false)
+		}, wantFail: true},
+		"NoWarningsAndWarning": {assert: func(t *testing.T) {
+			t.Helper()
+			assertWarnings(t, nil, []warningMatch{{messageContains: "advisory"}}, true)
+		}, wantFail: true},
+		"DryRunContradiction": {assert: func(t *testing.T) {
+			t.Helper()
+			assertDryRun(t, "id", nil, dryRunExpectation{mustBePerformed: true, skipReason: "disabled"})
+		}, wantFail: true},
+	}
+
+	for name, tc := range cases {
+		checkAssertion(t, name, tc.wantFail, tc.assert)
 	}
 }

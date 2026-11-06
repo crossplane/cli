@@ -286,8 +286,9 @@ func assertFields(t *testing.T, id string, p *plan.ResourcePlan, changeType stri
 	planned := changeType != dt.DiffTypeWordRemoved
 
 	for path, want := range values {
-		if got := valueAt(t, p.Changes, planned, path); !reflect.DeepEqual(got, want) {
-			t.Errorf("%s: field %s: expected %v, got %v", id, path, want, got)
+		// A field that is absent is not an explicit null, so WithField(path, nil) needs it present.
+		if got, found := valueAt(t, p.Changes, planned, path); !found || !valuesEqual(got, want) {
+			t.Errorf("%s: field %s: expected %v, got %v (present: %t)", id, path, want, got, found)
 		}
 	}
 
@@ -298,13 +299,13 @@ func assertFields(t *testing.T, id string, p *plan.ResourcePlan, changeType stri
 
 		// FieldChanges are leaf changes only, so a field rendered identically on both sides is read from
 		// the plan's objects instead, and must have no change at or under it.
-		if want[0] != nil && reflect.DeepEqual(want[0], want[1]) {
+		if want[0] != nil && valuesEqual(want[0], want[1]) {
 			if c := changesUnder(t, p.Changes, path); len(c) > 0 {
 				t.Errorf("%s: field %s: expected unchanged (%v), got changes %+v", id, path, want[0], c)
 			}
 
 			for i, u := range []*unstructured.Unstructured{p.Before, p.After} {
-				if got, ok := objectValueAt(t, u, path); !ok || !reflect.DeepEqual(got, want[0]) {
+				if got, ok := objectValueAt(t, u, path); !ok || !valuesEqual(got, want[0]) {
 					t.Errorf("%s: field %s in %s: expected %v, got %v (present: %t)", id, path, []string{"before", "after"}[i], want[0], got, ok)
 				}
 			}
@@ -312,11 +313,11 @@ func assertFields(t *testing.T, id string, p *plan.ResourcePlan, changeType stri
 			continue
 		}
 
-		if got := valueAt(t, p.Changes, false, path); !reflect.DeepEqual(got, want[0]) {
+		if got, _ := valueAt(t, p.Changes, false, path); !valuesEqual(got, want[0]) {
 			t.Errorf("%s: field %s old value: expected %v, got %v", id, path, want[0], got)
 		}
 
-		if got := valueAt(t, p.Changes, true, path); !reflect.DeepEqual(got, want[1]) {
+		if got, _ := valueAt(t, p.Changes, true, path); !valuesEqual(got, want[1]) {
 			t.Errorf("%s: field %s new value: expected %v, got %v", id, path, want[1], got)
 		}
 	}
@@ -327,6 +328,11 @@ func assertFields(t *testing.T, id string, p *plan.ResourcePlan, changeType stri
 // no such report is present at all.
 func assertDryRun(t *testing.T, id string, got *plan.Verification, want dryRunExpectation) {
 	t.Helper()
+
+	if want.mustBePerformed && want.skipReason != "" {
+		t.Errorf("%s: WithDryRunPerformed and WithDryRunSkipped(%q) contradict each other; set only one", id, want.skipReason)
+		return
+	}
 
 	if want.mustBePerformed {
 		if got != nil {
@@ -365,8 +371,15 @@ func assertDryRun(t *testing.T, id string, got *plan.Verification, want dryRunEx
 func assertWarnings(t *testing.T, got []simulate.Warning, want []warningMatch, noWarnings bool) {
 	t.Helper()
 
+	if noWarnings && len(want) > 0 {
+		t.Errorf("WithNoWarnings and WithWarning(%q) contradict each other; set only one", want[0].messageContains)
+		return
+	}
+
+	// Each expectation consumes a distinct warning, so two identical expectations need two warnings.
+	used := make([]bool, len(got))
 	for _, w := range want {
-		assertWarningExpectation(t, got, w)
+		assertWarningExpectation(t, got, used, w)
 	}
 
 	if (len(want) > 0 || noWarnings) && len(got) != len(want) {
@@ -374,20 +387,21 @@ func assertWarnings(t *testing.T, got []simulate.Warning, want []warningMatch, n
 	}
 }
 
-// assertWarningExpectation finds a warning whose message contains want's substring and, when the
-// expectation pins one, whose context map is exactly want's. Both conditions select the warning, since
-// several warnings legitimately share a message and differ only in context.
-func assertWarningExpectation(t *testing.T, got []simulate.Warning, want warningMatch) {
+// assertWarningExpectation finds an unused warning whose message contains want's substring and, when the
+// expectation pins one, whose context map is exactly want's, and marks it used. Both conditions select the
+// warning, since several warnings legitimately share a message and differ only in context.
+func assertWarningExpectation(t *testing.T, got []simulate.Warning, used []bool, want warningMatch) {
 	t.Helper()
 
 	var contextsSeen []map[string]string
 
-	for _, w := range got {
-		if !strings.Contains(w.Message, want.messageContains) {
+	for i, w := range got {
+		if used[i] || !strings.Contains(w.Message, want.messageContains) {
 			continue
 		}
 
 		if want.context == nil || reflect.DeepEqual(want.context, w.Context) {
+			used[i] = true
 			return
 		}
 
@@ -596,9 +610,12 @@ func objectValueAt(t *testing.T, u *unstructured.Unstructured, path string) (any
 		return nil, false
 	}
 
-	var node any = u.Object
+	return walk(u.Object, mustParsePath(t, path))
+}
 
-	for _, tok := range mustParsePath(t, path) {
+// walk returns the value at toks below node, and whether it is there at all.
+func walk(node any, toks fieldpath.Segments) (any, bool) {
+	for _, tok := range toks {
 		if tok.Type == fieldpath.SegmentIndex {
 			l, ok := node.([]any)
 			if !ok || tok.Index >= uint(len(l)) {
@@ -623,15 +640,45 @@ func objectValueAt(t *testing.T, u *unstructured.Unstructured, path string) (any
 	return node, true
 }
 
+// valuesEqual compares a and b by value, so int 3 equals float64 3. Both are normalised through JSON,
+// which is how the plan's values arrive.
+// ponytail: integers beyond 2^53 lose precision in the round trip; compare them differently if one is ever asserted.
+func valuesEqual(a, b any) bool {
+	na, errA := normalise(a)
+	nb, errB := normalise(b)
+
+	if errA != nil || errB != nil {
+		return reflect.DeepEqual(a, b)
+	}
+
+	return reflect.DeepEqual(na, nb)
+}
+
+func normalise(v any) (any, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+
+	var out any
+
+	return out, json.Unmarshal(raw, &out)
+}
+
 // valueAt returns the value at path on one side of a plan's changes: the planned side, or else the
 // actual. A leaf is its change's value; a non-leaf is re-assembled from the changed leaves under it.
-// Nil means no change sets anything at or under path on that side.
-func valueAt(t *testing.T, changes []plan.FieldChange, planned bool, path string) any {
+// Found is false, and the value nil, when no change sets anything at or under path on that side, so an
+// absent field differs from an explicit null. A change above path (one whose value is a whole object)
+// is searched for path within its value.
+func valueAt(t *testing.T, changes []plan.FieldChange, planned bool, path string) (any, bool) {
 	t.Helper()
 
 	prefix := mustParsePath(t, path)
 
-	var root any
+	var (
+		root  any
+		found bool
+	)
 
 	for _, c := range changes {
 		v := c.Actual
@@ -643,19 +690,31 @@ func valueAt(t *testing.T, changes []plan.FieldChange, planned bool, path string
 			continue
 		}
 
-		rel, ok := under(mustParsePath(t, c.Path), prefix)
+		cp := mustParsePath(t, c.Path)
+
+		// An enclosing change holds the value inside its own.
+		if outer, ok := under(prefix, cp); ok && len(outer) > 0 {
+			if inner, ok := walk(v.Value, outer); ok {
+				return inner, true
+			}
+
+			continue
+		}
+
+		rel, ok := under(cp, prefix)
 		if !ok {
 			continue
 		}
 
 		if len(rel) == 0 {
-			return v.Value
+			return v.Value, true
 		}
 
 		root = insert(root, rel, v.Value)
+		found = true
 	}
 
-	return assemble(root)
+	return assemble(root), found
 }
 
 // insert sets v at toks below node, building maps as it goes. Lists are built as index maps, which

@@ -635,11 +635,14 @@ func (c *Flags) build(ctx context.Context, in *Inputs) (*Built, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(ics))
-	if err != nil {
-		return nil, errors.Wrap(err, "cannot create xpkg client")
+	pkgs := &Packages{ICs: ics}
+	// Only planning fetches packages, so --skip-plan needs no cache.
+	if !c.SkipPlan {
+		if pkgs.Client, err = clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(ics)); err != nil {
+			return nil, errors.Wrap(err, "cannot create xpkg client")
+		}
 	}
-	return &Built{Compositions: in.Compositions, Packages: &Packages{ICs: ics, Client: client}}, nil
+	return &Built{Compositions: in.Compositions, Packages: pkgs}, nil
 }
 
 // flagImageConfigs returns the ImageConfigs from --image-configs, or none.

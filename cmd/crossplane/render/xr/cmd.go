@@ -40,7 +40,6 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composed"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
-	runtimexpkg "github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
@@ -405,9 +404,9 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 		return fns, nil
 	}
 
-	filePath, err := c.resolveProjectFile()
+	filePath, err := projectfile.Resolve(c.ProjectFile)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "functions argument is required when not in a project or configuration")
 	}
 
 	dir := filepath.Dir(filePath)
@@ -424,28 +423,6 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 	}
 
 	return c.loadFunctionsFromConfiguration(ctx, log, fs, fileName)
-}
-
-// resolveProjectFile returns the absolute path of the project or configuration
-// file to use. When the user supplied an explicit --project-file, that path is
-// used as-is. Otherwise it probes for crossplane-project.yaml and then
-// crossplane.yaml in the working directory.
-func (c *Cmd) resolveProjectFile() (string, error) {
-	if c.ProjectFile != "" {
-		return filepath.Abs(c.ProjectFile)
-	}
-
-	for _, name := range []string{clixpkg.ProjectFile, runtimexpkg.MetaFile} {
-		abs, err := filepath.Abs(name)
-		if err != nil {
-			return "", errors.Wrapf(err, "cannot determine path for %q", name)
-		}
-		if _, err := os.Stat(abs); err == nil {
-			return abs, nil
-		}
-	}
-
-	return "", errors.New("functions argument is required when not in a project or configuration")
 }
 
 func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config, projFS afero.Fs, projFilePath, projFileName string) ([]pkgv1.Function, error) {

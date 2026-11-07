@@ -278,6 +278,24 @@ func TestDefaultDiffRenderer_RenderDiffs(t *testing.T) {
 				"Total: 1 modified across 2 XRs (1 unchanged)",
 			},
 		},
+		// Same kind and name in different namespaces: the header names the namespace.
+		"NamespacedXRHeaders": {
+			groups: []dt.XRDiffGroup{
+				{
+					XR:    corev1.ObjectReference{Kind: "XNopResource", Name: "same", Namespace: "ns-a"},
+					Diffs: map[string]*dt.ResourceDiff{},
+				},
+				{
+					XR:    corev1.ObjectReference{Kind: "XNopResource", Name: "same", Namespace: "ns-b"},
+					Diffs: map[string]*dt.ResourceDiff{},
+				},
+			},
+			options: noColor,
+			expectedOutputs: []string{
+				"=== XNopResource/ns-a/same ===",
+				"=== XNopResource/ns-b/same ===",
+			},
+		},
 		// A mixed batch (identity-less group alongside identity-bearing ones):
 		// the identity-less group's diffs fold into the aggregate with no header.
 		// Two identity-bearing groups ensure the footer fires so the fold-in is
@@ -299,7 +317,7 @@ func TestDefaultDiffRenderer_RenderDiffs(t *testing.T) {
 				"=== XNopResource/real-xr ===",
 				"=== XNopResource/real-xr-2 ===",
 				"~~~ Topic/loose-topic",          // identity-less diff still rendered
-				"Total: 3 modified across 3 XRs", // all three counted
+				"Total: 3 modified across 2 XRs", // the identity-less group is not an XR
 			},
 			notExpected: []string{
 				"=== /", "=== (unknown)", // no header for the identity-less group

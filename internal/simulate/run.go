@@ -234,9 +234,9 @@ func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp
 // crossplane-diff's xr command. A claim is simulated as its XR, but the
 // report names the input, so its result is listed under the claim's name
 // (crossplane/cli#367).
-func (c *Flags) diffComposites(k *kong.Context, logger logging.Logger, proc dp.DiffProcessor, xp *xpclient.Clients, xrs []*un.Unstructured) func(context.Context) (bool, error) {
+func (c *Flags) diffComposites(k *kong.Context, logger logging.Logger, proc dp.DiffProcessor, xp *xpclient.Clients, ns string, xrs []*un.Unstructured) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
-		if err := checkComposites(ctx, xp.Definition, xrs); err != nil {
+		if err := checkComposites(ctx, xp.Definition, ns, xrs); err != nil {
 			return false, err
 		}
 		report, err := proc.PerformDiff(ctx, xrs, xp.Composition.FindMatchingComposition)
@@ -619,7 +619,7 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 	}
 	xrProc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
 	if in.Composites != nil {
-		return c.simulate(sigCtx, logger, clients.Initialize, xrProc, c.diffComposites(k, logger, xrProc, &clients.XpClients, in.Composites))
+		return c.simulate(sigCtx, logger, clients.Initialize, xrProc, c.diffComposites(k, logger, xrProc, &clients.XpClients, ns, in.Composites))
 	}
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
 	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, msg))

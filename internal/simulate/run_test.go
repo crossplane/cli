@@ -1043,7 +1043,7 @@ func TestDiffComposites(t *testing.T) {
 			k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: &bytes.Buffer{}}}
 			xp := &xpclient.Clients{Definition: defs, Composition: &testutils.MockCompositionClient{}}
 
-			_, err := c.diffComposites(k, logging.NewNopLogger(), proc, xp, tc.xrs)(context.Background())
+			_, err := c.diffComposites(k, logging.NewNopLogger(), proc, xp, "", tc.xrs)(context.Background())
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("\n%s\ndiffComposites(...): want error containing %q, got %v", tc.reason, tc.wantErr, err)
 			}

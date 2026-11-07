@@ -90,18 +90,32 @@ func RejectDuplicateNames(comps []*un.Unstructured) error {
 // checkComposites rejects resources that no XRD in the cluster defines as a
 // composite resource or claim, such as package metadata, a Provider or a
 // ConfigMap, which the engine would otherwise fail on with no hint at what -f
-// accepts. The definition client caches the XRDs when it initializes, so the
-// check costs no extra calls.
-func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, resources []*un.Unstructured) error {
+// accepts. It also gives a claim or namespaced composite resource with no
+// namespace the kubeconfig context namespace ns, as kubectl apply would. The
+// definition client caches the XRDs when it initializes, so the check costs
+// no extra calls.
+func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, ns string, resources []*un.Unstructured) error {
 	for _, r := range resources {
 		gvk := r.GroupVersionKind()
 		if xrd, err := defs.GetXRDForClaim(ctx, gvk); err == nil && xrd != nil {
+			defaultNamespace(r, ns)
 			continue
 		}
 		if xrd, err := defs.GetXRDForXR(ctx, gvk); err == nil && xrd != nil {
+			// Only a Namespaced scope is namespaced; Cluster and LegacyCluster are not.
+			if scope, _, _ := un.NestedString(xrd.Object, "spec", "scope"); scope == "Namespaced" {
+				defaultNamespace(r, ns)
+			}
 			continue
 		}
 		return rejectInput(r, "which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)", XRTakes)
 	}
 	return nil
+}
+
+// defaultNamespace sets r's namespace to ns if it has none.
+func defaultNamespace(r *un.Unstructured, ns string) {
+	if r.GetNamespace() == "" {
+		r.SetNamespace(ns)
+	}
 }

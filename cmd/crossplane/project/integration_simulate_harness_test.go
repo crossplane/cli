@@ -21,7 +21,7 @@ limitations under the License.
 // https://github.com/crossplane-contrib/crossplane-diff/commit/6a140b65a6bdb428add78680e6caee9f08b7f04b, plus later upstream additions through
 // https://github.com/crossplane-contrib/crossplane-diff/commit/d93eb87c6315cb2b44e4790e369eef3590c31dff), written as its comp and xr commands' CLI args plus an expected
 // exit code and output. runSimulate translates those args into
-// `crossplane composition simulate` args and runs the real command through
+// `crossplane composition simulate` or `crossplane xr simulate` args and runs the real command through
 // kong against the case's envtest cluster, started by
 // internal/testutils/integration, so no case table changes.
 //
@@ -54,6 +54,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/composition"
+	"github.com/crossplane/cli/v2/cmd/crossplane/xr"
 	"github.com/crossplane/cli/v2/internal/config"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/ref"
@@ -69,7 +70,7 @@ const defaultTimeout = 60 * time.Second
 
 // simArgs mirrors the crossplane-diff flags the integration cases pass,
 // plus each command's positional files, so runSimulate can translate
-// them into composition simulate's flags.
+// them into composition or xr simulate's flags.
 type simArgs struct {
 	Timeout                time.Duration `default:"1m"                                                         help:"How long to run before timing out."`
 	CrossplaneRenderBinary string        `help:"Local crossplane binary to render with."                       name:"crossplane-render-binary"`
@@ -77,6 +78,7 @@ type simArgs struct {
 	Output                 string        `default:"diff"                                                       enum:"diff,json,yaml"                     help:"Output format (diff, json, or yaml)."                            name:"output"     short:"o"`
 	NoColor                bool          `help:"Disable colorized output."                                     name:"no-color"`
 	IgnorePaths            []string      `help:"Paths to ignore in diffs."                                     name:"ignore-paths"`
+	FunctionCredentials    string        `help:"Secret credentials to pass to Functions."                      name:"function-credentials"               placeholder:"PATH"`
 	EventualState          bool          `help:"Show eventual state after all reconciliation cycles complete." name:"eventual-state"`
 	DryRunOn               string        `default:"all"                                                        enum:"existing,all"                       help:"Which resources to verify against the apiserver with a dry run." name:"dry-run-on"`
 	Resource               []string      `help:"Composite resources to scope to."                              sep:","`
@@ -105,7 +107,7 @@ func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simA
 }
 
 // simulateArgv translates the parsed crossplane-diff args into composition
-// simulate's: the input files as -f, each --resource as a --name (and
+// or xr simulate's: the input files as -f, each --resource as a --name (and
 // --namespace), --include-manual as --include-pinned, and
 // --analyze-unchanged as its replacement --analyze-on=always. The output
 // is passed explicitly: crossplane-diff's default diff, since simulate
@@ -113,12 +115,17 @@ func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simA
 func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
 	t.Helper()
 
-	// NOTE: only Composition cases run here; xr simulate adds its type.
-	if testType != CompositionDiffTest {
+	var cmd string
+	switch testType {
+	case CompositionDiffTest:
+		cmd = "composition"
+	case XRDiffTest:
+		cmd = "xr"
+	default:
 		t.Fatalf("simulateArgv: no simulate command for test type %q", testType)
 	}
 	argv := []string{
-		"composition", "simulate",
+		cmd, "simulate",
 		"--timeout=" + a.Timeout.String(),
 		"--output=" + a.Output,
 		"--dry-run-on=" + a.DryRunOn,
@@ -145,6 +152,9 @@ func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
 	for _, p := range a.IgnorePaths {
 		argv = append(argv, "--ignore-paths="+p)
 	}
+	if a.FunctionCredentials != "" {
+		argv = append(argv, "--function-credentials="+a.FunctionCredentials)
+	}
 	if a.EventualState {
 		argv = append(argv, "--eventual-state")
 	}
@@ -163,26 +173,27 @@ func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
 }
 
 // runSimulate runs one case's args through the real `crossplane
-// composition simulate` command against cfg, and returns the exit code the command
+// composition simulate` or `crossplane xr simulate` command against cfg, and returns the exit code the command
 // would exit with, the error it would fail with, and everything it wrote,
 // including the error as main prints it.
 // Each call parses a fresh command, so a second run starts with cold
-// client caches just as a second CLI invocation would; the restricted
-// RBAC rerun relies on it.
+// client caches just as a second CLI invocation would; the determinism
+// re-run and the restricted RBAC rerun rely on it.
 func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []string, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
 	a := parseSimulateArgs(t, testType, args)
 
-	return runSimulateArgv(t, cfg, simulateArgv(t, testType, a), a.CrossplaneRenderBinary, stdout, stderr)
+	return runSimulateArgv(t, cfg, simulateArgv(t, testType, a), a.CrossplaneRenderBinary, nil, stdout, stderr)
 }
 
-// runSimulateArgv runs `crossplane <project|composition> simulate` with argv against cfg,
-// rendering with renderBinary when it is set, as runSimulate does.
-func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, stdout, stderr io.Writer) (int, error) {
+// runSimulateArgv runs `crossplane <project|composition|xr> simulate` with argv against cfg,
+// rendering with renderBinary when it is set, as runSimulate does, and routing provider
+// plans through router, when it is non-nil, instead of started diff servers.
+func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, router simulate.Router, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
-	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &simulate.Hooks{}, stdout, stderr)
+	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &simulate.Hooks{Router: router}, stdout, stderr)
 }
 
 // withRenderBinary returns argv rendering with the local crossplane binary
@@ -194,7 +205,7 @@ func withRenderBinary(argv []string, bin string) []string {
 	return append(slices.Clip(argv), "--crossplane-binary="+bin)
 }
 
-// runSimulateArgvWith runs `crossplane <project|composition> simulate` with argv against
+// runSimulateArgvWith runs `crossplane <project|composition|xr> simulate` with argv against
 // cfg and hooks, whose RESTConfig and Terminal it sets.
 func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *simulate.Hooks, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
@@ -202,6 +213,7 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *s
 	var cli struct {
 		Project     Cmd             `cmd:""`
 		Composition composition.Cmd `cmd:""`
+		XR          xr.Cmd          `cmd:""`
 	}
 	parser, err := kong.New(&cli,
 		kong.Name("crossplane"),
@@ -237,6 +249,7 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *s
 	hooks.Terminal = true
 	cli.Project.Simulate.Hooks = hooks
 	cli.Composition.Simulate.Hooks = hooks
+	cli.XR.Simulate.Hooks = hooks
 
 	err = kctx.Run()
 	// Exit as main does: a silent ExitError, such as changes found, exits

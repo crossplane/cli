@@ -17,6 +17,8 @@ limitations under the License.
 package simulate
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,8 +26,11 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+
+	"github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 
 func TestLoadInputs(t *testing.T) {
@@ -165,7 +170,7 @@ spec:
 			want:   want{err: `-f inputs include GoTemplate "g"`},
 		},
 		"KubectlList": {
-			reason: "A List, as kubectl get -o yaml writes, should be rejected with a hint to unwrap it.",
+			reason: "A List, as kubectl get -o yaml writes, should be rejected with a hint to unwrap it and no pointer at another command.",
 			paths:  []string{list},
 			want:   want{err: `-f inputs include List "" (v1); composition simulate takes Composition files; pass its items as separate YAML documents instead of a List`},
 		},
@@ -207,6 +212,125 @@ spec:
 			}
 			if diff := cmp.Diff(tc.want.names, names); diff != "" {
 				t.Errorf("\n%s\nLoadInputs(%v): -want, +got:\n%s", tc.reason, tc.paths, diff)
+			}
+		})
+	}
+}
+
+func TestCheckComposites(t *testing.T) {
+	xrGVK := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XThing"}
+	claimGVK := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "Thing"}
+	xrd := &un.Unstructured{}
+	lookup := func(want schema.GroupVersionKind) func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) {
+		return func(_ context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
+			if gvk == want {
+				return xrd, nil
+			}
+			return nil, errors.New("no XRD found")
+		}
+	}
+	defs := &testutils.MockDefinitionClient{GetXRDForXRFn: lookup(xrGVK), GetXRDForClaimFn: lookup(claimGVK)}
+	res := func(apiVersion, kind, name string) *un.Unstructured {
+		return &un.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": map[string]any{"name": name}}}
+	}
+
+	cases := map[string]struct {
+		reason    string
+		resources []*un.Unstructured
+		err       string
+	}{
+		"XRAndClaim": {
+			reason:    "Resources an XRD defines as a composite resource or claim should be accepted.",
+			resources: []*un.Unstructured{res("example.org/v1", "XThing", "x"), res("example.org/v1", "Thing", "t")},
+		},
+		"ConfigurationMetadata": {
+			reason:    "A Configuration package metadata file should be rejected in the shared template, with no other command to point at.",
+			resources: []*un.Unstructured{res("meta.pkg.crossplane.io/v1", "Configuration", "cfg")},
+			err:       `-f inputs include Configuration "cfg" (meta.pkg.crossplane.io/v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed); xr simulate takes composite resource or claim files`,
+		},
+		"Provider": {
+			reason:    "A Provider should be rejected.",
+			resources: []*un.Unstructured{res("example.org/v1", "XThing", "x"), res("pkg.crossplane.io/v1", "Provider", "provider-aws")},
+			err:       `-f inputs include Provider "provider-aws" (pkg.crossplane.io/v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed); xr simulate takes composite resource or claim files`,
+		},
+		"ConfigMap": {
+			reason:    "A non-Crossplane kind should be rejected.",
+			resources: []*un.Unstructured{res("v1", "ConfigMap", "cm")},
+			err:       `-f inputs include ConfigMap "cm" (v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed); xr simulate takes composite resource or claim files`,
+		},
+		"WrongVersion": {
+			reason:    "A composite resource at a version its XRD doesn't define should be rejected.",
+			resources: []*un.Unstructured{res("example.org/v2", "XThing", "x")},
+			err:       `-f inputs include XThing "x" (example.org/v2), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed); xr simulate takes composite resource or claim files`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := checkComposites(context.Background(), defs, "ctx-ns", tc.resources)
+			if tc.err == "" {
+				if err != nil {
+					t.Fatalf("\n%s\ncheckComposites(...): %v", tc.reason, err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.err {
+				t.Fatalf("\n%s\ncheckComposites(...): want error %q, got %v", tc.reason, tc.err, err)
+			}
+		})
+	}
+}
+
+func TestCheckCompositesNamespace(t *testing.T) {
+	xrdWithScope := func(scope string) *un.Unstructured {
+		return &un.Unstructured{Object: map[string]any{"spec": map[string]any{"scope": scope}}}
+	}
+	gvk := func(kind string) schema.GroupVersionKind {
+		return schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: kind}
+	}
+	notFound := func(_ context.Context, _ schema.GroupVersionKind) (*un.Unstructured, error) {
+		return nil, errors.New("no XRD found")
+	}
+	defs := &testutils.MockDefinitionClient{
+		GetXRDForXRFn: func(ctx context.Context, g schema.GroupVersionKind) (*un.Unstructured, error) {
+			switch g {
+			case gvk("XNamespaced"):
+				return xrdWithScope("Namespaced"), nil
+			case gvk("XCluster"):
+				return xrdWithScope("Cluster"), nil
+			case gvk("XLegacy"):
+				return xrdWithScope("LegacyCluster"), nil
+			}
+			return notFound(ctx, g)
+		},
+		GetXRDForClaimFn: func(ctx context.Context, g schema.GroupVersionKind) (*un.Unstructured, error) {
+			if g == gvk("Claim") {
+				return xrdWithScope("LegacyCluster"), nil
+			}
+			return notFound(ctx, g)
+		},
+	}
+
+	cases := map[string]struct {
+		kind, namespace, want string
+	}{
+		"NamespacedXRWithoutNamespace": {kind: "XNamespaced", want: "ctx-ns"},
+		"NamespacedXRWithNamespace":    {kind: "XNamespaced", namespace: "mine", want: "mine"},
+		"ClusterXR":                    {kind: "XCluster", want: ""},
+		"LegacyClusterXR":              {kind: "XLegacy", want: ""},
+		"ClaimWithoutNamespace":        {kind: "Claim", want: "ctx-ns"},
+		"ClaimWithNamespace":           {kind: "Claim", namespace: "mine", want: "mine"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := &un.Unstructured{Object: map[string]any{"apiVersion": "example.org/v1", "kind": tc.kind, "metadata": map[string]any{"name": "r"}}}
+			if tc.namespace != "" {
+				r.SetNamespace(tc.namespace)
+			}
+			if err := checkComposites(context.Background(), defs, "ctx-ns", []*un.Unstructured{r}); err != nil {
+				t.Fatalf("checkComposites(...): %v", err)
+			}
+			if got := r.GetNamespace(); got != tc.want {
+				t.Errorf("checkComposites(...): namespace = %q, want %q", got, tc.want)
 			}
 		})
 	}

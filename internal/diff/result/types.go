@@ -37,9 +37,37 @@ import (
 // DiffRenderer mock — can reference it without importing renderer, which would
 // close an import cycle through renderer's in-package tests.
 type XRDiffGroup struct {
-	XR    corev1.ObjectReference
-	Diffs map[string]*ResourceDiff
-	Err   *OutputError
+	XR corev1.ObjectReference
+	// NameGenerated is true when the input XR had only a generateName, so XR.Name — and the name
+	// its render used — is a placeholder this tool synthesized, not one the API server would assign.
+	// Two such XRs sharing a generateName are distinct in the cluster but indistinguishable here; see
+	// the diff processor's render-overlap check.
+	NameGenerated bool
+	Diffs         map[string]*ResourceDiff
+	Err           *OutputError
+}
+
+// XRReport is what one xr diff run produced: everything a DiffRenderer renders.
+type XRReport struct {
+	// Groups holds one entry per input XR/claim, in input order.
+	Groups []XRDiffGroup
+	// Errors is the run's union error list: every group's error, plus errors no single group owns
+	// (render overlaps, an interruption).
+	Errors []OutputError
+	// Warnings are the advisories the run raised, sorted.
+	Warnings []OutputWarning
+}
+
+// HasChanges reports whether any group has a non-equal diff. Groups may hold DiffTypeEqual entries
+// (e.g. the XR, stored for removal detection), which are not changes.
+func (r *XRReport) HasChanges() bool {
+	for _, group := range r.Groups {
+		if group.HasChanges() {
+			return true
+		}
+	}
+
+	return false
 }
 
 // HasChanges reports whether any diff in the group is not equal.

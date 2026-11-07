@@ -266,7 +266,7 @@ func TestCheckComposites(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			err := checkComposites(context.Background(), defs, tc.resources)
+			err := checkComposites(context.Background(), defs, "ctx-ns", tc.resources)
 			if tc.err == "" {
 				if err != nil {
 					t.Fatalf("\n%s\ncheckComposites(...): %v", tc.reason, err)
@@ -275,6 +275,62 @@ func TestCheckComposites(t *testing.T) {
 			}
 			if err == nil || err.Error() != tc.err {
 				t.Fatalf("\n%s\ncheckComposites(...): want error %q, got %v", tc.reason, tc.err, err)
+			}
+		})
+	}
+}
+
+func TestCheckCompositesNamespace(t *testing.T) {
+	xrdWithScope := func(scope string) *un.Unstructured {
+		return &un.Unstructured{Object: map[string]any{"spec": map[string]any{"scope": scope}}}
+	}
+	gvk := func(kind string) schema.GroupVersionKind {
+		return schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: kind}
+	}
+	notFound := func(_ context.Context, _ schema.GroupVersionKind) (*un.Unstructured, error) {
+		return nil, errors.New("no XRD found")
+	}
+	defs := &testutils.MockDefinitionClient{
+		GetXRDForXRFn: func(ctx context.Context, g schema.GroupVersionKind) (*un.Unstructured, error) {
+			switch g {
+			case gvk("XNamespaced"):
+				return xrdWithScope("Namespaced"), nil
+			case gvk("XCluster"):
+				return xrdWithScope("Cluster"), nil
+			case gvk("XLegacy"):
+				return xrdWithScope("LegacyCluster"), nil
+			}
+			return notFound(ctx, g)
+		},
+		GetXRDForClaimFn: func(ctx context.Context, g schema.GroupVersionKind) (*un.Unstructured, error) {
+			if g == gvk("Claim") {
+				return xrdWithScope("LegacyCluster"), nil
+			}
+			return notFound(ctx, g)
+		},
+	}
+
+	cases := map[string]struct {
+		kind, namespace, want string
+	}{
+		"NamespacedXRWithoutNamespace": {kind: "XNamespaced", want: "ctx-ns"},
+		"NamespacedXRWithNamespace":    {kind: "XNamespaced", namespace: "mine", want: "mine"},
+		"ClusterXR":                    {kind: "XCluster", want: ""},
+		"LegacyClusterXR":              {kind: "XLegacy", want: ""},
+		"ClaimWithoutNamespace":        {kind: "Claim", want: "ctx-ns"},
+		"ClaimWithNamespace":           {kind: "Claim", namespace: "mine", want: "mine"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := &un.Unstructured{Object: map[string]any{"apiVersion": "example.org/v1", "kind": tc.kind, "metadata": map[string]any{"name": "r"}}}
+			if tc.namespace != "" {
+				r.SetNamespace(tc.namespace)
+			}
+			if err := checkComposites(context.Background(), defs, "ctx-ns", []*un.Unstructured{r}); err != nil {
+				t.Fatalf("checkComposites(...): %v", err)
+			}
+			if got := r.GetNamespace(); got != tc.want {
+				t.Errorf("checkComposites(...): namespace = %q, want %q", got, tc.want)
 			}
 		})
 	}

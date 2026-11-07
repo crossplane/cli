@@ -20,7 +20,9 @@ must be a kind an XRD in the cluster defines as a composite resource or claim;
 to simulate a Composition, use `crossplane composition simulate`, to simulate a
 project, use `crossplane project simulate`, and to simulate managed resources
 directly, use `crossplane resource simulate`. A claim is simulated as its
-composite resource, and its result is listed under the claim's name.
+composite resource, and its result is listed under the claim's name. A claim or
+namespaced composite resource with no `metadata.namespace` is simulated in the
+current context's namespace, as `kubectl apply` would.
 Functions come from the cluster. `--cache-dir` sets where provider package
 contents are cached.
 

@@ -463,6 +463,8 @@ func assertFieldValue(t *testing.T, id string, p *plan.ResourcePlan, planned boo
 
 		if planned {
 			assertAbsentInAfter(t, id, p, path)
+		} else {
+			assertAbsentInBefore(t, id, p, path)
 		}
 
 		return
@@ -492,6 +494,20 @@ func assertAbsentInAfter(t *testing.T, id string, p *plan.ResourcePlan, path str
 	}
 }
 
+// assertAbsentInBefore requires path to be absent from the plan's Before object, not only from its leaf
+// changes, when Before is set: an empty map or list leaves no leaf change.
+func assertAbsentInBefore(t *testing.T, id string, p *plan.ResourcePlan, path string) {
+	t.Helper()
+
+	if p.Before == nil {
+		return
+	}
+
+	if got, ok := objectValueAt(t, p.Before, path); ok {
+		t.Errorf("%s: field %s: expected absent, but before carries %v", id, path, got)
+	}
+}
+
 // assertDryRun checks a plan's dry-run verification: either that its desired state was reported as NOT
 // verified against the apiserver (for a reason, optionally with the cluster's own explanation), or that
 // no such report is present at all.
@@ -500,6 +516,11 @@ func assertDryRun(t *testing.T, id string, got *plan.Verification, want dryRunEx
 
 	if want.mustBePerformed && want.skipReason != "" {
 		t.Errorf("%s: WithDryRunPerformed and WithDryRunSkipped(%q) contradict each other; set only one", id, want.skipReason)
+		return
+	}
+
+	if want.mustBePerformed && want.storageVersion != "" {
+		t.Errorf("%s: WithDryRunPerformed and WithDryRunStorageVersion(%q) contradict each other; a performed dry-run reports no storage version", id, want.storageVersion)
 		return
 	}
 
@@ -512,7 +533,12 @@ func assertDryRun(t *testing.T, id string, got *plan.Verification, want dryRunEx
 		return
 	}
 
-	if want.skipReason == "" {
+	if want.skipReason == "" && want.storageVersion == "" {
+		return
+	}
+
+	if got == nil && want.skipReason == "" {
+		t.Errorf("%s: expected dryRun.storageVersion %q, but no dryRun was reported", id, want.storageVersion)
 		return
 	}
 
@@ -523,7 +549,7 @@ func assertDryRun(t *testing.T, id string, got *plan.Verification, want dryRunEx
 		return
 	}
 
-	if got.SkipReason != want.skipReason {
+	if want.skipReason != "" && got.SkipReason != want.skipReason {
 		t.Errorf("%s: dryRun.skipReason: expected %q, got %q", id, want.skipReason, got.SkipReason)
 	}
 

@@ -458,7 +458,7 @@ func (x *XRExpectation) xrExpectation() *XRExpectation { return x }
 func (r *ResourceExpectation) xrExpectation() *XRExpectation { return r.xrParent }
 
 // WithXRs attaches per-input-XR expectations (built via XR(...)) to assert
-// against the xrs[] grouped view, in order.
+// against the xrs[] grouped view, matched regardless of order.
 func (e *Expected) WithXRs(xrs ...xrSpec) *Expected {
 	for _, x := range xrs {
 		e.xrs = append(e.xrs, x.xrExpectation())

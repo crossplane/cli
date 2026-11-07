@@ -31,6 +31,7 @@ import (
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/git"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -47,6 +48,8 @@ type addCmd struct {
 	Package     string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
 	ProjectFile string `default:"${project_file}"   help:"Path to project definition file."                                                        short:"f"`
 	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
+	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"  help:"Token for git HTTPS authentication."`
+	GitUsername string `default:"x-access-token"    env:"CROSSPLANE_GIT_USERNAME"                                                                  help:"Username for git HTTPS authentication."`
 
 	// Flags for specific dependency types.
 	APIOnly bool   `help:"Mark an xpkg dependency as API-only (not a runtime dependency)." name:"api-only"`
@@ -79,7 +82,7 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 		return errors.Wrap(err, "cannot create xpkg client")
 	}
 
-	m := dependency.NewManager(proj, projFS,
+	opts := []dependency.ManagerOption{
 		dependency.WithProjectFile(c.ProjectFile),
 		dependency.WithSchemaGenerators(generator.Filter(
 			generator.AllLanguages(
@@ -89,7 +92,16 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 			proj.Spec.Schemas.GetLanguages(),
 		)),
 		dependency.WithXpkgClient(client),
-	)
+	}
+
+	if c.GitToken != "" {
+		opts = append(opts, dependency.WithGitAuthProvider(&git.HTTPSAuthProvider{
+			Username: c.GitUsername,
+			Password: c.GitToken,
+		}))
+	}
+
+	m := dependency.NewManager(proj, projFS, opts...)
 
 	dep, err := c.buildDependency()
 	if err != nil {

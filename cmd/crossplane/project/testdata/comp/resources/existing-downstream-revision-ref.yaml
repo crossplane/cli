@@ -1,0 +1,19 @@
+# The composed resource as it exists in the cluster, i.e. rendered from the revision the composite
+# currently tracks. configData therefore holds that revision's name, which is exactly what makes the
+# revision-propagating change observable: re-render against the new revision and this value must move.
+#
+# It carries crossplane.io/composition-resource-name, which the render adds, so that it is a real
+# discriminator: a fixture omitting it shows an annotation diff on EVERY run, which would report the
+# resource as modified whether or not the revision name propagated. Its value is a real revision name,
+# which matches the predicted-name pattern too, so the tests pin the exact old and new value.
+apiVersion: ns.nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  name: revision-ref-resource
+  namespace: default
+  annotations:
+    crossplane.io/composition-resource-name: nop-resource
+spec:
+  forProvider:
+    configData: xrevisionrefs.diff.example.org-e36719b
+    resourceTier: basic

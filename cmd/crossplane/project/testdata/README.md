@@ -3,7 +3,10 @@
 The `integration*_test.go` files in `cmd/crossplane/project` run
 `crossplane project simulate -f <project file>` against fixture projects
 under `testdata/project`, each against its own envtest cluster seeded from
-`testdata/comp/resources`.
+`testdata/comp/resources`. `TestCompDiffIntegration` runs
+`crossplane composition simulate -f <Composition files>` with the
+crossplane-diff cases and fixtures under `testdata/comp`, plus a few shared
+ones under `testdata/diff`.
 
 ## How a case runs
 
@@ -12,6 +15,11 @@ through kong with `runSimulateArgvWith` in
 `integration_simulate_harness_test.go`. `simulate.Hooks` points the
 command at the case's envtest cluster in place of a kubeconfig, so the
 cases run in parallel.
+
+A `TestCompDiffIntegration` case keeps its crossplane-diff args;
+`runSimulate` translates them into `composition simulate`'s flags (its
+files as `-f`, `--resource` as `--name`, `--include-manual` as
+`--include-pinned`) and runs the command the same way.
 
 ## Skips
 

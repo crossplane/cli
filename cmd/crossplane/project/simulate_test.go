@@ -396,6 +396,11 @@ func TestSimulateBuildProjectErrors(t *testing.T) {
 			project: "nocomps",
 			want:    "no Compositions found",
 		},
+		"DuplicateCompositionNames": {
+			reason:  "Two files under the APIs path defining one Composition name would be diffed against the same live Composition.",
+			project: "dupcomps",
+			want:    `Composition "dup" is defined more than once`,
+		},
 	}
 
 	for name, tc := range cases {

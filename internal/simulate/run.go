@@ -17,6 +17,7 @@ limitations under the License.
 package simulate
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -55,15 +56,18 @@ import (
 	"github.com/crossplane/cli/v2/internal/kube"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/terminal"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
 
 // Packages is how a simulation fetches packages. Functions and providers go
 // through one set of ImageConfigs, so --image-configs rewrites both.
 type Packages struct {
-	ICs    []pkgv1beta1.ImageConfig
+	ICs []pkgv1beta1.ImageConfig
+	// Client is set by Run.
 	Client runtimexpkg.Client
 
+	// Proj and DepMgr are set for a project.
 	Proj   *v1alpha1.Project
 	DepMgr *dependency.Manager
 }
@@ -71,7 +75,8 @@ type Packages struct {
 // planOptions sets up provider diff servers and the XRPlanner, and returns
 // the processor options that plan each composite resource's composed
 // resources. Namespaced resources without a namespace plan in ns, the
-// kubeconfig's namespace. pkgs is the project's. Run stops c.servers when it is set. Planning
+// kubeconfig's namespace. pkgs is the project's, or without a project has
+// only ICs and Client. Run stops c.servers when it is set. Planning
 // shares the engine's clients' REST mapper and CRD cache, so a run discovers
 // the cluster once and fetches each CRD at most once.
 func (c *Flags) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, clients *client.Clients, ns string, pkgs *Packages) ([]dp.ProcessorOption, error) {
@@ -89,9 +94,10 @@ func (c *Flags) planOptions(sigCtx context.Context, k *kong.Context, logger logg
 		router = c.servers
 	}
 
+	var ensure EnsureFunc
 	if c.servers != nil {
 		var upfront []diffserver.Input
-		switch providerSource(c.Providers) {
+		switch providerSource(c.Providers, pkgs.Proj != nil) {
 		case providersFlag:
 			upfront, err = LoadProviderInputs(c.Providers)
 			if err != nil {
@@ -103,14 +109,22 @@ func (c *Flags) planOptions(sigCtx context.Context, k *kong.Context, logger logg
 				return nil, errors.Wrap(err, "cannot load the project's provider dependencies")
 			}
 			upfront = diffserver.Images(images)
+		case providersPerXR:
+			cache := NewImageCache()
+			ensure = func(ctx context.Context, rs []*un.Unstructured) error {
+				imgs := RelevantProviderImages(ctx, kubeClient, rmapper, crds, rs, len(pkgs.ICs) > 0, cache, k.Stderr)
+				return EnsureServers(ctx, sp, k.Stderr, c.servers, diffserver.Images(imgs))
+			}
 		}
-		if err := EnsureServers(sigCtx, sp, k.Stderr, c.servers, upfront); err != nil {
-			return nil, err
+		if ensure == nil {
+			if err := EnsureServers(sigCtx, sp, k.Stderr, c.servers, upfront); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	c.keep = ProviderManaged(sigCtx, rmapper, crds)
-	c.xrPlanner = NewXRPlanner(NewPlanner(kubeClient, rmapper, crds, ns, router, c.Timeout), c.keep, nil)
+	c.xrPlanner = NewXRPlanner(NewPlanner(kubeClient, rmapper, crds, ns, router, c.Timeout), c.keep, ensure)
 	return []dp.ProcessorOption{dp.WithAfterXRDiff(c.xrPlanner.AfterXRDiff), dp.WithKeepEqualDiffs(c.keep)}, nil
 }
 
@@ -122,15 +136,23 @@ const (
 	providersFlag source = iota
 	// providersProject starts the project's provider dependencies up front.
 	providersProject
+	// providersPerXR starts the providers each composite resource needs as
+	// it is simulated.
+	providersPerXR
 )
 
 // providerSource picks where provider diff servers come from: --providers
-// when set, else the project's provider dependencies.
-func providerSource(providers string) source {
-	if providers != "" {
+// when set, else the project's provider dependencies when there is a
+// project, else per composite resource.
+func providerSource(providers string, project bool) source {
+	switch {
+	case providers != "":
 		return providersFlag
+	case project:
+		return providersProject
+	default:
+		return providersPerXR
 	}
-	return providersProject
 }
 
 // noteNoServers prints NoteNoDiffServers to stderr once, for -o
@@ -191,7 +213,8 @@ func changedFunctions(ctx context.Context, rc k8client.ResourceClient, digests m
 
 // diffCompositions returns the diff simulate runs for Compositions: their
 // impact on the composite resources in scope, rendered to k's writers.
-func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp.CompDiffProcessor, comps []*un.Unstructured) func(context.Context) (bool, error) {
+// Errors are wrapped with msg.
+func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp.CompDiffProcessor, comps []*un.Unstructured, msg string) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
 		output, err := proc.DiffComposition(ctx, comps, c.sel.ns, c.sel.refs)
 
@@ -202,7 +225,7 @@ func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp
 		if output != nil {
 			changed, err = c.renderCompReport(k, logger, output, err)
 		}
-		return changed, errors.Wrap(err, "cannot simulate project")
+		return changed, errors.Wrap(err, msg)
 	}
 }
 
@@ -494,16 +517,18 @@ func isTerminal(w io.Writer) bool {
 	return ok && term.IsTerminal(f.Fd())
 }
 
-// Run previews a project's compositions, with its functions built locally,
-// against the cluster.
+// Run previews in against the cluster: a project's Compositions, with its
+// functions built locally, or Composition files, with the cluster's
+// functions.
 func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, in *Inputs) error {
 	if in.Selection != nil {
 		c.sel = *in.Selection
 	}
-	warnIgnoredFlags(k.Stderr, setFlags(k), c.SkipPlan, true)
+	project := in.Build != nil
+	warnIgnoredFlags(k.Stderr, setFlags(k), c.SkipPlan, project)
 
 	if err := docker.Check(sigCtx); err != nil {
-		return errors.Wrap(err, "cannot connect to Docker, which project simulate needs to run functions")
+		return errors.Wrap(err, "cannot connect to Docker, which simulate needs to run functions")
 	}
 
 	var creds []corev1.Secret
@@ -522,9 +547,27 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 		return err
 	}
 
-	built, err := in.Build(sigCtx)
-	if err != nil {
-		return err
+	built := &Built{Compositions: in.Compositions}
+	msg := "cannot simulate Compositions"
+	if project {
+		msg = "cannot simulate project"
+	}
+	if project {
+		if built, err = in.Build(sigCtx); err != nil {
+			return err
+		}
+	} else {
+		var ics []pkgv1beta1.ImageConfig
+		if ics, err = c.flagImageConfigs(); err != nil {
+			return err
+		}
+		built.Packages = &Packages{ICs: ics}
+		// Only planning fetches packages, so --skip-plan needs no cache.
+		if !c.SkipPlan {
+			if built.Packages.Client, err = clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(ics)); err != nil {
+				return errors.Wrap(err, "cannot create xpkg client")
+			}
+		}
 	}
 	comps, fns, digests, pkgs := built.Compositions, built.Functions, built.Digests, built.Packages
 
@@ -555,7 +598,18 @@ func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logg
 	}
 	xrProc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
-	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps))
+	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, msg))
+}
+
+// flagImageConfigs returns the ImageConfigs from --image-configs, or none.
+// Unlike ImageConfigs it never falls back to a project file in the current
+// directory: a command that takes files rather than a project uses only what
+// the user passed.
+func (c *Flags) flagImageConfigs() ([]pkgv1beta1.ImageConfig, error) {
+	if c.ImageConfigs == "" {
+		return nil, nil
+	}
+	return ImageConfigs(c.ImageConfigs, "")
 }
 
 // warnIgnoredFlags prints a warning to stderr for each flag set on the
@@ -589,7 +643,12 @@ type Built struct {
 type Inputs struct {
 	// Build builds the project. Run calls it after loading the kubeconfig,
 	// so a bad context fails before the slow build.
+	// Build is nil for a command that takes Compositions instead.
 	Build func(ctx context.Context) (*Built, error)
+
+	// Compositions are the Compositions to simulate, with the cluster's
+	// functions, when Build is nil.
+	Compositions []*un.Unstructured
 
 	// Selection limits the run to the composite resources it selects. A
 	// command without CompositionFlags leaves it nil, which selects them all.

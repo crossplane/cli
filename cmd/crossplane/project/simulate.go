@@ -92,6 +92,10 @@ func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, s
 		return nil, errors.Errorf("no Compositions found under the project's APIs path %q", proj.Spec.Paths.APIs)
 	}
 
+	if err := simulate.RejectDuplicateNames(comps); err != nil {
+		return nil, errors.Wrap(err, "cannot load compositions from project")
+	}
+
 	ics := proj.Spec.ImageConfigs
 	if c.ImageConfigs != "" {
 		if ics, err = simulate.ImageConfigs(c.ImageConfigs, ""); err != nil {

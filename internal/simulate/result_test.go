@@ -82,10 +82,10 @@ func TestRenderPlanCompositeDetail(t *testing.T) {
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
 	r := ProjectResult{
 		Result:     plan.Result{},
-		Composites: []CompositeResult{{Ref: xr, Status: CompositeUnchanged, Pinned: true, Detail: "rendered against pinned revision net-6 with the project's functions"}},
+		Composites: []CompositeResult{{Ref: xr, Status: CompositeUnchanged, Pinned: true, Detail: "rendered against pinned revision net-6 with the changed functions"}},
 	}
 	want := `XR: XNetwork.example.org prod-network
-    rendered against pinned revision net-6 with the project's functions
+    rendered against pinned revision net-6 with the changed functions
 
 Plan: 0 to add, 0 to change, 0 to destroy.
 `

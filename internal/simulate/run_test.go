@@ -557,6 +557,8 @@ func TestSimulateRun(t *testing.T) {
 		initClients func(context.Context, logging.Logger) error
 		proc        *fakeCompProc
 		cancel      bool
+		// files runs as composition simulate rather than project simulate.
+		files bool
 	}
 	type want struct {
 		code      int
@@ -635,6 +637,20 @@ func TestSimulateRun(t *testing.T) {
 			}}},
 			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
 		},
+		"ProjectDiffErrorWrap": {
+			reason: "A project's simulation error should name the project.",
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return nil, errBoom
+			}}},
+			want: want{code: dp.ExitCodeToolError, err: errBoom, errMsg: "cannot simulate project: boom", diffed: true},
+		},
+		"CompositionDiffErrorWrap": {
+			reason: "A Composition file's simulation error should name the Compositions.",
+			args: args{files: true, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return nil, errBoom
+			}}},
+			want: want{code: dp.ExitCodeToolError, err: errBoom, errMsg: "cannot simulate Compositions: boom", diffed: true},
+		},
 		"SchemaValidationError": {
 			reason: "A simulation that failed only schema validation should exit 2.",
 			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
@@ -664,7 +680,11 @@ func TestSimulateRun(t *testing.T) {
 				tc.args.cmd.Output = "plan"
 			}
 			k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
-			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}})
+			msg := "cannot simulate project"
+			if tc.args.files {
+				msg = "cannot simulate Compositions"
+			}
+			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, msg)
 			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), tc.args.initClients, tc.args.proc, diff)
 
 			if diff := cmp.Diff(tc.want.code, exitCode(err)); diff != "" {
@@ -838,6 +858,7 @@ func TestProviderSource(t *testing.T) {
 	cases := map[string]struct {
 		reason    string
 		providers string
+		project   bool
 		want      source
 	}{
 		"Flag": {
@@ -845,14 +866,25 @@ func TestProviderSource(t *testing.T) {
 			providers: "providers.yaml",
 			want:      providersFlag,
 		},
-		"WithoutFlag": {
-			reason: "Without --providers the project's provider dependencies start.",
-			want:   providersProject,
+		"FlagWithProject": {
+			reason:    "--providers wins even when a project is loaded.",
+			providers: "providers.yaml",
+			project:   true,
+			want:      providersFlag,
+		},
+		"Project": {
+			reason:  "Without --providers the project's provider dependencies start.",
+			project: true,
+			want:    providersProject,
+		},
+		"NoProject": {
+			reason: "Without --providers or a project, each composite resource's providers start as it is simulated.",
+			want:   providersPerXR,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := providerSource(tc.providers); got != tc.want {
+			if got := providerSource(tc.providers, tc.project); got != tc.want {
 				t.Errorf("%s\nproviderSource(%q): want %v, got %v", tc.reason, tc.providers, tc.want, got)
 			}
 		})
@@ -907,4 +939,22 @@ func parseFlags(t *testing.T, args ...string) (*Flags, error) {
 	}
 	_, err = parser.Parse(append([]string{"simulate"}, args...))
 	return &cli.Simulate, err
+}
+
+func TestFlagImageConfigsIgnoresProjectFile(t *testing.T) {
+	// A Composition run inside a project directory must not read its
+	// project file: an unparseable one would otherwise fail the run.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "crossplane-project.yaml"), []byte("{not: [yaml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	ics, err := (&Flags{}).flagImageConfigs()
+	if err != nil {
+		t.Errorf("flagImageConfigs(): want no error, got %v", err)
+	}
+	if len(ics) != 0 {
+		t.Errorf("flagImageConfigs(): want no ImageConfigs, got %v", ics)
+	}
 }

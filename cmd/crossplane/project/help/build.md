@@ -20,7 +20,7 @@ and `crossplane dependency update-cache`. Override the cache location with
 Git dependencies fetched over HTTPS can authenticate using `--git-token` and
 `--git-username`. Prefer the `CROSSPLANE_GIT_TOKEN` and
 `CROSSPLANE_GIT_USERNAME` environment variables to avoid exposing credentials
-in shell history. The username defaults to `x-access-token`. Credentials are not
+in shell history. The username defaults to `x-access-token`. Credentials aren't
 saved in the project file.
 
 The CLI builds embedded functions onto a runtime base image from a registry, and

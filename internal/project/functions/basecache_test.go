@@ -17,10 +17,15 @@ limitations under the License.
 package functions
 
 import (
+	"bytes"
+	"compress/gzip"
+	"crypto/rand"
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -94,7 +99,7 @@ func TestTolerantCacheUnwritableDirStillReads(t *testing.T) {
 		t.Fatalf("creating read-only cache dir: %v", err)
 	}
 
-	plain := cache.NewFilesystemCache(dir)
+	plain := newAtomicCache(dir)
 	l, err := plain.Put(testLayer())
 	if err != nil {
 		t.Fatalf("Put(): unexpected error: %v", err)
@@ -104,7 +109,7 @@ func TestTolerantCacheUnwritableDirStillReads(t *testing.T) {
 	}
 
 	// Same directory, wrapped: the layer must read regardless.
-	tolerant := tolerantCache{cache.NewFilesystemCache(dir)}
+	tolerant := tolerantCache{newAtomicCache(dir)}
 	wrapped, err := tolerant.Put(testLayer())
 	if err != nil {
 		t.Fatalf("Put(): unexpected error: %v", err)
@@ -117,7 +122,7 @@ func TestTolerantCacheUnwritableDirStillReads(t *testing.T) {
 func TestTolerantCachePassesThroughOnSuccess(t *testing.T) {
 	// A working cache must behave exactly as it would unwrapped: a miss is
 	// still a miss, and a stored layer still reads back.
-	c := tolerantCache{cache.NewFilesystemCache(t.TempDir())}
+	c := tolerantCache{newAtomicCache(t.TempDir())}
 
 	if _, err := c.Get(v1.Hash{Algorithm: "sha256", Hex: "cafe"}); !errors.Is(err, cache.ErrNotFound) {
 		t.Errorf("Get() on empty cache: want cache.ErrNotFound, got %v", err)
@@ -138,5 +143,162 @@ func TestTolerantCachePassesThroughOnSuccess(t *testing.T) {
 	}
 	if _, err := c.Get(d); err != nil {
 		t.Errorf("Get() after populating cache: unexpected error: %v", err)
+	}
+}
+
+// gzipLayer returns a layer whose compressed form is real gzip, as registry
+// layers are, so the filesystem cache reads it back with the same digest.
+func gzipLayer(t *testing.T, payload []byte) v1.Layer {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(payload); err != nil {
+		t.Fatalf("gzip: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip: %v", err)
+	}
+	return static.NewLayer(buf.Bytes(), types.DockerLayer)
+}
+
+// slowLayer delivers its compressed bytes in small chunks with pauses, so
+// concurrent readers reliably overlap the download.
+type slowLayer struct{ v1.Layer }
+
+func (l slowLayer) Compressed() (io.ReadCloser, error) {
+	rc, err := l.Layer.Compressed()
+	if err != nil {
+		return nil, err
+	}
+	return slowReader{rc}, nil
+}
+
+type slowReader struct{ io.ReadCloser }
+
+func (r slowReader) Read(b []byte) (int, error) {
+	time.Sleep(time.Millisecond)
+	return r.ReadCloser.Read(b[:min(len(b), 1024)])
+}
+
+func TestAtomicCachePartialReadLeavesNoEntry(t *testing.T) {
+	noise := make([]byte, 1<<20)
+	_, _ = rand.Read(noise)
+	big := gzipLayer(t, noise)
+	d, err := big.Digest()
+	if err != nil {
+		t.Fatalf("Digest(): %v", err)
+	}
+
+	tests := map[string]func(rc io.ReadCloser){
+		"ClosedEarly": func(rc io.ReadCloser) {
+			_, _ = io.CopyN(io.Discard, rc, 100)
+		},
+		"NeverRead": func(io.ReadCloser) {},
+	}
+	for name, consume := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := newAtomicCache(t.TempDir())
+			l, err := c.Put(big)
+			if err != nil {
+				t.Fatalf("Put(): %v", err)
+			}
+			rc, err := l.Compressed()
+			if err != nil {
+				t.Fatalf("Compressed(): %v", err)
+			}
+			consume(rc)
+			_ = rc.Close()
+
+			if _, err := c.Get(d); !errors.Is(err, cache.ErrNotFound) {
+				t.Errorf("Get() after partial read: want cache.ErrNotFound, got %v", err)
+			}
+			if ents, _ := os.ReadDir(c.dir); len(ents) != 0 {
+				t.Errorf("cache dir should be empty after partial read, got %d entries", len(ents))
+			}
+		})
+	}
+}
+
+func TestAtomicCacheFullReadIsHit(t *testing.T) {
+	c := newAtomicCache(t.TempDir())
+	src := gzipLayer(t, []byte("hello from a layer"))
+	l, err := c.Put(src)
+	if err != nil {
+		t.Fatalf("Put(): %v", err)
+	}
+	readAll(t, l)
+
+	d, _ := src.Digest()
+	wantSize, _ := src.Size()
+	got, err := c.Get(d)
+	if err != nil {
+		t.Fatalf("Get(): %v", err)
+	}
+	gotDigest, _ := got.Digest()
+	gotSize, _ := got.Size()
+	if gotDigest != d || gotSize != wantSize {
+		t.Errorf("Get(): want %v/%d, got %v/%d", d, wantSize, gotDigest, gotSize)
+	}
+}
+
+func TestAtomicCacheConcurrentReadersNeverSeePartialLayers(t *testing.T) {
+	payload := make([]byte, 256<<10)
+	_, _ = rand.Read(payload)
+	src := slowLayer{gzipLayer(t, payload)}
+	d, _ := src.Digest()
+	wantSize, _ := src.Size()
+
+	c := newAtomicCache(t.TempDir())
+	var wg sync.WaitGroup
+	errs := make(chan error, 64)
+
+	for range 8 {
+		wg.Go(func() {
+			l, err := c.Put(src)
+			if err != nil {
+				errs <- err
+				return
+			}
+			rc, err := l.Compressed()
+			if err != nil {
+				errs <- err
+				return
+			}
+			// Small reads keep the download slow enough to overlap Gets.
+			buf := make([]byte, 4096)
+			for {
+				if _, err := rc.Read(buf); err != nil {
+					break
+				}
+			}
+			if err := rc.Close(); err != nil {
+				errs <- err
+			}
+		})
+	}
+	for range 8 {
+		wg.Go(func() {
+			for range 200 {
+				l, err := c.Get(d)
+				if errors.Is(err, cache.ErrNotFound) {
+					continue
+				}
+				if err != nil {
+					errs <- err
+					return
+				}
+				gotSize, _ := l.Size()
+				gotDigest, _ := l.Digest()
+				if gotSize != wantSize || gotDigest != d {
+					errs <- errors.Errorf("Get() returned %v/%d, want %v/%d", gotDigest, gotSize, d, wantSize)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }

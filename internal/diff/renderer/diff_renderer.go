@@ -297,6 +297,7 @@ func (r *DefaultDiffRenderer) renderGrouped(groups []dt.XRDiffGroup) error {
 
 	var (
 		total       diffCounts
+		xrCount     int
 		unchangedXR int
 		errorXR     int
 	)
@@ -316,7 +317,15 @@ func (r *DefaultDiffRenderer) renderGrouped(groups []dt.XRDiffGroup) error {
 			continue
 		}
 
-		if _, err := fmt.Fprintf(stdout, "=== %s/%s ===\n\n", g.XR.Kind, g.XR.Name); err != nil {
+		xrCount++
+
+		// The namespace is part of the identity: same-named XRs in different namespaces are distinct.
+		title := g.XR.Kind + "/" + g.XR.Name
+		if g.XR.Namespace != "" {
+			title = g.XR.Kind + "/" + g.XR.Namespace + "/" + g.XR.Name
+		}
+
+		if _, err := fmt.Fprintf(stdout, "=== %s ===\n\n", title); err != nil {
 			return errors.Wrap(err, "failed to write XR section header")
 		}
 
@@ -354,7 +363,7 @@ func (r *DefaultDiffRenderer) renderGrouped(groups []dt.XRDiffGroup) error {
 		}
 	}
 
-	return r.renderAggregateFooter(len(groups), total, unchangedXR, errorXR)
+	return r.renderAggregateFooter(xrCount, total, unchangedXR, errorXR)
 }
 
 // renderAggregateFooter writes the cross-XR totals line shown when more than one

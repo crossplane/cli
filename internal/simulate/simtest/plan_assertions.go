@@ -71,8 +71,10 @@ func AssertStructured(t *testing.T, jsonOutput string, e Expectation) {
 		t.Errorf("Expected %d changes, got %d: %v", len(expected.resources), len(changes), planIDs(changes))
 	}
 
+	usedErrs := make([]bool, len(res.Errors))
+
 	for _, want := range expected.errors {
-		got := findMatchingError(res.Errors, want.resourceID)
+		got := findMatchingError(res.Errors, usedErrs, want.resourceID, nil)
 		if got == nil {
 			t.Errorf("Expected error for resourceID %q not found in output. Actual error IDs: %v",
 				want.resourceID, errorIDs(res.Errors))
@@ -93,7 +95,7 @@ func AssertStructured(t *testing.T, jsonOutput string, e Expectation) {
 	assertXRExpectations(t, res, expected.xrs)
 
 	for _, id := range expected.errorIDs {
-		if findMatchingError(res.Errors, id) == nil {
+		if findMatchingError(res.Errors, usedErrs, id, nil) == nil {
 			t.Errorf("Expected top-level error with resourceID %q not found. Actual error IDs: %v", id, errorIDs(res.Errors))
 		}
 	}
@@ -269,8 +271,10 @@ func assertXRImpact(t *testing.T, res simulate.ProjectResult, label string, comp
 		}
 	}
 
+	usedErrs := make([]bool, len(errs))
+
 	for _, id := range want.errorIDs {
-		if findMatchingError(errs, id) == nil {
+		if findMatchingError(errs, usedErrs, id, nil) == nil {
 			t.Errorf("%s: expected error with resourceID %q not found. Actual error IDs: %v", label, id, errorIDs(errs))
 		}
 	}
@@ -282,8 +286,10 @@ func assertXRImpact(t *testing.T, res simulate.ProjectResult, label string, comp
 		assertSummary(t, label+": downstream summary", s, create, update, destroy, replace)
 	}
 
+	usedPlans := make([]bool, len(downstream))
+
 	for _, wantRes := range want.downstreamResources {
-		p := findMatchingPlan(downstream, wantRes.changeType, wantRes.kind, wantRes.name, wantRes.namespace, wantRes.namePattern)
+		p := findMatchingPlan(downstream, usedPlans, wantRes.changeType, wantRes.kind, wantRes.name, wantRes.namespace, wantRes.namePattern)
 		if p == nil {
 			t.Errorf("%s: expected downstream %s resource %s/%s not found. Actual: %v",
 				label, wantRes.changeType, wantRes.kind, wantRes.name, planIDs(downstream))
@@ -325,6 +331,7 @@ func assertXRExpectations(t *testing.T, res simulate.ProjectResult, expected []*
 	}
 
 	used := make([]bool, len(res.Composites))
+	usedErrs := make([]bool, len(res.Errors))
 
 	for _, want := range expected {
 		i := -1
@@ -366,8 +373,7 @@ func assertXRExpectations(t *testing.T, res simulate.ProjectResult, expected []*
 		}
 
 		for _, id := range want.errorIDs {
-			e := findMatchingError(res.Errors, id)
-			if e == nil || e.Ref == nil || *e.Ref != got.Ref {
+			if findMatchingError(res.Errors, usedErrs, id, &got.Ref) == nil {
 				t.Errorf("xr %s: expected error with resourceID %q not found against it. Actual error IDs: %v", label, id, errorIDs(res.Errors))
 			}
 		}
@@ -384,8 +390,10 @@ func assertResourceExpectations(t *testing.T, scope string, changes []*plan.Reso
 		prefix = "xr " + scope + ": "
 	}
 
+	used := make([]bool, len(changes))
+
 	for _, want := range resources {
-		p := findMatchingPlan(changes, want.changeType, want.kind, want.name, want.namespace, want.namePattern)
+		p := findMatchingPlan(changes, used, want.changeType, want.kind, want.name, want.namespace, want.namePattern)
 		if p == nil {
 			t.Errorf("%sExpected %s resource %s/%s (ns=%s) not found. Actual resources: %v",
 				prefix, want.changeType, want.kind, want.name, want.namespace, planIDs(changes))
@@ -589,8 +597,12 @@ func assertErrorMatch(t *testing.T, got simulate.Error, want *ErrorExpectation) 
 		t.Errorf("error %q: message %q does not contain %q", want.resourceID, got.Message, want.messageContains)
 	}
 
+	usedVFs := make([]bool, len(got.ValidationFailures))
+
 	for _, wantVF := range want.validationFailures {
-		i := slices.IndexFunc(got.ValidationFailures, func(v simulate.ValidationFailure) bool {
+		i := firstUnused(usedVFs, func(i int) bool {
+			v := got.ValidationFailures[i]
+
 			return v.APIVersion == wantVF.apiVersion && v.Kind == wantVF.kind && v.Name == wantVF.name &&
 				(wantVF.namespace == "" || v.Namespace == wantVF.namespace)
 		})
@@ -605,6 +617,8 @@ func assertErrorMatch(t *testing.T, got simulate.Error, want *ErrorExpectation) 
 
 			continue
 		}
+
+		usedVFs[i] = true
 
 		assertValidationFailureMatch(t, got.ValidationFailures[i], wantVF)
 	}
@@ -624,9 +638,11 @@ func assertValidationFailureMatch(t *testing.T, got simulate.ValidationFailure, 
 		t.Errorf("%s: status: expected %q, got %q", label, want.status, got.Status)
 	}
 
+	usedFEs := make([]bool, len(got.Errors))
+
 	for _, wantFE := range want.errors {
-		i := slices.IndexFunc(got.Errors, func(fe simulate.FieldValidationError) bool {
-			return fe.Type == wantFE.errType && fe.Field == wantFE.field
+		i := firstUnused(usedFEs, func(i int) bool {
+			return got.Errors[i].Type == wantFE.errType && got.Errors[i].Field == wantFE.field
 		})
 		if i < 0 {
 			actual := make([]string, 0, len(got.Errors))
@@ -639,6 +655,7 @@ func assertValidationFailureMatch(t *testing.T, got simulate.ValidationFailure, 
 			continue
 		}
 
+		usedFEs[i] = true
 		gotFE := got.Errors[i]
 
 		if wantFE.messageContains != "" && !strings.Contains(gotFE.Message, wantFE.messageContains) {
@@ -655,6 +672,17 @@ func assertValidationFailureMatch(t *testing.T, got simulate.ValidationFailure, 
 	if len(want.errors) > 0 && len(got.Errors) != len(want.errors) {
 		t.Errorf("%s: expected %d field errors, got %d", label, len(want.errors), len(got.Errors))
 	}
+}
+
+// firstUnused returns the index of the first unused element for which match is true, or -1.
+func firstUnused(used []bool, match func(i int) bool) int {
+	for i := range used {
+		if !used[i] && match(i) {
+			return i
+		}
+	}
+
+	return -1
 }
 
 func assertSummary(t *testing.T, label string, want *expectedSummary, create, update, destroy, replace int) {
@@ -718,16 +746,18 @@ func findPlan(plans []*plan.ResourcePlan, ref plan.ResourceRef, composite *plan.
 	return nil
 }
 
-// findMatchingPlan returns the first plan with changeType's action, kind and (when given) namespace,
+// findMatchingPlan returns the first unused plan with changeType's action, kind and (when given) namespace,
 // whose name is any, matches namePattern, or equals name.
-func findMatchingPlan(plans []*plan.ResourcePlan, changeType, kind, name, namespace string, namePattern *regexp.Regexp) *plan.ResourcePlan {
-	for _, p := range plans {
-		if p.Action != changeAction(changeType) {
+func findMatchingPlan(plans []*plan.ResourcePlan, used []bool, changeType, kind, name, namespace string, namePattern *regexp.Regexp) *plan.ResourcePlan {
+	for i, p := range plans {
+		if used[i] || p.Action != changeAction(changeType) {
 			continue
 		}
 
 		ref := plan.ResourceRef{Kind: p.Kind, Name: p.Name, Namespace: p.Namespace}
 		if refMatches(ref, kind, name, namespace, namePattern, false) {
+			used[i] = true
+
 			return p
 		}
 	}
@@ -750,10 +780,17 @@ func refMatches(ref plan.ResourceRef, kind, name, namespace string, namePattern 
 	}
 }
 
-// findMatchingError returns the error whose resource is resourceID ("Kind/name").
-func findMatchingError(errs []simulate.Error, resourceID string) *simulate.Error {
+// findMatchingError returns the first unused error whose resource is resourceID ("Kind/name") and, when
+// ref is set, whose Ref equals it, and marks it used so one error satisfies one expectation.
+func findMatchingError(errs []simulate.Error, used []bool, resourceID string, ref *plan.ResourceRef) *simulate.Error {
 	for i := range errs {
-		if errorID(errs[i]) == resourceID {
+		if used[i] || errorID(errs[i]) != resourceID {
+			continue
+		}
+
+		if ref == nil || (errs[i].Ref != nil && *errs[i].Ref == *ref) {
+			used[i] = true
+
 			return &errs[i]
 		}
 	}

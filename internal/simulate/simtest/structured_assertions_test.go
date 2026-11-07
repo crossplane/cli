@@ -448,12 +448,16 @@ func TestAssertStructuredCombined(t *testing.T) {
 		want     Expectation
 		wantFail bool
 	}{
-		"Combined":         {want: combined()},
-		"WrongSummary":     {want: combined().WithSummary(2, 1, 1), wantFail: true},
-		"WrongRevision":    {want: combined().WithComposition("comp-a").WithRevisionImpact("metadata", true, 1), wantFail: true},
-		"WrongXRImpact":    {want: combined().WithComposition("comp-a").WithXRImpact("XNop", "xr-1", "default", "unchanged"), wantFail: true},
-		"MissingErrorID":   {want: combined().WithErrorID("Composition/comp-a"), wantFail: true},
-		"AbsentFieldFails": {want: Expect().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldAbsent("spec.region"), wantFail: true},
+		"Combined":       {want: combined()},
+		"WrongSummary":   {want: combined().WithSummary(2, 1, 1), wantFail: true},
+		"WrongRevision":  {want: combined().WithComposition("comp-a").WithRevisionImpact("metadata", true, 1), wantFail: true},
+		"WrongXRImpact":  {want: combined().WithComposition("comp-a").WithXRImpact("XNop", "xr-1", "default", "unchanged"), wantFail: true},
+		"MissingErrorID": {want: combined().WithErrorID("Composition/comp-a"), wantFail: true},
+		"AbsentFieldFails": {
+			want: Expect().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldAbsent("spec.region").And().
+				WithAddedResource("ConfigMap", "cm-x7k2p", "default").And().WithRemovedResource("Secret", "gone", "default").And(),
+			wantFail: true,
+		},
 	}
 
 	for name, tc := range cases {

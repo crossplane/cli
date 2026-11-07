@@ -29,9 +29,11 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/sergi/go-diff/diffmatchpatch"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
@@ -43,10 +45,12 @@ import (
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
+	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
+	difftypes "github.com/crossplane/cli/v2/internal/diff/types"
 	"github.com/crossplane/cli/v2/internal/plan"
 	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
@@ -340,26 +344,33 @@ func TestSimulateDiffOptions(t *testing.T) {
 }
 
 // TestSimulateRenderReports pins which renderer each -o value selects, for
-// both report types: ProjectResult for plan, json and yaml, and the engine's
+// both report types: Result for plan, json and yaml, and the engine's
 // human diff for diff.
 func TestSimulateRenderReports(t *testing.T) {
 	xr := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
+	cm := &un.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": "cm"}, "data": map[string]any{"k": "v"}}}
+	added := &dt.ResourceDiff{
+		Gvk: cm.GroupVersionKind(), ResourceName: "cm", DiffType: dt.DiffTypeAdded,
+		Desired:   dt.ResourceViews{Raw: cm, Clean: cm},
+		LineDiffs: []diffmatchpatch.Diff{{Type: diffmatchpatch.DiffInsert, Text: "data:\n  k: v\n"}},
+	}
+	xrReport := &dt.XRReport{Groups: []dt.XRDiffGroup{{XR: xr, Diffs: map[string]*dt.ResourceDiff{added.GetDiffKey(): added}}}}
 	compReport := &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
 		Name:           "net",
 		RevisionImpact: dt.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1},
 		ImpactAnalysis: []dt.XRImpact{{ObjectReference: xr, Status: dt.XRStatusUnchanged}},
 	}}}
 
-	// isPlanResult checks out decodes as a ProjectResult naming the composite.
+	// isPlanResult checks out decodes as a Result naming the composite.
 	isPlanResult := func(unmarshal func([]byte, any) error) func(*testing.T, string) {
 		return func(t *testing.T, out string) {
 			t.Helper()
-			var r ProjectResult
+			var r Result
 			if err := unmarshal([]byte(out), &r); err != nil {
-				t.Fatalf("output is not a ProjectResult: %v\n%s", err, out)
+				t.Fatalf("output is not a Result: %v\n%s", err, out)
 			}
 			if r.FormatVersion != plan.ResultFormatVersion || len(r.Composites) != 1 || r.Composites[0].Ref.Name != "prod" {
-				t.Errorf("want a ProjectResult for composite prod, got:\n%s", out)
+				t.Errorf("want a Result for composite prod, got:\n%s", out)
 			}
 		}
 	}
@@ -377,26 +388,31 @@ func TestSimulateRenderReports(t *testing.T) {
 	cases := map[string]struct {
 		reason   string
 		cmd      Flags
+		wantXR   func(*testing.T, string)
 		wantComp func(*testing.T, string)
 	}{
 		"Plan": {
 			reason:   "-o plan, the default, should print the plan text, with the revision impact under the Composition.",
 			cmd:      Flags{Output: "plan"},
+			wantXR:   contains("XR: XNetwork.example.org prod\n  [+] ConfigMap. cm (create)\n      data:\n        + k: \"v\"", "Plan: 1 to add", "Note: "),
 			wantComp: contains("[=] Composition.apiextensions.crossplane.io net (no-op)\n    Applying this creates a new CompositionRevision, which 1 composite would adopt.", "XR: XNetwork.example.org prod", "Note: "),
 		},
 		"JSON": {
-			reason:   "-o json should print ProjectResult as JSON.",
+			reason:   "-o json should print Result as JSON.",
 			cmd:      Flags{Output: "json"},
+			wantXR:   isPlanResult(json.Unmarshal),
 			wantComp: isPlanResult(json.Unmarshal),
 		},
 		"YAML": {
-			reason:   "-o yaml should print ProjectResult as YAML.",
+			reason:   "-o yaml should print Result as YAML.",
 			cmd:      Flags{Output: "yaml"},
+			wantXR:   isPlanResult(func(b []byte, v any) error { return yaml.Unmarshal(b, v) }),
 			wantComp: isPlanResult(func(b []byte, v any) error { return yaml.Unmarshal(b, v) }),
 		},
 		"Diff": {
 			reason:   "-o diff should print the engine's human diff.",
 			cmd:      Flags{Output: "diff"},
+			wantXR:   contains("+++ ConfigMap/cm", "Summary: 1 added"),
 			wantComp: contains("=== Composition Changes ===", "=== Affected Composite Resources ==="),
 		},
 	}
@@ -408,6 +424,10 @@ func TestSimulateRenderReports(t *testing.T) {
 				render func(*kong.Context) error
 				want   func(*testing.T, string)
 			}{
+				"xr": {func(k *kong.Context) error {
+					_, err := tc.cmd.renderXRReport(k, logging.NewNopLogger(), xrReport, nil)
+					return err
+				}, tc.wantXR},
 				"comp": {func(k *kong.Context) error {
 					_, err := tc.cmd.renderCompReport(k, logging.NewNopLogger(), compReport, nil)
 					return err
@@ -941,20 +961,98 @@ func parseFlags(t *testing.T, args ...string) (*Flags, error) {
 	return &cli.Simulate, err
 }
 
-func TestFlagImageConfigsIgnoresProjectFile(t *testing.T) {
-	// A Composition run inside a project directory must not read its
-	// project file: an unparseable one would otherwise fail the run.
+func TestBuildFileInputsIgnoreProjectFile(t *testing.T) {
+	// Composition and composite resource runs inside a project directory
+	// must not read its project file: an unparseable one would otherwise
+	// fail the run.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "crossplane-project.yaml"), []byte("{not: [yaml"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(dir)
 
-	ics, err := (&Flags{}).flagImageConfigs()
-	if err != nil {
-		t.Errorf("flagImageConfigs(): want no error, got %v", err)
+	for name, in := range map[string]*Inputs{
+		"Compositions": {Compositions: []*un.Unstructured{{}}},
+		"Composites":   {Composites: []*un.Unstructured{{}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			built, err := (&Flags{}).build(context.Background(), in)
+			if err != nil {
+				t.Fatalf("build(): want no error, got %v", err)
+			}
+			if len(built.Packages.ICs) != 0 {
+				t.Errorf("build(): want no ImageConfigs, got %v", built.Packages.ICs)
+			}
+		})
 	}
-	if len(ics) != 0 {
-		t.Errorf("flagImageConfigs(): want no ImageConfigs, got %v", ics)
+}
+
+func TestDiffComposites(t *testing.T) {
+	xrGVK := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XThing"}
+	defs := &testutils.MockDefinitionClient{
+		GetXRDForXRFn: func(_ context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
+			if gvk == xrGVK {
+				return &un.Unstructured{}, nil
+			}
+			return nil, errors.New("no XRD found")
+		},
+		GetXRDForClaimFn: func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) {
+			return nil, errors.New("no XRD found")
+		},
+	}
+	res := func(apiVersion, kind string) *un.Unstructured {
+		return &un.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": map[string]any{"name": "n"}}}
+	}
+
+	cases := map[string]struct {
+		reason    string
+		xrs       []*un.Unstructured
+		diffErr   error
+		wantDiffs bool
+		wantErr   string
+		wantOut   string
+	}{
+		"RejectedBeforeDiff": {
+			reason:  "An input no XRD defines should be rejected, unwrapped, before PerformDiff runs.",
+			xrs:     []*un.Unstructured{res("example.org/v1", "XThing"), res("v1", "ConfigMap")},
+			wantErr: `-f inputs include ConfigMap "n" (v1), which no XRD`,
+		},
+		"DiffErrorWrapsAndRenders": {
+			reason:    "A PerformDiff error should be wrapped, and the report rendered anyway.",
+			xrs:       []*un.Unstructured{res("example.org/v1", "XThing")},
+			diffErr:   errors.New("boom"),
+			wantDiffs: true,
+			wantErr:   "cannot simulate composite resources: boom",
+			wantOut:   "XThing",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			diffed := false
+			proc := &testutils.MockDiffProcessor{PerformDiffFn: func(context.Context, []*un.Unstructured, difftypes.CompositionProvider) (*dt.XRReport, error) {
+				diffed = true
+				ref := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XThing", Name: "n"}
+				g := dt.XRDiffGroup{XR: ref}
+				if tc.diffErr != nil {
+					g.Err = &dt.OutputError{Message: tc.diffErr.Error()}
+				}
+				return &dt.XRReport{Groups: []dt.XRDiffGroup{g}}, tc.diffErr
+			}}
+			c := &Flags{Output: "plan", NoColor: true}
+			stdout := &bytes.Buffer{}
+			k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: &bytes.Buffer{}}}
+			xp := &xpclient.Clients{Definition: defs, Composition: &testutils.MockCompositionClient{}}
+
+			_, err := c.diffComposites(k, logging.NewNopLogger(), proc, xp, "", tc.xrs)(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("\n%s\ndiffComposites(...): want error containing %q, got %v", tc.reason, tc.wantErr, err)
+			}
+			if diffed != tc.wantDiffs {
+				t.Errorf("\n%s\ndiffComposites(...): PerformDiff called = %t, want %t", tc.reason, diffed, tc.wantDiffs)
+			}
+			if !strings.Contains(stdout.String(), tc.wantOut) {
+				t.Errorf("\n%s\ndiffComposites(...): want output containing %q, got:\n%s", tc.reason, tc.wantOut, stdout.String())
+			}
+		})
 	}
 }

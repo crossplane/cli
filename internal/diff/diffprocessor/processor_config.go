@@ -154,7 +154,7 @@ type ProcessorConfig struct {
 	// HasChanges and renderer skips equal diffs, so this only adds diffs a caller can refine further.
 	KeepEqualDiffs func(*un.Unstructured) bool
 
-	// XRTimeout, when positive, bounds each composite resource's diff, one input of DiffSingleResource or one
+	// XRTimeout, when positive, bounds each composite resource's diff, one input of PerformDiff or one
 	// affected composite of DiffComposition: its render and AfterXRDiff. A composite that runs out
 	// fails alone, as a failed render does, and the next one still renders. Zero, the default, adds
 	// no deadline to the caller's.
@@ -231,6 +231,9 @@ type ComponentFactories struct {
 
 	// FunctionProvider creates a FunctionProvider
 	FunctionProvider func(fnClient xp.FunctionClient, logger logging.Logger) FunctionProvider
+
+	// InputValidator creates the InputValidator for one PerformDiff run
+	InputValidator InputValidatorFactory
 }
 
 // ProcessorOption defines a function that can modify a ProcessorConfig.
@@ -424,6 +427,13 @@ func WithRequirementsProviderFactory(factory func(k8.ResourceClient, logging.Log
 	}
 }
 
+// WithInputValidatorFactory sets the InputValidator factory function, called once per PerformDiff run.
+func WithInputValidatorFactory(factory InputValidatorFactory) ProcessorOption {
+	return func(config *ProcessorConfig) {
+		config.Factories.InputValidator = factory
+	}
+}
+
 // WithFunctionProviderFactory sets the FunctionProvider factory function.
 func WithFunctionProviderFactory(factory func(xp.FunctionClient, logging.Logger) FunctionProvider) ProcessorOption {
 	return func(config *ProcessorConfig) {
@@ -589,5 +599,9 @@ func (c *ProcessorConfig) SetDefaultFactories() {
 		// This prevents container proliferation with --eventual-state (multiple iterations)
 		// and enables reuse when diffing multiple XRs with the same composition.
 		c.Factories.FunctionProvider = NewCachedFunctionProvider
+	}
+
+	if c.Factories.InputValidator == nil {
+		c.Factories.InputValidator = NewBundleInputValidator
 	}
 }

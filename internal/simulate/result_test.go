@@ -30,7 +30,7 @@ import (
 func TestRenderPlanGrouped(t *testing.T) {
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
 	pinned := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "staging-network"}
-	r := ProjectResult{
+	r := Result{
 		Result: plan.Result{
 			Summary: plan.Summary{Update: 1, Destroy: 1, NoOp: 1},
 			Plans: []*plan.ResourcePlan{
@@ -80,7 +80,7 @@ Plan: 0 to add, 1 to change, 1 to destroy.
 
 func TestRenderPlanCompositeDetail(t *testing.T) {
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
-	r := ProjectResult{
+	r := Result{
 		Result:     plan.Result{},
 		Composites: []CompositeResult{{Ref: xr, Status: CompositeUnchanged, Pinned: true, Detail: "rendered against pinned revision net-6 with the changed functions"}},
 	}
@@ -103,7 +103,7 @@ func TestRenderPlanPinnedHeader(t *testing.T) {
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
 	var buf bytes.Buffer
 	r, _ := NewRenderer(plan.FormatPlan)
-	if err := r.Render(&buf, ProjectResult{Composites: []CompositeResult{{Ref: xr, Status: CompositeUnchanged, Pinned: true}}}); err != nil {
+	if err := r.Render(&buf, Result{Composites: []CompositeResult{{Ref: xr, Status: CompositeUnchanged, Pinned: true}}}); err != nil {
 		t.Fatalf("Render(plan): unexpected error: %v", err)
 	}
 	if want := "XR: XNetwork.example.org prod-network (pinned)\n"; !strings.HasPrefix(buf.String(), want) {
@@ -116,7 +116,7 @@ func TestRenderPlanCompositions(t *testing.T) {
 	same := plan.ResourceRef{APIVersion: comp.APIVersion, Kind: comp.Kind, Name: "same"}
 	unknown := plan.ResourceRef{APIVersion: comp.APIVersion, Kind: comp.Kind, Name: "unknown"}
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
-	r := ProjectResult{
+	r := Result{
 		Result: plan.Result{
 			Summary: plan.Summary{Update: 2, NoOp: 2},
 			Plans: []*plan.ResourcePlan{
@@ -174,7 +174,7 @@ Note: Provider plan not run.
 
 func TestRenderJSONProjectFields(t *testing.T) {
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
-	in := ProjectResult{
+	in := Result{
 		Composites: []CompositeResult{{Ref: xr, Status: CompositeDeferred, Reason: "manualPolicy"}},
 		Compositions: []CompositionResult{{
 			Ref:            plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "net"},
@@ -205,7 +205,7 @@ func TestRenderJSONProjectFields(t *testing.T) {
 	if err := r.Render(&buf, in); err != nil {
 		t.Fatalf("Render(json): unexpected error: %v", err)
 	}
-	got := ProjectResult{}
+	got := Result{}
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
 		t.Fatalf("Render(json): output is not valid JSON: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestRenderJSONProjectFields(t *testing.T) {
 
 func TestRenderYAMLSummaryDeferred(t *testing.T) {
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
-	in := NewProjectResult(nil, []CompositeResult{{Ref: xr, Status: CompositeDeferred}}, nil)
+	in := NewResult(nil, []CompositeResult{{Ref: xr, Status: CompositeDeferred}}, nil)
 	var buf bytes.Buffer
 	r, _ := NewRenderer(plan.FormatYAML)
 	if err := r.Render(&buf, in); err != nil {
@@ -260,7 +260,7 @@ func TestRenderYAMLSummaryDeferred(t *testing.T) {
 	}
 }
 
-func TestNewProjectResult(t *testing.T) {
+func TestNewResult(t *testing.T) {
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
 	pinned := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "staging-network"}
 	plans := []*plan.ResourcePlan{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionCreate, Composite: &xr}}
@@ -293,12 +293,12 @@ func TestNewProjectResult(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := NewProjectResult(plans, composites, tc.errs)
+			got := NewResult(plans, composites, tc.errs)
 			if diff := cmp.Diff(tc.want, want{summary: got.Summary, deferred: got.Deferred(), errored: got.Errored}, cmp.AllowUnexported(want{})); diff != "" {
-				t.Errorf("\n%s\nNewProjectResult(...): -want, +got:\n%s", tc.reason, diff)
+				t.Errorf("\n%s\nNewResult(...): -want, +got:\n%s", tc.reason, diff)
 			}
 			if got.FormatVersion != plan.ResultFormatVersion {
-				t.Errorf("\n%s\nNewProjectResult(...).FormatVersion: want %q, got %q", tc.reason, plan.ResultFormatVersion, got.FormatVersion)
+				t.Errorf("\n%s\nNewResult(...).FormatVersion: want %q, got %q", tc.reason, plan.ResultFormatVersion, got.FormatVersion)
 			}
 		})
 	}

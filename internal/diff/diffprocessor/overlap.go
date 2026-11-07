@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"sort"
+	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -14,11 +15,224 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/diff/types"
 )
 
-// This file holds the overlap checks among a run's inputs and renders: identity of an object
-// independent of API version, which input manages another, and two renders reaching one resource.
-// An input with no name yet (generateName only) has no identity.
+// This file validates the xr command's input set. PerformDiff drives an InputValidator through three
+// stages; the default, bundleInputValidator, treats the inputs as one change set, so any overlap among
+// them is settled here:
+//
+//  1. checkInputs, before rendering (ToRender): a duplicate input, and the same object given twice differently.
+//  2. rejectManagedInputs, after rendering (Verdicts): an input that another input manages.
+//  3. renderOverlapErrors (RenderOverlaps): two inputs' renders reaching one resource.
+//
+// Identity throughout is group, kind, namespace and name, independent of API version, since one object
+// served at two versions is still one object. An input with no name yet (generateName only) has none.
+
+// InputValidator validates one PerformDiff run's input set. It is created per run by an
+// InputValidatorFactory, because it carries that run's state between stages.
+type InputValidator interface {
+	// ToRender returns the inputs to render, in input order, with duplicates already dropped.
+	// An input with a non-nil Err was rejected before rendering and must not be rendered.
+	ToRender() []types.ValidatedInput
+	// RecordRender records the render of ToRender()[i]: every resource key it produced
+	// (including unchanged ones) and its error, if any.
+	RecordRender(i int, rendered map[string]bool, err error)
+	// Verdicts returns the final error for each group (indexed like ToRender()), or nil.
+	// It applies stage 2 and the precedence rule: a managed-input verdict replaces that
+	// group's own render failure.
+	Verdicts(groups []dt.XRDiffGroup) []error
+	// RenderOverlaps returns the stage-3 errors.
+	RenderOverlaps(groups []dt.XRDiffGroup) []error
+}
+
+// InputValidatorFactory creates the InputValidator for one run.
+type InputValidatorFactory func(advisories dt.Advisories, inputs []*un.Unstructured) InputValidator
+
+// bundleInputValidator is the default InputValidator. It is a "bundle" validator because it treats the
+// inputs as one change set, to be applied together: any overlap among them — a duplicate, the same object
+// twice differently, an input another input manages, two renders reaching one resource — is settled
+// against the set as a whole, not per input.
+type bundleInputValidator struct {
+	// checks are checkInputs' verdicts on the inputs to render (duplicates dropped), indexed like toRender.
+	checks   []inputCheck
+	toRender []types.ValidatedInput
+	// rendered and failed are, by index, each render's resource keys and each input's own failure
+	// (its pre-render rejection, or else its render error).
+	rendered []map[string]bool
+	failed   []error
+}
+
+// NewBundleInputValidator returns the default InputValidator for one run over inputs. It has the
+// InputValidatorFactory signature. Stage 1 (checkInputs) runs here, so duplicates are reported once.
+func NewBundleInputValidator(advisories dt.Advisories, inputs []*un.Unstructured) InputValidator {
+	v := &bundleInputValidator{}
+
+	for _, in := range checkInputs(advisories, inputs) {
+		if in.duplicate {
+			continue
+		}
+
+		v.checks = append(v.checks, in)
+		v.toRender = append(v.toRender, types.ValidatedInput{Resource: in.res, Err: in.err})
+		v.failed = append(v.failed, in.err)
+	}
+
+	v.rendered = make([]map[string]bool, len(v.checks))
+
+	return v
+}
+
+// ToRender returns the non-duplicate inputs in input order; see InputValidator.
+func (v *bundleInputValidator) ToRender() []types.ValidatedInput {
+	return v.toRender
+}
+
+// RecordRender records the render of ToRender()[i]; see InputValidator.
+func (v *bundleInputValidator) RecordRender(i int, rendered map[string]bool, err error) {
+	v.rendered[i] = rendered
+	v.failed[i] = err
+}
+
+// Verdicts returns each group's final error. A managed-input verdict replaces the group's own failure:
+// that failure is moot, and often a symptom of the same mistake. See rejectManagedInputs.
+func (v *bundleInputValidator) Verdicts(groups []dt.XRDiffGroup) []error {
+	verdicts := make([]error, len(v.failed))
+	copy(verdicts, v.failed)
+
+	for i, err := range rejectManagedInputs(groups, v.checks, v.rendered, v.failed) {
+		verdicts[i] = err
+	}
+
+	return verdicts
+}
+
+// RenderOverlaps returns the stage-3 errors; see renderOverlapErrors.
+func (v *bundleInputValidator) RenderOverlaps(groups []dt.XRDiffGroup) []error {
+	return renderOverlapErrors(groups)
+}
+
+// inputCheck is checkInputs' verdict on one input.
+type inputCheck struct {
+	res *un.Unstructured
+	// duplicate is true for an input identical to an earlier one; it is not rendered.
+	duplicate bool
+	// err rejects the input before it is rendered.
+	err error
+}
+
+// checkInputs judges the input set before anything is rendered. An input identical to an earlier one
+// has one clear intent — a fat-fingered command line, or CI enumerating the same file twice — so it is
+// dropped with a warning. The same object twice with different content fails both inputs: applying both
+// would leave whichever is applied last, and the order inputs arrive in (often a glob's) is not intent.
+func checkInputs(advisories dt.Advisories, resources []*un.Unstructured) []inputCheck {
+	checks := make([]inputCheck, len(resources))
+	first := make(map[string]int, len(resources))
+
+	for i, res := range resources {
+		checks[i] = inputCheck{res: res}
+
+		id := identityOf(res)
+		if id == "" {
+			continue
+		}
+
+		j, seen := first[id]
+		if !seen {
+			first[id] = i
+			continue
+		}
+
+		if equality.Semantic.DeepEqual(resources[j].Object, res.Object) {
+			checks[i].duplicate = true
+			advisories.Raise(dt.OutputWarning{
+				Message: "Ignoring a duplicate input: it is identical to an earlier one",
+				Context: map[string]string{
+					"resource":    fmt.Sprintf("%s/%s", res.GetKind(), res.GetName()),
+					"input":       strconv.Itoa(i + 1),
+					"duplicateOf": strconv.Itoa(j + 1),
+				},
+			})
+
+			continue
+		}
+
+		checks[i].err = conflictingInputError(i+1, j+1, res)
+		if checks[j].err == nil {
+			checks[j].err = conflictingInputError(j+1, i+1, res)
+		}
+	}
+
+	return checks
+}
+
+func conflictingInputError(position, other int, res *un.Unstructured) error {
+	return errors.Errorf("input %d defines %s/%s differently from input %d; applying both would leave whichever "+
+		"is applied last, and the order inputs are given in is not a statement of intent — pass only one of them",
+		position, res.GetKind(), res.GetName(), other)
+}
+
+// rejectManagedInputs returns, by group index, an error for each input that another input manages: an
+// XR a parent input composes, and an XR a claim input is bound to. Crossplane writes such an object on
+// the manager's behalf — the parent's composition, or the claim controller, applies it with forced
+// ownership — so supplying it as an input too gives it a second writer. The managed input is the
+// mistake, so it is the one rejected.
+//
+// inputs, rendered and failed are indexed like groups: each group's input, every resource key its
+// render produced (including unchanged ones, which its diffs omit), and its own failure. A managed input
+// is judged even if its own render failed, because the verdict supersedes that failure: it is moot, and
+// often a symptom of the same mistake (an XR's cluster copy is rarely a valid standalone input). A
+// manager must have rendered, since what it manages is read from its render.
+func rejectManagedInputs(groups []dt.XRDiffGroup, inputs []inputCheck, rendered []map[string]bool, failed []error) map[int]error {
+	renderedIDs := make([]map[string]bool, len(groups))
+
+	for i := range groups {
+		renderedIDs[i] = make(map[string]bool, len(rendered[i]))
+		for key := range rendered[i] {
+			renderedIDs[i][diffKeyIdentity(key)] = true
+		}
+	}
+
+	rejected := make(map[int]error)
+
+	for b := range groups {
+		managed := inputs[b].res
+		if inputs[b].err != nil || identityOf(managed) == "" {
+			continue
+		}
+
+		for a := range groups {
+			if a == b || failed[a] != nil {
+				continue
+			}
+
+			manager := inputs[a].res
+			relation := managedBy(groups[b], managed, groups[a], manager)
+
+			// The manager's rendered keys are checked as well as managedBy's controller reference: a child
+			// the manager would create has no cluster copy yet, so nothing carries that reference.
+			switch {
+			case renderedIDs[a][identityOf(managed)]:
+				rejected[b] = errors.Errorf("%s is composed by input %s, whose composition writes it; supplying it "+
+					"as an input too gives it a second writer — pass %s only", kindName(managed), kindName(manager), kindName(manager))
+			case relation == composedBy:
+				// The manager's render no longer produces it, but the manager still controls it in the
+				// cluster, so diffing it on its own predicts nothing applying the manager would do.
+				rejected[b] = errors.Errorf("%s is controlled by input %s; supplying it as an input too "+
+					"gives it a second writer — pass %s only", kindName(managed), kindName(manager), kindName(manager))
+			case relation == claimedBy:
+				rejected[b] = errors.Errorf("%s is the XR bound to claim %s, which Crossplane's claim controller writes; "+
+					"supplying it as an input too gives it a second writer — pass the claim, not its XR", kindName(managed), kindName(manager))
+			}
+
+			if rejected[b] != nil {
+				break
+			}
+		}
+	}
+
+	return rejected
+}
 
 // management is how one input of a run manages another; see managedBy.
 type management int
@@ -204,14 +418,16 @@ func renderOverlapError(groups []dt.XRDiffGroup, producers []overlapProducer) er
 	inputs := make([]string, 0, len(producers))
 
 	var (
-		controllers    []string
-		allEqual       = true
-		identical      = true
-		seenController = make(map[string]bool)
-		seenGroup      = make(map[int]bool)
-		keys           []string
-		seenKey        = make(map[string]bool)
-		first          = groups[producers[0].group].Diffs[producers[0].key]
+		controllers       []string
+		allEqual          = true
+		identical         = true
+		sharedPlaceholder = false
+		placeholders      = make(map[string]bool)
+		seenController    = make(map[string]bool)
+		seenGroup         = make(map[int]bool)
+		keys              []string
+		seenKey           = make(map[string]bool)
+		first             = groups[producers[0].group].Diffs[producers[0].key]
 	)
 
 	for _, p := range producers {
@@ -227,6 +443,11 @@ func renderOverlapError(groups []dt.XRDiffGroup, producers []overlapProducer) er
 		if !seenGroup[p.group] {
 			seenGroup[p.group] = true
 			inputs = append(inputs, fmt.Sprintf("%s/%s", g.XR.Kind, g.XR.Name))
+
+			if g.NameGenerated {
+				sharedPlaceholder = sharedPlaceholder || placeholders[g.XR.Name]
+				placeholders[g.XR.Name] = true
+			}
 		}
 
 		// A nil entry is not expected; treat it as observable and as matching nothing, so a malformed
@@ -260,6 +481,10 @@ func renderOverlapError(groups []dt.XRDiffGroup, producers []overlapProducer) er
 	switch {
 	case allEqual:
 		return nil
+	case sharedPlaceholder:
+		return errors.Errorf("cannot combine diffs: inputs %s both produce resource %s only because simulate "+
+			"gives XRs that share a generateName the same placeholder name; the API server would name them "+
+			"differently, so they cannot be told apart here — diff them separately", strings.Join(inputs, ", "), key)
 	case len(controllers) > 1:
 		return errors.Errorf("cannot combine diffs: resource %s would be controlled by more than one XR (%s); "+
 			"Crossplane gives it to whichever of them creates it first, and the other fails to reconcile it, "+
@@ -358,4 +583,8 @@ func refIdentity(obj *un.Unstructured, path ...string) string {
 	}
 
 	return identity(ref["apiVersion"], ref["kind"], ref["namespace"], ref["name"])
+}
+
+func kindName(res *un.Unstructured) string {
+	return fmt.Sprintf("%s/%s", res.GetKind(), res.GetName())
 }

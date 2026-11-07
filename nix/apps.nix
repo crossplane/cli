@@ -77,9 +77,11 @@ in
             echo "integration-test: found no packages with //go:build integration test files" >&2
             exit 1
           fi
+          # -p 1: each package's cases already run in parallel, and several packages'
+          # rendering through Docker at once starve each other into timeouts.
           # -coverpkg credits the tests' coverage to the packages they exercise;
           # without it the profile only covers the test packages themselves.
-          go test -tags integration -covermode=count \
+          go test -tags integration -p 1 -covermode=count \
             -coverpkg=./... -coverprofile=coverage-integration.txt "''${pkgs[@]}" "$@"
         '';
       }

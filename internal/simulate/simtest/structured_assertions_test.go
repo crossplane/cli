@@ -12,8 +12,8 @@ import (
 	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
-// resultJSON serializes r the way composition simulate's -o json does.
-func resultJSON(t *testing.T, r simulate.ProjectResult) string {
+// resultJSON serializes r the way simulate's -o json does.
+func resultJSON(t *testing.T, r simulate.Result) string {
 	t.Helper()
 
 	out, err := json.Marshal(r)
@@ -39,6 +39,174 @@ func checkAssertion(t *testing.T, name string, wantFail bool, assert func(*testi
 }
 
 var (
+	xrA = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XBucket", Name: "changed-xr", Namespace: "default"}
+	xrB = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XBucket", Name: "unchanged-xr", Namespace: "default"}
+	xrC = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XBucket", Name: "broken-xr", Namespace: "default"}
+)
+
+// bucket is bucket-a's object in region, with an unchanged tier.
+func bucket(region string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "example.org/v1", "kind": "Bucket",
+		"metadata": map[string]any{"name": "bucket-a", "namespace": "default"},
+		"spec":     map[string]any{"region": region, "tier": "premium"},
+	}}
+}
+
+// xrResult is an xr run: one changed XR (a modified Bucket, a created ConfigMap and a deleted Secret),
+// one unchanged XR, and one errored XR.
+func xrResult() simulate.Result {
+	plans := []*plan.ResourcePlan{
+		{
+			APIVersion: "example.org/v1", Kind: "Bucket", Name: "bucket-a", Namespace: "default", Action: plan.ActionUpdate, Composite: &xrA,
+			Before: bucket("us-east-1"), After: bucket("us-west-2"),
+			Changes: []plan.FieldChange{
+				{Path: "spec.region", Actual: val("us-east-1"), Planned: val("us-west-2")},
+				{Path: "metadata.annotations[example.org/source]", Actual: val("old"), Planned: val("new")},
+			},
+		},
+		{
+			APIVersion: "v1", Kind: "ConfigMap", Name: "cm-x7k2p", Namespace: "default", Action: plan.ActionCreate, Composite: &xrA,
+			Changes: []plan.FieldChange{
+				{Path: "data.key", Planned: val("value")},
+				{Path: "spec.items[0].name", Planned: val("first")},
+				{Path: "spec.items[1].name", Planned: val("second")},
+			},
+		},
+		{
+			APIVersion: "v1", Kind: "Secret", Name: "gone", Namespace: "default", Action: plan.ActionDelete, Composite: &xrA,
+			Changes: []plan.FieldChange{{Path: "type", Actual: val("Opaque")}},
+		},
+		{APIVersion: xrB.APIVersion, Kind: xrB.Kind, Name: xrB.Name, Namespace: xrB.Namespace, Action: plan.ActionNoOp, Composite: &xrB},
+		{APIVersion: xrC.APIVersion, Kind: xrC.Kind, Name: xrC.Name, Namespace: xrC.Namespace, Error: "cannot get composition", Composite: &xrC},
+	}
+
+	return simulate.Result{
+		Result: plan.Result{
+			Summary: plan.Summarize(plans),
+			Plans:   plans,
+		},
+		Composites: []simulate.CompositeResult{
+			{Ref: xrA, Status: simulate.CompositeChanged},
+			{Ref: xrB, Status: simulate.CompositeUnchanged},
+			{Ref: xrC, Status: simulate.CompositeError},
+		},
+		Errors:   []simulate.Error{{Ref: &xrC, Message: "cannot get composition"}},
+		Warnings: []simulate.Warning{{Message: "something advisory", Context: map[string]string{"composition": "c"}}},
+	}
+}
+
+func TestAssertStructuredXRPlan(t *testing.T) {
+	out := resultJSON(t, xrResult())
+
+	// Any resource expectation pins the change count, so a case about one change lists the others.
+	withoutBucket := func() *Expected {
+		return Expect().WithAddedResource("ConfigMap", "cm-x7k2p", "default").And().WithRemovedResource("Secret", "gone", "default").And()
+	}
+	withoutConfigMap := func() *Expected {
+		return Expect().WithModifiedResource("Bucket", "bucket-a", "default").And().WithRemovedResource("Secret", "gone", "default").And()
+	}
+
+	cases := map[string]struct {
+		want     Expectation
+		wantFail bool
+	}{
+		"Summary":      {want: Expect().WithSummary(1, 1, 1)},
+		"WrongSummary": {want: Expect().WithSummary(0, 1, 1), wantFail: true},
+		"AllChanges": {want: Expect().
+			WithModifiedResource("Bucket", "bucket-a", "default").
+			WithFieldChange("spec.region", "us-east-1", "us-west-2").
+			WithFieldChange("metadata.annotations['example.org/source']", "old", "new").
+			And().
+			WithAddedResource("ConfigMap", "cm-x7k2p", "default").
+			WithField("data.key", "value").
+			WithField("spec.items", []any{map[string]any{"name": "first"}, map[string]any{"name": "second"}}).
+			WithField("spec.items[1].name", "second").
+			And().
+			WithRemovedResource("Secret", "gone", "default").
+			WithField("type", "Opaque")},
+		// Any resource expectation pins the change count, so an unlisted change fails.
+		"UnlistedChange": {want: Expect().
+			WithModifiedResource("Bucket", "bucket-a", "default").And().
+			WithAddedResource("ConfigMap", "cm-x7k2p", "default"), wantFail: true},
+		"WrongAction": {want: Expect().WithAddedResource("Bucket", "bucket-a", "default"), wantFail: true},
+		"WrongNewValue": {
+			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.region", "us-east-1", "eu-west-1"),
+			wantFail: true,
+		},
+		"WrongOldValue": {
+			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.region", "eu-west-1", "us-west-2"),
+			wantFail: true,
+		},
+		"NamePattern":    {want: withoutConfigMap().WithAddedResource("ConfigMap", "", "default").WithNamePattern(`^cm-[a-z0-9]{5}$`)},
+		"BadNamePattern": {want: withoutConfigMap().WithAddedResource("ConfigMap", "", "default").WithNamePattern(`^other-`), wantFail: true},
+		// A field rendered identically on both sides has no leaf change: asserting it unchanged passes
+		// when the plan's before and after objects both hold the value and nothing at or under it
+		// changed, and fails otherwise.
+		"UnchangedField": {want: withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.tier", "premium", "premium")},
+		"UnchangedWrongValue": {
+			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.tier", "basic", "basic"),
+			wantFail: true,
+		},
+		"UnchangedMissing": {
+			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.size", "large", "large"),
+			wantFail: true,
+		},
+		"ChangedNotSteady": {
+			want:     withoutBucket().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldChange("spec.region", "us-east-1", "us-east-1"),
+			wantFail: true,
+		},
+		"FieldAbsent":       {want: withoutConfigMap().WithAddedResource("ConfigMap", "cm-x7k2p", "default").WithFieldAbsent("spec.other")},
+		"FieldNotAbsent":    {want: withoutConfigMap().WithAddedResource("ConfigMap", "cm-x7k2p", "default").WithFieldAbsent("data.key"), wantFail: true},
+		"Error":             {want: Expect().WithError("XBucket/broken-xr").WithMessageContaining("cannot get")},
+		"WrongErrorMessage": {want: Expect().WithError("XBucket/broken-xr").WithMessageContaining("timeout"), wantFail: true},
+		"MissingError":      {want: Expect().WithError("XBucket/changed-xr"), wantFail: true},
+		"Warning":           {want: Expect().WithWarning("advisory").WithWarningContext(map[string]string{"composition": "c"})},
+		"WrongContext":      {want: Expect().WithWarning("advisory").WithWarningContext(map[string]string{"composition": "d"}), wantFail: true},
+		"NoWarnings":        {want: Expect().WithNoWarnings(), wantFail: true},
+		"GroupedByXR": {want: Expect().
+			WithXRs(
+				XR("XBucket", "changed-xr", "default").
+					Status("changed").
+					Summary(1, 1, 1).
+					Change("modified", "Bucket", "bucket-a", "default").
+					WithFieldChange("spec.region", "us-east-1", "us-west-2").
+					Change("added", "ConfigMap", "cm-x7k2p", "default").
+					Change("removed", "Secret", "gone", "default"),
+				XR("XBucket", "unchanged-xr", "default").Status("unchanged"),
+				XR("XBucket", "broken-xr", "default").Status("error").Err("XBucket/broken-xr"),
+			).
+			Build()},
+		"GroupedWrongStatus": {want: Expect().
+			WithXRs(
+				XR("XBucket", "changed-xr", "default").Status("unchanged"),
+				XR("XBucket", "unchanged-xr", "default"),
+				XR("XBucket", "broken-xr", "default"),
+			).
+			Build(), wantFail: true},
+		// Two expectations cannot both consume the same entry.
+		"GroupedDuplicate": {want: Expect().
+			WithXRs(
+				XR("XBucket", "changed-xr", "default"),
+				XR("XBucket", "changed-xr", "default"),
+				XR("XBucket", "broken-xr", "default"),
+			).
+			Build(), wantFail: true},
+		"GroupedErrorOnWrongXR": {want: Expect().
+			WithXRs(
+				XR("XBucket", "changed-xr", "default").Err("XBucket/broken-xr"),
+				XR("XBucket", "unchanged-xr", "default"),
+				XR("XBucket", "broken-xr", "default"),
+			).
+			Build(), wantFail: true},
+	}
+
+	for name, tc := range cases {
+		checkAssertion(t, name, tc.wantFail, func(t *testing.T) { t.Helper(); AssertStructured(t, out, tc.want) })
+	}
+}
+
+var (
 	compA = plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "comp-a"}
 	compB = plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "comp-b"}
 	xr1   = plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNop", Name: "xr-1", Namespace: "default"}
@@ -48,8 +216,8 @@ var (
 
 // compResult is a comp run over two compositions: comp-a reaches a changed, an unchanged and a deleting
 // composite; comp-b reaches only a composite whose analysis failed.
-func compResult() simulate.ProjectResult {
-	return simulate.ProjectResult{
+func compResult() simulate.Result {
+	return simulate.Result{
 		Result: plan.Result{
 			Plans: []*plan.ResourcePlan{
 				{
@@ -253,5 +421,89 @@ func TestAssertFieldsAndWarnings(t *testing.T) {
 
 	for name, tc := range cases {
 		checkAssertion(t, name, tc.wantFail, tc.assert)
+	}
+}
+
+// TestAssertStructuredCombined checks that xr-style and composition-style sections of one Expect()
+// are asserted against a single simulate.Result, and that each still fails where it did on its own.
+func TestAssertStructuredCombined(t *testing.T) {
+	res := xrResult()
+	res.Compositions = []simulate.CompositionResult{{Ref: compA, RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1}}}
+	res.Composites = append(res.Composites, simulate.CompositeResult{Ref: xr1, Status: simulate.CompositeChanged, Composition: &compA})
+	out := resultJSON(t, res)
+
+	combined := func() *Expected {
+		e := Expect().WithSummary(1, 1, 1).WithError("XBucket/broken-xr").AndError().WithWarning("advisory").And().
+			WithXRs(
+				XR("XBucket", "changed-xr", "default").Status("changed"),
+				XR("XBucket", "unchanged-xr", "default").Status("unchanged"),
+				XR("XBucket", "broken-xr", "default").Status("error"),
+				XR("XNop", "xr-1", "default").Status("changed"))
+		e.WithComposition("comp-a").WithRevisionImpact("spec", true, 1).WithXRImpact("XNop", "xr-1", "default", "changed")
+
+		return e
+	}
+
+	cases := map[string]struct {
+		want     Expectation
+		wantFail bool
+	}{
+		"Combined":       {want: combined()},
+		"WrongSummary":   {want: combined().WithSummary(2, 1, 1), wantFail: true},
+		"WrongRevision":  {want: combined().WithComposition("comp-a").WithRevisionImpact("metadata", true, 1), wantFail: true},
+		"WrongXRImpact":  {want: combined().WithComposition("comp-a").WithXRImpact("XNop", "xr-1", "default", "unchanged"), wantFail: true},
+		"MissingErrorID": {want: combined().WithErrorID("Composition/comp-a"), wantFail: true},
+		"AbsentFieldFails": {
+			want: Expect().WithModifiedResource("Bucket", "bucket-a", "default").WithFieldAbsent("spec.region").And().
+				WithAddedResource("ConfigMap", "cm-x7k2p", "default").And().WithRemovedResource("Secret", "gone", "default").And(),
+			wantFail: true,
+		},
+	}
+
+	for name, tc := range cases {
+		checkAssertion(t, name, tc.wantFail, func(t *testing.T) { t.Helper(); AssertStructured(t, out, tc.want) })
+	}
+}
+
+func TestResourceExpectationParents(t *testing.T) {
+	root := Expect()
+	flat := root.WithAddedResource("K", "n", "ns")
+
+	if flat.And() != root {
+		t.Error("flat And() must return the root")
+	}
+
+	impact := root.WithComposition("c").WithXRImpact("XR", "x", "ns", "changed")
+	down := impact.WithDownstreamResource("modified", "K", "n", "ns")
+
+	if down.AndXR() != impact {
+		t.Error("downstream AndXR() must return the XR impact")
+	}
+
+	if down.And() != root {
+		t.Error("downstream And() must return the root")
+	}
+
+	var _ Expectation = down
+
+	if down.expectation() != root {
+		t.Error("downstream expectation() must resolve to the root")
+	}
+
+	for name, fn := range map[string]func(){
+		"AndXR on flat":    func() { flat.AndXR() },
+		"And on XR-scoped": func() { XR("X", "x", "ns").Change("added", "K", "n", "ns").And() },
+		"AndComposition on XR-scoped": func() {
+			XR("X", "x", "ns").Change("added", "K", "n", "ns").AndComposition("c")
+		},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: expected panic, not a nil parent", name)
+				}
+			}()
+			fn()
+		}()
 	}
 }

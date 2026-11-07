@@ -11,12 +11,15 @@ import (
 	v1 "github.com/crossplane/function-sdk-go/proto/v1"
 	gcmp "github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/sergi/go-diff/diffmatchpatch"
 	corev1 "k8s.io/api/core/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic/fake"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
@@ -26,6 +29,7 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	"github.com/crossplane/cli/v2/internal/diff/client/core"
 	xp "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	"github.com/crossplane/cli/v2/internal/diff/compare"
@@ -34,6 +38,17 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/types"
 	"github.com/crossplane/cli/v2/pkg/render"
 	"github.com/crossplane/cli/v2/pkg/resource"
+)
+
+// Test constants to avoid duplication.
+const (
+	testGroup      = "example.org"
+	testKind       = "XR1"
+	testPlural     = "xr1s"
+	testSingular   = "xr1"
+	testCRDName    = testPlural + "." + testGroup
+	testXRDName    = testCRDName
+	testAPIVersion = "v1"
 )
 
 // Ensure MockDiffProcessor implements the DiffProcessor interface.
@@ -208,6 +223,1038 @@ func testProcessorOptions(t *testing.T) []ProcessorOption {
 	}
 }
 
+func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
+	// Setup test context
+	ctx := t.Context()
+
+	// Create test resources
+	resource1 := tu.NewResource("example.org/v1", "XR1", "my-xr-1").
+		WithSpecField("coolField", "test-value-1").
+		Build()
+
+	resource2 := tu.NewResource("example.org/v1", "XR1", "my-xr-2").
+		WithSpecField("coolField", "test-value-2").
+		Build()
+
+	// Create a composition for testing
+	composition := tu.NewComposition("test-comp").
+		WithCompositeTypeRef("example.org/v1", "XR1").
+		WithPipelineMode().
+		WithPipelineStep("step1", "function-test", nil).
+		Build()
+
+	// The XR's XRD and CRD. The effective XR is defaulted before its composition is resolved, so even
+	// the cases that fail resolving it need them.
+	testXRD := tu.NewXRD(testXRDName, testGroup, testKind).WithVersion("v1", true, true).BuildAsUnstructured()
+	testCRD := makeTestCRD(testCRDName, testKind, testGroup, testAPIVersion)
+
+	// Create a composed resource for testing
+	composedResource := tu.NewResource("cpd.org/v1", "ComposedResource", "resource1").
+		WithCompositeOwner("my-xr-1").
+		WithCompositionResourceName("resA").
+		WithSpecField("param", "value").
+		Build()
+
+	// Test cases
+	tests := map[string]struct {
+		setupMocks      func() (k8.Clients, xp.Clients)
+		resources       []*un.Unstructured
+		processorOpts   []ProcessorOption
+		wantHasChanges  bool
+		want            error
+		validationError bool
+	}{
+		"NoResources": {
+			setupMocks: func() (k8.Clients, xp.Clients) {
+				// Create Kubernetes client mocks
+				k8sClients := k8.Clients{
+					Apply:    tu.NewMockApplyClient().Build(),
+					Resource: tu.NewMockResourceClient().Build(),
+					Schema:   tu.NewMockSchemaClient().Build(),
+					Type:     tu.NewMockTypeConverter().Build(),
+				}
+
+				// Create Crossplane client mocks
+				xpClients := xp.Clients{
+					Composition:  tu.NewMockCompositionClient().Build(),
+					Credential:   &tu.MockCredentialClient{},
+					Definition:   tu.NewMockDefinitionClient().Build(),
+					Function:     tu.NewMockFunctionClient().Build(),
+					ResourceTree: tu.NewMockResourceTreeClient().Build(),
+				}
+
+				return k8sClients, xpClients
+			},
+			resources:     []*un.Unstructured{},
+			processorOpts: testProcessorOptions(t),
+			want:          nil,
+		},
+		"DiffSingleResourceError": {
+			setupMocks: func() (k8.Clients, xp.Clients) {
+				// Create Kubernetes client mocks
+				k8sClients := k8.Clients{
+					Apply:    tu.NewMockApplyClient().Build(),
+					Resource: tu.NewMockResourceClient().WithResourceNotFound().Build(),
+					Schema:   tu.NewMockSchemaClient().WithSuccessfulCRDByNameFetch(testCRDName, testCRD).Build(),
+					Type:     tu.NewMockTypeConverter().Build(),
+				}
+
+				// Create Crossplane client mocks
+				xpClients := xp.Clients{
+					Composition: tu.NewMockCompositionClient().
+						WithNoMatchingComposition().
+						Build(),
+					Credential:   &tu.MockCredentialClient{},
+					Definition:   tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
+					Function:     tu.NewMockFunctionClient().Build(),
+					ResourceTree: tu.NewMockResourceTreeClient().Build(),
+				}
+
+				return k8sClients, xpClients
+			},
+			resources:     []*un.Unstructured{resource1},
+			processorOpts: testProcessorOptions(t),
+			// The report carries the error for the caller to render (see
+			// TestDefaultDiffProcessor_PerformDiff_StderrErrorOutput); this verifies the error return value.
+			want: errors.New("unable to process resource XR1/my-xr-1: cannot get composition: composition not found"),
+		},
+		"MultipleResourceErrors": {
+			setupMocks: func() (k8.Clients, xp.Clients) {
+				// Create Kubernetes client mocks
+				k8sClients := k8.Clients{
+					Apply:    tu.NewMockApplyClient().Build(),
+					Resource: tu.NewMockResourceClient().WithResourceNotFound().Build(),
+					Schema:   tu.NewMockSchemaClient().WithSuccessfulCRDByNameFetch(testCRDName, testCRD).Build(),
+					Type:     tu.NewMockTypeConverter().Build(),
+				}
+
+				// Create Crossplane client mocks
+				xpClients := xp.Clients{
+					Composition: tu.NewMockCompositionClient().
+						WithNoMatchingComposition().
+						Build(),
+					Credential:   &tu.MockCredentialClient{},
+					Definition:   tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
+					Function:     tu.NewMockFunctionClient().Build(),
+					ResourceTree: tu.NewMockResourceTreeClient().Build(),
+				}
+
+				return k8sClients, xpClients
+			},
+			resources:     []*un.Unstructured{resource1, resource2},
+			processorOpts: testProcessorOptions(t),
+			// The report carries the errors for the caller to render (see
+			// TestDefaultDiffProcessor_PerformDiff_StderrErrorOutput); this verifies the error return value.
+			want: errors.New("[unable to process resource XR1/my-xr-1: cannot get composition: composition not found, " +
+				"unable to process resource XR1/my-xr-2: cannot get composition: composition not found]"),
+		},
+		"CompositionNotFound": {
+			setupMocks: func() (k8.Clients, xp.Clients) {
+				// Create Kubernetes client mocks
+				k8sClients := k8.Clients{
+					Apply:    tu.NewMockApplyClient().Build(),
+					Resource: tu.NewMockResourceClient().WithResourceNotFound().Build(),
+					Schema:   tu.NewMockSchemaClient().WithSuccessfulCRDByNameFetch(testCRDName, testCRD).Build(),
+					Type:     tu.NewMockTypeConverter().Build(),
+				}
+
+				// Create Crossplane client mocks
+				xpClients := xp.Clients{
+					Composition: tu.NewMockCompositionClient().
+						WithNoMatchingComposition().
+						Build(),
+					Credential:   &tu.MockCredentialClient{},
+					Definition:   tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
+					Function:     tu.NewMockFunctionClient().Build(),
+					ResourceTree: tu.NewMockResourceTreeClient().Build(),
+				}
+
+				return k8sClients, xpClients
+			},
+			resources:     []*un.Unstructured{resource1},
+			processorOpts: testProcessorOptions(t),
+			want:          errors.New("unable to process resource XR1/my-xr-1: cannot get composition: composition not found"),
+		},
+		"GetFunctionsError": {
+			setupMocks: func() (k8.Clients, xp.Clients) {
+				// Create Kubernetes client mocks
+				k8sClients := k8.Clients{
+					Apply:    tu.NewMockApplyClient().Build(),
+					Resource: tu.NewMockResourceClient().WithResourceNotFound().Build(),
+					Schema:   tu.NewMockSchemaClient().WithSuccessfulCRDByNameFetch(testCRDName, testCRD).Build(),
+					Type:     tu.NewMockTypeConverter().Build(),
+				}
+
+				// Create Crossplane client mocks
+				xpClients := xp.Clients{
+					Composition: tu.NewMockCompositionClient().
+						WithSuccessfulCompositionMatch(composition).
+						Build(),
+					Credential: &tu.MockCredentialClient{},
+					Definition: tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
+					Function: tu.NewMockFunctionClient().
+						WithFailedFunctionsFetch("function not found").
+						Build(),
+					ResourceTree: tu.NewMockResourceTreeClient().Build(),
+				}
+
+				return k8sClients, xpClients
+			},
+			resources:     []*un.Unstructured{resource1},
+			processorOpts: testProcessorOptions(t),
+			want:          errors.New("unable to process resource XR1/my-xr-1: cannot get functions for composition: cannot get functions from pipeline: function not found"),
+		},
+		"SuccessfulDiff": {
+			setupMocks: func() (k8.Clients, xp.Clients) {
+				// Create mock functions that render will call successfully
+				functions := []pkgv1.Function{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "function-test",
+						},
+					},
+				}
+
+				// Create CRDs upfront to avoid recreating them in closures
+				mainCRD := makeTestCRD(testCRDName, testKind, testGroup, testAPIVersion)
+				composedCRD := makeTestCRD("composedresources.cpd.org", "ComposedResource", "cpd.org", "v1")
+
+				// Create Kubernetes client mocks
+				k8sClients := k8.Clients{
+					Apply: tu.NewMockApplyClient().
+						WithSuccessfulDryRun().
+						Build(),
+					Resource: tu.NewMockResourceClient().
+						WithResourcesExist(resource1, composedResource). // Add resources to existing resources
+						WithResourcesFoundByLabel([]*un.Unstructured{composedResource}, "crossplane.io/composite", "test-xr").
+						Build(),
+					Schema: tu.NewMockSchemaClient().
+						WithNoResourcesRequiringCRDs().
+						WithGetCRD(func(_ context.Context, gvk schema.GroupVersionKind) (*extv1.CustomResourceDefinition, error) {
+							if gvk.Group == testGroup && gvk.Kind == testKind {
+								return mainCRD, nil
+							}
+
+							if gvk.Group == "cpd.org" && gvk.Kind == "ComposedResource" {
+								return composedCRD, nil
+							}
+
+							return nil, errors.New("CRD not found")
+						}).
+						WithGetCRDByName(func(name string) (*extv1.CustomResourceDefinition, error) {
+							if name == testCRDName {
+								return mainCRD, nil
+							}
+
+							if name == "composedresources.cpd.org" {
+								return composedCRD, nil
+							}
+
+							return nil, errors.Errorf("CRD with name %s not found", name)
+						}).
+						Build(),
+					Type: tu.NewMockTypeConverter().Build(),
+				}
+
+				// Create XRD for composed resource
+				composedXRD := tu.NewXRD("composedresources.cpd.org", "cpd.org", "ComposedResource").
+					WithPlural("composedresources").
+					WithSingular("composedresource").
+					WithVersion("v1", true, true).
+					WithSchema(&extv1.JSONSchemaProps{
+						Type: "object",
+						Properties: map[string]extv1.JSONSchemaProps{
+							"spec": {
+								Type: "object",
+								Properties: map[string]extv1.JSONSchemaProps{
+									"param": {Type: "string"},
+								},
+							},
+							"status": {Type: "object"},
+						},
+					}).
+					BuildAsUnstructured()
+
+				// Create main XRD
+				mainXRD := tu.NewXRD(testXRDName, testGroup, testKind).
+					WithPlural(testPlural).
+					WithSingular(testSingular).
+					WithVersion("v1", true, true).
+					WithSchema(&extv1.JSONSchemaProps{
+						Type: "object",
+						Properties: map[string]extv1.JSONSchemaProps{
+							"spec": {
+								Type: "object",
+								Properties: map[string]extv1.JSONSchemaProps{
+									"field": {Type: "string"},
+								},
+							},
+							"status": {Type: "object"},
+						},
+					}).
+					BuildAsUnstructured()
+
+				// Create Crossplane client mocks
+				xpClients := xp.Clients{
+					Composition: tu.NewMockCompositionClient().
+						WithSuccessfulCompositionMatch(composition).
+						Build(),
+					Credential: &tu.MockCredentialClient{},
+					Definition: tu.NewMockDefinitionClient().
+						WithXRDForGVK(schema.GroupVersionKind{Group: testGroup, Version: "v1", Kind: testKind}, mainXRD).
+						WithXRDForGVK(schema.GroupVersionKind{Group: "cpd.org", Version: "v1", Kind: "ComposedResource"}, composedXRD).
+						Build(),
+					Function: tu.NewMockFunctionClient().
+						WithSuccessfulFunctionsFetch(functions).
+						Build(),
+					ResourceTree: tu.NewMockResourceTreeClient().
+						WithEmptyResourceTree().
+						Build(),
+				}
+
+				return k8sClients, xpClients
+			},
+			resources: []*un.Unstructured{resource1},
+			processorOpts: append(testProcessorOptions(t),
+				WithRenderFunc(func(_ context.Context, _ logging.Logger, in RenderInputs) (render.CompositionOutputs, error) {
+					// Only return composed resources for the main XR, not for nested XRs
+					// to avoid infinite recursion
+					if in.CompositeResource.GetKind() == testKind {
+						return render.CompositionOutputs{
+							CompositeResource: in.CompositeResource,
+							ComposedResources: []cpd.Unstructured{
+								{
+									Unstructured: un.Unstructured{
+										Object: composedResource.Object,
+									},
+								},
+							},
+						}, nil
+					}
+					// For nested XRs, just return the XR itself with no composed resources
+					return render.CompositionOutputs{
+						CompositeResource: in.CompositeResource,
+					}, nil
+				}),
+				// Override the schema validator factory to use a simple validator
+				WithSchemaValidatorFactory(func(k8.SchemaClient, k8.ResourceClient, xp.DefinitionClient, logging.Logger) SchemaValidator {
+					return &tu.MockSchemaValidator{
+						ValidateResourcesFn: func(context.Context, *un.Unstructured, []cpd.Unstructured) error {
+							return nil
+						},
+					}
+				}),
+				// Override the diff calculator factory to return actual diffs
+				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter, func(*un.Unstructured) bool) DiffCalculator {
+					return &tu.MockDiffCalculator{
+						CalculateNonRemovalDiffsFn: func(context.Context, *cmp.Unstructured, render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+							diffs := make(map[string]*dt.ResourceDiff)
+
+							var rendered types.RenderedResources
+
+							// Add a modified diff (not just equal)
+							lineDiffs := []diffmatchpatch.Diff{
+								{Type: diffmatchpatch.DiffDelete, Text: "  field: old-value"},
+								{Type: diffmatchpatch.DiffInsert, Text: "  field: new-value"},
+							}
+
+							diffKey1 := "example.org/v1/XR1/test-xr"
+							diffs[diffKey1] = &dt.ResourceDiff{
+								Gvk:          schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XR1"},
+								ResourceName: "test-xr",
+								DiffType:     dt.DiffTypeModified,
+								LineDiffs:    lineDiffs,                                          // Add line diffs
+								Current:      dt.ResourceViews{Raw: resource1, Clean: resource1}, // for completeness
+								Desired:      dt.ResourceViews{Raw: resource1, Clean: resource1}, // for completeness
+							}
+							rendered.AddKey(diffKey1)
+
+							// Add a composed resource diff that's also modified
+							diffKey2 := "example.org/v1/ComposedResource/resource-a"
+							diffs[diffKey2] = &dt.ResourceDiff{
+								Gvk:          schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "ComposedResource"},
+								ResourceName: "resource-a",
+								DiffType:     dt.DiffTypeModified,
+								LineDiffs:    lineDiffs,
+								Current:      dt.ResourceViews{Raw: composedResource, Clean: composedResource},
+								Desired:      dt.ResourceViews{Raw: composedResource, Clean: composedResource},
+							}
+							rendered.AddKey(diffKey2)
+
+							return diffs, rendered, nil
+						},
+					}
+				}),
+			),
+			wantHasChanges: true,
+			want:           nil,
+		},
+		"ValidationError": {
+			setupMocks: func() (k8.Clients, xp.Clients) {
+				// Create mock functions that render will call successfully
+				functions := []pkgv1.Function{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "function-test",
+						},
+					},
+				}
+
+				// Create Kubernetes client mocks
+				k8sClients := k8.Clients{
+					Apply: tu.NewMockApplyClient().
+						WithSuccessfulDryRun().
+						Build(),
+					Resource: tu.NewMockResourceClient().
+						WithResourcesExist(resource1).
+						Build(),
+					Schema: tu.NewMockSchemaClient().
+						WithNoResourcesRequiringCRDs().
+						WithGetCRD(func(_ context.Context, gvk schema.GroupVersionKind) (*extv1.CustomResourceDefinition, error) {
+							if gvk.Group == testGroup && gvk.Kind == testKind {
+								return makeTestCRD(testCRDName, testKind, testGroup, testAPIVersion), nil
+							}
+
+							if gvk.Group == "cpd.org" && gvk.Kind == "ComposedResource" {
+								return makeTestCRD("composedresources.cpd.org", "ComposedResource", "cpd.org", "v1"), nil
+							}
+
+							return nil, errors.New("CRD not found")
+						}).
+						WithSuccessfulCRDByNameFetch(testCRDName, makeTestCRD(testCRDName, testKind, testGroup, testAPIVersion)).
+						Build(),
+					Type: tu.NewMockTypeConverter().Build(),
+				}
+
+				// Create Crossplane client mocks
+				xpClients := xp.Clients{
+					Composition: tu.NewMockCompositionClient().
+						WithSuccessfulCompositionMatch(composition).
+						Build(),
+					Credential: &tu.MockCredentialClient{},
+					Definition: tu.NewMockDefinitionClient().
+						WithXRDForXR(tu.NewXRD(testXRDName, testGroup, testKind).
+							WithPlural(testPlural).
+							WithSingular(testSingular).
+							BuildAsUnstructured()).
+						Build(),
+					Function: tu.NewMockFunctionClient().
+						WithSuccessfulFunctionsFetch(functions).
+						Build(),
+					// resource1 exists in the cluster, so its observed resources
+					// are fetched before validation runs. That fetch has to
+					// succeed for this case to reach the validation failure it is
+					// actually about.
+					ResourceTree: tu.NewMockResourceTreeClient().
+						WithEmptyResourceTree().
+						Build(),
+				}
+
+				return k8sClients, xpClients
+			},
+			resources: []*un.Unstructured{resource1},
+			processorOpts: append(testProcessorOptions(t),
+				WithRenderFunc(func(_ context.Context, _ logging.Logger, in RenderInputs) (render.CompositionOutputs, error) {
+					// Return valid render outputs
+					return render.CompositionOutputs{
+						CompositeResource: in.CompositeResource,
+						ComposedResources: []cpd.Unstructured{
+							{
+								Unstructured: un.Unstructured{
+									Object: composedResource.Object,
+								},
+							},
+						},
+					}, nil
+				}),
+				// Override with a validator that fails
+				WithSchemaValidatorFactory(func(_ k8.SchemaClient, _ k8.ResourceClient, _ xp.DefinitionClient, _ logging.Logger) SchemaValidator {
+					return &tu.MockSchemaValidator{
+						ValidateResourcesFn: func(context.Context, *un.Unstructured, []cpd.Unstructured) error {
+							return errors.New("validation error")
+						},
+					}
+				}),
+			),
+			want:            errors.New("unable to process resource XR1/my-xr-1: cannot validate resources: validation error"),
+			validationError: true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			// Create components for testing
+			k8sClients, xpClients := tt.setupMocks()
+
+			// Create the diff processor
+			processor := NewDiffProcessor(k8sClients, xpClients, tt.processorOpts...)
+
+			// Create a mock composition provider that uses the same mock composition client
+			compositionProvider := func(ctx context.Context, res *un.Unstructured) (types.ResolvedComposition, error) {
+				return xpClients.Composition.FindMatchingComposition(ctx, res)
+			}
+			report, err := processor.PerformDiff(ctx, tt.resources, compositionProvider)
+
+			// Checked first, before the error checks: the report is returned even with an error.
+			if got := report != nil && report.HasChanges(); got != tt.wantHasChanges {
+				t.Errorf("PerformDiff(...): report.HasChanges() = %v, want %v", got, tt.wantHasChanges)
+			}
+
+			if tt.want != nil {
+				if err == nil {
+					t.Errorf("PerformDiff(...): expected error but got none")
+					return
+				}
+
+				if diff := gcmp.Diff(tt.want.Error(), err.Error()); diff != "" {
+					t.Errorf("PerformDiff(...): -want error, +got error:\n%s", diff)
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Errorf("PerformDiff(...): unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// Note: PerformDiff's per-XR grouping structure is verified end-to-end (real
+// renderer, real JSON) by TestDiffIntegration/MultipleXRsGroupedByInputXR, and
+// the per-group xrs[] shape — including errored groups — by
+// TestStructuredDiffRenderer_GroupsByXR. The identity each group carries, and
+// how the input validator's verdicts land, are asserted on the intermediate
+// []XRDiffGroup handoff by TestDefaultDiffProcessor_PerformDiff_Groups.
+
+// TestDefaultDiffProcessor_PerformDiff_Groups pins how PerformDiff hands its groups to the renderer. With
+// a mock InputValidator it pins the wiring: only what ToRender returns is rendered, and an input it
+// rejected is not; every render is recorded; and each Verdicts and RenderOverlaps error lands as a group
+// error (replacing that group's diffs), in errors[], and on the returned error. With the real default
+// validator it pins what PerformDiff itself decides: the group identity of a generateName-only XR (issue
+// #477), and the NameGenerated mark the overlap check relies on. The validation rules themselves are
+// tested directly in input_validator_test.go and end to end in diff_integration_test.go; add rule cases
+// there, not here.
+func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
+	ctx := t.Context()
+
+	composition := tu.NewComposition("test-comp").
+		WithCompositeTypeRef(testGroup+"/"+testAPIVersion, testKind).
+		WithPipelineMode().
+		WithPipelineStep("step1", "function-test", nil).
+		Build()
+
+	functions := []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "function-test"}}}
+
+	xrd := tu.NewXRD(testXRDName, testGroup, testKind).
+		WithPlural(testPlural).
+		WithSingular(testSingular).
+		BuildAsUnstructured()
+
+	// sharedKey is returned by the diff calculator for every input XR, so two
+	// inputs collide on it.
+	const sharedKey = "example.org/v1/Bucket/default/shared"
+
+	// bucket is the shared resource as one input XR's render produces it, controlled by the XR named
+	// controller, with spec.value set to value. renderedBy only varies the controller reference's UID,
+	// the way a render synthesizes a fresh UID for an XR that does not exist yet. Clean mirrors
+	// cleanupForDiff, which strips ownerReferences (and uid) before anything is compared or displayed.
+	bucket := func(controller, value, renderedBy string) *dt.ResourceDiff {
+		desired := tu.NewResource("example.org/v1", "Bucket", "shared").
+			InNamespace("default").
+			WithSpecField("value", value).
+			WithControllerReference(testKind, controller, testGroup+"/"+testAPIVersion, "uid-rendered-by-"+renderedBy).
+			Build()
+		clean := desired.DeepCopy()
+		clean.SetOwnerReferences(nil)
+
+		return &dt.ResourceDiff{
+			Gvk:          schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "Bucket"},
+			Namespace:    "default",
+			ResourceName: "shared",
+			DiffType:     dt.DiffTypeModified,
+			Desired:      dt.ResourceViews{Raw: desired, Clean: clean},
+		}
+	}
+
+	xr := func(name string) *un.Unstructured {
+		return tu.NewResource(testGroup+"/"+testAPIVersion, testKind, name).WithSpecField("coolField", name).Build()
+	}
+
+	ref := func(name string) corev1.ObjectReference {
+		return corev1.ObjectReference{APIVersion: testGroup + "/" + testAPIVersion, Kind: testKind, Name: name}
+	}
+
+	// recorded is one RecordRender call.
+	type recorded struct {
+		I        int
+		Rendered map[string]bool
+		Err      string
+	}
+
+	// got is the whole handoff, asserted as one value: the group identities in
+	// input order, each errored group's message by name, the global (union)
+	// error list the renderer was given, the error PerformDiff returned, and
+	// (with a mock validator) the renders it recorded.
+	type got struct {
+		XRs        []corev1.ObjectReference
+		GroupErrs  map[string]string
+		GlobalErrs []string
+		Err        string
+		Recorded   []recorded
+	}
+
+	const (
+		generatedErr = `cannot combine diffs: inputs XR1/gen-xr-(generated), XR1/gen-xr-(generated) both produce resource ` +
+			`"example.org/v1/Bucket/default/shared" only because simulate gives XRs that share a generateName the ` +
+			`same placeholder name; the API server would name them differently, so they cannot be told apart here — diff ` +
+			`them separately`
+
+		contendedErr = `cannot combine diffs: resource "example.org/v1/Bucket/default/shared" would be controlled by ` +
+			`more than one XR (XR1/xr-a, XR1/xr-b); Crossplane gives it to whichever of them creates it first, and ` +
+			`the other fails to reconcile it, so no diff predicts applying these inputs together — diff them separately`
+
+		// renderFailedErr is how a render failure reaches RecordRender: wrapped by the render path.
+		renderFailedErr = "cannot calculate diffs for composed resources: render failed"
+	)
+
+	genXR := tu.NewResource(testGroup+"/"+testAPIVersion, testKind, "").
+		WithGenerateName("gen-xr-").
+		WithSpecField("coolField", "value").
+		Build()
+
+	// validation is what a mock validator returns: ToRender's list, and Verdicts and RenderOverlaps
+	// errors. A nil validation means the real default validator.
+	type validation struct {
+		toRender []types.ValidatedInput
+		verdicts []error
+		overlaps []error
+	}
+
+	tests := map[string]struct {
+		resources []*un.Unstructured
+		validator *validation
+		// failRender names an input XR whose render fails.
+		failRender string
+		// slowRender names an input XR whose render runs until its context ends.
+		slowRender string
+		xrTimeout  time.Duration
+		afterXR    func(context.Context, map[string]*dt.ResourceDiff) error
+		// equalRender names an input XR whose render leaves the shared resource unchanged: an equal diff,
+		// controlled by that XR, kept among the diffs when keepEqual is set (as provider plans do) and
+		// otherwise recorded only as an unchanged rendering (as with --skip-plan).
+		equalRender string
+		keepEqual   bool
+		want        got
+	}{
+		// An XR that runs out of its own XRTimeout fails alone, as a failed render does; the next
+		// one still renders.
+		"XRTimeoutFailsOnlyThatXR": {
+			resources:  []*un.Unstructured{xr("my-xr-1"), xr("my-xr-2")},
+			slowRender: "my-xr-1",
+			xrTimeout:  50 * time.Millisecond,
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("my-xr-1"), ref("my-xr-2")},
+				GroupErrs:  map[string]string{"my-xr-1": "timed out after 50ms: cannot calculate diffs for composed resources: context canceled"},
+				GlobalErrs: []string{"timed out after 50ms: cannot calculate diffs for composed resources: context canceled"},
+				Err:        "unable to process resource XR1/my-xr-1: timed out after 50ms: cannot calculate diffs for composed resources: context canceled",
+			},
+		},
+		// An AfterXRDiff error fails its XR with none of its diffs, as a failed render does.
+		"AfterXRDiffErrorFailsTheXR": {
+			resources: []*un.Unstructured{xr("my-xr-1")},
+			afterXR: func(_ context.Context, diffs map[string]*dt.ResourceDiff) error {
+				if diffs[sharedKey] == nil {
+					return errors.New("hook got no diffs")
+				}
+				return errors.New("plan failed")
+			},
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("my-xr-1")},
+				GroupErrs:  map[string]string{"my-xr-1": "plan failed"},
+				GlobalErrs: []string{"plan failed"},
+				Err:        "unable to process resource XR1/my-xr-1: plan failed",
+			},
+		},
+		// An input ToRender already rejected is not rendered; its verdict is a group error, in errors[],
+		// and on the returned error.
+		"InputRejectedBeforeRenderingIsNotRendered": {
+			resources: []*un.Unstructured{xr("my-xr-1"), xr("my-xr-2")},
+			validator: &validation{
+				toRender: []types.ValidatedInput{{Resource: xr("my-xr-1")}, {Resource: xr("my-xr-2"), Err: errors.New("rejected")}},
+				verdicts: []error{nil, errors.New("rejected")},
+			},
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("my-xr-1"), ref("my-xr-2")},
+				GroupErrs:  map[string]string{"my-xr-2": "rejected"},
+				GlobalErrs: []string{"rejected"},
+				Err:        "unable to process resource XR1/my-xr-2: rejected",
+				Recorded:   []recorded{{I: 0, Rendered: map[string]bool{sharedKey: true}}},
+			},
+		},
+		// A Verdicts error on a group that rendered fine replaces its diffs.
+		"VerdictReplacesAGroupsDiffs": {
+			resources: []*un.Unstructured{xr("my-xr-1"), xr("my-xr-2")},
+			validator: &validation{
+				toRender: []types.ValidatedInput{{Resource: xr("my-xr-1")}, {Resource: xr("my-xr-2")}},
+				verdicts: []error{nil, errors.New("verdict")},
+			},
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("my-xr-1"), ref("my-xr-2")},
+				GroupErrs:  map[string]string{"my-xr-2": "verdict"},
+				GlobalErrs: []string{"verdict"},
+				Err:        "unable to process resource XR1/my-xr-2: verdict",
+				Recorded: []recorded{
+					{I: 0, Rendered: map[string]bool{sharedKey: true}},
+					{I: 1, Rendered: map[string]bool{sharedKey: true}},
+				},
+			},
+		},
+		"RenderOverlapsReachErrorsAndTheReturnedError": {
+			resources: []*un.Unstructured{xr("my-xr-1")},
+			validator: &validation{
+				toRender: []types.ValidatedInput{{Resource: xr("my-xr-1")}},
+				overlaps: []error{errors.New("overlap")},
+			},
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("my-xr-1")},
+				GlobalErrs: []string{"overlap"},
+				Err:        "overlap",
+				Recorded:   []recorded{{I: 0, Rendered: map[string]bool{sharedKey: true}}},
+			},
+		},
+		// Only what ToRender returns is rendered: a duplicate it dropped yields no group.
+		"OnlyWhatToRenderReturnsIsRendered": {
+			resources: []*un.Unstructured{xr("my-xr-1"), xr("my-xr-1")},
+			validator: &validation{toRender: []types.ValidatedInput{{Resource: xr("my-xr-1")}}},
+			want: got{
+				XRs:      []corev1.ObjectReference{ref("my-xr-1")},
+				Recorded: []recorded{{I: 0, Rendered: map[string]bool{sharedKey: true}}},
+			},
+		},
+		// RecordRender sees each render's keys and its error; the error is reported only if Verdicts
+		// returns it, which this mock does not.
+		"RecordRenderReceivesEachRender": {
+			resources:  []*un.Unstructured{xr("my-xr-1"), xr("my-xr-2")},
+			validator:  &validation{toRender: []types.ValidatedInput{{Resource: xr("my-xr-1")}, {Resource: xr("my-xr-2")}}},
+			failRender: "my-xr-2",
+			want: got{
+				XRs: []corev1.ObjectReference{ref("my-xr-1"), ref("my-xr-2")},
+				Recorded: []recorded{
+					{I: 0, Rendered: map[string]bool{sharedKey: true}},
+					{I: 1, Err: renderFailedErr},
+				},
+			},
+		},
+		// Issue #477: the name used for rendering is synthesized from
+		// generateName inside SanitizeXR, so the identity must carry that
+		// effective name rather than the input's empty metadata.name.
+		"GenerateNameOnlyXR": {
+			resources: []*un.Unstructured{genXR},
+			want:      got{XRs: []corev1.ObjectReference{ref("gen-xr-(generated)")}},
+		},
+		// PerformDiff marks a group whose name it synthesized, which is the only way the overlap check
+		// can tell two generateName-only inputs apart from one XR reached twice. Without it these
+		// identical renderings would merge, reporting one XR's changes for two.
+		// Two XRs controlling one resource contend for it even when one of them leaves it unchanged, so
+		// the run fails whether that equal diff is kept for a plan or left out of the report.
+		"UnchangedRenderingContendsWithPlans": {
+			resources:   []*un.Unstructured{xr("xr-a"), xr("xr-b")},
+			equalRender: "xr-a",
+			keepEqual:   true,
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("xr-a"), ref("xr-b")},
+				GlobalErrs: []string{contendedErr},
+				Err:        contendedErr,
+			},
+		},
+		"UnchangedRenderingContendsWithSkipPlan": {
+			resources:   []*un.Unstructured{xr("xr-a"), xr("xr-b")},
+			equalRender: "xr-a",
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("xr-a"), ref("xr-b")},
+				GlobalErrs: []string{contendedErr},
+				Err:        contendedErr,
+			},
+		},
+		"SharedGenerateNameReachesTheOverlapCheck": {
+			resources: []*un.Unstructured{genXR, genXR.DeepCopy()},
+			want: got{
+				XRs:        []corev1.ObjectReference{ref("gen-xr-(generated)"), ref("gen-xr-(generated)")},
+				GlobalErrs: []string{generatedErr},
+				Err:        generatedErr,
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			k8sClients := k8.Clients{
+				Apply:    tu.NewMockApplyClient().WithSuccessfulDryRun().Build(),
+				Resource: tu.NewMockResourceClient().WithResourceNotFound().Build(),
+				Schema: tu.NewMockSchemaClient().
+					WithNoResourcesRequiringCRDs().
+					WithSuccessfulCRDByNameFetch(testCRDName, makeTestCRD(testCRDName, testKind, testGroup, testAPIVersion)).
+					Build(),
+				Type: tu.NewMockTypeConverter().Build(),
+			}
+			xpClients := xp.Clients{
+				Composition:  tu.NewMockCompositionClient().WithSuccessfulCompositionMatch(composition).Build(),
+				Credential:   &tu.MockCredentialClient{},
+				Definition:   tu.NewMockDefinitionClient().WithXRDForXR(xrd).Build(),
+				Function:     tu.NewMockFunctionClient().WithSuccessfulFunctionsFetch(functions).Build(),
+				ResourceTree: tu.NewMockResourceTreeClient().WithEmptyResourceTree().Build(),
+			}
+
+			var gotRecorded []recorded
+
+			opts := append(testProcessorOptions(t),
+				WithSchemaValidatorFactory(func(k8.SchemaClient, k8.ResourceClient, xp.DefinitionClient, logging.Logger) SchemaValidator {
+					return &tu.MockSchemaValidator{
+						ValidateResourcesFn: func(context.Context, *un.Unstructured, []cpd.Unstructured) error {
+							return nil
+						},
+					}
+				}),
+				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter, func(*un.Unstructured) bool) DiffCalculator {
+					return &tu.MockDiffCalculator{
+						CalculateNonRemovalDiffsFn: func(ctx context.Context, rendered *cmp.Unstructured, _ render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+							if rendered.GetName() == tt.failRender {
+								return nil, types.RenderedResources{}, errors.New("render failed")
+							}
+							if rendered.GetName() == tt.slowRender {
+								<-ctx.Done()
+								return nil, types.RenderedResources{}, ctx.Err()
+							}
+
+							var keys types.RenderedResources
+							keys.AddKey(sharedKey)
+
+							if rendered.GetName() == tt.equalRender {
+								diff := bucket(rendered.GetName(), "same", rendered.GetName())
+								diff.DiffType = dt.DiffTypeEqual
+
+								if tt.keepEqual {
+									return map[string]*dt.ResourceDiff{sharedKey: diff}, keys, nil
+								}
+
+								keys.AddUnchanged(sharedKey, diff)
+
+								return map[string]*dt.ResourceDiff{}, keys, nil
+							}
+
+							controller := "parent"
+							if tt.equalRender != "" {
+								controller = rendered.GetName()
+							}
+
+							return map[string]*dt.ResourceDiff{sharedKey: bucket(controller, "same", rendered.GetName())}, keys, nil
+						},
+					}
+				}),
+			)
+
+			opts = append(opts, WithXRTimeout(tt.xrTimeout), WithAfterXRDiff(tt.afterXR))
+
+			if v := tt.validator; v != nil {
+				opts = append(opts, WithInputValidatorFactory(func(dt.Advisories, []*un.Unstructured) InputValidator {
+					return &tu.MockInputValidator{
+						ToRenderFn: func() []types.ValidatedInput { return v.toRender },
+						RecordRenderFn: func(i int, rendered map[string]bool, err error) {
+							gotRecorded = append(gotRecorded, recorded{I: i, Rendered: rendered, Err: errMessage(err)})
+						},
+						VerdictsFn: func(groups []dt.XRDiffGroup) []error {
+							if v.verdicts == nil {
+								return make([]error, len(groups))
+							}
+
+							return v.verdicts
+						},
+						RenderOverlapsFn: func([]dt.XRDiffGroup) []error { return v.overlaps },
+					}
+				}))
+			}
+
+			processor := NewDiffProcessor(k8sClients, xpClients, opts...)
+
+			report, err := processor.PerformDiff(ctx, tt.resources, func(ctx context.Context, res *un.Unstructured) (types.ResolvedComposition, error) {
+				return xpClients.Composition.FindMatchingComposition(ctx, res)
+			})
+
+			result := got{Recorded: gotRecorded}
+
+			for _, g := range report.Groups {
+				result.XRs = append(result.XRs, g.XR)
+
+				if g.Err == nil {
+					continue
+				}
+
+				if g.Diffs != nil {
+					t.Errorf("group %s/%s carries an error and diffs; an errored input must emit no partial result", g.XR.Kind, g.XR.Name)
+				}
+
+				if result.GroupErrs == nil {
+					result.GroupErrs = map[string]string{}
+				}
+
+				result.GroupErrs[g.XR.Name] = g.Err.Message
+			}
+
+			for _, e := range report.Errors {
+				result.GlobalErrs = append(result.GlobalErrs, e.Message)
+			}
+
+			if err != nil {
+				result.Err = err.Error()
+			}
+
+			if diff := gcmp.Diff(tt.want, result); diff != "" {
+				t.Errorf("PerformDiff(...) group handoff: -want, +got:\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestDefaultDiffProcessor_PerformDiff_LateWarningsReachStructuredOutput pins the warning channel's
+// contract for advisories that can only be discovered during teardown. The leftover-function-container
+// advisory is raised from FunctionProvider.Cleanup, which used to run in the command layer's defer —
+// i.e. after the renderer had already consumed and serialized the warning slice — so it reached stderr
+// but was structurally absent from warnings[], contradicting the README. PerformDiff therefore tears
+// down before it drains advisories into the report the command renders, and this test fails if that
+// ordering is lost.
+func TestDefaultDiffProcessor_PerformDiff_LateWarningsReachStructuredOutput(t *testing.T) {
+	ctx := t.Context()
+
+	const advisory = "Some containers could not be cleaned up"
+
+	var stderr bytes.Buffer
+
+	advisories := NewAdvisoryCollector(&stderr)
+
+	k8sClients := k8.Clients{
+		Apply:    tu.NewMockApplyClient().Build(),
+		Resource: tu.NewMockResourceClient().Build(),
+		Schema:   tu.NewMockSchemaClient().Build(),
+		Type:     tu.NewMockTypeConverter().Build(),
+	}
+
+	// The XR's own diff fails (no matching composition), which additionally pins the README's claim
+	// that a warning is still reported when a later step fails — the advisory has to survive alongside
+	// errors[], not instead of it.
+	xpClients := xp.Clients{
+		Composition:  tu.NewMockCompositionClient().WithNoMatchingComposition().Build(),
+		Credential:   &tu.MockCredentialClient{},
+		Definition:   tu.NewMockDefinitionClient().Build(),
+		Function:     tu.NewMockFunctionClient().Build(),
+		ResourceTree: tu.NewMockResourceTreeClient().Build(),
+	}
+
+	processor := NewDiffProcessor(k8sClients, xpClients,
+		append(testProcessorOptions(t),
+			WithAdvisories(advisories),
+			// Stands in for CachedFunctionProvider.Cleanup raising its advisory when a container could
+			// not be removed; the point under test is WHEN cleanup runs, not how it detects leftovers.
+			WithFunctionProviderFactory(func(xp.FunctionClient, logging.Logger) FunctionProvider {
+				return &tu.MockFunctionProvider{
+					CleanupFn: func(context.Context) error {
+						advisories.Raise(dt.OutputWarning{Message: advisory, Context: map[string]string{"errors": "1"}})
+						return nil
+					},
+				}
+			}),
+		)...,
+	)
+
+	resource := tu.NewResource("example.org/v1", "XR1", "my-xr-1").
+		WithSpecField("coolField", "test-value-1").
+		Build()
+
+	report, err := processor.PerformDiff(ctx, []*un.Unstructured{resource}, xpClients.Composition.FindMatchingComposition)
+	if err == nil {
+		t.Fatal("PerformDiff(): expected the XR's diff to fail, got nil")
+	}
+
+	if !strings.Contains(stderr.String(), advisory) {
+		t.Errorf("teardown advisory should reach stderr, got:\n%s", stderr.String())
+	}
+
+	// The report's warnings are what the structured renderer serializes as warnings[].
+	want := []dt.OutputWarning{{Message: advisory, Context: map[string]string{"errors": "1"}}}
+	if diff := gcmp.Diff(want, report.Warnings); diff != "" {
+		t.Errorf("report warnings mismatch (-want +got):\n%s", diff)
+	}
+
+	if len(report.Errors) != 1 {
+		t.Errorf("expected the XR's failure to still be reported in the report's errors, got %v", report.Errors)
+	}
+}
+
+// TestDefaultDiffProcessor_PerformDiff_ReportErrorOutput verifies that when resource processing
+// fails, the report carries the detailed error, attributed to the failed XR, for structured output,
+// and the returned error names the resource and carries the detail: the command prints it once.
+func TestDefaultDiffProcessor_PerformDiff_ReportErrorOutput(t *testing.T) {
+	ctx := t.Context()
+
+	// Create test resource
+	resource := tu.NewResource("example.org/v1", "XR1", "my-xr-1").
+		WithSpecField("coolField", "test-value-1").
+		Build()
+
+	// Create Kubernetes client mocks. The XR's CRD is needed because the effective XR is defaulted
+	// before its composition is resolved.
+	k8sClients := k8.Clients{
+		Apply:    tu.NewMockApplyClient().Build(),
+		Resource: tu.NewMockResourceClient().WithResourceNotFound().Build(),
+		Schema: tu.NewMockSchemaClient().
+			WithSuccessfulCRDByNameFetch(testCRDName, makeTestCRD(testCRDName, testKind, testGroup, testAPIVersion)).
+			Build(),
+		Type: tu.NewMockTypeConverter().Build(),
+	}
+
+	// Create Crossplane client mocks with a failing composition match
+	xpClients := xp.Clients{
+		Composition: tu.NewMockCompositionClient().
+			WithNoMatchingComposition().
+			Build(),
+		Credential: &tu.MockCredentialClient{},
+		Definition: tu.NewMockDefinitionClient().
+			WithXRDForXR(tu.NewXRD(testXRDName, testGroup, testKind).WithVersion("v1", true, true).BuildAsUnstructured()).
+			Build(),
+		Function:     tu.NewMockFunctionClient().Build(),
+		ResourceTree: tu.NewMockResourceTreeClient().Build(),
+	}
+
+	processor := NewDiffProcessor(k8sClients, xpClients, testProcessorOptions(t)...)
+
+	// Create composition provider using mock client
+	compositionProvider := func(ctx context.Context, res *un.Unstructured) (types.ResolvedComposition, error) {
+		return xpClients.Composition.FindMatchingComposition(ctx, res)
+	}
+
+	// Run the diff
+	report, err := processor.PerformDiff(ctx, []*un.Unstructured{resource}, compositionProvider)
+
+	// Should return an error
+	if err == nil {
+		t.Fatal("PerformDiff() expected error but got none")
+	}
+
+	for _, want := range []string{"unable to process resource XR1/my-xr-1", "composition not found"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Expected the returned error to contain %q, got: %v", want, err)
+		}
+	}
+
+	if len(report.Errors) != 1 {
+		t.Fatalf("Expected one error in the report, got: %v", report.Errors)
+	}
+
+	if got := report.Errors[0]; got.ResourceID != "XR1/my-xr-1" || !strings.Contains(got.Message, "composition not found") {
+		t.Errorf("Expected the report's error to name XR1/my-xr-1 and 'composition not found', got: %+v", got)
+	}
+}
+
 // TestDefaultDiffProcessor_warnIfDeleting covers the `xr`-side counterpart to comp's deleting-XR
 // exclusion (issue #452). `xr` diffs exactly the resource the user named, so a deleting cluster copy
 // is warned about rather than skipped. The warning travels through the advisory channel, so this
@@ -274,6 +1321,120 @@ func TestDefaultDiffProcessor_warnIfDeleting(t *testing.T) {
 
 			if diff := gcmp.Diff(tt.wantWarnings, advisories.Advisories()); diff != "" {
 				t.Errorf("collected warnings mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestDiffFetchesOnlyTheInputsCRD runs a diff through the real schema and definition clients, with
+// validation and defaulting as the processor builds them, against a cluster that forbids listing XRDs
+// and holds an XRD unrelated to the input whose CRD is missing. The run reads only what the input
+// needs, so neither matters; the input's own CRD going missing still fails it.
+func TestDiffFetchesOnlyTheInputsCRD(t *testing.T) {
+	xrGVK := schema.GroupVersionKind{Group: testGroup, Version: testAPIVersion, Kind: testKind}
+	xrdGVK := schema.GroupVersionKind{Group: xp.CrossplaneAPIExtGroup, Version: "v1", Kind: xp.CompositeResourceDefinitionKind}
+
+	inputXRD := tu.NewXRD(testXRDName, testGroup, testKind).
+		WithPlural(testPlural).
+		WithSingular(testSingular).
+		WithVersion(testAPIVersion, true, true).
+		BuildAsUnstructured()
+	unrelatedXRD := tu.NewXRD("xothers."+testGroup, testGroup, "XOther").
+		WithPlural("xothers").
+		WithSingular("xother").
+		WithVersion(testAPIVersion, true, true).
+		BuildAsUnstructured()
+
+	xr := tu.NewResource(testGroup+"/"+testAPIVersion, testKind, "my-xr").WithSpecField("coolField", "value").Build()
+	composition := tu.NewComposition("test-comp").
+		WithCompositeTypeRef(testGroup+"/"+testAPIVersion, testKind).
+		WithPipelineMode().
+		WithPipelineStep("step1", "function-test", nil).
+		Build()
+
+	tests := map[string]struct {
+		reason string
+		// crds are the CRDs in the cluster.
+		crds           []*extv1.CustomResourceDefinition
+		wantHasChanges bool
+		wantErr        string
+	}{
+		"UnrelatedXRDWithoutCRD": {
+			reason:         "An XRD unrelated to the input, and its missing CRD, must not fail the run",
+			crds:           []*extv1.CustomResourceDefinition{makeTestCRD(testCRDName, testKind, testGroup, testAPIVersion)},
+			wantHasChanges: true,
+		},
+		"InputXRDWithoutCRD": {
+			reason: "The input's own CRD missing still fails the run",
+			wantErr: `unable to process resource XR1/my-xr: cannot apply XRD defaults: cannot default example.org/v1, Kind=XR1 "my-xr": ` +
+				`cannot find CRD for XRD xr1s.example.org: cannot get CRD xr1s.example.org: ` +
+				`customresourcedefinitions.apiextensions.k8s.io "xr1s.example.org" not found`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			logger := tu.TestLogger(t, false)
+
+			crdObjs := make([]runtime.Object, 0, len(tt.crds))
+
+			for _, crd := range tt.crds {
+				obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(crd)
+				if err != nil {
+					t.Fatalf("cannot convert CRD: %v", err)
+				}
+
+				crdObjs = append(crdObjs, &un.Unstructured{Object: obj})
+			}
+
+			typeConverter := tu.NewMockTypeConverter().WithDefaultGetResourceNameForGVK().Build()
+			resourceClient := tu.NewMockResourceClient().
+				WithFoundGVKs([]schema.GroupVersionKind{xrdGVK}).
+				WithResourcesExist(inputXRD, unrelatedXRD).
+				WithErrorOnListOf(xrdGVK).
+				WithClusterScopedResource(xrGVK).
+				Build()
+
+			defClient := xp.NewDefinitionClient(resourceClient, typeConverter, logger)
+			if err := defClient.Initialize(ctx); err != nil {
+				t.Fatalf("cannot initialize definition client: %v", err)
+			}
+
+			k8sClients := k8.Clients{
+				Apply:    tu.NewMockApplyClient().WithSuccessfulDryRun().WithSuccessfulDryRunCreate().Build(),
+				Resource: resourceClient,
+				Schema:   k8.NewSchemaClient(&core.Clients{Dynamic: fake.NewSimpleDynamicClient(runtime.NewScheme(), crdObjs...)}, typeConverter, logger),
+				Type:     typeConverter,
+			}
+			xpClients := xp.Clients{
+				Composition:  tu.NewMockCompositionClient().WithSuccessfulCompositionMatch(composition).Build(),
+				Credential:   &tu.MockCredentialClient{},
+				Definition:   defClient,
+				Function:     tu.NewMockFunctionClient().WithSuccessfulFunctionsFetch([]pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "function-test"}}}).Build(),
+				ResourceTree: tu.NewMockResourceTreeClient().WithEmptyResourceTree().Build(),
+			}
+
+			processor := NewDiffProcessor(k8sClients, xpClients, testProcessorOptions(t)...)
+			if err := processor.Initialize(ctx); err != nil {
+				t.Fatalf("\n%s\nInitialize(...): unexpected error: %v", tt.reason, err)
+			}
+
+			report, err := processor.PerformDiff(ctx, []*un.Unstructured{xr}, func(ctx context.Context, res *un.Unstructured) (types.ResolvedComposition, error) {
+				return xpClients.Composition.FindMatchingComposition(ctx, res)
+			})
+
+			gotErr := ""
+			if err != nil {
+				gotErr = err.Error()
+			}
+
+			if diff := gcmp.Diff(tt.wantErr, gotErr); diff != "" {
+				t.Errorf("\n%s\nPerformDiff(...): -want error, +got error:\n%s", tt.reason, diff)
+			}
+
+			if got := report != nil && report.HasChanges(); got != tt.wantHasChanges {
+				t.Errorf("\n%s\nPerformDiff(...): report.HasChanges() = %v, want %v", tt.reason, got, tt.wantHasChanges)
 			}
 		})
 	}
@@ -1216,6 +2377,17 @@ func hasReadyCondition(res *un.Unstructured) bool {
 	}
 
 	return false
+}
+
+// Helper function to create a test CRD for the given GVK.
+func makeTestCRD(name string, kind string, group string, version string) *extv1.CustomResourceDefinition {
+	return tu.NewCRD(name, group, kind).
+		WithListKind(kind+"List").
+		WithPlural(strings.ToLower(kind)+"s").
+		WithSingular(strings.ToLower(kind)).
+		WithVersion(version, true, true).
+		WithStandardSchema("coolField").
+		Build()
 }
 
 func TestDefaultDiffProcessor_getCompositeResourceXRD(t *testing.T) {

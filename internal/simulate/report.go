@@ -36,7 +36,7 @@ import (
 // plans, so its plans say nothing about the cloud resources.
 const noteProviderPlanNotRun = "Provider plan not run."
 
-// Notes a caller sets on ProjectResult.Notes when no provider plans refined the
+// Notes a caller sets on Result.Notes when no provider plans refined the
 // cluster diff, saying why. A result built from provider plans
 // carries no note: each approximate plan already says why it is approximate.
 const (
@@ -44,15 +44,53 @@ const (
 	NoteNoDiffServers       = "Provider plan not run: no provider diff server planned these resources."
 )
 
-// FromCompReport maps a composition diff run onto a ProjectResult: a plan and a
-// Compositions entry per Composition, and a Composites entry per affected
-// composite, with that composite's downstream plans grouped under it. plans
-// is the provider plans the run collected (nil means none ran), merged into the
-// engine's plan of a diff that renders its resource as the planned one did (see
-// ProviderPlans.For). keep is the filter PlanDiffs used: a kept equal diff no
+// FromXRReport maps an xr or project diff run onto a Result: one plan per
+// resource diff (the XR's own included), each grouped under its input XR or
+// claim, and one Composites entry per input. plans are the provider plans
+// the run collected, each merged into the engine's plan of a diff that
+// renders its resource as the planned one did (see ProviderPlans.For); nil
+// means none ran. keep is the filter PlanDiffs used: a kept equal diff no
 // provider planned is dropped, as one whose provider plan is a no-op is. nil
 // keeps none.
-func FromCompReport(o *dt.CompDiffOutput, plans *ProviderPlans, keep func(*unstructured.Unstructured) bool) ProjectResult {
+func FromXRReport(r *dt.XRReport, plans *ProviderPlans, keep func(*unstructured.Unstructured) bool) Result {
+	if r == nil {
+		r = &dt.XRReport{}
+	}
+
+	a := newAssembler(plans, keep)
+	owned := make([]dt.OutputError, 0, len(r.Groups))
+
+	for _, g := range r.Groups {
+		// The group's XR is the input's identity, so a claim input keeps the
+		// claim's kind and name.
+		xr := resourceRef(g.XR)
+		c := CompositeResult{Ref: xr, Status: CompositeUnchanged}
+
+		switch {
+		case g.Err != nil:
+			c.Status = CompositeError
+			a.addError(xr, *g.Err, &xr)
+			owned = append(owned, *g.Err)
+		case g.HasChanges():
+			c.Status = CompositeChanged
+		}
+
+		if a.addDiffs(g.Diffs, &xr) && c.Status == CompositeUnchanged {
+			c.Status = CompositeChanged
+		}
+		a.composites = append(a.composites, c)
+	}
+
+	a.addRunErrors(r.Errors, owned)
+
+	return a.result(slices.Concat(r.Warnings, dt.XRDryRunWarnings(r.Groups)))
+}
+
+// FromCompReport maps a composition diff run onto a Result: a plan and a
+// Compositions entry per Composition, and a Composites entry per affected
+// composite, with that composite's downstream plans grouped under it. plans
+// and keep are used as FromXRReport uses them.
+func FromCompReport(o *dt.CompDiffOutput, plans *ProviderPlans, keep func(*unstructured.Unstructured) bool) Result {
 	if o == nil {
 		o = &dt.CompDiffOutput{}
 	}
@@ -324,8 +362,8 @@ func (a *assembler) addRunErrors(all, owned []dt.OutputError) {
 	}
 }
 
-func (a *assembler) result(warnings []dt.OutputWarning) ProjectResult {
-	res := NewProjectResult(a.plans, a.composites, a.errors)
+func (a *assembler) result(warnings []dt.OutputWarning) Result {
+	res := NewResult(a.plans, a.composites, a.errors)
 	if a.provider == nil {
 		res.Notes = []string{noteProviderPlanNotRun}
 	}

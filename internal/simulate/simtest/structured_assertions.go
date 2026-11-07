@@ -1,8 +1,10 @@
-// Package simtest asserts on composition simulate's structured output, simulate.ProjectResult, through
-// crossplane-diff's composition expectation builders.
+// Package simtest asserts on project simulate's structured output, simulate.Result, through
+// crossplane-diff's expectation builders.
 package simtest
 
 import (
+	"regexp"
+
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 )
 
@@ -12,20 +14,25 @@ type Expectation interface {
 	expectation() *Expected
 }
 
-// Expected is a fluent builder for test expectations on a simulate.ProjectResult: its compositions,
-// errors and warnings. Each section is asserted only if it was expected.
+// Expected is a fluent builder for test expectations on a simulate.Result, covering both xr-style sections
+// (summary, flat resources, errors, XR groups) and composition-style sections. Each section is asserted
+// only if it was expected.
 type Expected struct {
 	// compositions are asserted by composition ref, with no count pinned.
 	compositions []*CompositionExpectation
 	// errorIDs are resourceIDs the top-level errors[] must contain (no count pinned); see WithErrorID.
 	errorIDs []string
 
-	warnings []*WarningExpectation
+	summary   *expectedSummary
+	resources []*ResourceExpectation
+	errors    []*ErrorExpectation
+	warnings  []*WarningExpectation
 	// noWarnings asserts warnings[] is empty. Separate from len(warnings)==0, which means "no opinion".
 	noWarnings bool
+	xrs        []*XRExpectation
 }
 
-// warningMatch describes one expected entry in warnings[]. Matched
+// warningMatch describes one expected entry in warnings[], shared by the xr and comp builders. Matched
 // by message substring rather than exact equality, since warning prose is not a stable contract;
 // context keys are asserted exactly, because those ARE what a machine consumer reads.
 type warningMatch struct {
@@ -33,7 +40,7 @@ type warningMatch struct {
 	context         map[string]string
 }
 
-// WarningExpectation describes one expected entry in warnings[].
+// WarningExpectation describes one expected entry in an xr diff's warnings[].
 type WarningExpectation struct {
 	warningMatch
 
@@ -44,12 +51,21 @@ func (w *WarningExpectation) expectation() *Expected { return w.parent }
 
 func (e *Expected) expectation() *Expected { return e }
 
-// ResourceExpectation defines expectations for a single downstream resource change under an XR impact.
+type expectedSummary struct {
+	added    int
+	modified int
+	removed  int
+}
+
+// ResourceExpectation defines expectations for a single resource change.
 type ResourceExpectation struct {
-	parent       *XRImpactExpectation
-	changeType   string // "added", "modified", "removed"
+	parent       *Expected
+	xrParent     *XRExpectation       // set when this change is scoped to an xrs[] entry
+	impactParent *XRImpactExpectation // set when this is a downstream resource under an XR impact
+	changeType   string               // "added", "modified", "removed"
 	kind         string
 	name         string
+	namePattern  *regexp.Regexp
 	namespace    string
 	fieldValues  map[string]any    // For added/removed: field path -> expected value
 	fieldChanges map[string][2]any // For modified: field path -> [old, new]
@@ -57,7 +73,10 @@ type ResourceExpectation struct {
 	dryRun dryRunExpectation
 }
 
-// dryRunExpectation holds a downstream change's dryRun assertions.
+// dryRunExpectation holds the dryRun assertions. It is shared by the flat (xr)
+// and downstream (comp) change builders because dryRun lives on ChangeDetail,
+// which is the same per-resource wire shape for both commands — so asserting it
+// two different ways would let the two drift apart.
 //
 // skipReason, when non-empty, asserts the change carries a dryRun object with
 // that skipReason. mustBePerformed asserts the opposite — that no dryRun object
@@ -67,15 +86,114 @@ type ResourceExpectation struct {
 type dryRunExpectation struct {
 	skipReason      string
 	detailSubstring string
+	storageVersion  string
 	mustBePerformed bool
 }
 
-func (r *ResourceExpectation) expectation() *Expected { return r.parent.expectation() }
+// expectation returns the root builder. Only meaningful for a flat top-level
+// change (r.parent set) or a downstream resource (r.impactParent set); an XR-scoped
+// change (r.xrParent set) is built as a standalone sub-expression passed to WithXRs
+// and is never walked back to a root, so it returns nil there and that is fine.
+func (r *ResourceExpectation) expectation() *Expected {
+	if r.impactParent != nil {
+		return r.impactParent.expectation()
+	}
+
+	return r.parent
+}
 
 // Expect creates a new Expected builder.
 func Expect() *Expected {
-	return &Expected{compositions: make([]*CompositionExpectation, 0)}
+	return &Expected{
+		resources:    make([]*ResourceExpectation, 0),
+		compositions: make([]*CompositionExpectation, 0),
+	}
 }
+
+// WithSummary sets the expected summary counts.
+func (e *Expected) WithSummary(added, modified, removed int) *Expected {
+	e.summary = &expectedSummary{
+		added:    added,
+		modified: modified,
+		removed:  removed,
+	}
+
+	return e
+}
+
+// WithAddedResource adds an expectation for an added resource.
+func (e *Expected) WithAddedResource(kind, name, namespace string) *ResourceExpectation {
+	r := &ResourceExpectation{
+		parent:       e,
+		changeType:   dt.DiffTypeWordAdded,
+		kind:         kind,
+		name:         name,
+		namespace:    namespace,
+		fieldValues:  make(map[string]any),
+		fieldChanges: make(map[string][2]any),
+	}
+	e.resources = append(e.resources, r)
+
+	return r
+}
+
+// WithModifiedResource adds an expectation for a modified resource.
+func (e *Expected) WithModifiedResource(kind, name, namespace string) *ResourceExpectation {
+	r := &ResourceExpectation{
+		parent:       e,
+		changeType:   dt.DiffTypeWordModified,
+		kind:         kind,
+		name:         name,
+		namespace:    namespace,
+		fieldValues:  make(map[string]any),
+		fieldChanges: make(map[string][2]any),
+	}
+	e.resources = append(e.resources, r)
+
+	return r
+}
+
+// ErrorExpectation describes one expected entry in the structured
+// errors[] payload. Match is by ResourceID; ValidationFailures, when
+// non-nil, asserts the per-resource typed validation breakdown.
+type ErrorExpectation struct {
+	parent             *Expected
+	resourceID         string
+	messageContains    string
+	validationFailures []*ValidationFailureExpectation
+}
+
+func (e *ErrorExpectation) expectation() *Expected { return e.parent }
+
+// ValidationFailureExpectation describes one expected entry in
+// errors[].validationFailures[]. Match is by APIVersion/Kind/Name;
+// Errors asserts on the per-field validation entries within.
+type ValidationFailureExpectation struct {
+	parent     *ErrorExpectation
+	apiVersion string
+	kind       string
+	name       string
+	namespace  string
+	status     string                   // optional; if "", no assertion
+	errors     []*FieldErrorExpectation // optional; nil = no assertion on per-field errors
+}
+
+func (v *ValidationFailureExpectation) expectation() *Expected { return v.parent.parent }
+
+// FieldErrorExpectation describes one expected entry in
+// errors[].validationFailures[].errors[]. Match is by Type+Field
+// (Field may be empty for non-localized errors); messageContains and
+// value are optional refinements.
+type FieldErrorExpectation struct {
+	parent          *ValidationFailureExpectation
+	errType         string
+	field           string
+	messageContains string
+	hasValue        bool
+	value           any
+}
+
+func (f *FieldErrorExpectation) expectation() *Expected { return f.parent.parent.parent }
 
 // WithWarning asserts that structured output carries a warning whose message contains the supplied
 // substring. Chain WithWarningContext to pin the machine-readable context pairs.
@@ -106,9 +224,135 @@ func (w *WarningExpectation) WithWarningContext(context map[string]string) *Warn
 // And returns to the parent builder.
 func (w *WarningExpectation) And() *Expected { return w.parent }
 
+// WithError attaches an expectation for an entry in the structured
+// errors[] payload, matched by resourceID. Use the returned
+// ErrorExpectation to add validationFailures expectations.
+func (e *Expected) WithError(resourceID string) *ErrorExpectation {
+	er := &ErrorExpectation{
+		parent:     e,
+		resourceID: resourceID,
+	}
+	e.errors = append(e.errors, er)
+
+	return er
+}
+
+// WithMessageContaining adds a substring assertion on the error's
+// Message field. Optional — useful when machine consumers care about
+// the human-readable message too.
+func (e *ErrorExpectation) WithMessageContaining(s string) *ErrorExpectation {
+	e.messageContains = s
+	return e
+}
+
+// WithValidationFailure adds an expectation for one entry in the
+// error's validationFailures[] slice, matched by APIVersion/Kind/Name.
+// namespace is optional (empty string skips the namespace assertion);
+// pass the actual namespace to lock down namespaced resources.
+func (e *ErrorExpectation) WithValidationFailure(apiVersion, kind, name, namespace string) *ValidationFailureExpectation {
+	v := &ValidationFailureExpectation{
+		parent:     e,
+		apiVersion: apiVersion,
+		kind:       kind,
+		name:       name,
+		namespace:  namespace,
+	}
+	e.validationFailures = append(e.validationFailures, v)
+
+	return v
+}
+
+// AndError returns to the parent Expected to chain another
+// WithError call, mirroring the AndXR / AndComp helpers elsewhere in
+// this file.
+func (e *ErrorExpectation) AndError() *Expected {
+	return e.parent
+}
+
+// WithStatus pins the validation status on this resource entry
+// ("invalid", "missingSchema"). Optional; empty status skips the
+// assertion.
+func (v *ValidationFailureExpectation) WithStatus(status string) *ValidationFailureExpectation {
+	v.status = status
+	return v
+}
+
+// WithFieldError adds an expectation for one entry in the failure's
+// errors[] slice, matched by errType ("schema", "cel",
+// "unknownField", "defaulting") and field (empty matches
+// non-localized errors like defaulting).
+func (v *ValidationFailureExpectation) WithFieldError(errType, field string) *FieldErrorExpectation {
+	f := &FieldErrorExpectation{
+		parent:  v,
+		errType: errType,
+		field:   field,
+	}
+	v.errors = append(v.errors, f)
+
+	return f
+}
+
+// AndValidationFailure returns to the parent ErrorExpectation to chain
+// another WithValidationFailure.
+func (v *ValidationFailureExpectation) AndValidationFailure() *ErrorExpectation {
+	return v.parent
+}
+
+// WithMessageContaining adds a substring assertion on this field
+// error's Message. Optional.
+func (f *FieldErrorExpectation) WithMessageContaining(s string) *FieldErrorExpectation {
+	f.messageContains = s
+	return f
+}
+
+// WithValue pins the bad value on this field error. Pass the value as
+// it would arrive after JSON decoding (e.g. float64 for numbers,
+// string for strings); for "any number is fine" omit this method.
+func (f *FieldErrorExpectation) WithValue(v any) *FieldErrorExpectation {
+	f.hasValue = true
+	f.value = v
+
+	return f
+}
+
+// AndFieldError returns to the parent ValidationFailureExpectation to
+// chain another WithFieldError.
+func (f *FieldErrorExpectation) AndFieldError() *ValidationFailureExpectation {
+	return f.parent
+}
+
+// WithRemovedResource adds an expectation for a removed resource.
+func (e *Expected) WithRemovedResource(kind, name, namespace string) *ResourceExpectation {
+	r := &ResourceExpectation{
+		parent:       e,
+		changeType:   dt.DiffTypeWordRemoved,
+		kind:         kind,
+		name:         name,
+		namespace:    namespace,
+		fieldValues:  make(map[string]any),
+		fieldChanges: make(map[string][2]any),
+	}
+	e.resources = append(e.resources, r)
+
+	return r
+}
+
 // WithField asserts a specific field exists with exact value (for added/removed resources).
 func (r *ResourceExpectation) WithField(path string, value any) *ResourceExpectation {
 	r.fieldValues[path] = value
+	return r
+}
+
+// absentField is the fieldValues entry WithFieldAbsent stores, which assertFields tells from the
+// explicit null WithField(path, nil) stores.
+type absentField struct{}
+
+// WithFieldAbsent asserts the path carries no value at all (for added/removed resources).
+//
+// Named rather than spelled WithField(path, nil) at call sites, because "this field must not be
+// here" is a different claim from "this field equals nothing" and reads as a typo otherwise.
+func (r *ResourceExpectation) WithFieldAbsent(path string) *ResourceExpectation {
+	r.fieldValues[path] = absentField{}
 	return r
 }
 
@@ -131,6 +375,15 @@ func (r *ResourceExpectation) WithDryRunSkipped(reason, detailSubstring string) 
 	return r
 }
 
+// WithDryRunStorageVersion asserts this change, reported as not verified (see
+// WithDryRunSkipped), records version as the version its CRD stores it at:
+// one other than the version it was requested at, whose defaults and
+// conversion its locally predicted diff does not model.
+func (r *ResourceExpectation) WithDryRunStorageVersion(version string) *ResourceExpectation {
+	r.dryRun.storageVersion = version
+	return r
+}
+
 // WithDryRunPerformed asserts this change carries NO dryRun object, i.e. its
 // desired state did go through the apiserver. Worth asserting explicitly on the
 // happy path: without it, a regression that silently stopped dry-running
@@ -141,8 +394,123 @@ func (r *ResourceExpectation) WithDryRunPerformed() *ResourceExpectation {
 	return r
 }
 
-// WithErrorID asserts the top-level errors[] contains an error with the given resourceID. It pins
-// neither the error's details nor the error count.
+// WithNamePattern matches resource name against a regex pattern instead of exact name.
+func (r *ResourceExpectation) WithNamePattern(pattern string) *ResourceExpectation {
+	r.namePattern = regexp.MustCompile(pattern)
+	return r
+}
+
+// And returns to the root Expected to chain more expectations.
+// Not needed at the end of a chain - AssertStructured accepts a
+// ResourceExpectation directly.
+func (r *ResourceExpectation) And() *Expected {
+	e := r.expectation()
+	if e == nil {
+		panic("And chained on an XR-scoped change; it has no root builder")
+	}
+
+	return e
+}
+
+// Change opens a sibling change on the same enclosing XR entry (only valid on a
+// change opened via XRExpectation.Change). Lets an XR's changes chain without a
+// scope-closing call: xr.Change(...).FieldChange(...).Change(...). Panics if
+// called on a flat top-level change (which has no enclosing XR).
+func (r *ResourceExpectation) Change(changeType, kind, name, namespace string) *ResourceExpectation {
+	if r.xrParent == nil {
+		panic("Change chained on a flat (non-XR) change; open the change via XR(...).Change(...)")
+	}
+
+	return r.xrParent.Change(changeType, kind, name, namespace)
+}
+
+// XRExpectation defines expectations for a single entry in the xrs[] grouped
+// view: the input XR's identity, its status, its per-XR summary, and its
+// per-XR changes. Build one with XR(...), configure it with the methods below,
+// then pass it (with any siblings) to Expected.WithXRs.
+type XRExpectation struct {
+	kind      string
+	name      string
+	namespace string
+	status    string
+	summary   *expectedSummary
+	changes   []*ResourceExpectation
+	errorIDs  []string
+}
+
+// XR begins a standalone expectation for one xrs[] entry, keyed by the input
+// XR's kind/name/namespace. Pass the result(s) to Expected.WithXRs.
+func XR(kind, name, namespace string) *XRExpectation {
+	return &XRExpectation{kind: kind, name: name, namespace: namespace}
+}
+
+// xrSpec is satisfied by the two things a WithXRs argument can end on: an
+// XRExpectation itself, or a ResourceExpectation returned by an XR's Change(…)
+// sub-chain (which resolves back to its enclosing XR). This lets a per-XR
+// sub-expression terminate on either a status/summary call or a field call
+// without an explicit scope-closing step.
+type xrSpec interface {
+	xrExpectation() *XRExpectation
+}
+
+func (x *XRExpectation) xrExpectation() *XRExpectation { return x }
+
+func (r *ResourceExpectation) xrExpectation() *XRExpectation { return r.xrParent }
+
+// WithXRs attaches per-input-XR expectations (built via XR(...)) to assert
+// against the xrs[] grouped view, matched regardless of order.
+func (e *Expected) WithXRs(xrs ...xrSpec) *Expected {
+	for _, x := range xrs {
+		e.xrs = append(e.xrs, x.xrExpectation())
+	}
+
+	return e
+}
+
+// Build terminates the chain and returns the root expectation. Optional —
+// AssertStructured accepts an *Expected directly — but it reads as an
+// explicit "done building" marker.
+func (e *Expected) Build() *Expected { return e }
+
+// Status asserts the entry's status (changed/unchanged/error).
+func (x *XRExpectation) Status(status string) *XRExpectation {
+	x.status = status
+	return x
+}
+
+// Summary asserts the entry's per-XR summary counts.
+func (x *XRExpectation) Summary(added, modified, removed int) *XRExpectation {
+	x.summary = &expectedSummary{added: added, modified: modified, removed: removed}
+	return x
+}
+
+// Err asserts the entry carries an error with the given resourceID.
+func (x *XRExpectation) Err(resourceID string) *XRExpectation {
+	x.errorIDs = append(x.errorIDs, resourceID)
+	return x
+}
+
+// Change opens a change expectation scoped to this XR entry's changes[].
+// changeType is "added", "modified", or "removed". Returns a
+// ResourceExpectation whose field methods (WithField/WithFieldChange/…) and
+// chained Change(...) let a change and its siblings be expressed inline.
+func (x *XRExpectation) Change(changeType, kind, name, namespace string) *ResourceExpectation {
+	r := &ResourceExpectation{
+		xrParent:     x,
+		changeType:   changeType,
+		kind:         kind,
+		name:         name,
+		namespace:    namespace,
+		fieldValues:  make(map[string]any),
+		fieldChanges: make(map[string][2]any),
+	}
+	x.changes = append(x.changes, r)
+
+	return r
+}
+
+// WithErrorID asserts the top-level errors[] contains an error with the given resourceID. Unlike
+// WithError it pins neither the error's details nor the error count.
 func (e *Expected) WithErrorID(resourceID string) *Expected {
 	e.errorIDs = append(e.errorIDs, resourceID)
 	return e
@@ -158,9 +526,8 @@ type CompositionExpectation struct {
 	affectedWithErrors         *int
 	affectedFilteredByDeletion *int
 	xrImpacts                  []*XRImpactExpectation
-	// compositionChangeType, when set, is the composition's own change: "modified", the only one a
-	// composition makes.
-	compositionChangeType string
+	// Composition changes expectations
+	compositionChangeType string // "modified" - composition changes are always modifications
 	// impactAnalysisSkipped, when set, asserts the composites were deliberately not evaluated.
 	impactAnalysisSkipped *bool
 	// revisionImpact, when set, asserts what applying the composition does to CompositionRevisions.
@@ -200,19 +567,12 @@ type XRImpactExpectation struct {
 	status              string   // "changed", "unchanged", "error", "filtered"
 	filterReason        string   // "manualPolicy", "revisionSelectorMismatch", "deleting"; only checked when set
 	errorContains       string   // substring of an "error" impact's Error; only checked when set
-	errorIDs            []string // resourceIDs the simulate.ProjectResult errors[] attributed to the XR must contain
+	errorIDs            []string // resourceIDs the simulate.Result errors[] attributed to the XR must contain
 	downstreamSummary   *expectedSummary
 	downstreamResources []*ResourceExpectation
 }
 
 func (x *XRImpactExpectation) expectation() *Expected { return x.parent.parent }
-
-// expectedSummary is the expected count of each change type.
-type expectedSummary struct {
-	added    int
-	modified int
-	removed  int
-}
 
 // WithComposition adds an expectation for a composition.
 func (e *Expected) WithComposition(name string) *CompositionExpectation {
@@ -287,6 +647,7 @@ func (c *CompositionExpectation) WithoutPredictedRevisionName() *CompositionExpe
 // WithCompositionModified asserts that the composition itself is modified.
 func (c *CompositionExpectation) WithCompositionModified() *CompositionExpectation {
 	c.compositionChangeType = dt.DiffTypeWordModified
+
 	return c
 }
 
@@ -339,7 +700,7 @@ func (x *XRImpactExpectation) WithDownstreamSummary(added, modified, removed int
 // Use this to assert on specific field-level changes in downstream resources.
 func (x *XRImpactExpectation) WithDownstreamResource(changeType, kind, name, namespace string) *ResourceExpectation {
 	r := &ResourceExpectation{
-		parent:       x,
+		impactParent: x,
 		changeType:   changeType,
 		kind:         kind,
 		name:         name,
@@ -354,12 +715,25 @@ func (x *XRImpactExpectation) WithDownstreamResource(changeType, kind, name, nam
 
 // AndXR returns to the enclosing XR impact to chain more downstream resource expectations.
 // Not needed at the end of a chain - AssertStructured accepts a ResourceExpectation directly.
-func (r *ResourceExpectation) AndXR() *XRImpactExpectation { return r.parent }
+// Panics if called on a resource not opened via WithDownstreamResource.
+func (r *ResourceExpectation) AndXR() *XRImpactExpectation {
+	if r.impactParent == nil {
+		panic("AndXR chained on a resource not opened via WithDownstreamResource")
+	}
+
+	return r.impactParent
+}
 
 // AndComp returns to parent to chain more XR impact expectations.
 // Not needed at the end of a chain - AssertStructured accepts XRImpactExpectation directly.
 func (x *XRImpactExpectation) AndComp() *CompositionExpectation {
 	return x.parent
+}
+
+// And returns to parent to chain more composition expectations.
+// Not needed at the end of a chain - AssertStructured accepts CompositionExpectation directly.
+func (c *CompositionExpectation) And() *Expected {
+	return c.parent
 }
 
 // AndComposition starts an expectation for another composition, from anywhere in the current
@@ -369,5 +743,22 @@ func (x *XRImpactExpectation) AndComp() *CompositionExpectation {
 // multi-composition expectation readable instead of ending each composition with a run of climbs
 // whose purpose is not obvious from reading them.
 func (r *ResourceExpectation) AndComposition(name string) *CompositionExpectation {
-	return r.expectation().WithComposition(name)
+	e := r.expectation()
+	if e == nil {
+		panic("AndComposition chained on an XR-scoped change; it has no root builder")
+	}
+
+	return e.WithComposition(name)
+}
+
+// AndComposition starts an expectation for another composition. See
+// ResourceExpectation.AndComposition.
+func (x *XRImpactExpectation) AndComposition(name string) *CompositionExpectation {
+	return x.expectation().WithComposition(name)
+}
+
+// AndComposition starts an expectation for another composition. See
+// ResourceExpectation.AndComposition.
+func (c *CompositionExpectation) AndComposition(name string) *CompositionExpectation {
+	return c.expectation().WithComposition(name)
 }

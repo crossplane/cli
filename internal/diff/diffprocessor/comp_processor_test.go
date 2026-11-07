@@ -511,7 +511,11 @@ func TestDefaultCompDiffProcessor_DiffComposition(t *testing.T) {
 			xpClients := tt.setupMocks()
 
 			// Create mock XR processor
-			mockXRProc := &tu.MockDiffProcessor{}
+			mockXRProc := &tu.MockDiffProcessor{
+				PerformDiffFn: func(_ context.Context, _ []*un.Unstructured, _ types.CompositionProvider) (*dt.XRReport, error) {
+					return &dt.XRReport{}, nil
+				},
+			}
 
 			// Create processor using constructor to ensure all fields are initialized
 			logger := tu.TestLogger(t, false)
@@ -1791,9 +1795,11 @@ func TestDefaultCompDiffProcessor_DiffComposition_ReportErrorOutput(t *testing.T
 	}
 }
 
-// TestDefaultCompDiffProcessor_DiffComposition_LateWarningsReachStructuredOutput pins that an advisory
-// that can only be discovered while releasing resources is still in the report's warnings (warnings[]),
-// not just on stderr. comp reaches teardown via xrProc.Cleanup.
+// TestDefaultCompDiffProcessor_DiffComposition_LateWarningsReachStructuredOutput is the comp-side twin
+// of TestDefaultDiffProcessor_PerformDiff_LateWarningsReachStructuredOutput: an advisory that can only
+// be discovered while releasing resources must still be in the report's warnings (warnings[]), not
+// just on stderr. comp reaches
+// teardown via xrProc.Cleanup, so it needs its own guard — the xr-side test cannot fail for it.
 func TestDefaultCompDiffProcessor_DiffComposition_LateWarningsReachStructuredOutput(t *testing.T) {
 	ctx := t.Context()
 

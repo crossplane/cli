@@ -62,6 +62,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/ref"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/docker"
+	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -261,7 +262,7 @@ func RunSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *s
 	// Exit as main does: a silent ExitError, such as changes found, exits
 	// with its code and prints nothing; any other error is printed the way
 	// FatalIfErrorf does and exits with its ExitCoder's code or 1.
-	if code, ok := simulate.SilentExit(err); ok {
+	if code, ok := exitcode.SilentExit(err); ok {
 		return code, nil
 	}
 	if err != nil {

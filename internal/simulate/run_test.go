@@ -51,6 +51,7 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 	difftypes "github.com/crossplane/cli/v2/internal/diff/types"
+	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/plan"
 	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
@@ -713,7 +714,7 @@ func TestSimulateRun(t *testing.T) {
 				t.Errorf("\n%s\nsimulate(...): -want exit code, +got:\n%s", tc.reason, diff)
 			}
 			// Changes found return a silent ExitError, which main prints nothing for.
-			if _, silent := SilentExit(err); tc.want.err == nil && err != nil && !silent {
+			if _, silent := exitcode.SilentExit(err); tc.want.err == nil && err != nil && !silent {
 				t.Errorf("\n%s\nsimulate(...): want no error or a silent exit, got %v", tc.reason, err)
 			}
 			if tc.want.err != nil && !errors.Is(err, tc.want.err) {
@@ -842,10 +843,10 @@ func TestPlanNotes(t *testing.T) {
 // TestExitCodesMatchEngine pins the CLI's exit statuses to the engine's, so
 // DetermineExitCode's ranking keeps meaning what the help says.
 func TestExitCodesMatchEngine(t *testing.T) {
-	if diff := cmp.Diff(dp.ExitCodeDiffDetected, ExitCodeChanges); diff != "" {
-		t.Errorf("ExitCodeChanges: -engine, +cli:\n%s", diff)
+	if diff := cmp.Diff(dp.ExitCodeDiffDetected, exitcode.ExitCodeChanges); diff != "" {
+		t.Errorf("exitcode.ExitCodeChanges: -engine, +cli:\n%s", diff)
 	}
-	if diff := cmp.Diff(dp.ExitCodeSchemaValidation, ExitCodeSchemaValidation); diff != "" {
+	if diff := cmp.Diff(dp.ExitCodeSchemaValidation, exitcode.ExitCodeSchemaValidation); diff != "" {
 		t.Errorf("ExitCodeSchemaValidation: -engine, +cli:\n%s", diff)
 	}
 }

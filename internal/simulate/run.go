@@ -53,6 +53,7 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
+	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/kube"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -299,10 +300,10 @@ func (c *runner) simulate(ctx context.Context, logger logging.Logger, initClient
 	hasDiffs, err := diff(ctx)
 	switch dp.DetermineExitCode(err, hasDiffs) {
 	case dp.ExitCodeSchemaValidation:
-		return ExitError{Err: err, Code: ExitCodeSchemaValidation}
+		return exitcode.ExitError{Err: err, Code: exitcode.ExitCodeSchemaValidation}
 	case dp.ExitCodeDiffDetected:
 		// Changes found are a result, not an error, so nothing is printed.
-		return ExitError{Code: ExitCodeChanges}
+		return exitcode.ExitError{Code: exitcode.ExitCodeChanges}
 	}
 
 	return err
@@ -555,8 +556,8 @@ func isTerminal(w io.Writer) bool {
 // functions built locally, Composition files, with the cluster's functions,
 // or composite resource or claim files, with the cluster's Compositions and
 // functions.
-func (f *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, in *Inputs) error {
-	return (&runner{Flags: f}).run(sigCtx, k, logger, sp, in)
+func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, in *Inputs) error {
+	return (&runner{Flags: c}).run(sigCtx, k, logger, sp, in)
 }
 
 // runner is the state of one Run: the flags it was configured by, and what

@@ -181,6 +181,12 @@ func RunIntegrationTest(t *testing.T, testType TestType, tt IntegrationTestCase)
 		args = append(args, "--no-color")
 	}
 
+	// A structured expectation is only asserted for JSON output; without
+	// it the case would silently pass on the empty text-output check.
+	if tt.ExpectedStructured != nil && tt.OutputFormat != "json" {
+		t.Fatalf("ExpectedStructured is set but OutputFormat is %q; set OutputFormat to \"json\" so the structured assertion runs", tt.OutputFormat)
+	}
+
 	// Add JSON output format if specified
 	if tt.OutputFormat == "json" {
 		args = append(args, "--output=json")

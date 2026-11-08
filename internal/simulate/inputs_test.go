@@ -316,7 +316,9 @@ func TestCheckCompositesNamespace(t *testing.T) {
 		"NamespacedXRWithoutNamespace": {kind: "XNamespaced", want: "ctx-ns"},
 		"NamespacedXRWithNamespace":    {kind: "XNamespaced", namespace: "mine", want: "mine"},
 		"ClusterXR":                    {kind: "XCluster", want: ""},
+		"ClusterXRWithNamespace":       {kind: "XCluster", namespace: "mine", want: ""},
 		"LegacyClusterXR":              {kind: "XLegacy", want: ""},
+		"LegacyClusterXRWithNamespace": {kind: "XLegacy", namespace: "mine", want: ""},
 		"ClaimWithoutNamespace":        {kind: "Claim", want: "ctx-ns"},
 		"ClaimWithNamespace":           {kind: "Claim", namespace: "mine", want: "mine"},
 	}

@@ -40,6 +40,9 @@ var (
 	simulateExamples string
 )
 
+// takes is what xr simulate takes, for simulate.RejectInput.
+const takes = "xr simulate takes composite resource or claim files"
+
 // simulateCmd previews how changed composite resources or claims would change
 // a cluster.
 type simulateCmd struct {
@@ -61,11 +64,11 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 		gvk := r.GroupVersionKind()
 		switch {
 		case gvk == apiextensionsv1.CompositionGroupVersionKind:
-			return simulate.RejectInput(r, simulate.XRTakes+"; composition simulate takes Composition files")
+			return simulate.RejectInput(r, takes+"; composition simulate takes Composition files")
 		case gvk.GroupVersion().String() == projectfile.APIVersion && gvk.Kind == projectfile.Kind:
-			return simulate.RejectInput(r, simulate.XRTakes+"; project simulate takes a project file")
+			return simulate.RejectInput(r, takes+"; project simulate takes a project file")
 		case r.IsList() || gvk.Kind == "List":
-			return simulate.RejectInput(r, simulate.XRTakes)
+			return simulate.RejectInput(r, takes)
 		}
 		return nil
 	})

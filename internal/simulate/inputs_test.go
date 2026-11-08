@@ -246,22 +246,22 @@ func TestCheckComposites(t *testing.T) {
 		"ConfigurationMetadata": {
 			reason:    "A Configuration package metadata file should be rejected in the shared template, with no other command to point at.",
 			resources: []*un.Unstructured{res("meta.pkg.crossplane.io/v1", "Configuration", "cfg")},
-			err:       `-f inputs include Configuration "cfg" (meta.pkg.crossplane.io/v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed); xr simulate takes composite resource or claim files`,
+			err:       `-f inputs include Configuration "cfg" (meta.pkg.crossplane.io/v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)`,
 		},
 		"Provider": {
 			reason:    "A Provider should be rejected.",
 			resources: []*un.Unstructured{res("example.org/v1", "XThing", "x"), res("pkg.crossplane.io/v1", "Provider", "provider-aws")},
-			err:       `-f inputs include Provider "provider-aws" (pkg.crossplane.io/v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed); xr simulate takes composite resource or claim files`,
+			err:       `-f inputs include Provider "provider-aws" (pkg.crossplane.io/v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)`,
 		},
 		"ConfigMap": {
 			reason:    "A non-Crossplane kind should be rejected.",
 			resources: []*un.Unstructured{res("v1", "ConfigMap", "cm")},
-			err:       `-f inputs include ConfigMap "cm" (v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed); xr simulate takes composite resource or claim files`,
+			err:       `-f inputs include ConfigMap "cm" (v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)`,
 		},
 		"WrongVersion": {
 			reason:    "A composite resource at a version its XRD doesn't define should be rejected.",
 			resources: []*un.Unstructured{res("example.org/v2", "XThing", "x")},
-			err:       `-f inputs include XThing "x" (example.org/v2), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed); xr simulate takes composite resource or claim files`,
+			err:       `-f inputs include XThing "x" (example.org/v2), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)`,
 		},
 	}
 	for name, tc := range cases {

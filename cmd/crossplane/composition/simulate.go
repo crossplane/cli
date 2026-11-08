@@ -67,5 +67,5 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	if err := simulate.RejectDuplicateNames(comps); err != nil {
 		return err
 	}
-	return c.Flags.Run(sigCtx, k, logger, sp, &simulate.Inputs{Compositions: comps, Selection: &c.CompositionFlags})
+	return simulate.NewRunner(&c.Flags).Run(sigCtx, k, logger, sp, &simulate.Inputs{Compositions: comps, Selection: &c.CompositionFlags})
 }

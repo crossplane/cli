@@ -51,25 +51,28 @@ import (
 //go:embed help/simulate.md
 var helpDetail string
 
+//go:embed help/simulate_examples.md
+var helpExamples string
+
 // Cmd previews what applying managed resources would do.
 type Cmd struct {
-	Filename string `help:"YAML files or directory with managed resources, or '-' for stdin (comma-separated)." predictor:"yaml_file_or_directory" required:"" short:"f"`
+	Filename string `help:"File or directory of managed resources to simulate. Takes a comma-separated list of paths. - reads standard input." predictor:"yaml_file_or_directory" required:"" short:"f"`
 
-	Providers    string        `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                  name:"providers"                                         optional:""                                     predictor:"yaml_file_or_directory" type:"path"`
-	ImageConfigs string        `help:"YAML file with ImageConfig manifests that rewrite provider image paths for local pulls. Defaults to the project's imageConfigs when a project file is present."                                            name:"image-configs"                                     optional:""                                     predictor:"yaml_file"              type:"existingfile"`
-	ProjectFile  string        `help:"Path to a project definition file to read imageConfigs from. Defaults to ${project_file} when present."                                                                                                    name:"project-file"                                      optional:""`
-	SessionID    string        `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-run ID. A supplied ID isn't leased, so its containers aren't reclaimed after a crash." placeholder:"ID"`
-	Context      string        `default:""                                                                                                                                                                                                       help:"Kubernetes context."                               name:"context"                                  predictor:"context"                short:"c"`
-	CacheDir     string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                                                                                                                      help:"Cache directory for downloaded provider packages." name:"cache-dir"                                predictor:"directory"`
-	Timeout      time.Duration `default:"2m"                                                                                                                                                                                                     help:"Per-resource plan timeout."`
-	Output       string        `default:"plan"                                                                                                                                                                                                   enum:"plan,json,yaml"                                    help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
+	Providers    string        `help:"YAML file or directory of Provider manifests to run as diff servers, instead of discovering them from the cluster."                                                                                            name:"providers"                                                                optional:""                                     predictor:"yaml_file_or_directory" type:"path"`
+	ImageConfigs string        `help:"YAML file of ImageConfig manifests that rewrite package paths for pulls. Defaults to the project's imageConfigs when a project file is present."                                                               name:"image-configs"                                                            optional:""                                     predictor:"yaml_file"              type:"existingfile"`
+	ProjectFile  string        `help:"Project file to read imageConfigs from. Defaults to ${project_file} when present."                                                                                                                             name:"project-file"                                                             optional:""`
+	SessionID    string        `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID. A supplied ID isn't leased, so its containers aren't reclaimed after a crash." placeholder:"ID"`
+	Context      string        `default:""                                                                                                                                                                                                           help:"Kubernetes context to simulate against. Defaults to the current context." name:"context"                                  predictor:"context"                short:"c"`
+	CacheDir     string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                                                                                                                          help:"Directory for cached xpkg package contents (providers)."                  name:"cache-dir"                                predictor:"directory"`
+	Timeout      time.Duration `default:"2m"                                                                                                                                                                                                         help:"Max time to plan one managed resource."`
+	Output       string        `default:"plan"                                                                                                                                                                                                       enum:"plan,json,yaml"                                                           help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
 
 // Help returns the help message for the simulate command.
 func (c *Cmd) Help() string {
-	return helpDetail
+	return helpDetail + "\n" + helpExamples
 }
 
 // Run runs the simulate command. ctx is the signal-bound command context from

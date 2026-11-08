@@ -79,7 +79,7 @@ type Packages struct {
 // only ICs and Client. Run stops c.servers when it is set. Planning
 // shares the engine's clients' REST mapper and CRD cache, so a run discovers
 // the cluster once and fetches each CRD at most once.
-func (c *Flags) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, clients *client.Clients, ns string, pkgs *Packages) ([]dp.ProcessorOption, error) {
+func (c *runner) planOptions(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, restCfg *rest.Config, clients *client.Clients, ns string, pkgs *Packages) ([]dp.ProcessorOption, error) {
 	rmapper, crds := clients.Core.Mapper, clients.K8sClients.Schema
 	kubeClient, err := NewKubeClient(restCfg, rmapper)
 	if err != nil {
@@ -157,7 +157,7 @@ func providerSource(providers string, project bool) source {
 
 // noteNoServers prints NoteNoDiffServers to stderr once, for -o
 // diff, which has no notes; the other formats carry it in their notes.
-func (c *Flags) noteNoServers(k *kong.Context, notes []string) {
+func (c *runner) noteNoServers(k *kong.Context, notes []string) {
 	if c.noServersNoted || c.Output != string(renderer.OutputFormatDiff) || !slices.Contains(notes, NoteNoDiffServers) {
 		return
 	}
@@ -214,7 +214,7 @@ func changedFunctions(ctx context.Context, rc k8client.ResourceClient, digests m
 // diffCompositions returns the diff simulate runs for Compositions: their
 // impact on the composite resources in scope, rendered to k's writers.
 // Errors are wrapped with msg.
-func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp.CompDiffProcessor, comps []*un.Unstructured, msg string) func(context.Context) (bool, error) {
+func (c *runner) diffCompositions(k *kong.Context, logger logging.Logger, proc dp.CompDiffProcessor, comps []*un.Unstructured, msg string) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
 		output, err := proc.DiffComposition(ctx, comps, c.sel.ns, c.sel.refs)
 
@@ -234,7 +234,7 @@ func (c *Flags) diffCompositions(k *kong.Context, logger logging.Logger, proc dp
 // crossplane-diff's xr command. A claim is simulated as its XR, but the
 // report names the input, so its result is listed under the claim's name
 // (crossplane/cli#367).
-func (c *Flags) diffComposites(k *kong.Context, logger logging.Logger, proc dp.DiffProcessor, xp *xpclient.Clients, ns string, xrs []*un.Unstructured) func(context.Context) (bool, error) {
+func (c *runner) diffComposites(k *kong.Context, logger logging.Logger, proc dp.DiffProcessor, xp *xpclient.Clients, ns string, xrs []*un.Unstructured) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
 		if err := checkComposites(ctx, xp.Definition, ns, xrs); err != nil {
 			return false, err
@@ -275,7 +275,7 @@ type processor interface {
 // exits 3; one that fails only schema validation returns one that exits 2.
 // ctx must not be cancelled by its owner until simulate returns, so a
 // cancellation reads as an interrupt.
-func (c *Flags) simulate(ctx context.Context, logger logging.Logger, initClients func(context.Context, logging.Logger) error, proc processor, diff func(context.Context) (bool, error)) (err error) {
+func (c *runner) simulate(ctx context.Context, logger logging.Logger, initClients func(context.Context, logging.Logger) error, proc processor, diff func(context.Context) (bool, error)) (err error) {
 	// An interrupted run reports the interruption, not the cancelled calls it
 	// caused. main exits 130 for it.
 	defer func() {
@@ -342,7 +342,7 @@ func (c *CompositionFlags) scope() (string, []k8stypes.NamespacedName, error) {
 // XR and composition processors get the same options, so they share one advisory collector. fns are the project's
 // functions, of which embedded are the locally built ones, and ics rewrite
 // the other functions' images.
-func (c *Flags) processorOptions(k *kong.Context, logger logging.Logger, creds []corev1.Secret, fns []pkgv1.Function, embedded map[string]name.Digest, ics []pkgv1beta1.ImageConfig) []dp.ProcessorOption {
+func (c *runner) processorOptions(k *kong.Context, logger logging.Logger, creds []corev1.Secret, fns []pkgv1.Function, embedded map[string]name.Digest, ics []pkgv1beta1.ImageConfig) []dp.ProcessorOption {
 	c.SetDefaultCrossplaneDockerNetwork(fns)
 
 	opts := []dp.ProcessorOption{
@@ -416,7 +416,7 @@ func functionProviderFactory(fns []pkgv1.Function, embedded map[string]name.Dige
 // writing to k's stdout and stderr. The processors return reports; the command
 // renders them with these options. Diffs are colorized only when a person
 // reads them: on a terminal, or as if on one under the test hooks.
-func (c *Flags) diffOptions(k *kong.Context) renderer.DiffOptions {
+func (c *runner) diffOptions(k *kong.Context) renderer.DiffOptions {
 	opts := renderer.DefaultDiffOptions()
 	opts.UseColors = !c.NoColor && (c.Hooks != nil && c.Hooks.Terminal || isTerminal(k.Stdout))
 	opts.Compact = c.Compact
@@ -427,7 +427,7 @@ func (c *Flags) diffOptions(k *kong.Context) renderer.DiffOptions {
 
 // providerPlans returns the provider plans the run collected, or nil when
 // planning was skipped.
-func (c *Flags) providerPlans() *ProviderPlans {
+func (c *runner) providerPlans() *ProviderPlans {
 	if c.xrPlanner == nil {
 		return nil
 	}
@@ -447,7 +447,7 @@ func planNotes(skipPlan, planned bool, routed, considered int) []string {
 	return nil
 }
 
-func (c *Flags) notes() []string {
+func (c *runner) notes() []string {
 	if c.xrPlanner == nil {
 		return planNotes(c.SkipPlan, false, 0, 0)
 	}
@@ -456,7 +456,7 @@ func (c *Flags) notes() []string {
 
 // renderXRReport writes an xr run's report in the format -o selects, as
 // renderReport does.
-func (c *Flags) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport, runErr error) (bool, error) {
+func (c *runner) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport, runErr error) (bool, error) {
 	plans := c.providerPlans()
 	return c.renderReport(k, logger, runErr, FromXRReport(r, plans, c.keep), r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
 		// Annotated even without plans, so a Secret's values are redacted.
@@ -467,7 +467,7 @@ func (c *Flags) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRR
 
 // renderCompReport writes a composition run's report in the format -o
 // selects, as renderReport does.
-func (c *Flags) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput, runErr error) (bool, error) {
+func (c *runner) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput, runErr error) (bool, error) {
 	plans := c.providerPlans()
 	return c.renderReport(k, logger, runErr, FromCompReport(o, plans, c.keep), o.HasChanges(), dt.CompDryRunWarnings(o), func(opts renderer.DiffOptions) error {
 		opts.MinimizeComposition = c.sel.MinimizeComposition
@@ -482,7 +482,7 @@ func (c *Flags) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.C
 // whether the run changed anything, provider plans included, and runErr
 // with any render failure joined to it, so neither is lost. changed is
 // whether the report itself has changes.
-func (c *Flags) renderReport(k *kong.Context, logger logging.Logger, runErr error, res Result, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (bool, error) {
+func (c *runner) renderReport(k *kong.Context, logger logging.Logger, runErr error, res Result, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (bool, error) {
 	opts := c.diffOptions(k)
 	plans := c.providerPlans()
 	if plans != nil {
@@ -512,7 +512,7 @@ func (c *Flags) renderReport(k *kong.Context, logger logging.Logger, runErr erro
 // writes derived, the warnings derived from the report, to stderr, as the
 // engine's renderers do. The run's other warnings went to stderr when they
 // were raised.
-func (c *Flags) renderPlan(k *kong.Context, res Result, derived []dt.OutputWarning) error {
+func (c *runner) renderPlan(k *kong.Context, res Result, derived []dt.OutputWarning) error {
 	r, err := NewRenderer(c.Output)
 	if err != nil {
 		return err
@@ -555,7 +555,28 @@ func isTerminal(w io.Writer) bool {
 // functions built locally, Composition files, with the cluster's functions,
 // or composite resource or claim files, with the cluster's Compositions and
 // functions.
-func (c *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, in *Inputs) error {
+func (f *Flags) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, in *Inputs) error {
+	return (&runner{Flags: f}).run(sigCtx, k, logger, sp, in)
+}
+
+// runner is the state of one Run: the flags it was configured by, and what
+// planning sets up along the way.
+type runner struct {
+	*Flags
+
+	// xrPlanner and servers are set by planOptions; nil with --skip-plan
+	// (servers also when Hooks.Router is set).
+	xrPlanner *XRPlanner
+	// keep is the equal-diff filter the engine and xrPlanner share.
+	keep    func(*un.Unstructured) bool
+	servers *diffserver.Manager
+	// noServersNoted is set once the "no diff servers" line is printed.
+	noServersNoted bool
+	// sel is Inputs.Selection, which run copies in; zero without one.
+	sel CompositionFlags
+}
+
+func (c *runner) run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, in *Inputs) error {
 	if in.Selection != nil {
 		c.sel = *in.Selection
 	}

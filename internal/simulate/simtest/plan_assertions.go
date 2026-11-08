@@ -18,16 +18,15 @@ import (
 	"github.com/crossplane/cli/v2/internal/simulate"
 )
 
-// The assertions below read composition simulate's structured output, simulate.ProjectResult, behind the
-// builder API in structured_assertions.go. The builders speak crossplane-diff's vocabulary
-// (added/modified/removed changes, impactAnalysis[] entries); this file maps each onto its
-// simulate.ProjectResult home:
+// The assertions below read project simulate's structured output, simulate.ProjectResult, behind the builder API
+// in structured_assertions.go. The builders speak crossplane-diff's vocabulary (added/modified/removed
+// changes, xrs[] entries, impactAnalysis[] entries); this file maps each onto its simulate.ProjectResult home:
 //
 //   - a change is a ResourcePlan, its type the plan's Action (create/update/delete);
 //   - a field value or old/new pair is read from the plan's leaf FieldChanges, a non-leaf path being
 //     re-assembled from the leaves under it, or, for a pair whose sides are equal, from the plan's
 //     before and after objects;
-//   - an impactAnalysis[] entry is a Composites entry, its changes the plans grouped under it;
+//   - an xrs[] or impactAnalysis[] entry is a Composites entry, its changes the plans grouped under it;
 //   - a composition is a Compositions entry plus its own (ungrouped) plan;
 //   - an error's resourceID ("Kind/name") is the Kind and Name of its Errors[].resource.
 
@@ -49,9 +48,8 @@ func changeAction(changeType string) plan.Action {
 // simulate.ProjectResult splits into deferred (Manual policy) and skipped (any other reason).
 const statusFiltered = "filtered"
 
-// AssertStructured checks composition simulate's -o json output against expected, running each
-// section only if it was expected. Accepts any builder level, so callers don't need
-// And()/AndXR()/AndComp().
+// AssertStructured checks a simulate.ProjectResult against expected, running each section only if it was
+// expected. Accepts any builder level, so callers don't need And()/AndXR()/AndComp().
 func AssertStructured(t *testing.T, jsonOutput string, e Expectation) {
 	t.Helper()
 
@@ -62,10 +60,42 @@ func AssertStructured(t *testing.T, jsonOutput string, e Expectation) {
 		t.Fatalf("failed to parse plan result JSON output: %v\nOutput was:\n%s", err, jsonOutput)
 	}
 
+	if s := expected.summary; s != nil {
+		assertSummary(t, "Summary", s, res.Summary.Create, res.Summary.Update, res.Summary.Destroy, res.Summary.Replace)
+	}
+
+	changes := changePlans(res.Plans, func(*plan.ResourcePlan) bool { return true })
+	assertResourceExpectations(t, "", changes, expected.resources)
+
+	if len(expected.resources) > 0 && len(changes) != len(expected.resources) {
+		t.Errorf("Expected %d changes, got %d: %v", len(expected.resources), len(changes), planIDs(changes))
+	}
+
+	usedErrs := make([]bool, len(res.Errors))
+
+	for _, want := range expected.errors {
+		got := findMatchingError(res.Errors, usedErrs, want.resourceID, nil)
+		if got == nil {
+			t.Errorf("Expected error for resourceID %q not found in output. Actual error IDs: %v",
+				want.resourceID, errorIDs(res.Errors))
+
+			continue
+		}
+
+		assertErrorMatch(t, *got, want)
+	}
+
+	// Pinning any error expectations pins the count too. Zero expectations = no opinion on errors.
+	if len(expected.errors) > 0 && len(res.Errors) != len(expected.errors) {
+		t.Errorf("Expected %d errors in structured output, got %d", len(expected.errors), len(res.Errors))
+	}
+
 	assertWarnings(t, res.Warnings, warningMatches(expected.warnings, func(w *WarningExpectation) warningMatch { return w.warningMatch }), expected.noWarnings)
 
+	assertXRExpectations(t, res, expected.xrs)
+
 	for _, id := range expected.errorIDs {
-		if findMatchingError(res.Errors, id) == nil {
+		if findMatchingError(res.Errors, usedErrs, id, nil) == nil {
 			t.Errorf("Expected top-level error with resourceID %q not found. Actual error IDs: %v", id, errorIDs(res.Errors))
 		}
 	}
@@ -112,6 +142,8 @@ func assertComposition(t *testing.T, res simulate.ProjectResult, want *Compositi
 			t.Errorf("%s: expected composition changes but found no plan for it", label)
 		case compPlan.Action != changeAction(want.compositionChangeType):
 			t.Errorf("%s: expected action %s, got %q (error %q)", label, changeAction(want.compositionChangeType), compPlan.Action, compPlan.Error)
+		default:
+			assertFields(t, label, compPlan, want.compositionChangeType, nil, nil)
 		}
 	}
 
@@ -206,7 +238,7 @@ func assertXRImpact(t *testing.T, res simulate.ProjectResult, label string, comp
 	t.Helper()
 
 	i := slices.IndexFunc(composites, func(c simulate.CompositeResult) bool {
-		return refMatches(c.Ref, want.kind, want.name, want.namespace)
+		return refMatches(c.Ref, want.kind, want.name, want.namespace, nil, false)
 	})
 	if i < 0 {
 		t.Errorf("%s: Expected XR impact %s/%s (ns=%s) not found. Actual XRs: %v",
@@ -239,8 +271,10 @@ func assertXRImpact(t *testing.T, res simulate.ProjectResult, label string, comp
 		}
 	}
 
+	usedErrs := make([]bool, len(errs))
+
 	for _, id := range want.errorIDs {
-		if findMatchingError(errs, id) == nil {
+		if findMatchingError(errs, usedErrs, id, nil) == nil {
 			t.Errorf("%s: expected error with resourceID %q not found. Actual error IDs: %v", label, id, errorIDs(errs))
 		}
 	}
@@ -252,8 +286,10 @@ func assertXRImpact(t *testing.T, res simulate.ProjectResult, label string, comp
 		assertSummary(t, label+": downstream summary", s, create, update, destroy, replace)
 	}
 
+	usedPlans := make([]bool, len(downstream))
+
 	for _, wantRes := range want.downstreamResources {
-		p := findMatchingPlan(downstream, wantRes.changeType, wantRes.kind, wantRes.name, wantRes.namespace)
+		p := findMatchingPlan(downstream, usedPlans, wantRes.changeType, wantRes.kind, wantRes.name, wantRes.namespace, wantRes.namePattern)
 		if p == nil {
 			t.Errorf("%s: expected downstream %s resource %s/%s not found. Actual: %v",
 				label, wantRes.changeType, wantRes.kind, wantRes.name, planIDs(downstream))
@@ -278,23 +314,113 @@ func statusMatches(got simulate.CompositeStatus, want string) bool {
 	return string(got) == want
 }
 
-// assertFields checks a plan's field expectations. values read the planned side, or the actual side
-// of a delete, which carries what is removed. changes compare both sides.
+// assertXRExpectations checks the xrs[] expectations against Composites.
+//
+// Each expectation consumes the entry it matches, so two expectations can never both resolve to the
+// same entry, and the entry count is pinned once the test has an opinion on xrs[] at all. Without those
+// guards a duplicated identity satisfied every expectation that matched it (issues #477, #488).
+func assertXRExpectations(t *testing.T, res simulate.ProjectResult, expected []*XRExpectation) {
+	t.Helper()
+
+	if len(expected) == 0 {
+		return
+	}
+
+	if len(res.Composites) != len(expected) {
+		t.Errorf("Expected %d xrs[] entries, got %d: %v", len(expected), len(res.Composites), compositeIDs(res.Composites))
+	}
+
+	used := make([]bool, len(res.Composites))
+	usedErrs := make([]bool, len(res.Errors))
+
+	for _, want := range expected {
+		i := -1
+		for j, c := range res.Composites {
+			if !used[j] && refMatches(c.Ref, want.kind, want.name, want.namespace, nil, true) {
+				i = j
+				break
+			}
+		}
+
+		if i < 0 {
+			t.Errorf("Expected xrs[] entry %s/%s (ns=%s) not found. Actual: %v",
+				want.kind, want.name, want.namespace, compositeIDs(res.Composites))
+
+			continue
+		}
+
+		used[i] = true
+		got := res.Composites[i]
+		label := fmt.Sprintf("%s/%s", got.Ref.Kind, got.Ref.Name)
+
+		if want.status != "" && !statusMatches(got.Status, want.status) {
+			t.Errorf("xr %s: status: expected %q, got %q", label, want.status, got.Status)
+		}
+
+		changes := changePlans(res.Plans, groupedUnder(got.Ref))
+
+		if s := want.summary; s != nil {
+			create, update, destroy, replace := countActions(changes)
+			assertSummary(t, "xr "+label+": summary", s, create, update, destroy, replace)
+		}
+
+		assertResourceExpectations(t, label, changes, want.changes)
+
+		// Pin the entry's change count too, so a change the test did not ask for cannot hide inside a
+		// matched entry.
+		if len(want.changes) > 0 && len(changes) != len(want.changes) {
+			t.Errorf("xr %s: expected %d changes, got %d: %v", label, len(want.changes), len(changes), planIDs(changes))
+		}
+
+		for _, id := range want.errorIDs {
+			if findMatchingError(res.Errors, usedErrs, id, &got.Ref) == nil {
+				t.Errorf("xr %s: expected error with resourceID %q not found against it. Actual error IDs: %v", label, id, errorIDs(res.Errors))
+			}
+		}
+	}
+}
+
+// assertResourceExpectations checks each expectation against a set of change plans. scope is "" for
+// the flat view, or an XR's Kind/name, and is used only in failure messages.
+func assertResourceExpectations(t *testing.T, scope string, changes []*plan.ResourcePlan, resources []*ResourceExpectation) {
+	t.Helper()
+
+	prefix := ""
+	if scope != "" {
+		prefix = "xr " + scope + ": "
+	}
+
+	used := make([]bool, len(changes))
+
+	for _, want := range resources {
+		p := findMatchingPlan(changes, used, want.changeType, want.kind, want.name, want.namespace, want.namePattern)
+		if p == nil {
+			t.Errorf("%sExpected %s resource %s/%s (ns=%s) not found. Actual resources: %v",
+				prefix, want.changeType, want.kind, want.name, want.namespace, planIDs(changes))
+
+			continue
+		}
+
+		id := fmt.Sprintf("%s%s %s/%s", prefix, want.changeType, want.kind, want.name)
+		assertDryRun(t, id, p.DryRun, want.dryRun)
+		assertFields(t, id, p, want.changeType, want.fieldValues, want.fieldChanges)
+	}
+}
+
+// assertFields checks a plan's field expectations. values read the planned side, or the
+// actual side of a delete, which carries what is removed. changes compare both sides.
 func assertFields(t *testing.T, id string, p *plan.ResourcePlan, changeType string, values map[string]any, changes map[string][2]any) {
 	t.Helper()
 
 	planned := changeType != dt.DiffTypeWordRemoved
 
 	for path, want := range values {
-		// A field that is absent is not an explicit null, so WithField(path, nil) needs it present.
-		if got, found := valueAt(t, p.Changes, planned, path); !found || !valuesEqual(got, want) {
-			t.Errorf("%s: field %s: expected %v, got %v (present: %t)", id, path, want, got, found)
-		}
+		assertFieldValue(t, id, p, planned, path, want)
 	}
 
 	for path, want := range changes {
 		if want[0] == nil && want[1] == nil {
-			t.Fatalf("%s: field %s: WithFieldChange(path, nil, nil) asserts nothing", id, path)
+			t.Fatalf("%s: field %s: WithFieldChange(path, nil, nil) asserts nothing; use WithFieldAbsent", id, path)
 		}
 
 		// FieldChanges are leaf changes only, so a field rendered identically on both sides is read from
@@ -323,6 +449,65 @@ func assertFields(t *testing.T, id string, p *plan.ResourcePlan, changeType stri
 	}
 }
 
+// assertFieldValue checks one WithField or WithFieldAbsent expectation against the planned side, or
+// the actual side of a delete.
+func assertFieldValue(t *testing.T, id string, p *plan.ResourcePlan, planned bool, path string, want any) {
+	t.Helper()
+
+	got, found := valueAt(t, p.Changes, planned, path)
+
+	if _, ok := want.(absentField); ok {
+		if found {
+			t.Errorf("%s: field %s: expected absent, got %v", id, path, got)
+		}
+
+		if planned {
+			assertAbsentInAfter(t, id, p, path)
+		} else {
+			assertAbsentInBefore(t, id, p, path)
+		}
+
+		return
+	}
+
+	// A field that is absent is not an explicit null, so WithField(path, nil) needs it present.
+	if !found || !valuesEqual(got, want) {
+		t.Errorf("%s: field %s: expected %v, got %v (present: %t)", id, path, want, got, found)
+	}
+
+	if want == nil && planned {
+		assertAbsentInAfter(t, id, p, path)
+	}
+}
+
+// assertAbsentInAfter requires path to be absent from the plan's After object, not only from its leaf
+// changes, when After is set.
+func assertAbsentInAfter(t *testing.T, id string, p *plan.ResourcePlan, path string) {
+	t.Helper()
+
+	if p.After == nil {
+		return
+	}
+
+	if got, ok := objectValueAt(t, p.After, path); ok {
+		t.Errorf("%s: field %s: expected absent, but after carries %v", id, path, got)
+	}
+}
+
+// assertAbsentInBefore requires path to be absent from the plan's Before object, not only from its leaf
+// changes, when Before is set: an empty map or list leaves no leaf change.
+func assertAbsentInBefore(t *testing.T, id string, p *plan.ResourcePlan, path string) {
+	t.Helper()
+
+	if p.Before == nil {
+		return
+	}
+
+	if got, ok := objectValueAt(t, p.Before, path); ok {
+		t.Errorf("%s: field %s: expected absent, but before carries %v", id, path, got)
+	}
+}
+
 // assertDryRun checks a plan's dry-run verification: either that its desired state was reported as NOT
 // verified against the apiserver (for a reason, optionally with the cluster's own explanation), or that
 // no such report is present at all.
@@ -331,6 +516,11 @@ func assertDryRun(t *testing.T, id string, got *plan.Verification, want dryRunEx
 
 	if want.mustBePerformed && want.skipReason != "" {
 		t.Errorf("%s: WithDryRunPerformed and WithDryRunSkipped(%q) contradict each other; set only one", id, want.skipReason)
+		return
+	}
+
+	if want.mustBePerformed && want.storageVersion != "" {
+		t.Errorf("%s: WithDryRunPerformed and WithDryRunStorageVersion(%q) contradict each other; a performed dry-run reports no storage version", id, want.storageVersion)
 		return
 	}
 
@@ -343,7 +533,12 @@ func assertDryRun(t *testing.T, id string, got *plan.Verification, want dryRunEx
 		return
 	}
 
-	if want.skipReason == "" {
+	if want.skipReason == "" && want.storageVersion == "" {
+		return
+	}
+
+	if got == nil && want.skipReason == "" {
+		t.Errorf("%s: expected dryRun.storageVersion %q, but no dryRun was reported", id, want.storageVersion)
 		return
 	}
 
@@ -354,7 +549,7 @@ func assertDryRun(t *testing.T, id string, got *plan.Verification, want dryRunEx
 		return
 	}
 
-	if got.SkipReason != want.skipReason {
+	if want.skipReason != "" && got.SkipReason != want.skipReason {
 		t.Errorf("%s: dryRun.skipReason: expected %q, got %q", id, want.skipReason, got.SkipReason)
 	}
 
@@ -362,10 +557,14 @@ func assertDryRun(t *testing.T, id string, got *plan.Verification, want dryRunEx
 		t.Errorf("%s: dryRun.detail %q does not contain %q — the cluster's own explanation must be propagated, not swallowed",
 			id, got.Detail, want.detailSubstring)
 	}
+
+	if want.storageVersion != "" && got.StorageVersion != want.storageVersion {
+		t.Errorf("%s: dryRun.storageVersion: expected %q, got %q", id, want.storageVersion, got.StorageVersion)
+	}
 }
 
 // assertWarnings checks each expectation against got, then — if the test pinned any expectations, or
-// asserted there are none — verifies no extras were emitted. Without the
+// asserted there are none — verifies no extras were emitted, mirroring the errors[] guard. Without the
 // count check, warning duplication is untestable: a regression that emits the same advisory once per
 // XR still satisfies every find-first-match expectation. No expectations and no noWarnings = no opinion.
 func assertWarnings(t *testing.T, got []simulate.Warning, want []warningMatch, noWarnings bool) {
@@ -414,6 +613,102 @@ func assertWarningExpectation(t *testing.T, got []simulate.Warning, used []bool,
 	}
 
 	t.Errorf("expected a warning containing %q in structured output; got %v", want.messageContains, warningMessages(got))
+}
+
+// assertErrorMatch checks a single error against its expectation.
+func assertErrorMatch(t *testing.T, got simulate.Error, want *ErrorExpectation) {
+	t.Helper()
+
+	if want.messageContains != "" && !strings.Contains(got.Message, want.messageContains) {
+		t.Errorf("error %q: message %q does not contain %q", want.resourceID, got.Message, want.messageContains)
+	}
+
+	usedVFs := make([]bool, len(got.ValidationFailures))
+
+	for _, wantVF := range want.validationFailures {
+		i := firstUnused(usedVFs, func(i int) bool {
+			v := got.ValidationFailures[i]
+
+			return v.APIVersion == wantVF.apiVersion && v.Kind == wantVF.kind && v.Name == wantVF.name &&
+				(wantVF.namespace == "" || v.Namespace == wantVF.namespace)
+		})
+		if i < 0 {
+			actual := make([]string, 0, len(got.ValidationFailures))
+			for _, vf := range got.ValidationFailures {
+				actual = append(actual, fmt.Sprintf("%s/%s %s/%s", vf.APIVersion, vf.Kind, vf.Namespace, vf.Name))
+			}
+
+			t.Errorf("error %q: expected validationFailure %s/%s %s/%s not found. Actual: %v",
+				want.resourceID, wantVF.apiVersion, wantVF.kind, wantVF.namespace, wantVF.name, actual)
+
+			continue
+		}
+
+		usedVFs[i] = true
+
+		assertValidationFailureMatch(t, got.ValidationFailures[i], wantVF)
+	}
+
+	if len(want.validationFailures) > 0 && len(got.ValidationFailures) != len(want.validationFailures) {
+		t.Errorf("error %q: expected %d validationFailures, got %d",
+			want.resourceID, len(want.validationFailures), len(got.ValidationFailures))
+	}
+}
+
+func assertValidationFailureMatch(t *testing.T, got simulate.ValidationFailure, want *ValidationFailureExpectation) {
+	t.Helper()
+
+	label := fmt.Sprintf("validationFailure %s/%s %s", want.apiVersion, want.kind, want.name)
+
+	if want.status != "" && got.Status != want.status {
+		t.Errorf("%s: status: expected %q, got %q", label, want.status, got.Status)
+	}
+
+	usedFEs := make([]bool, len(got.Errors))
+
+	for _, wantFE := range want.errors {
+		i := firstUnused(usedFEs, func(i int) bool {
+			return got.Errors[i].Type == wantFE.errType && got.Errors[i].Field == wantFE.field
+		})
+		if i < 0 {
+			actual := make([]string, 0, len(got.Errors))
+			for _, fe := range got.Errors {
+				actual = append(actual, fmt.Sprintf("[%s] %s", fe.Type, fe.Field))
+			}
+
+			t.Errorf("%s: expected fieldError [%s] %s not found. Actual: %v", label, wantFE.errType, wantFE.field, actual)
+
+			continue
+		}
+
+		usedFEs[i] = true
+		gotFE := got.Errors[i]
+
+		if wantFE.messageContains != "" && !strings.Contains(gotFE.Message, wantFE.messageContains) {
+			t.Errorf("%s: fieldError [%s] %s: message %q does not contain %q",
+				label, wantFE.errType, wantFE.field, gotFE.Message, wantFE.messageContains)
+		}
+
+		if wantFE.hasValue && !reflect.DeepEqual(gotFE.Value, wantFE.value) {
+			t.Errorf("%s: fieldError [%s] %s: value: expected %v (%T), got %v (%T)",
+				label, wantFE.errType, wantFE.field, wantFE.value, wantFE.value, gotFE.Value, gotFE.Value)
+		}
+	}
+
+	if len(want.errors) > 0 && len(got.Errors) != len(want.errors) {
+		t.Errorf("%s: expected %d field errors, got %d", label, len(want.errors), len(got.Errors))
+	}
+}
+
+// firstUnused returns the index of the first unused element for which match is true, or -1.
+func firstUnused(used []bool, match func(i int) bool) int {
+	for i := range used {
+		if !used[i] && match(i) {
+			return i
+		}
+	}
+
+	return -1
 }
 
 func assertSummary(t *testing.T, label string, want *expectedSummary, create, update, destroy, replace int) {
@@ -477,16 +772,18 @@ func findPlan(plans []*plan.ResourcePlan, ref plan.ResourceRef, composite *plan.
 	return nil
 }
 
-// findMatchingPlan returns the first plan with changeType's action, kind, name and (when given)
-// namespace.
-func findMatchingPlan(plans []*plan.ResourcePlan, changeType, kind, name, namespace string) *plan.ResourcePlan {
-	for _, p := range plans {
-		if p.Action != changeAction(changeType) {
+// findMatchingPlan returns the first unused plan with changeType's action, kind and (when given) namespace,
+// whose name is any, matches namePattern, or equals name.
+func findMatchingPlan(plans []*plan.ResourcePlan, used []bool, changeType, kind, name, namespace string, namePattern *regexp.Regexp) *plan.ResourcePlan {
+	for i, p := range plans {
+		if used[i] || p.Action != changeAction(changeType) {
 			continue
 		}
 
 		ref := plan.ResourceRef{Kind: p.Kind, Name: p.Name, Namespace: p.Namespace}
-		if refMatches(ref, kind, name, namespace) {
+		if refMatches(ref, kind, name, namespace, namePattern, false) {
+			used[i] = true
+
 			return p
 		}
 	}
@@ -494,15 +791,32 @@ func findMatchingPlan(plans []*plan.ResourcePlan, changeType, kind, name, namesp
 	return nil
 }
 
-// refMatches reports whether ref has kind, name and, unless namespace is empty, namespace.
-func refMatches(ref plan.ResourceRef, kind, name, namespace string) bool {
-	return ref.Kind == kind && ref.Name == name && (namespace == "" || ref.Namespace == namespace)
+// refMatches reports whether ref has kind and the expected name (any, matching namePattern, or equal).
+// An empty namespace matches any namespace unless exactNamespace is set.
+func refMatches(ref plan.ResourceRef, kind, name, namespace string, namePattern *regexp.Regexp, exactNamespace bool) bool {
+	if ref.Kind != kind || ((exactNamespace || namespace != "") && ref.Namespace != namespace) {
+		return false
+	}
+
+	switch {
+	case namePattern != nil:
+		return namePattern.MatchString(ref.Name)
+	default:
+		return ref.Name == name
+	}
 }
 
-// findMatchingError returns the error whose resource is resourceID ("Kind/name").
-func findMatchingError(errs []simulate.Error, resourceID string) *simulate.Error {
+// findMatchingError returns the first unused error whose resource is resourceID ("Kind/name") and, when
+// ref is set, whose Ref equals it, and marks it used so one error satisfies one expectation.
+func findMatchingError(errs []simulate.Error, used []bool, resourceID string, ref *plan.ResourceRef) *simulate.Error {
 	for i := range errs {
-		if errorID(errs[i]) == resourceID {
+		if used[i] || errorID(errs[i]) != resourceID {
+			continue
+		}
+
+		if ref == nil || (errs[i].Ref != nil && *errs[i].Ref == *ref) {
+			used[i] = true
+
 			return &errs[i]
 		}
 	}

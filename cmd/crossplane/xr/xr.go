@@ -21,4 +21,5 @@ package xr
 type Cmd struct {
 	Generate generateCmd `cmd:"" help:"Generate a Composite Resource (XR) from a Claim."`
 	Patch    patchCmd    `cmd:"" help:"Patch a Composite Resource (XR)."`
+	Simulate simulateCmd `cmd:"" help:"Preview what applying changed Composite Resources (XRs) or claims would do." maturity:"alpha"`
 }

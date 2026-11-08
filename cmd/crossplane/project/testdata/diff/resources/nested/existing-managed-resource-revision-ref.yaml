@@ -1,0 +1,15 @@
+# The managed resource composed by existing-child-xr-revision-ref.yaml through
+# child-revision-templating-composition.yaml, so configData holds the revision the child tracks.
+# Carries crossplane.io/composition-resource-name (and, from the harness, the composite label) because
+# the render adds both: a fixture missing them is reported as modified on every run, which would hide
+# whether the revision name propagated.
+apiVersion: ns.nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  name: test-parent-child-managed
+  namespace: default
+  annotations:
+    crossplane.io/composition-resource-name: managed-resource
+spec:
+  forProvider:
+    configData: xchildresources.nested.example.org-96afc06

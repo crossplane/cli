@@ -11,6 +11,11 @@ desired and live state. The provider computes its own diff, so the preview
 includes replacement detection, values known only after apply, and redacted
 sensitive values. A resource with no live counterpart plans as a create.
 
+This command takes managed resources. To simulate composite resources or
+claims, use `crossplane xr simulate`; to simulate Compositions, use
+`crossplane composition simulate`; to simulate a project, use
+`crossplane project simulate`.
+
 Which providers run as diff servers comes from the current kubeconfig context
 by default: the CLI follows each resource's kind to the provider that
 installed it on the cluster, so the preview matches the provider versions

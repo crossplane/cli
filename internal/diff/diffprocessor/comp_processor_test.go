@@ -2355,6 +2355,22 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 			Build()
 	}
 
+	// A Manual claim, whose render resolves the composition for its backing XR (see
+	// DiffProcessor.ResolveComposite): the revision's compositeTypeRef names the XR's kind, not the claim's.
+	claim := tu.NewResource("example.org/v1", "Claim", "pinned").InNamespace("ns").
+		WithSpecField("crossplane", map[string]any{
+			"compositionUpdatePolicy": "Manual",
+			"compositionRevisionRef":  map[string]any{"name": "test-comp-rev1"},
+		}).
+		Build()
+	resolveComposite := func(_ context.Context, res *un.Unstructured) (*un.Unstructured, error) {
+		if res.GetKind() == "Claim" {
+			return pinnedXR("pinned-xyz"), nil
+		}
+
+		return res, nil
+	}
+
 	// The pinned revision's pipeline has a step the CLI composition lacks, so a render that saw the
 	// CLI composition instead is detectable.
 	revisionWith := func(fn string) *apiextensionsv1.Composition {
@@ -2380,6 +2396,7 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 		lookupErr     error
 		includeManual bool
 		unrelated     bool
+		claim         bool
 		want          want
 	}{
 		"PinnedXRWithChangedFunctionRendersPinnedRevision": {
@@ -2388,6 +2405,18 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 		},
 		"PinnedXRWithUnrelatedFunctionChangeStaysDeferred": {
 			revision: revisionWith("function-other"),
+			want:     want{Status: dt.XRStatusFiltered, FilterReason: dt.FilterReasonManualPolicy},
+		},
+		// Issue #516: the revision is checked against the backing XR's type, and the render, handed the
+		// backing XR, finds the pin under its key.
+		"PinnedClaimWithChangedFunctionRendersPinnedRevision": {
+			revision: revisionWith("function-a"),
+			claim:    true,
+			want:     want{Status: dt.XRStatusUnchanged, Pinned: true, RenderedRevision: "test-comp-rev1", Pipeline: []string{"function-a"}},
+		},
+		"PinnedClaimWithUnrelatedFunctionChangeStaysDeferred": {
+			revision: revisionWith("function-other"),
+			claim:    true,
 			want:     want{Status: dt.XRStatusFiltered, FilterReason: dt.FilterReasonManualPolicy},
 		},
 		"PinnedXRWithChangedFunctionRendersWhenCompositionCallsNone": {
@@ -2444,8 +2473,15 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 			)
 
 			proc.xrProc = &tu.MockDiffProcessor{
+				ResolveCompositeFn: resolveComposite,
+				// Like the real one, the provider is handed the effective composite.
 				DiffSingleResourceFn: func(ctx context.Context, xr *un.Unstructured, provider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error) {
-					resolved, err := provider(ctx, xr)
+					composite, err := resolveComposite(ctx, xr)
+					if err != nil {
+						return nil, nil, err
+					}
+
+					resolved, err := provider(ctx, composite)
 					if err != nil {
 						return nil, nil, err
 					}
@@ -2459,7 +2495,12 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 				},
 			}
 
-			got, _, err := proc.processSingleComposition(t.Context(), cliComp.BuildAsUnstructured(), []*un.Unstructured{pinnedXR("pinned")}, false)
+			input := pinnedXR("pinned")
+			if tt.claim {
+				input = claim
+			}
+
+			got, _, err := proc.processSingleComposition(t.Context(), cliComp.BuildAsUnstructured(), []*un.Unstructured{input}, false)
 			if err != nil {
 				t.Fatalf("processSingleComposition: %v", err)
 			}
@@ -2491,9 +2532,9 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 }
 
 // TestDefaultCompDiffProcessor_processSingleComposition_PinnedBackingXROfFilteredClaim pins that the
-// backing-XR drop runs after the pinned step: a Manual claim stays filtered (a pinned claim is
-// deferred), so its backing XR, pinned to a revision calling a changed function, is the only entry that
-// reports that change and must still be rendered against its pinned revision.
+// backing-XR drop runs after the pinned step: a Manual claim naming a revision that calls no changed
+// function stays filtered, so its backing XR, still pinned in the cluster to a revision calling a changed
+// function, is the only entry that reports that change and must still be rendered against that revision.
 func TestDefaultCompDiffProcessor_processSingleComposition_PinnedBackingXROfFilteredClaim(t *testing.T) {
 	cliComp := tu.NewComposition("test-comp").
 		WithCompositeTypeRef("example.org/v1", "XR").
@@ -2502,20 +2543,26 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedBackingXROfFilt
 
 	manual := map[string]any{"compositionUpdatePolicy": "Manual", "compositionRevisionRef": map[string]any{"name": "test-comp-rev1"}}
 	claim := tu.NewResource("example.org/v1", "Claim", "my-claim").InNamespace("ns").
-		WithSpecField("crossplane", manual).Build()
+		WithSpecField("crossplane", map[string]any{"compositionUpdatePolicy": "Manual", "compositionRevisionRef": map[string]any{"name": "test-comp-rev0"}}).Build()
 	backing := tu.NewResource("example.org/v1", "XR", "my-claim-xyz").
 		WithSpecField("compositionRef", map[string]any{"name": "test-comp"}).
 		WithSpecField("crossplane", manual).
 		WithSpecField("claimRef", map[string]any{"apiVersion": "example.org/v1", "kind": "Claim", "name": "my-claim", "namespace": "ns"}).
 		Build()
 
-	revision := tu.NewComposition("test-comp").WithCompositeTypeRef("example.org/v1", "XR").WithPipelineMode().
-		WithPipelineStep("step-old", "function-a", nil).Build()
+	// Revision 1 calls the changed function; revision 0, which the claim names, does not.
+	revisions := map[string]*apiextensionsv1.Composition{
+		"test-comp-rev0": tu.NewComposition("test-comp").WithCompositeTypeRef("example.org/v1", "XR").WithPipelineMode().
+			WithPipelineStep("step-old", "function-other", nil).Build(),
+		"test-comp-rev1": tu.NewComposition("test-comp").WithCompositeTypeRef("example.org/v1", "XR").WithPipelineMode().
+			WithPipelineStep("step-old", "function-a", nil).Build(),
+	}
 
 	client := tu.NewMockCompositionClient().
 		WithSuccessfulCompositionFetch(cliComp.Build()).
-		WithFindMatchingComposition(func(context.Context, *un.Unstructured) (types.ResolvedComposition, error) {
-			return types.ResolvedComposition{Composition: revision, RevisionName: "test-comp-rev1"}, nil
+		WithFindMatchingComposition(func(_ context.Context, res *un.Unstructured) (types.ResolvedComposition, error) {
+			name, _, _ := un.NestedString(res.Object, "spec", "crossplane", "compositionRevisionRef", "name")
+			return types.ResolvedComposition{Composition: revisions[name], RevisionName: name}, nil
 		}).
 		Build()
 
@@ -2524,6 +2571,17 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedBackingXROfFilt
 
 	rendered := map[string]string{}
 	proc.xrProc = &tu.MockDiffProcessor{
+		// The claim's effective composite is its backing XR with the claim's revision synced in.
+		ResolveCompositeFn: func(_ context.Context, res *un.Unstructured) (*un.Unstructured, error) {
+			if res.GetKind() != "Claim" {
+				return res, nil
+			}
+
+			synced := backing.DeepCopy()
+			_ = un.SetNestedField(synced.Object, "test-comp-rev0", "spec", "crossplane", "compositionRevisionRef", "name")
+
+			return synced, nil
+		},
 		DiffSingleResourceFn: func(ctx context.Context, xr *un.Unstructured, provider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error) {
 			resolved, err := provider(ctx, xr)
 			if err != nil {

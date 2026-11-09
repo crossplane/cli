@@ -192,6 +192,8 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 		compositionErrors int
 		// composites are the successfully rendered composites of every composition, for the overlap check.
 		composites []renderedComposite
+		// run holds every Composition of the run, so a nested XR of another type renders with its own.
+		run = p.runCompositions(ctx, compositions)
 	)
 
 	// Process each composition, filtering out non-Composition objects
@@ -247,7 +249,7 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 		)
 
 		if err == nil {
-			compResult, rendered, err = p.processSingleComposition(ctx, comp, affectedXRs, scoped)
+			compResult, rendered, err = p.processSingleComposition(ctx, comp, affectedXRs, scoped, run)
 		}
 
 		composites = append(composites, rendered...)
@@ -405,10 +407,11 @@ func (p *DefaultCompDiffProcessor) preflightResourceRefs(ctx context.Context, co
 // `affectedXRs` is the pre-resolved set of XRs to evaluate (caller decides via DiffComposition's
 // switch whether this comes from the --resource preflight or default-discovery via FindComposites).
 // `scoped` records that the set came from --resource rather than discovery (see CompositionDiff.Scoped).
+// `run` holds the run's Compositions by name, for nested XRs of other types (see runCompositions).
 //
 // It also returns each composite it rendered without error, with its group of diffs and unchanged
 // renderings (which the impact analysis leaves out), for DiffComposition's render-overlap check.
-func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context, newComp *un.Unstructured, affectedXRs []*un.Unstructured, scoped bool) (*dt.CompositionDiff, []renderedComposite, error) {
+func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context, newComp *un.Unstructured, affectedXRs []*un.Unstructured, scoped bool, run map[string]runComposition) (*dt.CompositionDiff, []renderedComposite, error) {
 	result := &dt.CompositionDiff{
 		Name:           newComp.GetName(),
 		Scoped:         scoped,
@@ -596,7 +599,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// Process kept XRs and collect diffs to determine which ones have changes
 	p.config.Logger.Debug("Processing XRs to collect diff information", "count", len(keptXRs))
 
-	xrResults := p.collectXRDiffs(ctx, keptXRs, cliComp, revisionName, predictedRevisionLabels(newComp, pred), pinnedXRs)
+	xrResults := p.collectXRDiffs(ctx, keptXRs, cliComp, revisionName, predictedRevisionLabels(newComp, pred), pinnedXRs, run)
 
 	composites := make([]renderedComposite, 0, len(keptXRs))
 	for _, xr := range keptXRs {
@@ -678,12 +681,17 @@ func withoutClaimedXRs(kept []*un.Unstructured, dropped []filteredXR, xrKind str
 }
 
 // overlapGroups returns the groups of composites for the overlap check, without each composite another
-// one in the run manages (see managedBy): a nested XR, controlled by its parent, is still rendered and
-// reported, but the parent's rendering of what they share wins. A kept claim's backing XR is dropped (see withoutClaimedXRs), so it cannot
-// exclude an XR nested under it here. Such a nested XR carries the crossplane.io/claim-name and
-// claim-namespace labels Crossplane copies onto composed resources, so withoutClaimedXRs drops it as bound
-// to the claim (see boundToClaim) before it is rendered; one lacking those labels reaches this check,
-// controlled by no rendered composite.
+// one in the run manages (see managedBy). A nested XR, controlled by its parent, is still rendered and
+// reported, but the parent's rendering of what they share wins: it renders the nested XR as the parent
+// would write it, with the nested XR's Composition from the run when the run has it (see
+// runCompositionFor), where the nested XR's own render starts from the spec it has now.
+//
+// A kept claim's backing XR is dropped (see withoutClaimedXRs), so it cannot exclude an XR nested under
+// it here. Such a nested XR carries the crossplane.io/claim-name and claim-namespace labels Crossplane
+// copies onto composed resources, so it is bound to the claim (see boundToClaim): withoutClaimedXRs
+// drops one of the backing XR's own type before it is rendered, and one of another type, rendered for
+// its own Composition, is left out here. One lacking those labels reaches this check, controlled by no
+// rendered composite.
 func overlapGroups(composites []renderedComposite) []dt.XRDiffGroup {
 	groups := make([]dt.XRDiffGroup, 0, len(composites))
 
@@ -708,7 +716,10 @@ func overlapGroups(composites []renderedComposite) []dt.XRDiffGroup {
 //
 // pinned, keyed by dt.MakeDiffKeyFromResource, holds the composites rendered against their own pinned
 // revision instead of cliComp; see pinnedFunctionChangeXRs.
-func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string, pinned map[string]pinnedResolution) map[string]*XRDiffResult {
+//
+// run holds the run's Compositions by name; a nested XR of another type is rendered with its own from
+// there when the run has it (see runCompositionFor).
+func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string, pinned map[string]pinnedResolution, run map[string]runComposition) map[string]*XRDiffResult {
 	// Extract the target GVK from the CLI composition's compositeTypeRef
 	cliCompTargetAPIVersion := cliComp.Spec.CompositeTypeRef.APIVersion
 	cliCompTargetKind := cliComp.Spec.CompositeTypeRef.Kind
@@ -733,7 +744,8 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 	// 1. Root-level resources (XRs and Claims that use this composition)
 	// 2. XRs whose type matches the CLI composition's compositeTypeRef
 	//
-	// For nested XRs with different types, looks up from the cluster.
+	// A nested XR of another type is rendered with its Composition from the run when the run has it,
+	// and otherwise with the cluster's (see runCompositionFor).
 	//
 	// The provider is handed the effective composite (see CompositeResolver), so a root claim reaches it
 	// as its backing XR, whose key is not in rootResourceKeys: Check 2 matches it by type instead.
@@ -772,15 +784,15 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 			return p.cliCompositionRevision(res, cliComp, revisionName, revisionLabels)
 		}
 
-		// This is a nested XR with a different type - look up its composition from the cluster
-		p.config.Logger.Debug("Resource does not match CLI composition type, looking up from cluster",
+		// This is a nested XR with a different type: its Composition comes from the run, or the cluster.
+		p.config.Logger.Debug("Resource does not match CLI composition type, looking up its own composition",
 			"resource", resourceID,
 			"resourceAPIVersion", resAPIVersion,
 			"resourceKind", resKind,
 			"cliCompTargetAPIVersion", cliCompTargetAPIVersion,
 			"cliCompTargetKind", cliCompTargetKind)
 
-		return p.compositionClient.FindMatchingComposition(ctx, res)
+		return p.runCompositionFor(ctx, res, run)
 	}
 
 	results := make(map[string]*XRDiffResult)
@@ -926,6 +938,118 @@ func (p *DefaultCompDiffProcessor) cliCompositionRevision(res *un.Unstructured, 
 	}
 
 	return resolved, nil
+}
+
+// runComposition is one Composition of the run, with the predicted name and labels of the revision it
+// would produce (see processSingleComposition), or the error that kept it from being read.
+type runComposition struct {
+	comp           *apiextensionsv1.Composition
+	revisionName   string
+	revisionLabels map[string]string
+	err            error
+}
+
+// runCompositions returns the run's Compositions by name, each with the revision name and labels
+// processSingleComposition renders its own composites with. Names are unique within a run (see
+// simulate.RejectDuplicateNames). A Composition that cannot be read carries its error, which its own
+// processing reports too.
+func (p *DefaultCompDiffProcessor) runCompositions(ctx context.Context, compositions []*un.Unstructured) map[string]runComposition {
+	run := make(map[string]runComposition, len(compositions))
+
+	for _, u := range compositions {
+		if u.GetKind() != "Composition" {
+			continue
+		}
+
+		// In processSingleComposition's order: the comparison strips cluster metadata from u first.
+		comparison, err := p.calculateCompositionDiff(ctx, u)
+		if err != nil {
+			run[u.GetName()] = runComposition{err: errors.Wrapf(err, "cannot calculate the diff of composition %q", u.GetName())}
+			continue
+		}
+
+		comp := &apiextensionsv1.Composition{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, comp); err != nil {
+			run[u.GetName()] = runComposition{err: errors.Wrapf(err, "cannot convert composition %q to typed", u.GetName())}
+			continue
+		}
+
+		pred := predictRevision(comp)
+		rc := runComposition{comp: comp, revisionLabels: predictedRevisionLabels(u, pred)}
+
+		if comparison.revisionNamePredictable {
+			rc.revisionName = pred.name
+		}
+
+		run[u.GetName()] = rc
+	}
+
+	return run
+}
+
+// runCompositionFor resolves the composition of res, a nested XR of a type other than the diffed
+// composition's. The run's Composition is used when it is the one res names in compositionRef, or, when
+// res names none, the one the cluster selects for it (by compositionSelector or type), and res would
+// adopt the revision it produces (see classifyXR). res then renders with that revision's predicted name,
+// as a composite of the diffed composition does (see cliCompositionRevision). Otherwise res gets the
+// cluster's composition and revision: a Manual res stays on the revision it is pinned to, as Crossplane
+// would keep it.
+//
+// ponytail: selection by compositionSelector or type runs over the cluster's Compositions, so a run
+// Composition the cluster does not have yet, or whose labels the run changes, is not selected for a
+// nested XR without a compositionRef. Crossplane writes compositionRef on every XR it reconciles, so
+// only a nested XR the run would create is affected; overlay the run onto the cluster's candidates if
+// that case matters.
+func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *un.Unstructured, run map[string]runComposition) (dtypes.ResolvedComposition, error) {
+	name, err := xp.XRCompositionRef(res.Object, res.GetAPIVersion())
+	if err != nil {
+		return dtypes.ResolvedComposition{}, errors.Wrapf(err, "cannot read compositionRef for %s/%s", res.GetKind(), res.GetName())
+	}
+
+	// cluster is the cluster's resolution, looked up only when res names no composition or the run's
+	// does not apply to it.
+	var cluster dtypes.ResolvedComposition
+
+	if name == "" {
+		if cluster, err = p.compositionClient.FindMatchingComposition(ctx, res); err != nil {
+			return dtypes.ResolvedComposition{}, err
+		}
+
+		name = cluster.Composition.GetName()
+	}
+
+	rc, inRun := run[name]
+	if inRun {
+		if rc.err != nil {
+			return dtypes.ResolvedComposition{}, rc.err
+		}
+
+		if ref := rc.comp.Spec.CompositeTypeRef; ref.APIVersion != res.GetAPIVersion() || ref.Kind != res.GetKind() {
+			return dtypes.ResolvedComposition{}, errors.Errorf("composition %s is not compatible with %s", rc.comp.GetName(), res.GroupVersionKind())
+		}
+
+		disposition, err := p.classifyXR(res, rc.revisionLabels, rc.comp.GetLabels())
+		if err != nil {
+			return dtypes.ResolvedComposition{}, err
+		}
+
+		inRun = disposition.filtered == nil && !disposition.pinnedToRevision
+	}
+
+	if !inRun {
+		if cluster.Composition != nil {
+			return cluster, nil
+		}
+
+		return p.compositionClient.FindMatchingComposition(ctx, res)
+	}
+
+	p.config.Logger.Debug("Nested XR's composition is in the run, using it",
+		"resource", fmt.Sprintf("%s/%s", res.GetKind(), res.GetName()),
+		"composition", rc.comp.GetName())
+
+	// classifyXR kept res, so it adopts the revision, as cliCompositionRevision would find.
+	return dtypes.ResolvedComposition{Composition: rc.comp, RevisionName: rc.revisionName}, nil
 }
 
 // compositionComparison is the result of comparing a proposed composition against its in-cluster

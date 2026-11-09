@@ -90,9 +90,10 @@ func RejectDuplicateNames(comps []*un.Unstructured) error {
 // composite resource or claim, such as package metadata, a Provider or a
 // ConfigMap, which the engine would otherwise fail on with no hint at what -f
 // accepts. It also gives a claim or namespaced composite resource with no
-// namespace the kubeconfig context namespace ns, as kubectl apply would. The
-// definition client caches the XRDs when it initializes, so the check costs
-// no extra calls.
+// namespace the kubeconfig context namespace ns, as kubectl apply would, and
+// clears any namespace on a cluster-scoped composite resource, which kubectl
+// apply ignores there. The definition client caches the XRDs when it
+// initializes, so the check costs no extra calls.
 func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, ns string, resources []*un.Unstructured) error {
 	for _, r := range resources {
 		gvk := r.GroupVersionKind()
@@ -104,6 +105,8 @@ func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, ns str
 			// Only a Namespaced scope is namespaced; Cluster and LegacyCluster are not.
 			if scope, _, _ := un.NestedString(xrd.Object, "spec", "scope"); scope == "Namespaced" {
 				defaultNamespace(r, ns)
+			} else {
+				r.SetNamespace("")
 			}
 			continue
 		}

@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file is the simulate harness: the one function every integration
+// This package is the simulate harness: the one function every integration
 // case funnels through. The cases are crossplane-diff's (origin/main
 // https://github.com/crossplane-contrib/crossplane-diff/commit/6a140b65a6bdb428add78680e6caee9f08b7f04b, plus later upstream additions through
 // https://github.com/crossplane-contrib/crossplane-diff/commit/d93eb87c6315cb2b44e4790e369eef3590c31dff), written as its comp and xr commands' CLI args plus an expected
@@ -32,10 +32,11 @@ limitations under the License.
 // without a Docker daemon no rendering case can run; cases that would not
 // render cannot be told apart upfront, so they skip too.
 //
-// testdata/README.md describes how a case runs, the skips, and how to run
-// the suite and read its coverage.
+// Each suite's testdata/README.md describes how its cases run, the skips,
+// and how to run the suite and read its coverage.
 
-package project
+// Package simharness is the simulate harness shared by the integration suites of `composition`, `xr` and `project`.
+package simharness
 
 import (
 	"context"
@@ -54,6 +55,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/composition"
+	"github.com/crossplane/cli/v2/cmd/crossplane/project"
 	"github.com/crossplane/cli/v2/cmd/crossplane/xr"
 	"github.com/crossplane/cli/v2/internal/config"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
@@ -65,8 +67,12 @@ import (
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
-// defaultTimeout is the --timeout the cases pass to simulate.
-const defaultTimeout = 60 * time.Second
+// DefaultTimeout is the --timeout the cases pass to simulate.
+const DefaultTimeout = 60 * time.Second
+
+// LongTimeout is the --timeout for cases with multiple iterations, such as
+// eventual state.
+const LongTimeout = 180 * time.Second
 
 // simArgs mirrors the crossplane-diff flags the integration cases pass,
 // plus each command's positional files, so runSimulate can translate
@@ -90,7 +96,7 @@ type simArgs struct {
 
 // parseSimulateArgs parses one case's CLI-style args. A parse failure is
 // fatal, as it was when kong parsed crossplane-diff's own commands.
-func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simArgs {
+func parseSimulateArgs(t *testing.T, testType TestType, args []string) *simArgs {
 	t.Helper()
 
 	var a simArgs
@@ -112,14 +118,14 @@ func parseSimulateArgs(t *testing.T, testType DiffTestType, args []string) *simA
 // --analyze-unchanged as its replacement --analyze-on=always. The output
 // is passed explicitly: crossplane-diff's default diff, since simulate
 // defaults to -o plan, and json or yaml as simulate's -o json/yaml result type.
-func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
+func simulateArgv(t *testing.T, testType TestType, a *simArgs) []string {
 	t.Helper()
 
 	var cmd string
 	switch testType {
-	case CompositionDiffTest:
+	case CompositionTest:
 		cmd = "composition"
-	case XRDiffTest:
+	case XRTest:
 		cmd = "xr"
 	default:
 		t.Fatalf("simulateArgv: no simulate command for test type %q", testType)
@@ -179,39 +185,39 @@ func simulateArgv(t *testing.T, testType DiffTestType, a *simArgs) []string {
 // Each call parses a fresh command, so a second run starts with cold
 // client caches just as a second CLI invocation would; the determinism
 // re-run and the restricted RBAC rerun rely on it.
-func runSimulate(t *testing.T, cfg *rest.Config, testType DiffTestType, args []string, stdout, stderr io.Writer) (int, error) {
+func runSimulate(t *testing.T, cfg *rest.Config, testType TestType, args []string, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
 	a := parseSimulateArgs(t, testType, args)
 
-	return runSimulateArgv(t, cfg, simulateArgv(t, testType, a), a.CrossplaneRenderBinary, nil, stdout, stderr)
+	return RunSimulateArgv(t, cfg, simulateArgv(t, testType, a), a.CrossplaneRenderBinary, nil, stdout, stderr)
 }
 
-// runSimulateArgv runs `crossplane <project|composition|xr> simulate` with argv against cfg,
+// RunSimulateArgv runs `crossplane <project|composition|xr> simulate` with argv against cfg,
 // rendering with renderBinary when it is set, as runSimulate does, and routing provider
 // plans through router, when it is non-nil, instead of started diff servers.
-func runSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, router simulate.Router, stdout, stderr io.Writer) (int, error) {
+func RunSimulateArgv(t *testing.T, cfg *rest.Config, argv []string, renderBinary string, router simulate.Router, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
-	return runSimulateArgvWith(t, cfg, withRenderBinary(argv, renderBinary), &simulate.Hooks{Router: router}, stdout, stderr)
+	return RunSimulateArgvWith(t, cfg, WithRenderBinary(argv, renderBinary), &simulate.Hooks{Router: router}, stdout, stderr)
 }
 
-// withRenderBinary returns argv rendering with the local crossplane binary
+// WithRenderBinary returns argv rendering with the local crossplane binary
 // bin, or argv itself, rendering with the render image, when bin is empty.
-func withRenderBinary(argv []string, bin string) []string {
+func WithRenderBinary(argv []string, bin string) []string {
 	if bin == "" {
 		return argv
 	}
 	return append(slices.Clip(argv), "--crossplane-binary="+bin)
 }
 
-// runSimulateArgvWith runs `crossplane <project|composition|xr> simulate` with argv against
+// RunSimulateArgvWith runs `crossplane <project|composition|xr> simulate` with argv against
 // cfg and hooks, whose RESTConfig and Terminal it sets.
-func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *simulate.Hooks, stdout, stderr io.Writer) (int, error) {
+func RunSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *simulate.Hooks, stdout, stderr io.Writer) (int, error) {
 	t.Helper()
 
 	var cli struct {
-		Project     Cmd             `cmd:""`
+		Project     project.Cmd     `cmd:""`
 		Composition composition.Cmd `cmd:""`
 		XR          xr.Cmd          `cmd:""`
 	}
@@ -273,16 +279,18 @@ func runSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *s
 	}
 }
 
-// dockerAvailable reports whether the local Docker daemon answers, which
+// DockerAvailable reports whether the local Docker daemon answers, which
 // the render engine needs to run functions as containers. Probed once per
 // test binary.
-var dockerAvailable = sync.OnceValue(func() bool {
+//
+//nolint:gochecknoglobals // Memoizes one daemon probe for every case.
+var DockerAvailable = sync.OnceValue(func() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return docker.Check(ctx) == nil
 })
 
-// localCrossplaneBinary returns the absolute path to a locally built
+// LocalCrossplaneBinary returns the absolute path to a locally built
 // `crossplane` binary at _output/bin/crossplane in the repo root, or "" when
 // there is none. With a binary, the render engine runs `crossplane internal
 // render` directly, which is faster; without one, callers pass "" and it
@@ -297,7 +305,7 @@ var dockerAvailable = sync.OnceValue(func() bool {
 // Callers pass the path to the command as --crossplane-binary=<path> rather
 // than through a process-global env var, so parallel tests don't race on
 // shared state.
-func localCrossplaneBinary(t *testing.T) string {
+func LocalCrossplaneBinary(t *testing.T) string {
 	t.Helper()
 
 	if override := os.Getenv("CROSSPLANE_RENDER_BINARY"); override != "" {

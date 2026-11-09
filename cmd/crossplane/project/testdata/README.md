@@ -1,24 +1,26 @@
-# Simulate integration tests
+# Project simulate integration tests
 
 The `integration*_test.go` files in `cmd/crossplane/project` run
 `crossplane project simulate -f <project file>` against fixture projects
 under `testdata/project`, each against its own envtest cluster seeded from
-`testdata/comp/resources`. `TestCompDiffIntegration` runs
-`crossplane composition simulate -f <Composition files>` with the
-crossplane-diff cases and fixtures under `testdata/comp`, plus a few shared
-ones under `testdata/diff`.
-`TestDiffIntegration` runs `crossplane xr simulate -f <XR files>` with
-crossplane-diff's XR cases and the same fixtures.
+the shared fixtures in `internal/testutils/integration/testdata/comp`.
+`TestSimulatePlanOutput` and `TestSimulateProviderPlan` also run
+`composition simulate` and `xr simulate` for their output formats. The
+`composition` and `xr` suites, with their own `integration_test.go`, are
+in `cmd/crossplane/composition` and `cmd/crossplane/xr`; the harness all
+three share is `internal/testutils/integration/simharness`, and the
+fixtures more than one suite uses are in
+`internal/testutils/integration/testdata`.
 
 ## How a case runs
 
 A case copies its project fixture to a temp dir and runs the real command
 through kong with `runSimulateArgvWith` in
-`integration_simulate_harness_test.go`. `simulate.Hooks` points the
+`internal/testutils/integration/simharness`. `simulate.Hooks` points the
 command at the case's envtest cluster in place of a kubeconfig, so the
 cases run in parallel.
 
-A `TestCompDiffIntegration` or `TestDiffIntegration` case keeps its crossplane-diff args;
+A `TestCompDiffIntegration` (`cmd/crossplane/composition`) or `TestDiffIntegration` (`cmd/crossplane/xr`) case keeps its crossplane-diff args;
 `runSimulate` translates them into `composition simulate`'s or
 `xr simulate`'s flags (its
 files as `-f`, `--resource` as `--name`, `--include-manual` as
@@ -39,7 +41,7 @@ unset.
 # Full suite (Docker + envtest assets required):
 CROSSPLANE_CRDS_DIR=<crossplane cluster/crds at go.mod's crossplane/apis version> \
 KUBEBUILDER_ASSETS=$(setup-envtest use -p path) \
-go test -tags integration -v ./cmd/crossplane/project/
+go test -tags integration -v ./cmd/crossplane/project/ ./cmd/crossplane/composition/ ./cmd/crossplane/xr/
 
 # One case:
 go test -tags integration -run 'TestProjectSimulateIntegration/PlainProject' ./cmd/crossplane/project/

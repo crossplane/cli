@@ -117,7 +117,7 @@ func TestFromCompReport(t *testing.T) {
 	cases := map[string]struct {
 		reason string
 		in     *dt.CompDiffOutput
-		want   ProjectResult
+		want   Result
 	}{
 		"CompositionAndRevisionImpact": {
 			reason: "A changed Composition is an ungrouped plan with a Compositions entry carrying its revision impact; affected XRs group their plans.",
@@ -131,7 +131,7 @@ func TestFromCompReport(t *testing.T) {
 					Diffs: diffs(rdiff(cmGVK, "cm", dt.DiffTypeRemoved, map[string]any{}, nil)),
 				}},
 			}),
-			want: ProjectResult{
+			want: Result{
 				Result: plan.Result{
 					FormatVersion: plan.ResultFormatVersion,
 					Summary:       plan.Summary{Update: 1, Destroy: 1},
@@ -161,7 +161,7 @@ func TestFromCompReport(t *testing.T) {
 					filtered("deleting", dt.FilterReasonDeleting, ""),
 				},
 			}),
-			want: ProjectResult{
+			want: Result{
 				Result: plan.Result{
 					FormatVersion: plan.ResultFormatVersion,
 					Summary:       plan.Summary{NoOp: 1},
@@ -181,7 +181,7 @@ func TestFromCompReport(t *testing.T) {
 			in: composition(dt.CompositionDiff{
 				ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: dt.XRStatusUnchanged, Pinned: true}},
 			}),
-			want: ProjectResult{
+			want: Result{
 				Result: plan.Result{
 					FormatVersion: plan.ResultFormatVersion,
 					Summary:       plan.Summary{NoOp: 1},
@@ -197,7 +197,7 @@ func TestFromCompReport(t *testing.T) {
 			in: composition(dt.CompositionDiff{
 				ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: dt.XRStatusChanged, Pinned: true, RenderedRevision: "net-6"}},
 			}),
-			want: ProjectResult{
+			want: Result{
 				Result: plan.Result{
 					FormatVersion: plan.ResultFormatVersion,
 					Summary:       plan.Summary{NoOp: 1},
@@ -215,7 +215,7 @@ func TestFromCompReport(t *testing.T) {
 				ImpactAnalysisSkipped: true,
 				RevisionImpact:        dt.RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 3},
 			}),
-			want: ProjectResult{
+			want: Result{
 				Result: plan.Result{
 					FormatVersion: plan.ResultFormatVersion,
 					Summary:       plan.Summary{NoOp: 1},
@@ -234,7 +234,7 @@ func TestFromCompReport(t *testing.T) {
 			in: composition(dt.CompositionDiff{
 				Error: &dt.OutputError{ResourceID: "Composition/net", Message: "cannot load"},
 			}),
-			want: ProjectResult{
+			want: Result{
 				Result: plan.Result{
 					FormatVersion: plan.ResultFormatVersion,
 					Errored:       true,
@@ -254,7 +254,7 @@ func TestFromCompReport(t *testing.T) {
 				{Name: "net", ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: dt.XRStatusUnchanged}}},
 				{Name: "db", ImpactAnalysis: []dt.XRImpact{filtered("qa", dt.FilterReasonDeleting, "")}},
 			}},
-			want: ProjectResult{
+			want: Result{
 				Result: plan.Result{
 					FormatVersion: plan.ResultFormatVersion,
 					Summary:       plan.Summary{NoOp: 2},
@@ -276,7 +276,7 @@ func TestFromCompReport(t *testing.T) {
 			in: composition(dt.CompositionDiff{
 				ImpactAnalysis: []dt.XRImpact{{ObjectReference: xrRef, Status: dt.XRStatus("bogus")}},
 			}),
-			want: ProjectResult{
+			want: Result{
 				Result: plan.Result{
 					FormatVersion: plan.ResultFormatVersion,
 					Summary:       plan.Summary{NoOp: 1},
@@ -296,7 +296,7 @@ func TestFromCompReport(t *testing.T) {
 				}},
 				Errors: []dt.OutputError{xrErr, {Message: "interrupted"}},
 			},
-			want: ProjectResult{
+			want: Result{
 				Result: plan.Result{
 					FormatVersion: plan.ResultFormatVersion,
 					Errored:       true,

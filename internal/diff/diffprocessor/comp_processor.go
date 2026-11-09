@@ -425,24 +425,22 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 		},
 	}
 
-	// First, calculate the composition diff itself
-	comparison, err := p.calculateCompositionDiff(ctx, newComp)
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "cannot calculate composition diff")
+	// The composition diff itself, the typed composition and the identity of the revision it would
+	// produce come from the run (see runCompositions), so a nested XR of this composition's type renders
+	// under another composition's parent with the same revision this composition's own XRs get.
+	rc, ok := run[newComp.GetName()]
+	if !ok {
+		return nil, nil, errors.Errorf("composition %q is not in the run", newComp.GetName())
 	}
+
+	if rc.err != nil {
+		return nil, nil, rc.err
+	}
+
+	comparison, cliComp, pred := rc.comparison, rc.comp, rc.pred
 
 	result.CompositionDiff = comparison.diff
 	result.MaskedChangesOnly = comparison.diff == nil && comparison.changed()
-
-	cliComp := &apiextensionsv1.Composition{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(newComp.Object, cliComp); err != nil {
-		return nil, nil, errors.Wrapf(err, "cannot convert composition %q to typed", newComp.GetName())
-	}
-
-	// Predict the identity of the revision this composition would produce. Needed twice below: to
-	// evaluate compositionRevisionSelectors against the label set the revision would carry, and to seed
-	// the composites so a template observing the revision name renders the value it would really get.
-	pred := predictRevision(cliComp)
 
 	// Report what applying this composition does to CompositionRevisions regardless of whether the
 	// composites are evaluated below. This is the mutative consequence of the apply, and it is
@@ -454,9 +452,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 		CreatesRevision: comparison.changed(),
 	}
 
-	if comparison.revisionNamePredictable {
-		result.RevisionImpact.PredictedRevisionName = pred.name
-	}
+	result.RevisionImpact.PredictedRevisionName = rc.revisionName()
 
 	// Partition XRs by whether they would adopt the diffed composition's resulting revision. This is
 	// local (no renders), and every path below needs it: the composites that would adopt the new
@@ -584,12 +580,9 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// When the name is not predictable we render with the refs the composites have — the pre-#474
 	// behaviour — and say so, rather than guess one. Rendering with a name we invented would manufacture
 	// a downstream diff on a converged cluster for exactly the compositions this feature exists to serve.
-	revisionName := ""
+	revisionName := rc.revisionName()
 
-	switch {
-	case comparison.revisionNamePredictable:
-		revisionName = pred.name
-	case comparison.changed():
+	if revisionName == "" && comparison.changed() {
 		p.config.Advisories.Raise(dt.OutputWarning{
 			Message: "Could not predict the name of the CompositionRevision this composition would create, because it differs from the cluster's only by the annotation a client-side `kubectl apply` writes — whose post-apply value depends on how you apply, not on the file. Composites were rendered with their existing compositionRevisionRef, so if any of your composition templates read the revision name, a resulting change was not detected. Apply with `--server-side` (or via Argo/Flux) to make it predictable.",
 			Context: map[string]string{"composition": newComp.GetName()},
@@ -599,7 +592,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// Process kept XRs and collect diffs to determine which ones have changes
 	p.config.Logger.Debug("Processing XRs to collect diff information", "count", len(keptXRs))
 
-	xrResults := p.collectXRDiffs(ctx, keptXRs, cliComp, revisionName, predictedRevisionLabels(newComp, pred), pinnedXRs, run)
+	xrResults := p.collectXRDiffs(ctx, keptXRs, cliComp, revisionName, rc.revisionLabels, pinnedXRs, run)
 
 	composites := make([]renderedComposite, 0, len(keptXRs))
 	for _, xr := range keptXRs {
@@ -940,19 +933,32 @@ func (p *DefaultCompDiffProcessor) cliCompositionRevision(res *un.Unstructured, 
 	return resolved, nil
 }
 
-// runComposition is one Composition of the run, with the predicted name and labels of the revision it
-// would produce (see processSingleComposition), or the error that kept it from being read.
+// runComposition is one Composition of the run: its comparison with the cluster's, its typed form and
+// the predicted identity and labels of the revision it would produce, or the error that kept it from
+// being read. It is the one source of these for the Composition's own processing (see
+// processSingleComposition) and for a nested XR of its type under another Composition's parent (see
+// runCompositionFor).
 type runComposition struct {
+	comparison     compositionComparison
 	comp           *apiextensionsv1.Composition
-	revisionName   string
+	pred           predictedRevision
 	revisionLabels map[string]string
 	err            error
 }
 
-// runCompositions returns the run's Compositions by name, each with the revision name and labels
-// processSingleComposition renders its own composites with. Names are unique within a run (see
+// revisionName is the predicted name of the revision rc would produce, or empty when it cannot be
+// predicted (see compositionComparison.revisionNamePredictable).
+func (rc runComposition) revisionName() string {
+	if !rc.comparison.revisionNamePredictable {
+		return ""
+	}
+
+	return rc.pred.name
+}
+
+// runCompositions returns the run's Compositions by name. Names are unique within a run (see
 // simulate.RejectDuplicateNames). A Composition that cannot be read carries its error, which its own
-// processing reports too.
+// processing reports.
 func (p *DefaultCompDiffProcessor) runCompositions(ctx context.Context, compositions []*un.Unstructured) map[string]runComposition {
 	run := make(map[string]runComposition, len(compositions))
 
@@ -961,10 +967,10 @@ func (p *DefaultCompDiffProcessor) runCompositions(ctx context.Context, composit
 			continue
 		}
 
-		// In processSingleComposition's order: the comparison strips cluster metadata from u first.
+		// The comparison strips cluster metadata from u, so it runs before the conversion.
 		comparison, err := p.calculateCompositionDiff(ctx, u)
 		if err != nil {
-			run[u.GetName()] = runComposition{err: errors.Wrapf(err, "cannot calculate the diff of composition %q", u.GetName())}
+			run[u.GetName()] = runComposition{err: errors.Wrap(err, "cannot calculate composition diff")}
 			continue
 		}
 
@@ -974,14 +980,11 @@ func (p *DefaultCompDiffProcessor) runCompositions(ctx context.Context, composit
 			continue
 		}
 
+		// The identity of the revision this composition would produce, used to evaluate
+		// compositionRevisionSelectors against the label set the revision would carry, and to seed the
+		// composites so a template observing the revision name renders the value it would really get.
 		pred := predictRevision(comp)
-		rc := runComposition{comp: comp, revisionLabels: predictedRevisionLabels(u, pred)}
-
-		if comparison.revisionNamePredictable {
-			rc.revisionName = pred.name
-		}
-
-		run[u.GetName()] = rc
+		run[u.GetName()] = runComposition{comparison: comparison, comp: comp, pred: pred, revisionLabels: predictedRevisionLabels(u, pred)}
 	}
 
 	return run
@@ -995,7 +998,7 @@ func (p *DefaultCompDiffProcessor) runCompositions(ctx context.Context, composit
 // cluster's composition and revision: a Manual res stays on the revision it is pinned to, as Crossplane
 // would keep it.
 //
-// ponytail: selection by compositionSelector or type runs over the cluster's Compositions, so a run
+// TODO(jcogilvie): selection by compositionSelector or type runs over the cluster's Compositions, so a run
 // Composition the cluster does not have yet, or whose labels the run changes, is not selected for a
 // nested XR without a compositionRef. Crossplane writes compositionRef on every XR it reconciles, so
 // only a nested XR the run would create is affected; overlay the run onto the cluster's candidates if
@@ -1021,7 +1024,7 @@ func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *u
 	rc, inRun := run[name]
 	if inRun {
 		if rc.err != nil {
-			return dtypes.ResolvedComposition{}, rc.err
+			return dtypes.ResolvedComposition{}, errors.Wrapf(rc.err, "cannot use composition %q from the run", name)
 		}
 
 		if ref := rc.comp.Spec.CompositeTypeRef; ref.APIVersion != res.GetAPIVersion() || ref.Kind != res.GetKind() {
@@ -1049,7 +1052,7 @@ func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *u
 		"composition", rc.comp.GetName())
 
 	// classifyXR kept res, so it adopts the revision, as cliCompositionRevision would find.
-	return dtypes.ResolvedComposition{Composition: rc.comp, RevisionName: rc.revisionName}, nil
+	return dtypes.ResolvedComposition{Composition: rc.comp, RevisionName: rc.revisionName()}, nil
 }
 
 // compositionComparison is the result of comparing a proposed composition against its in-cluster

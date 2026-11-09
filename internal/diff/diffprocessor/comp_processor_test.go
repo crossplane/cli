@@ -1742,14 +1742,19 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 		nested *un.Unstructured
 		// cluster is the composition the cluster resolves nested to.
 		cluster types.ResolvedComposition
+		// runComps are the run's Compositions; runChild when unset.
+		runComps []*un.Unstructured
+		// run, when set, replaces the run built from runComps.
+		run map[string]runComposition
 	}
 
 	// want is the composition the nested XR renders with: its name, labels (the run's copy carries
-	// version 2) and revision.
+	// version 2) and revision, or the error resolving it.
 	type want struct {
 		Composition string
 		Labels      map[string]string
 		Revision    string
+		Err         string
 	}
 
 	cases := map[string]struct {
@@ -1781,11 +1786,40 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 			},
 			want: want{Composition: "child", Revision: "child-0ld0001"},
 		},
+		"SelectorRejectingRunRevisionGetsClusters": {
+			reason: "An Automatic nested XR whose compositionRevisionSelector rejects the run's revision labels does not adopt it, so it renders with the cluster's.",
+			args: args{
+				nested:  nested("child").WithCompositionRevisionSelector(xp.CrossplaneAPIExtGroupV2, map[string]string{"version": "3"}, nil).Build(),
+				cluster: types.ResolvedComposition{Composition: clusterChild, RevisionName: "child-0ld0001"},
+			},
+			want: want{Composition: "child", Revision: "child-0ld0001"},
+		},
+		"RunCompositionErrorIsReturned": {
+			reason: "A nested XR naming a run Composition that could not be read fails, rather than silently rendering with the cluster's.",
+			args: args{
+				nested:  nested("child").Build(),
+				cluster: types.ResolvedComposition{Composition: clusterChild, RevisionName: "child-0ld0001"},
+				run:     map[string]runComposition{"child": {err: errors.New("boom")}},
+			},
+			want: want{Err: `cannot use composition "child" from the run: boom`},
+		},
+		"IncompatibleRunCompositionIsAnError": {
+			reason: "A nested XR naming a run Composition of another composite type fails.",
+			args: args{
+				nested:   nested("child").Build(),
+				cluster:  types.ResolvedComposition{Composition: clusterChild, RevisionName: "child-0ld0001"},
+				runComps: []*un.Unstructured{tu.NewComposition("child").WithCompositeTypeRef("child.example.org/v1", "XOther").WithPipelineMode().BuildAsUnstructured()},
+			},
+			want: want{Err: "composition child is not compatible with child.example.org/v1, Kind=XChild"},
+		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			var got types.ResolvedComposition
+			var (
+				got    types.ResolvedComposition
+				gotErr error
+			)
 
 			processor := &DefaultCompDiffProcessor{
 				compositionClient: tu.NewMockCompositionClient().
@@ -1796,24 +1830,32 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 					Build(),
 				xrProc: &tu.MockDiffProcessor{
 					DiffSingleResourceFn: func(ctx context.Context, _ *un.Unstructured, provider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error) {
-						var err error
+						got, gotErr = provider(ctx, tc.args.nested)
 
-						got, err = provider(ctx, tc.args.nested)
-
-						return map[string]*dt.ResourceDiff{}, nil, err
+						return map[string]*dt.ResourceDiff{}, nil, gotErr
 					},
 				},
 				config: ProcessorConfig{Logger: tu.TestLogger(t, false)},
 			}
 
-			run := processor.runCompositions(t.Context(), []*un.Unstructured{runChild.BuildAsUnstructured()})
-			results := processor.collectXRDiffs(t.Context(), []*un.Unstructured{root}, parentComp, "", nil, nil, run)
-
-			if err := results[dt.MakeDiffKeyFromResource(root)].Error; err != nil {
-				t.Fatalf("%s\ncollectXRDiffs(): unexpected error: %v", tc.reason, err)
+			runComps := tc.args.runComps
+			if runComps == nil {
+				runComps = []*un.Unstructured{runChild.BuildAsUnstructured()}
 			}
 
-			gotWant := want{Composition: got.Composition.GetName(), Labels: got.Composition.GetLabels(), Revision: got.RevisionName}
+			run := tc.args.run
+			if run == nil {
+				run = processor.runCompositions(t.Context(), runComps)
+			}
+
+			_ = processor.collectXRDiffs(t.Context(), []*un.Unstructured{root}, parentComp, "", nil, nil, run)
+
+			gotWant := want{}
+			if gotErr != nil {
+				gotWant.Err = gotErr.Error()
+			} else {
+				gotWant = want{Composition: got.Composition.GetName(), Labels: got.Composition.GetLabels(), Revision: got.RevisionName}
+			}
 			if diff := gcmp.Diff(tc.want, gotWant); diff != "" {
 				t.Errorf("%s\ncollectXRDiffs() nested XR's composition (-want +got):\n%s", tc.reason, diff)
 			}
@@ -2143,7 +2185,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 
 				proc := newCompProcessorForTest(t, client, false /* IncludeManual */)
 
-				got, _, err := proc.processSingleComposition(t.Context(), comp, []*un.Unstructured{manualXR, pinnedManualXR}, tt.scoped, nil)
+				got, _, err := proc.processSingleComposition(t.Context(), comp, []*un.Unstructured{manualXR, pinnedManualXR}, tt.scoped, proc.runCompositions(t.Context(), []*un.Unstructured{comp}))
 				if err != nil {
 					t.Fatalf("processSingleComposition: %v", err)
 				}
@@ -2251,7 +2293,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 				proc := newCompProcessorForTest(t, client, tt.includeManual)
 				proc.config.AnalyzeOn = tt.analyzeOn
 
-				got, _, err := proc.processSingleComposition(t.Context(), metaOnlyComp, []*un.Unstructured{xr1, manualXR}, tt.scoped, nil)
+				got, _, err := proc.processSingleComposition(t.Context(), metaOnlyComp, []*un.Unstructured{xr1, manualXR}, tt.scoped, proc.runCompositions(t.Context(), []*un.Unstructured{metaOnlyComp}))
 				if err != nil {
 					t.Fatalf("processSingleComposition: %v", err)
 				}
@@ -2311,7 +2353,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 
 		proc := newCompProcessorForTest(t, client, false /* IncludeManual */)
 
-		got, _, err := proc.processSingleComposition(t.Context(), labeledComp, []*un.Unstructured{selectorMismatchXR}, true /* scoped */, nil)
+		got, _, err := proc.processSingleComposition(t.Context(), labeledComp, []*un.Unstructured{selectorMismatchXR}, true /* scoped */, proc.runCompositions(t.Context(), []*un.Unstructured{labeledComp}))
 		if err != nil {
 			t.Fatalf("processSingleComposition: %v", err)
 		}
@@ -2427,7 +2469,8 @@ func TestDefaultCompDiffProcessor_processSingleComposition_ChangedFunctions(t *t
 			proc.config.AnalyzeOn = tt.analyzeOn
 			WithChangedFunctions(tt.changed...)(&proc.config)
 
-			got, _, err := proc.processSingleComposition(t.Context(), builder().BuildAsUnstructured(), []*un.Unstructured{xr}, false, nil)
+			comp := builder().BuildAsUnstructured()
+			got, _, err := proc.processSingleComposition(t.Context(), comp, []*un.Unstructured{xr}, false, proc.runCompositions(t.Context(), []*un.Unstructured{comp}))
 			if err != nil {
 				t.Fatalf("processSingleComposition: %v", err)
 			}
@@ -2566,7 +2609,8 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 				},
 			}
 
-			got, _, err := proc.processSingleComposition(t.Context(), cliComp.BuildAsUnstructured(), []*un.Unstructured{pinnedXR("pinned")}, false, nil)
+			comp := cliComp.BuildAsUnstructured()
+			got, _, err := proc.processSingleComposition(t.Context(), comp, []*un.Unstructured{pinnedXR("pinned")}, false, proc.runCompositions(t.Context(), []*un.Unstructured{comp}))
 			if err != nil {
 				t.Fatalf("processSingleComposition: %v", err)
 			}
@@ -2643,7 +2687,8 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedBackingXROfFilt
 		},
 	}
 
-	got, _, err := proc.processSingleComposition(t.Context(), cliComp.BuildAsUnstructured(), []*un.Unstructured{claim, backing}, false, nil)
+	comp := cliComp.BuildAsUnstructured()
+	got, _, err := proc.processSingleComposition(t.Context(), comp, []*un.Unstructured{claim, backing}, false, proc.runCompositions(t.Context(), []*un.Unstructured{comp}))
 	if err != nil {
 		t.Fatalf("processSingleComposition: %v", err)
 	}

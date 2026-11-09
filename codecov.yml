@@ -1,0 +1,9 @@
+# CI uploads two coverage reports per commit: unittests and integration
+# (.github/workflows/ci.yml). Wait for both before posting statuses or the PR
+# comment, so the first upload alone doesn't post a misleading result.
+codecov:
+  notify:
+    after_n_builds: 2
+
+comment:
+  after_n_builds: 2

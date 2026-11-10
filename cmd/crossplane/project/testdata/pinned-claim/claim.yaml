@@ -1,0 +1,15 @@
+# A Manual claim bound to xr.yaml. The pin lives on the backing XR alone.
+apiVersion: pinned.diff.example.org/v1alpha1
+kind: Pinned
+metadata:
+  name: manual-claim
+  namespace: default
+spec:
+  coolField: existing-value
+  compositionUpdatePolicy: Manual
+  compositionRef:
+    name: xpinneds.pinned.diff.example.org
+  resourceRef:
+    apiVersion: pinned.diff.example.org/v1alpha1
+    kind: XPinned
+    name: manual-claim-x1y2z

@@ -1,0 +1,9 @@
+apiVersion: nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  name: {{ .observed.composite.resource.metadata.name }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: nop-resource
+spec:
+  forProvider:
+    configData: embedded-{{ .observed.composite.resource.spec.coolField }}

@@ -1028,7 +1028,7 @@ func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *u
 		}
 
 		if ref := rc.comp.Spec.CompositeTypeRef; ref.APIVersion != res.GetAPIVersion() || ref.Kind != res.GetKind() {
-			return dtypes.ResolvedComposition{}, errors.Errorf("composition %s is not compatible with %s", rc.comp.GetName(), res.GroupVersionKind())
+			return dtypes.ResolvedComposition{}, errors.Errorf("composition %q in the run composes %s %s, but nested XR %q is a %s %s", rc.comp.GetName(), ref.APIVersion, ref.Kind, res.GetName(), res.GetAPIVersion(), res.GetKind())
 		}
 
 		disposition, err := p.classifyXR(res, rc.revisionLabels, rc.comp.GetLabels())

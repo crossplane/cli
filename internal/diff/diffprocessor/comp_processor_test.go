@@ -1810,7 +1810,7 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 				cluster:  types.ResolvedComposition{Composition: clusterChild, RevisionName: "child-0ld0001"},
 				runComps: []*un.Unstructured{tu.NewComposition("child").WithCompositeTypeRef("child.example.org/v1", "XOther").WithPipelineMode().BuildAsUnstructured()},
 			},
-			want: want{Err: "composition child is not compatible with child.example.org/v1, Kind=XChild"},
+			want: want{Err: `composition "child" in the run composes child.example.org/v1 XOther, but nested XR "nested" is a child.example.org/v1 XChild`},
 		},
 	}
 

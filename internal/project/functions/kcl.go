@@ -154,7 +154,7 @@ func baseImageForArch(ref name.Reference, arch string, transport http.RoundTripp
 		// tolerantCache keeps a cache that cannot be read or written from
 		// failing the build; see its doc comment for the one case it cannot
 		// recover from.
-		img = cache.Image(img, tolerantCache{cache.NewFilesystemCache(cacheDir)})
+		img = cache.Image(img, tolerantCache{newAtomicCache(cacheDir)})
 	}
 
 	cfg, err := img.ConfigFile()

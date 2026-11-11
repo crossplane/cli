@@ -34,6 +34,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/git"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/functions"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
@@ -56,6 +57,8 @@ type buildCmd struct {
 	OutputDir      string `default:"_output"                                   help:"Output directory for packages."              short:"o"`
 	MaxConcurrency uint   `default:"8"                                         help:"Max concurrent function builds."`
 	CacheDir       string `env:"CROSSPLANE_XPKG_CACHE"                         help:"Directory for cached xpkg package contents." name:"cache-dir"`
+	GitToken       string `env:"CROSSPLANE_GIT_TOKEN"                          help:"Token for git HTTPS authentication."`
+	GitUsername    string `default:"x-access-token"                            env:"CROSSPLANE_GIT_USERNAME"                      help:"Username for git HTTPS authentication."`
 
 	proj   *devv1alpha1.Project
 	projFS afero.Fs
@@ -111,13 +114,22 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 		return errors.Wrap(err, "cannot create xpkg client")
 	}
 
-	depMgr := dependency.NewManager(c.proj, c.projFS,
+	opts := []dependency.ManagerOption{
 		dependency.WithProjectFile(c.ProjectFile),
 		dependency.WithSchemaFS(schemasFS),
 		dependency.WithSchemaGenerators(generators),
 		dependency.WithSchemaRunner(schemaRunner),
 		dependency.WithXpkgClient(client),
-	)
+	}
+
+	if c.GitToken != "" {
+		opts = append(opts, dependency.WithGitAuthProvider(&git.HTTPSAuthProvider{
+			Username: c.GitUsername,
+			Password: c.GitToken,
+		}))
+	}
+
+	depMgr := dependency.NewManager(c.proj, c.projFS, opts...)
 
 	// The builder may decompress function runtime tarballs into this directory;
 	// the built images read from it lazily, so we remove it only after the
@@ -140,7 +152,7 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 	var imgMap project.ImageTagMap
 	err = sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
 		var buildErr error
-		imgMap, buildErr = b.Build(ctx, c.proj, c.projFS,
+		imgMap, _, buildErr = b.Build(ctx, c.proj, c.projFS,
 			project.BuildWithLogger(logger),
 			project.BuildWithEventChannel(ch),
 		)

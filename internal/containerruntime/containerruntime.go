@@ -23,10 +23,18 @@ limitations under the License.
 package containerruntime
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"sync"
 	"time"
+)
 
-	"k8s.io/apimachinery/pkg/util/rand"
+const (
+	// DomainRender is the label and annotation domain render uses.
+	DomainRender = "render.crossplane.io"
+
+	// DomainSimulate is the label and annotation domain simulate uses.
+	DomainSimulate = "simulate.crossplane.io"
 )
 
 // Cleanup specifies what to do with a package's container once its run is
@@ -96,11 +104,20 @@ const (
 	LabelValueManagedBy = "crossplane-cli"
 )
 
+// NewSessionID returns a new random session ID: 16 lowercase hex characters
+// (64 random bits).
+func NewSessionID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b) // Never returns an error.
+
+	return hex.EncodeToString(b)
+}
+
 // SessionID returns an identifier unique to this process. It is the session
 // ID used for Docker resources when the caller doesn't supply one.
 //
 //nolint:gochecknoglobals // Must be stable for the life of the process.
-var SessionID = sync.OnceValue(func() string { return rand.String(12) })
+var SessionID = sync.OnceValue(NewSessionID)
 
 // ManagedLabels returns the labels marking a Docker resource as managed by
 // the crossplane CLI under the given annotation domain:

@@ -14,24 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package dependency
+package containerruntime
 
-import (
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/go-git/go-git/v5/plumbing/transport/http"
-)
-
-type gitAuthProvider struct {
-	username string
-	token    string
-}
-
-func (g *gitAuthProvider) GetAuthMethod() (transport.AuthMethod, error) {
-	if g.token != "" {
-		return &http.BasicAuth{
-			Username: g.username,
-			Password: g.token,
-		}, nil
+// TryLease reports whether the lease of run id in dir could be taken, i.e.
+// whether no process holds it, and gives it straight back.
+func TryLease(dir, id string) bool {
+	f, ok := tryLease(leasePath(dir, id))
+	if ok {
+		_ = f.Close()
 	}
-	return nil, nil
+
+	return ok
 }
+
+// LeasePath is the path of run id's lease file in dir.
+var LeasePath = leasePath

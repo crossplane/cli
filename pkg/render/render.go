@@ -246,11 +246,11 @@ func OverrideFunctionAnnotations(fns []pkgv1.Function, annotations []string) err
 }
 
 // WarnCleanupFailure writes a short warning about err to w. It does nothing if
-// err is nil. Callers use it to surface function runtime cleanup failures that
+// err is nil. Callers use it to surface render session cleanup failures that
 // would otherwise only be visible with --verbose.
 func WarnCleanupFailure(w io.Writer, err error) {
 	if err == nil {
 		return
 	}
-	_, _ = fmt.Fprintf(w, "warning: failed to clean up function runtimes; some resources (e.g. containers) may need to be removed manually: %v\n", err)
+	_, _ = fmt.Fprintf(w, "warning: failed to clean up render session; some resources (e.g. containers or networks) may need to be removed manually: %v\n", err)
 }

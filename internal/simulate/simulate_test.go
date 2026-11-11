@@ -17,7 +17,10 @@ limitations under the License.
 package simulate
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"testing"
 	"time"
 
@@ -114,7 +117,7 @@ func TestPlanner(t *testing.T) {
 			}},
 		}}
 
-		got := NewPlanner(kube, rm, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
 
 		if got.Action != plan.ActionUpdate || got.Approximate || got.Error != "" {
 			t.Errorf("Plan(...): want a provider-computed update, got %+v", got)
@@ -124,11 +127,79 @@ func TestPlanner(t *testing.T) {
 		}
 	})
 
+	t.Run("RoutedPlanRedactsSensitiveViews", func(t *testing.T) {
+		// The provider marks a field sensitive: its value must not reach the
+		// plan's before and after, which -o json and -o yaml print.
+		live := vpc("my-vpc", "10.0.0.0/16")
+		kube := fake.NewClientBuilder().WithScheme(s).WithObjects(live).Build()
+		sensitive := &diffv1alpha1.FieldValue{Kind: &diffv1alpha1.FieldValue_Absence{Absence: diffv1alpha1.Absence_ABSENCE_SENSITIVE}}
+		pc := &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{
+			Action:  diffv1alpha1.Action_ACTION_UPDATE,
+			Changes: []*diffv1alpha1.FieldChange{{Field: "spec.forProvider.cidrBlock", Actual: sensitive, Planned: sensitive}},
+		}}
+
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
+
+		for side, u := range map[string]*unstructured.Unstructured{"Before": got.Before, "After": got.After} {
+			v, _, _ := unstructured.NestedString(u.Object, "spec", "forProvider", "cidrBlock")
+			if v == "10.0.0.0/16" || v == "10.1.0.0/16" || v == "" {
+				t.Errorf("Plan(...).%s: want cidrBlock redacted, got %q", side, v)
+			}
+		}
+
+		// -o json prints the plan marshalled, so the clear values must be absent from those bytes.
+		out, err := json.Marshal(got)
+		if err != nil {
+			t.Fatalf("json.Marshal(Plan(...)): %v", err)
+		}
+
+		for _, secret := range []string{"10.0.0.0/16", "10.1.0.0/16"} {
+			if bytes.Contains(out, []byte(secret)) {
+				t.Errorf("json.Marshal(Plan(...)): want %q absent, got %s", secret, out)
+			}
+		}
+	})
+
+	t.Run("RoutedPlanAfterHasCRDDefaults", func(t *testing.T) {
+		// After means the desired state with CRD defaults applied on every
+		// path, so a provider-planned resource agrees with a fallback one.
+		crd := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "apiextensions.k8s.io/v1",
+			"kind":       "CustomResourceDefinition",
+			"metadata":   map[string]any{"name": "vpcs.ec2.aws.upbound.io"},
+			"spec": map[string]any{
+				"group": "ec2.aws.upbound.io",
+				"names": map[string]any{"kind": "VPC", "listKind": "VPCList", "plural": "vpcs", "singular": "vpc"},
+				"scope": "Cluster",
+				"versions": []any{map[string]any{
+					"name":   "v1beta1",
+					"served": true, "storage": true,
+					"schema": map[string]any{"openAPIV3Schema": map[string]any{
+						"type": "object",
+						"properties": map[string]any{"spec": map[string]any{
+							"type":       "object",
+							"properties": map[string]any{"deletionPolicy": map[string]any{"type": "string", "default": "Delete"}},
+						}},
+					}},
+				}},
+			},
+		}}
+		kube := fake.NewClientBuilder().WithScheme(s).Build()
+		crds, _ := newCRDs(t, crd)
+		pc := &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}
+
+		got := NewPlanner(kube, rm, crds, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("new-vpc", "10.0.0.0/16"))
+
+		if v, _, _ := unstructured.NestedString(got.After.Object, "spec", "deletionPolicy"); v != "Delete" {
+			t.Errorf("Plan(...).After: want the CRD default deletionPolicy Delete, got %q", v)
+		}
+	})
+
 	t.Run("NoLiveCounterpartPlansCreate", func(t *testing.T) {
 		kube := fake.NewClientBuilder().WithScheme(s).Build()
 		pc := &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}
 
-		got := NewPlanner(kube, rm, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("new-vpc", "10.0.0.0/16"))
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("new-vpc", "10.0.0.0/16"))
 
 		if got.Action != plan.ActionCreate || got.Error != "" {
 			t.Errorf("Plan(...): want a create, got %+v", got)
@@ -142,7 +213,7 @@ func TestPlanner(t *testing.T) {
 		live := vpc("my-vpc", "10.0.0.0/16")
 		kube := fake.NewClientBuilder().WithScheme(s).WithObjects(live).Build()
 
-		got := NewPlanner(kube, rm, "default", &fakeRouter{}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
 
 		if !got.Approximate || got.Action != plan.ActionUpdate {
 			t.Errorf("Plan(...): want an approximate update fallback, got %+v", got)
@@ -154,7 +225,7 @@ func TestPlanner(t *testing.T) {
 		kube := fake.NewClientBuilder().WithScheme(s).WithObjects(live).Build()
 		pc := &fakePlanClient{err: notSupportedErr(t)}
 
-		got := NewPlanner(kube, rm, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
 
 		if !got.Approximate || got.Action != plan.ActionUpdate {
 			t.Errorf("Plan(...): want an approximate fallback on DIFF_COMPUTATION_NOT_SUPPORTED, got %+v", got)
@@ -166,14 +237,6 @@ func TestPlanner(t *testing.T) {
 		// admission (deletionPolicy, managementPolicies) that the manifest
 		// omits. Applying the manifest would default them right back, so the
 		// fallback must not plan them as removals.
-		crdGVK := schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"}
-
-		defScheme := runtime.NewScheme()
-		defScheme.AddKnownTypeWithName(vpcGVK, &unstructured.Unstructured{})
-		defScheme.AddKnownTypeWithName(vpcGVK.GroupVersion().WithKind("VPCList"), &unstructured.UnstructuredList{})
-		defScheme.AddKnownTypeWithName(crdGVK, &unstructured.Unstructured{})
-		defScheme.AddKnownTypeWithName(crdGVK.GroupVersion().WithKind("CustomResourceDefinitionList"), &unstructured.UnstructuredList{})
-
 		crd := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "apiextensions.k8s.io/v1",
 			"kind":       "CustomResourceDefinition",
@@ -206,16 +269,11 @@ func TestPlanner(t *testing.T) {
 		_ = unstructured.SetNestedField(live.Object, "Delete", "spec", "deletionPolicy")
 		_ = unstructured.SetNestedStringSlice(live.Object, []string{"*"}, "spec", "managementPolicies")
 
-		crdGets := 0
-		kube := fake.NewClientBuilder().WithScheme(defScheme).WithObjects(live, crd).
-			WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				if obj.GetObjectKind().GroupVersionKind().Kind == "CustomResourceDefinition" {
-					crdGets++
-				}
-				return c.Get(ctx, key, obj, opts...)
-			}}).Build()
+		kube := fake.NewClientBuilder().WithScheme(s).WithObjects(live).Build()
+		crds, dc := newCRDs(t, crd)
+		crdGets := countCRDGets(dc)
 
-		planner := NewPlanner(kube, rm, "default", &fakeRouter{}, time.Second)
+		planner := NewPlanner(kube, rm, crds, "default", &fakeRouter{}, time.Second)
 		got := planner.Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
 
 		if !got.Approximate || got.Action != plan.ActionUpdate {
@@ -235,8 +293,8 @@ func TestPlanner(t *testing.T) {
 		if again := planner.Plan(ctx, vpc("my-vpc", "10.0.0.0/16")); again.Action != plan.ActionNoOp {
 			t.Errorf("Plan(...): want a no-op for a manifest omitting only defaulted fields, got %+v", again)
 		}
-		if crdGets != 1 {
-			t.Errorf("Plan(...): want 1 CRD fetch for 2 resources of the same kind, got %d", crdGets)
+		if *crdGets != 1 {
+			t.Errorf("Plan(...): want 1 CRD fetch for 2 resources of the same kind, got %d", *crdGets)
 		}
 	})
 
@@ -244,7 +302,7 @@ func TestPlanner(t *testing.T) {
 		kube := fake.NewClientBuilder().WithScheme(s).Build()
 		pc := &fakePlanClient{err: status.Error(codes.Internal, "boom")}
 
-		got := NewPlanner(kube, rm, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
+		got := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
 
 		if got.Error == "" {
 			t.Errorf("Plan(...): want a per-resource error, got %+v", got)
@@ -285,7 +343,7 @@ func TestPlanner(t *testing.T) {
 		kube := fake.NewClientBuilder().WithScheme(seedScheme).WithObjects(pc, secret).Build()
 		pc2 := &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}
 
-		got := NewPlanner(kube, seedRM, "default", &fakeRouter{client: pc2}, time.Second).Plan(ctx, vpc("my-vpc", "10.0.0.0/16"))
+		got := NewPlanner(kube, seedRM, noCRDs(t), "default", &fakeRouter{client: pc2}, time.Second).Plan(ctx, vpc("my-vpc", "10.0.0.0/16"))
 
 		if got.Error != "" {
 			t.Fatalf("Plan(...): unexpected error: %s", got.Error)
@@ -349,12 +407,42 @@ func TestPlanner(t *testing.T) {
 		}
 	})
 
-	t.Run("DiscoversOnlyRelevantProviders", func(t *testing.T) {
-		crdGVK := schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"}
+	t.Run("GatherDoesNotCacheContextErrors", func(t *testing.T) {
+		pcGVK := schema.GroupVersionKind{Group: "aws.upbound.io", Version: "v1beta1", Kind: "ProviderConfig"}
+		sc := runtime.NewScheme()
+		sc.AddKnownTypeWithName(pcGVK, &unstructured.Unstructured{})
+		sc.AddKnownTypeWithName(pcGVK.GroupVersion().WithKind("ProviderConfigList"), &unstructured.UnstructuredList{})
+		mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{vpcGVK.GroupVersion(), pcGVK.GroupVersion()})
+		mapper.Add(vpcGVK, meta.RESTScopeRoot)
+		mapper.Add(pcGVK, meta.RESTScopeRoot)
 
+		pc := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "aws.upbound.io/v1beta1",
+			"kind":       "ProviderConfig",
+			"metadata":   map[string]any{"name": "default"},
+		}}
+		kube := fake.NewClientBuilder().WithScheme(sc).WithObjects(pc).
+			WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				return c.Get(ctx, key, obj, opts...)
+			}}).Build()
+
+		expired, cancel := context.WithCancel(ctx)
+		cancel()
+
+		stores := newObjectStoreCache()
+		if got := stores.gather(expired, kube, mapper, "default", vpc("a", "10.0.0.0/16"), nil); len(got) != 0 {
+			t.Fatalf("gather(expired ctx): want no objects, got %v", got)
+		}
+		if got := stores.gather(ctx, kube, mapper, "default", vpc("a", "10.0.0.0/16"), nil); len(got) != 1 {
+			t.Errorf("gather(live ctx): want the ProviderConfig after an expired gather, got %v", got)
+		}
+	})
+
+	t.Run("DiscoversOnlyRelevantProviders", func(t *testing.T) {
 		discScheme := runtime.NewScheme()
-		discScheme.AddKnownTypeWithName(crdGVK, &unstructured.Unstructured{})
-		discScheme.AddKnownTypeWithName(crdGVK.GroupVersion().WithKind("CustomResourceDefinitionList"), &unstructured.UnstructuredList{})
 		if err := pkg.AddToScheme(discScheme); err != nil {
 			t.Fatalf("cannot add pkg scheme: %v", err)
 		}
@@ -388,7 +476,8 @@ func TestPlanner(t *testing.T) {
 		prv.SetName("provider-aws-ec2-abc123")
 		prv.Status.ResolvedPackage = "xpkg.upbound.io/upbound/provider-aws-ec2:v2.9.0"
 
-		kube := fake.NewClientBuilder().WithScheme(discScheme).WithObjects(crd, prv).Build()
+		kube := fake.NewClientBuilder().WithScheme(discScheme).WithObjects(prv).Build()
+		crds, _ := newCRDs(t, crd)
 
 		// Two VPCs (same kind) plus a kind with no CRD on the cluster: exactly
 		// one provider image, once.
@@ -397,13 +486,31 @@ func TestPlanner(t *testing.T) {
 			"kind":       "Key",
 			"metadata":   map[string]any{"name": "k"},
 		}}
-		got, err := RelevantProviderImages(ctx, kube, rm, []*unstructured.Unstructured{vpc("a", "10.0.0.0/16"), vpc("b", "10.1.0.0/16"), unserved}, false)
-		if err != nil {
-			t.Fatalf("RelevantProviderImages(...): unexpected error: %v", err)
-		}
+		cache := NewImageCache()
+		got := RelevantProviderImages(ctx, kube, rm, crds, []*unstructured.Unstructured{vpc("a", "10.0.0.0/16"), vpc("b", "10.1.0.0/16"), unserved}, false, cache, io.Discard)
 		want := []string{"xpkg.upbound.io/upbound/provider-aws-ec2:v2.9.0"}
 		if len(got) != 1 || got[0] != want[0] {
 			t.Errorf("RelevantProviderImages(...): want %v, got %v", want, got)
+		}
+
+		// A repeat call is served from the cache, not the cluster.
+		if err := kube.Delete(ctx, prv); err != nil {
+			t.Fatalf("cannot delete revision: %v", err)
+		}
+		if again := RelevantProviderImages(ctx, kube, rm, crds, []*unstructured.Unstructured{vpc("c", "10.2.0.0/16")}, false, cache, io.Discard); len(again) != 1 || again[0] != want[0] {
+			t.Errorf("RelevantProviderImages(...) repeat: want %v from the cache, got %v", want, again)
+		}
+
+		// A forbidden lookup is covered by TestTransientCRDErrorRetried.
+
+		// ProviderManaged follows the same chain: a VPC's CRD is controlled
+		// by a ProviderRevision; an unserved kind has no CRD.
+		managed := ProviderManaged(ctx, rm, crds)
+		if !managed(vpc("a", "10.0.0.0/16")) {
+			t.Errorf("ProviderManaged(...)(VPC): want true for a provider-installed kind")
+		}
+		if managed(unserved) {
+			t.Errorf("ProviderManaged(...)(Key): want false for a kind with no CRD")
 		}
 	})
 
@@ -413,7 +520,7 @@ func TestPlanner(t *testing.T) {
 		emptyRM := meta.NewDefaultRESTMapper(nil)
 		pc := &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}
 
-		got := NewPlanner(kube, emptyRM, "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.0.0.0/16"))
+		got := NewPlanner(kube, emptyRM, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second).Plan(ctx, vpc("my-vpc", "10.0.0.0/16"))
 
 		if got.Action != plan.ActionCreate || got.Error != "" {
 			t.Errorf("Plan(...): want a create for an unserved kind, got %+v", got)

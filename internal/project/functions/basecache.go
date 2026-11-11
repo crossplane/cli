@@ -17,9 +17,11 @@ limitations under the License.
 package functions
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/cache"
@@ -54,6 +56,146 @@ func DefaultBaseImageCacheDir() string {
 	return filepath.Join(base, "crossplane", "base-images")
 }
 
+// atomicCache is a cache.Cache whose entries only become visible once complete.
+//
+// go-containerregistry's filesystem cache creates a layer's final file up front
+// and tees the download into it, so a concurrent Get (another build, possibly
+// another process, sharing the directory) can find a half-written file and
+// treat it as a hit, taking the layer's size from the partial bytes. Writing
+// that layer to a tarball then fails with "archive/tar: write too long".
+//
+// atomicCache instead writes each layer to a temporary file in the cache
+// directory and renames it to its final path only after the whole stream has
+// been read to EOF and closed without error. Any other outcome removes the
+// temporary file, and a failure to write or publish it is absorbed, so a full
+// or unwritable disk degrades to "not cached". Concurrent writers of one
+// digest are harmless: rename is atomic and the content is identical. Get and
+// Delete use the filesystem cache, and the final paths are the same, so the
+// on-disk layout is unchanged and existing caches stay valid. A process killed
+// mid-download can leave a ".tmp-*" file behind; nothing reads those.
+type atomicCache struct {
+	cache.Cache
+
+	dir string
+}
+
+func newAtomicCache(dir string) atomicCache {
+	return atomicCache{Cache: cache.NewFilesystemCache(dir), dir: dir}
+}
+
+// Put returns a layer that populates the cache as it is read.
+func (c atomicCache) Put(l v1.Layer) (v1.Layer, error) {
+	digest, err := l.Digest()
+	if err != nil {
+		return nil, err
+	}
+	diffID, err := l.DiffID()
+	if err != nil {
+		return nil, err
+	}
+	return &atomicLayer{Layer: l, dir: c.dir, digest: digest, diffID: diffID}, nil
+}
+
+type atomicLayer struct {
+	v1.Layer
+
+	dir            string
+	digest, diffID v1.Hash
+}
+
+func (l *atomicLayer) Compressed() (io.ReadCloser, error) {
+	return l.tee(l.digest, l.Layer.Compressed)
+}
+
+func (l *atomicLayer) Uncompressed() (io.ReadCloser, error) {
+	return l.tee(l.diffID, l.Layer.Uncompressed)
+}
+
+func (l *atomicLayer) tee(h v1.Hash, open func() (io.ReadCloser, error)) (io.ReadCloser, error) {
+	if err := os.MkdirAll(l.dir, 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.CreateTemp(l.dir, ".tmp-*")
+	if err != nil {
+		return nil, err
+	}
+	rc, err := open()
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return nil, err
+	}
+	return &atomicReader{rc: rc, f: f, final: cachePath(l.dir, h)}, nil
+}
+
+// atomicReader copies what it reads into a temporary file, and publishes the
+// file only if the stream was read to EOF without error. Failures that only
+// affect the cache never change what the caller reads.
+type atomicReader struct {
+	rc    io.ReadCloser
+	f     *os.File
+	final string
+
+	complete bool
+	failed   bool
+}
+
+func (r *atomicReader) Read(b []byte) (int, error) {
+	n, err := r.rc.Read(b)
+	if n > 0 && r.f != nil {
+		if _, werr := r.f.Write(b[:n]); werr != nil {
+			// The caller still gets the source's bytes; only the cache entry
+			// is lost.
+			r.abandon()
+		}
+	}
+	switch {
+	case errors.Is(err, io.EOF):
+		r.complete = true
+	case err != nil:
+		r.failed = true
+	}
+	return n, err
+}
+
+// abandon drops the temporary file and stops teeing into it.
+func (r *atomicReader) abandon() {
+	if r.f == nil {
+		return
+	}
+	_ = r.f.Close()
+	_ = os.Remove(r.f.Name())
+	r.f = nil
+}
+
+// Close publishes the entry if the whole stream was read. Once the source has
+// been read to EOF and closed cleanly the caller has every byte, so a failure
+// to finish the cache entry is absorbed rather than returned.
+func (r *atomicReader) Close() error {
+	rerr := r.rc.Close()
+	if r.f == nil {
+		return rerr
+	}
+	if r.failed || !r.complete || rerr != nil {
+		r.abandon()
+		return rerr
+	}
+	name := r.f.Name()
+	if err := r.f.Close(); err != nil || os.Rename(name, r.final) != nil {
+		_ = os.Remove(name)
+	}
+	r.f = nil
+	return nil
+}
+
+// cachePath mirrors go-containerregistry's filesystem cache layout.
+func cachePath(dir string, h v1.Hash) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(dir, fmt.Sprintf("%s-%s", h.Algorithm, h.Hex))
+	}
+	return filepath.Join(dir, h.String())
+}
+
 // tolerantCache degrades to the registry instead of failing the build when the
 // cache itself cannot be used.
 //
@@ -65,10 +207,8 @@ func DefaultBaseImageCacheDir() string {
 // nothing prunes this cache, which makes a full disk a plausible way to reach
 // it. See DefaultBaseImageCacheDir.
 //
-// One case is not recoverable here: if the directory is writable but fills up
-// partway through a layer, the write error surfaces mid-stream, after the
-// reader has been handed to the caller. Restarting from the remote layer at
-// that point would mean re-reading bytes the caller already consumed.
+// A directory that fills up partway through a layer is absorbed by atomicCache,
+// which stops caching and keeps serving the remote bytes.
 type tolerantCache struct {
 	cache.Cache
 }

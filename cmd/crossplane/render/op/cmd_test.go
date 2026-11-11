@@ -98,6 +98,11 @@ func mustNewStruct(t *testing.T, data map[string]any) *structpb.Struct {
 }
 
 func TestCmdRun(t *testing.T) {
+	// Run leases this run in the user's cache directory, and reaps the dead
+	// runs it finds there; keep both off the developer's real one.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
 	type args struct {
 		cmd Cmd
 	}

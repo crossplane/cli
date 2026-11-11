@@ -22,6 +22,7 @@ package simulate
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -48,8 +49,10 @@ type Router interface {
 }
 
 // A Planner plans desired resources one at a time against the diff servers
-// its Router routes to. It caches the object stores it gathers and the CRDs
-// it defaults from, so reuse one Planner across a run.
+// its Router routes to. It caches the object stores it gathers, so reuse one
+// Planner across a run. A Planner is not safe for concurrent use: the engine
+// runs XRs sequentially, and the object store cache (like ProviderManaged's
+// kind map and ImageCache) is unlocked.
 type Planner struct {
 	kube             client.Client
 	rmapper          meta.RESTMapper
@@ -57,13 +60,14 @@ type Planner struct {
 	router           Router
 	timeout          time.Duration
 	stores           *objectStoreCache
-	crds             *crdDefaults
+	crds             CRDs
 }
 
 // NewPlanner returns a Planner that reads live state with kubeClient and
-// rmapper, resolves unset namespaces to defaultNamespace, and bounds each
-// diff server plan by timeout.
-func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, defaultNamespace string, r Router, timeout time.Duration) *Planner {
+// rmapper, defaults the approximate fallback's desired state from crds,
+// resolves unset namespaces to defaultNamespace, and bounds each diff server
+// plan by timeout, when positive.
+func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, defaultNamespace string, r Router, timeout time.Duration) *Planner {
 	return &Planner{
 		kube:             kubeClient,
 		rmapper:          rmapper,
@@ -71,13 +75,12 @@ func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, defaultNamesp
 		router:           r,
 		timeout:          timeout,
 		stores:           newObjectStoreCache(),
-		crds:             newCRDDefaults(),
+		crds:             crds,
 	}
 }
 
-// Plan plans a single resource: fetch its live counterpart, route it to a
-// diff server, and fall back to the approximate client-side diff when no
-// server can plan it. Failures become per-resource errors so one resource
+// Plan plans a single resource: fetch its live counterpart, then plan it
+// with PlanWithLive. Failures become per-resource errors so one resource
 // never fails the whole run.
 func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) *plan.ResourcePlan {
 	if desired.GetName() == "" {
@@ -86,69 +89,99 @@ func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) 
 		return rp
 	}
 
-	live, err := fetchLive(ctx, p.kube, p.rmapper, p.defaultNamespace, desired)
+	live, err := p.fetchLive(ctx, desired)
 	if err != nil {
 		rp := plan.NewResourcePlan(desired)
 		rp.Error = fmt.Sprintf("cannot fetch live resource: %s", err)
 		return rp
 	}
+	return p.PlanWithLive(ctx, desired, live)
+}
 
+// PlanWithLive plans a single resource against an already-fetched live
+// counterpart, or nil when none exists: route it to a diff server, and fall
+// back to the approximate client-side diff when no server can plan it.
+// Failures become per-resource errors so one resource never fails the whole
+// run.
+func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.Unstructured) *plan.ResourcePlan {
 	// Crossplane's external tags survive every apply (the provider's
 	// initializer re-adds them), so a preview must never claim they would be
 	// removed.
 	plan.MergeExternalTags(desired, live)
 
+	// The fallback diffs desired against live verbatim, but live was
+	// defaulted by the API server on admission and applying the manifest
+	// would default it again. So defaulted fields the manifest omits must not
+	// plan as removals, and a plan's After is always the defaulted desired
+	// state, whichever path planned it.
+	defaulted := applyCRDDefaults(ctx, p.rmapper, p.crds, desired)
+
 	gk := desired.GroupVersionKind().GroupKind()
 	planClient, ok := p.router.Route(gk)
 	if !ok {
-		// The fallback diffs desired against live verbatim, but live was
-		// defaulted by the API server on admission and applying the manifest
-		// would default it again. Apply the CRD's defaults to desired first,
-		// so defaulted fields the manifest omits do not plan as removals.
-		return plan.Fallback(p.crds.apply(ctx, p.kube, p.rmapper, desired), live, fmt.Sprintf("no diff server for %s", gk))
+		return plan.Fallback(defaulted, live, fmt.Sprintf("no diff server for %s", gk))
 	}
 
-	pctx, cancel := context.WithTimeout(ctx, p.timeout)
-	defer cancel()
+	pctx := ctx
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		pctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
 
 	store := p.stores.gather(ctx, p.kube, p.rmapper, p.defaultNamespace, desired, live)
 
 	rp, err := plan.Plan(pctx, planClient, desired, live, store)
 	if err != nil {
 		if plan.IsNotSupported(err) {
-			return plan.Fallback(p.crds.apply(ctx, p.kube, p.rmapper, desired), live, "the provider cannot compute a diff for this resource")
+			return plan.Fallback(defaulted, live, "the provider cannot compute a diff for this resource")
 		}
 		rp := plan.NewResourcePlan(desired)
 		rp.Error = fmt.Sprintf("diff server cannot plan: %s", err)
 		return rp
 	}
+	// Plan sends desired as written; its After is the defaulted view, and the
+	// views hide what the provider marks sensitive, as the changes do.
+	rp.After = plan.CleanView(defaulted)
+	rp.Before, rp.After = redactViews(rp.Before, rp.After, rp.Changes)
 	return rp
+}
+
+// CanPlan reports whether a diff server serves resources of kind gk.
+func (p *Planner) CanPlan(gk schema.GroupKind) bool {
+	_, ok := p.router.Route(gk)
+	return ok
 }
 
 // fetchLive returns the live counterpart of the desired resource, or nil when
 // it does not exist (including when its kind is not installed on the
 // cluster), in which case the resource plans as a create.
-func fetchLive(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, defaultNamespace string, desired *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+func (p *Planner) fetchLive(ctx context.Context, desired *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	gvk := desired.GroupVersionKind()
 
-	mapping, err := rmapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-	if err != nil {
+	mapping, err := p.rmapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if meta.IsNoMatchError(err) {
 		// The kind is not served by the cluster: nothing can exist yet. The
 		// diff server can still plan the resource as a create.
-		return nil, nil //nolint:nilerr // Intentional: an unserved kind means no live counterpart, not a failure.
+		return nil, nil
+	}
+	if err != nil {
+		// Any other mapping failure (e.g. discovery) says nothing about
+		// whether the resource exists, so it must not plan as a create.
+		return nil, errors.Wrapf(err, "cannot map %s", gvk)
 	}
 
 	key := client.ObjectKey{Name: desired.GetName()}
 	if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
 		key.Namespace = desired.GetNamespace()
 		if key.Namespace == "" {
-			key.Namespace = defaultNamespace
+			key.Namespace = p.defaultNamespace
 		}
 	}
 
 	live := &unstructured.Unstructured{}
 	live.SetGroupVersionKind(gvk)
-	if err := kubeClient.Get(ctx, key, live); err != nil {
+	if err := p.kube.Get(ctx, key, live); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -228,10 +261,16 @@ func (c *objectStoreCache) gather(ctx context.Context, kubeClient client.Client,
 	var store []*structpb.Struct
 	pc := &unstructured.Unstructured{}
 	pc.SetGroupVersionKind(mapping.GroupVersionKind)
-	if err := kubeClient.Get(ctx, key, pc); err == nil {
+	switch err := kubeClient.Get(ctx, key, pc); {
+	case err == nil:
 		if s, err := structpb.NewStruct(pc.Object); err == nil {
 			store = []*structpb.Struct{s}
 		}
+	case apierrors.IsNotFound(err):
+	default:
+		// Any other failure, notably a timed-out XR's expired context, must
+		// not poison the cache for the XRs after it.
+		return nil
 	}
 	c.cache[ck] = store
 	return store
@@ -258,77 +297,129 @@ func providerConfigMapping(rmapper meta.RESTMapper, group, kind string) *meta.RE
 	}
 }
 
+// ImageCache remembers which provider image serves each kind, so a run
+// looks a kind up on the cluster once however many composites use it. It
+// remembers only definite answers; a kind whose lookup failed is retried by
+// the next call, but warned about once. The zero value is not usable; use
+// NewImageCache.
+type ImageCache struct {
+	images map[schema.GroupKind]string
+	warned map[schema.GroupKind]bool
+}
+
+// NewImageCache returns an empty ImageCache.
+func NewImageCache() *ImageCache {
+	return &ImageCache{images: map[schema.GroupKind]string{}, warned: map[schema.GroupKind]bool{}}
+}
+
 // RelevantProviderImages returns the package images of exactly the providers
 // that serve the given resources, so simulate never starts a diff server it
 // will not route to. Discovery follows the ownership chain on the cluster:
 // each resource's kind maps to a CRD, the CRD is controlled by the active
 // ProviderRevision, and the revision carries the resolved package image.
 // Kinds that resolve to no provider are skipped; their resources degrade to
-// the approximate client-side diff.
-func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, resources []*unstructured.Unstructured, preferOriginal bool) ([]string, error) {
-	seenGK := map[schema.GroupKind]bool{}
+// the approximate client-side diff. So are kinds whose lookup fails (such as
+// forbidden): ProviderManaged treats them the same way, and a warning to warn
+// names each such kind once. cache carries answers across calls. CRDs come
+// from crds, the run's one CRD cache.
+func RelevantProviderImages(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, resources []*unstructured.Unstructured, preferOriginal bool, cache *ImageCache, warn io.Writer) []string {
 	seenImage := map[string]bool{}
 	var images []string
 
 	for _, r := range resources {
 		gvk := r.GroupVersionKind()
 		gk := gvk.GroupKind()
-		if seenGK[gk] {
-			continue
-		}
-		seenGK[gk] = true
-
-		mapping, err := rmapper.RESTMapping(gk, gvk.Version)
-		if err != nil {
-			continue // The kind is not installed; nothing serves it.
-		}
-
-		crd := &unstructured.Unstructured{}
-		crd.SetGroupVersionKind(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"})
-		crdName := mapping.Resource.Resource + "." + gk.Group
-		if err := kubeClient.Get(ctx, client.ObjectKey{Name: crdName}, crd); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
+		img, ok := cache.images[gk]
+		if !ok {
+			var err error
+			img, err = providerImage(ctx, kubeClient, rmapper, crds, gvk, preferOriginal)
+			switch {
+			case err == nil:
+				cache.images[gk] = img
+			case !cache.warned[gk]:
+				cache.warned[gk] = true
+				_, _ = fmt.Fprintf(warn, "Warning: cannot look up the provider for %s, so its diff is client-side only until a lookup succeeds: %s\n", gk, err)
 			}
-			return nil, errors.Wrapf(err, "cannot get CRD %s", crdName)
-		}
-
-		// After an upgrade every revision of the provider still owns the CRD;
-		// only the active revision holds the controller reference, and that is
-		// the one serving the resources.
-		revision := ""
-		for _, ref := range crd.GetOwnerReferences() {
-			if ref.Kind == "ProviderRevision" && strings.HasPrefix(ref.APIVersion, "pkg.crossplane.io/") && ref.Controller != nil && *ref.Controller {
-				revision = ref.Name
-				break
-			}
-		}
-		if revision == "" {
-			continue // Not provider-installed (e.g. a hand-applied CRD).
-		}
-
-		prv := &pkgv1.ProviderRevision{}
-		if err := kubeClient.Get(ctx, client.ObjectKey{Name: revision}, prv); err != nil {
-			return nil, errors.Wrapf(err, "cannot get provider revision %s owning CRD %s", revision, crdName)
-		}
-		// Prefer the resolved package: after the cluster's ImageConfig
-		// rewriting, it is the identity of the artifact the cluster actually
-		// runs, which is what the preview promises to use. If that reference
-		// is not pullable from this machine (e.g. a cluster-only mirror), the
-		// manager reports the image as skipped, its resources degrade to the
-		// approximate diff, and --provider-images remains the override for
-		// picking a locally reachable image instead. With local ImageConfigs
-		// in play (preferOriginal) the original reference is handed out
-		// instead, because that is what local rewrite rules are written
-		// against.
-		img := prv.Status.ResolvedPackage
-		if preferOriginal || img == "" {
-			img = prv.Spec.Package
 		}
 		if img != "" && !seenImage[img] {
 			seenImage[img] = true
 			images = append(images, img)
 		}
 	}
-	return images, nil
+	return images
+}
+
+// providerImage returns the package image of the provider serving gvk, or
+// empty when none does.
+func providerImage(ctx context.Context, kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, gvk schema.GroupVersionKind, preferOriginal bool) (string, error) {
+	revision, crdName, err := controllingRevision(ctx, rmapper, crds, gvk)
+	if err != nil || revision == "" {
+		return "", err
+	}
+
+	prv := &pkgv1.ProviderRevision{}
+	if err := kubeClient.Get(ctx, client.ObjectKey{Name: revision}, prv); err != nil {
+		return "", errors.Wrapf(err, "cannot get provider revision %s owning CRD %s", revision, crdName)
+	}
+	// Prefer the resolved package: after the cluster's ImageConfig
+	// rewriting, it is the identity of the artifact the cluster actually
+	// runs, which is what the preview promises to use. If that reference
+	// is not pullable from this machine (e.g. a cluster-only mirror), the
+	// manager reports the image as skipped, its resources degrade to the
+	// approximate diff, and --provider-images remains the override for
+	// picking a locally reachable image instead. With local ImageConfigs
+	// in play (preferOriginal) the original reference is handed out
+	// instead, because that is what local rewrite rules are written
+	// against.
+	img := prv.Status.ResolvedPackage
+	if preferOriginal || img == "" {
+		img = prv.Spec.Package
+	}
+	return img, nil
+}
+
+// ProviderManaged returns a predicate reporting whether a resource's kind is
+// served by a provider: whether its CRD is controlled by a ProviderRevision,
+// as RelevantProviderImages discovers. Definite answers are cached per group
+// and kind. A lookup that fails answers false without caching it, so the
+// resource keeps the engine's verdict alone and the next resource of its kind
+// asks again. XRs are never provider-managed: their CRDs are controlled by
+// their CompositeResourceDefinition. CRDs come from crds, the run's one CRD
+// cache.
+func ProviderManaged(ctx context.Context, rmapper meta.RESTMapper, crds CRDs) func(*unstructured.Unstructured) bool {
+	managed := map[schema.GroupKind]bool{}
+
+	// The engine diffs one resource at a time, so the cache needs no lock.
+	return func(u *unstructured.Unstructured) bool {
+		gvk := u.GroupVersionKind()
+		if m, ok := managed[gvk.GroupKind()]; ok {
+			return m
+		}
+		revision, _, err := controllingRevision(ctx, rmapper, crds, gvk)
+		if err != nil {
+			return false
+		}
+		managed[gvk.GroupKind()] = revision != ""
+		return managed[gvk.GroupKind()]
+	}
+}
+
+// controllingRevision returns the name of the ProviderRevision controlling the
+// CRD that serves gvk, and that CRD's name. The revision is empty when the
+// kind is not installed or its CRD is not provider-installed.
+func controllingRevision(ctx context.Context, rmapper meta.RESTMapper, crds CRDs, gvk schema.GroupVersionKind) (string, string, error) {
+	crd, err := lookupCRD(ctx, rmapper, crds, gvk)
+	if err != nil || crd == nil {
+		return "", "", err
+	}
+
+	// After an upgrade every revision of the provider still owns the CRD;
+	// only the active revision holds the controller reference, and that is
+	// the one serving the resources.
+	for _, ref := range crd.GetOwnerReferences() {
+		if ref.Kind == "ProviderRevision" && strings.HasPrefix(ref.APIVersion, "pkg.crossplane.io/") && ref.Controller != nil && *ref.Controller {
+			return ref.Name, crd.GetName(), nil
+		}
+	}
+	return "", crd.GetName(), nil // Not provider-installed (e.g. a hand-applied CRD).
 }

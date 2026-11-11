@@ -141,7 +141,7 @@ func TestNewLoader(t *testing.T) {
 			if diff := cmp.Diff(
 				tc.want.loader,
 				got,
-				cmpopts.IgnoreUnexported(FileLoader{}, FolderLoader{}, MultiLoader{}),
+				cmpopts.IgnoreUnexported(StdinLoader{}, FileLoader{}, FolderLoader{}, MultiLoader{}),
 			); diff != "" {
 				t.Errorf("%s\nLoad(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -352,7 +352,8 @@ func TestFolderLoaderLoad(t *testing.T) {
 
 func TestStreamToUnstructured(t *testing.T) {
 	type args struct {
-		stream [][]byte
+		stream             [][]byte
+		skipPipelineInputs bool
 	}
 
 	type want struct {
@@ -486,6 +487,78 @@ spec:
 				err: nil,
 			},
 		},
+		"CompositionWithoutPipelineInputs": {
+			reason: "With skipPipelineInputs, return only the Composition and not its pipeline step inputs",
+			args: args{
+				stream: [][]byte{
+					[]byte(`
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: example-composition
+spec:
+  compositeTypeRef:
+    apiVersion: example.crossplane.io/v1alpha1
+    kind: ExampleComposite
+  pipeline:
+    - step: patch-and-transform
+      functionRef:
+        name: example-function
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: instanceNodeRole
+            base:
+              apiVersion: iam.aws.crossplane.io/v1beta1
+              kind: Role
+              spec: {}
+`),
+				},
+				skipPipelineInputs: true,
+			},
+			want: want{
+				resources: []*unstructured.Unstructured{
+					{
+						Object: map[string]any{
+							"apiVersion": "apiextensions.crossplane.io/v1",
+							"kind":       "Composition",
+							"metadata": map[string]any{
+								"name": "example-composition",
+							},
+							"spec": map[string]any{
+								"compositeTypeRef": map[string]any{
+									"apiVersion": "example.crossplane.io/v1alpha1",
+									"kind":       "ExampleComposite",
+								},
+								"pipeline": []any{
+									map[string]any{
+										"step": "patch-and-transform",
+										"functionRef": map[string]any{
+											"name": "example-function",
+										},
+										"input": map[string]any{
+											"apiVersion": "pt.fn.crossplane.io/v1beta1",
+											"kind":       "Resources",
+											"resources": []any{
+												map[string]any{
+													"name": "instanceNodeRole",
+													"base": map[string]any{
+														"apiVersion": "iam.aws.crossplane.io/v1beta1",
+														"kind":       "Role",
+														"spec":       map[string]any{},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 		"SkipEmptyDocuments": {
 			reason: "Return empty unstructured array for empty documents",
 			args: args{
@@ -508,7 +581,7 @@ spec:
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := streamToUnstructured(tc.args.stream)
+			got, err := streamToUnstructured(tc.args.stream, tc.args.skipPipelineInputs)
 			if diff := cmp.Diff(tc.want.resources, got); diff != "" {
 				t.Errorf("%s\nstreamToUnstructured(...): -want, +got:\n%s", tc.reason, diff)
 			}

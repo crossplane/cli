@@ -22,6 +22,15 @@
     'release-2.4',
     'release-2.5',
   ],
+  ignoreDeps: [
+    // We're using the main branch of upjet to get the new diff server feature,
+    // which isn't in a release yet. Because of how upjet's releases are tagged, the
+    // pseudo-version for main is a v2.5.1 pre-release, which causes renovate to try
+    // and "upgrade" it to v2.5.1. Use a replace to pin the version so renovate
+    // doesn't touch it.
+    // TODO(adamwg): Get rid of this when upjet v2.6.0 ships.
+    'github.com/crossplane/upjet/v2',
+  ],
   ignorePaths: [],
   postUpdateOptions: [
     'gomodTidy',

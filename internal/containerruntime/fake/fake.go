@@ -36,9 +36,15 @@ type Client struct {
 	MockContainerStart   func(ctx context.Context, containerID string, options client.ContainerStartOptions) (client.ContainerStartResult, error)
 	MockContainerStop    func(ctx context.Context, containerID string, options client.ContainerStopOptions) (client.ContainerStopResult, error)
 	MockContainerRemove  func(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
+	MockContainerList    func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
+	MockNetworkList      func(ctx context.Context, options client.NetworkListOptions) (client.NetworkListResult, error)
+	MockNetworkRemove    func(ctx context.Context, networkID string, options client.NetworkRemoveOptions) (client.NetworkRemoveResult, error)
 }
 
-var _ containerruntime.Client = &Client{}
+var (
+	_ containerruntime.Client    = &Client{}
+	_ containerruntime.RunClient = &Client{}
+)
 
 // ImagePull calls MockImagePull.
 func (c *Client) ImagePull(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error) {
@@ -68,6 +74,21 @@ func (c *Client) ContainerStop(ctx context.Context, containerID string, options 
 // ContainerRemove calls MockContainerRemove.
 func (c *Client) ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
 	return c.MockContainerRemove(ctx, containerID, options)
+}
+
+// ContainerList calls MockContainerList.
+func (c *Client) ContainerList(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+	return c.MockContainerList(ctx, options)
+}
+
+// NetworkList calls MockNetworkList.
+func (c *Client) NetworkList(ctx context.Context, options client.NetworkListOptions) (client.NetworkListResult, error) {
+	return c.MockNetworkList(ctx, options)
+}
+
+// NetworkRemove calls MockNetworkRemove.
+func (c *Client) NetworkRemove(ctx context.Context, networkID string, options client.NetworkRemoveOptions) (client.NetworkRemoveResult, error) {
+	return c.MockNetworkRemove(ctx, networkID, options)
 }
 
 // ImagePullDone is a MockImagePull that reports an image pull that has

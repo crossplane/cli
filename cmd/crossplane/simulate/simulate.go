@@ -20,27 +20,22 @@ limitations under the License.
 package simulate
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/discovery/cached/memory"
-	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/restmapper"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/crossplane/apis/v2/pkg"
-
+	"github.com/crossplane/cli/v2/internal/dependency"
+	dcore "github.com/crossplane/cli/v2/internal/diff/client/core"
+	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/kube"
@@ -60,14 +55,14 @@ var helpDetail string
 type Cmd struct {
 	Filename string `help:"YAML files or directory with managed resources, or '-' for stdin (comma-separated)." predictor:"yaml_file_or_directory" required:"" short:"f"`
 
-	Providers    string        `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."       name:"providers"                                         optional:""                                     predictor:"yaml_file_or_directory" type:"path"`
-	ImageConfigs string        `help:"YAML file with ImageConfig manifests that rewrite provider image paths for local pulls. Defaults to the project's imageConfigs when a project file is present." name:"image-configs"                                     optional:""                                     predictor:"yaml_file"              type:"existingfile"`
-	ProjectFile  string        `help:"Path to a project definition file to read imageConfigs from. Defaults to ${project_file} when present."                                                         name:"project-file"                                      optional:""`
-	SessionID    string        `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID."                                placeholder:"ID"`
-	Context      string        `default:""                                                                                                                                                            help:"Kubernetes context."                               name:"context"                                  predictor:"context"                short:"c"`
-	CacheDir     string        `default:"~/.crossplane/cache"                                                                                                                                         help:"Cache directory for downloaded provider packages." name:"cache-dir"                                predictor:"directory"`
-	Timeout      time.Duration `default:"2m"                                                                                                                                                          help:"Per-resource plan timeout."`
-	Output       string        `default:"plan"                                                                                                                                                        enum:"plan,json,yaml"                                    help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
+	Providers    string        `help:"YAML file or directory with Provider manifests to run as diff servers, overriding discovery from the cluster. Supports per-provider runtime annotations."                                                  name:"providers"                                         optional:""                                     predictor:"yaml_file_or_directory" type:"path"`
+	ImageConfigs string        `help:"YAML file with ImageConfig manifests that rewrite provider image paths for local pulls. Defaults to the project's imageConfigs when a project file is present."                                            name:"image-configs"                                     optional:""                                     predictor:"yaml_file"              type:"existingfile"`
+	ProjectFile  string        `help:"Path to a project definition file to read imageConfigs from. Defaults to ${project_file} when present."                                                                                                    name:"project-file"                                      optional:""`
+	SessionID    string        `help:"Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-run ID. A supplied ID isn't leased, so its containers aren't reclaimed after a crash." placeholder:"ID"`
+	Context      string        `default:""                                                                                                                                                                                                       help:"Kubernetes context."                               name:"context"                                  predictor:"context"                short:"c"`
+	CacheDir     string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                                                                                                                      help:"Cache directory for downloaded provider packages." name:"cache-dir"                                predictor:"directory"`
+	Timeout      time.Duration `default:"2m"                                                                                                                                                                                                     help:"Per-resource plan timeout."`
+	Output       string        `default:"plan"                                                                                                                                                                                                   enum:"plan,json,yaml"                                    help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
@@ -75,18 +70,6 @@ type Cmd struct {
 // Help returns the help message for the simulate command.
 func (c *Cmd) Help() string {
 	return helpDetail
-}
-
-// AfterApply expands the cache directory.
-func (c *Cmd) AfterApply() error {
-	if strings.HasPrefix(c.CacheDir, "~/") {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return errors.Wrap(err, "cannot determine home directory for cache dir")
-		}
-		c.CacheDir = filepath.Join(homeDir, c.CacheDir[2:])
-	}
-	return nil
 }
 
 // Run runs the simulate command. ctx is the signal-bound command context from
@@ -125,7 +108,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		}
 	}
 
-	kubeClient, rmapper, defaultNamespace, err := c.setupKubeClient(logger)
+	kubeClient, rmapper, crds, defaultNamespace, err := c.setupKubeClient(logger)
 	if err != nil {
 		return err
 	}
@@ -139,32 +122,28 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		// With local ImageConfigs the rewrites apply to original package
 		// references, so discovery must hand those out; without them the
 		// cluster's resolved reference is the exact artifact it runs.
-		images, err := isimulate.RelevantProviderImages(ctx, kubeClient, rmapper, resources, len(imageConfigs) > 0)
-		if err != nil {
-			return errors.Wrap(err, "cannot discover the providers serving the given resources")
-		}
+		images := isimulate.RelevantProviderImages(ctx, kubeClient, rmapper, crds, resources, len(imageConfigs) > 0, isimulate.NewImageCache(), k.Stderr)
 		inputs = diffserver.Images(images)
 	}
-	if len(inputs) == 0 {
-		_, _ = fmt.Fprintln(k.Stderr, "No providers found to run as diff servers; all results will be approximate.")
-	}
-
 	pkgClient, err := clixpkg.NewClient(
-		clixpkg.WithCacheDir(afero.NewOsFs(), c.CacheDir),
+		clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())),
 		clixpkg.WithImageConfigs(imageConfigs),
 	)
 	if err != nil {
 		return errors.Wrap(err, "cannot create package client")
 	}
 
+	if len(inputs) == 0 {
+		_, _ = fmt.Fprintln(k.Stderr, "No providers found to run as diff servers; all results will be approximate.")
+	}
 	mgr := diffserver.NewManager(pkgClient, logger, diffserver.WithSessionID(c.SessionID))
+	defer isimulate.StopServers(ctx, k.Stderr, mgr)
 	if err := isimulate.EnsureServers(ctx, sp, k.Stderr, mgr, inputs); err != nil {
 		return err
 	}
-	defer isimulate.StopServers(ctx, k.Stderr, mgr)
 
 	plans := make([]*plan.ResourcePlan, 0, len(resources))
-	planner := isimulate.NewPlanner(kubeClient, rmapper, defaultNamespace, mgr, c.Timeout)
+	planner := isimulate.NewPlanner(kubeClient, rmapper, crds, defaultNamespace, mgr, c.Timeout)
 	for _, desired := range resources {
 		plans = append(plans, planner.Plan(ctx, desired))
 	}
@@ -189,31 +168,34 @@ func exitStatus(plans []*plan.ResourcePlan) error {
 	return nil
 }
 
-func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMapper, string, error) {
+// setupKubeClient builds the client stack resource simulate plans with: the
+// diff engine's core clients, whose REST mapper the kube client shares, and
+// its SchemaClient as the run's one CRD cache. The diff engine's clients are
+// reused whole so the run keeps a single client stack and CRD cache, rather
+// than a second mapper and CRD getter beside them.
+func (c *Cmd) setupKubeClient(logger logging.Logger) (client.Client, meta.RESTMapper, isimulate.CRDs, string, error) {
 	kubeconfig, clientconfig, err := kube.RESTConfig(c.Context, c.Impersonation)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, nil, "", err
 	}
 
 	logger.Debug("Found kubeconfig")
 
-	cl, err := client.New(kubeconfig, client.Options{Scheme: scheme.Scheme})
+	core, err := dcore.NewClients(kubeconfig)
 	if err != nil {
-		return nil, nil, "", errors.Wrap(err, "cannot init kubeclient")
+		return nil, nil, nil, "", errors.Wrap(err, "cannot create Kubernetes clients")
 	}
-	_ = pkg.AddToScheme(cl.Scheme())
+	crds := k8.NewSchemaClient(core, k8.NewTypeConverter(core, logger), logger)
 
-	discoveryClient, err := discovery.NewDiscoveryClientForConfig(kubeconfig)
+	cl, err := isimulate.NewKubeClient(kubeconfig, core.Mapper)
 	if err != nil {
-		return nil, nil, "", errors.Wrap(err, "cannot get discovery client")
+		return nil, nil, nil, "", err
 	}
-	d := memory.NewMemCacheClient(discoveryClient)
-	rmapper := restmapper.NewShortcutExpander(restmapper.NewDeferredDiscoveryRESTMapper(d), d, nil)
 
 	namespace, _, err := clientconfig.Namespace()
 	if err != nil {
-		return nil, nil, "", errors.Wrap(err, "failed to get namespace from kubeconfig")
+		return nil, nil, nil, "", errors.Wrap(err, "failed to get namespace from kubeconfig")
 	}
 
-	return cl, rmapper, namespace, nil
+	return cl, core.Mapper, crds, namespace, nil
 }

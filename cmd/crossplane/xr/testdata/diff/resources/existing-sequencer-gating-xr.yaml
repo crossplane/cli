@@ -1,0 +1,13 @@
+# sequencer-xr.yaml as it stood in the cluster before its coolField was changed, once Crossplane had
+# reconciled it against sequencer-gating-composition.yaml, recording the composition it selected at
+# spec.crossplane.* as the v2 XRD has them.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: sequencer-test
+  namespace: default
+spec:
+  coolField: existing-value
+  crossplane:
+    compositionRef:
+      name: sequencer-gating-composition

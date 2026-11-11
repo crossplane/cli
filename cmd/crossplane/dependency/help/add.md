@@ -19,6 +19,12 @@ dependencies. Use the `--api-only` flag to add a build-time xpkg dependency.
 
 Non-xpkg dependencies are always build-time dependencies.
 
+Git dependencies fetched over HTTPS can authenticate using `--git-token` and
+`--git-username`. Prefer the `CROSSPLANE_GIT_TOKEN` and
+`CROSSPLANE_GIT_USERNAME` environment variables to avoid exposing credentials
+in shell history. The username defaults to `x-access-token`. Credentials aren't
+saved in the project file.
+
 ## Package metadata files
 
 The command can also add a dependency to package metadata (`crossplane.yaml`) of a Configuration, Provider, or Function.

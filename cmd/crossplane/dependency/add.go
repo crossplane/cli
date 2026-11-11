@@ -27,6 +27,7 @@ import (
 
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/git"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -39,8 +40,10 @@ var addHelp string
 
 // addCmd adds a dependency to the current project.
 type addCmd struct {
-	CacheDir string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
-	Package  string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
+	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
+	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"  help:"Token for git HTTPS authentication."`
+	GitUsername string `default:"x-access-token"    env:"CROSSPLANE_GIT_USERNAME" help:"Username for git HTTPS authentication."`
+	Package     string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
 
 	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                           optional:""             predictor:"yaml_file" short:"f" type:"path"`
 	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."                 name:"schemas-dir"`
@@ -73,7 +76,7 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 		return errors.Wrap(err, "cannot create xpkg client")
 	}
 
-	m := dependency.NewManager(proj, projFS,
+	opts := []dependency.ManagerOption{
 		dependency.WithStore(store),
 		dependency.WithSchemaGenerators(generator.Filter(
 			generator.AllLanguages(
@@ -83,7 +86,16 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 			proj.Spec.Schemas.GetLanguages(),
 		)),
 		dependency.WithXpkgClient(client),
-	)
+	}
+
+	if c.GitToken != "" {
+		opts = append(opts, dependency.WithGitAuthProvider(&git.HTTPSAuthProvider{
+			Username: c.GitUsername,
+			Password: c.GitToken,
+		}))
+	}
+
+	m := dependency.NewManager(proj, projFS, opts...)
 
 	dep, err := dependency.ParseSource(c.Package, c.GitRef, c.GitPath)
 	if err != nil {

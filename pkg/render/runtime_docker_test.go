@@ -708,3 +708,45 @@ func TestRuntimeDockerStartLabels(t *testing.T) {
 		})
 	}
 }
+
+func TestRuntimeDockerNamedContainer(t *testing.T) {
+	const (
+		name          = "shared-fn"
+		dockerNetwork = "render-net"
+	)
+
+	// A running Orphan container found by name is shared, and this run's
+	// Remove policy never stops or removes it: ContainerStop and
+	// ContainerRemove are nil, so calling either panics.
+	cli := &fake.Client{
+		MockContainerInspect: func(context.Context, string, client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{Container: container.InspectResponse{
+				ID:              "old",
+				Name:            "/" + name,
+				State:           &container.State{Running: true},
+				Config:          &container.Config{Labels: functionContainerLabels("other-session", AnnotationValueRuntimeDockerCleanupOrphan)},
+				NetworkSettings: &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{dockerNetwork: {}}},
+			}}, nil
+		},
+		MockContainerStart: startContainer("old"),
+	}
+	r := &RuntimeDocker{
+		Image:        "xpkg.crossplane.io/crossplane-contrib/function-dummy:v0.1.0",
+		Name:         name,
+		Cleanup:      AnnotationValueRuntimeDockerCleanupRemove,
+		Session:      "this-session",
+		PullPolicy:   AnnotationValueRuntimeDockerPullPolicyNever,
+		Keychain:     authn.NewMultiKeychain(),
+		Network:      dockerNetwork,
+		log:          logging.NewNopLogger(),
+		dockerClient: cli,
+	}
+
+	rctx, err := r.Start(t.Context())
+	if err != nil {
+		t.Fatalf("Start(...): unexpected error: %v", err)
+	}
+	if err := rctx.Stop(t.Context()); err != nil {
+		t.Errorf("Stop(...): unexpected error: %v", err)
+	}
+}

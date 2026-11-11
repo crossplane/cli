@@ -24,10 +24,7 @@ import (
 	"github.com/alecthomas/kong"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -127,15 +124,13 @@ func (c *Cmd) setupKubeClient(logger logging.Logger) (clientcmd.ClientConfig, cl
 	// add package scheme
 	_ = pkg.AddToScheme(cl.Scheme())
 
-	discoveryClient, err := discovery.NewDiscoveryClientForConfig(kubeconfig)
-	if err != nil {
-		return nil, nil, nil, errors.Wrap(err, errGetDiscoveryClient)
-	}
 	// TODO(phisco): properly handle flags and switch to file backed cache
 	// 	(restmapper.NewDeferredDiscoveryRESTMapper), as cli-runtime
 	// 	pkg/resource Builder does.
-	d := memory.NewMemCacheClient(discoveryClient)
-	rmapper := restmapper.NewShortcutExpander(restmapper.NewDeferredDiscoveryRESTMapper(d), d, nil)
+	rmapper, err := kube.NewCachedRESTMapper(kubeconfig)
+	if err != nil {
+		return nil, nil, nil, errors.Wrap(err, errGetDiscoveryClient)
+	}
 
 	return clientconfig, cl, rmapper, nil
 }

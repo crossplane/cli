@@ -6,6 +6,10 @@ run:
   # runs our unit tests. Lint them anyway, so they don't rot.
   build-tags:
     - compilegate
+    # The integration tests need envtest's binaries, so they sit behind the
+    # integration tag and run in their own target, not the unit tests. Lint
+    # them anyway.
+    - integration
 
 output:
   formats:
@@ -139,8 +143,8 @@ linters:
           sizeThreshold: 32
     gomoddirectives:
       replace-allow-list:
-        # TODO(adamwg): Remove once upjet v2.6.0 is released; see go.mod.
-        - github.com/crossplane/upjet/v2
+        # TODO(adamwg): Remove once go-openapi is updated; see go.mod.
+        - github.com/dprotaso/go-yit
     govet:
       disable:
         - shadow

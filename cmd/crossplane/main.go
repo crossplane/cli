@@ -124,7 +124,7 @@ func main() {
 	flagVal, err := configFlag(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "crossplane: %v\n", err)
-		os.Exit(exitUsageError)
+		os.Exit(isimulate.ExitCodeUsage)
 	}
 	cfgPath := config.ResolvePath(flagVal)
 
@@ -211,10 +211,6 @@ func exitOnSignal(tty bool) {
 	}
 	os.Exit(130)
 }
-
-// exitUsageError is the status kong exits with on a parse error. Kong does
-// not export it, so it is mirrored here for flag errors found before Parse.
-const exitUsageError = 80
 
 // configFlag scans argv for the --config flag and returns its value or "" if
 // the config flag is not present.

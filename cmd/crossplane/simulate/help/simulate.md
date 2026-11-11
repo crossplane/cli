@@ -11,6 +11,11 @@ desired and live state. The provider computes its own diff, so the preview
 includes replacement detection, values known only after apply, and redacted
 sensitive values. A resource with no live counterpart plans as a create.
 
+This command takes managed resources. To simulate composite resources or
+claims, use `crossplane xr simulate`; to simulate Compositions, use
+`crossplane composition simulate`; to simulate a project, use
+`crossplane project simulate`.
+
 Which providers run as diff servers comes from the current kubeconfig context
 by default: the CLI follows each resource's kind to the provider that
 installed it on the cluster, so the preview matches the provider versions
@@ -46,13 +51,32 @@ Nothing simulate does writes to the cluster or the cloud: it reads the
 cluster with your kubeconfig and RBAC, and the diff servers run locally with
 no credentials and no cluster access.
 
+Each run starts its own diff servers, named
+`crossplane-diff-server-DIGEST-SUFFIX`, and removes them when it exits.
+
 Diff server startup takes seconds per provider image. In an
 edit-simulate-edit loop, annotate a provider manifest with
-`simulate.crossplane.io/runtime-docker-cleanup: Orphan` (like render's
-per-function cleanup annotation) to leave its container running so the next
-run reuses it. The containers have names like `crossplane-diff-server-DIGEST`
-and carry `simulate.crossplane.io/managed-by` and session labels; any later
-run without the annotation cleans them up, or remove them with docker rm.
+`simulate.crossplane.io/runtime-docker-cleanup: Orphan` to leave its
+container, named `crossplane-diff-server-DIGEST`, running for every later run
+with the annotation to share. No run removes it, including a later run without
+the annotation, which starts its own server instead. Remove kept containers
+with:
+
+```shell
+docker rm -f $(docker ps -aq --filter label=simulate.crossplane.io/cleanup=Orphan)
+```
+
+If a run is killed before it cleans up (for example by `kill -9`), the next
+`crossplane resource simulate` run that starts a diff server container, or
+`crossplane composition render` or `crossplane operation render` run, removes
+what it left, except kept containers. A run whose providers are all
+Development starts no containers, so it doesn't. This doesn't apply to runs
+started with `--session-id`, to runs on Windows, or to a different
+`DOCKER_HOST`.
+
+Provider packages are cached in `--cache-dir`, which defaults to
+`$CROSSPLANE_XPKG_CACHE` or the same xpkg cache directory as
+`project simulate` and `render`.
 
 The command exits with one of these statuses, so a CI pipeline can gate on
 the result:
@@ -97,7 +121,10 @@ repository, then simulate with a Provider manifest annotated with
 crossplane resource simulate -f resources.yaml --providers providers.yaml
 ```
 
-Emit machine-readable results for CI gating:
+Emit machine-readable results for CI gating. Each plan carries the live
+object as `before` (absent for a create) and the desired manifest as `after`,
+both without status, server-managed metadata and ignored paths, and with
+Secret values redacted:
 
 ```shell
 crossplane resource simulate -f resources.yaml -o json

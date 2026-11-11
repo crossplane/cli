@@ -181,6 +181,7 @@ spec:
 				"io.k8s.apimachinery.pkg.apis.meta.v1.OwnerReference",
 				"io.k8s.apimachinery.pkg.apis.meta.v1.Patch",
 				"io.k8s.apimachinery.pkg.apis.meta.v1.Preconditions",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.ShardInfo",
 				"io.k8s.apimachinery.pkg.apis.meta.v1.Status",
 				"io.k8s.apimachinery.pkg.apis.meta.v1.StatusCause",
 				"io.k8s.apimachinery.pkg.apis.meta.v1.StatusDetails",

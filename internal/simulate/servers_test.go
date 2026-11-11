@@ -17,15 +17,23 @@ limitations under the License.
 package simulate
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+
+	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/diffserver"
+	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
 func TestLoadProviderInputs(t *testing.T) {
@@ -226,4 +234,91 @@ func TestNeedsDocker(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEnsureServersDevelopmentKeys(t *testing.T) {
+	var out bytes.Buffer
+	mgr := diffserver.NewManager(nil, logging.NewNopLogger(), diffserver.WithSessionID("s"), diffserver.WithReadyTimeout(10*time.Millisecond))
+	sp := terminal.NewNopSpinnerPrinter()
+	// Development inputs have no image, so each is keyed by its own name.
+	inputs := []diffserver.Input{
+		{Runtime: diffserver.RuntimeDevelopment, Name: "a", DevelopmentTarget: "localhost:1", APIGroups: []string{"a.example.org"}},
+		{Runtime: diffserver.RuntimeDevelopment, Name: "b", DevelopmentTarget: "localhost:2", APIGroups: []string{"b.example.org"}},
+	}
+	_ = EnsureServers(context.Background(), sp, &out, mgr, inputs)
+	for _, n := range []string{"a", "b"} {
+		if got := strings.Count(out.String(), "Not running a diff server for "+n+":"); got != 1 {
+			t.Errorf("skip message for %q printed %d times, want 1: %q", n, got, out.String())
+		}
+	}
+	before := out.String()
+	_ = EnsureServers(context.Background(), sp, &out, mgr, inputs)
+	if out.String() != before {
+		t.Errorf("second EnsureServers printed more: %q", out.String())
+	}
+}
+
+// recordingSpinner counts spinner runs.
+type recordingSpinner struct {
+	terminal.SpinnerPrinter
+	runs int
+}
+
+func (r *recordingSpinner) WrapAsyncWithSuccessSpinners(f func(ch async.EventChannel) error) error {
+	r.runs++
+	return r.SpinnerPrinter.WrapAsyncWithSuccessSpinners(f)
+}
+
+func TestEnsureServersSpinner(t *testing.T) {
+	ctx := context.Background()
+	mgr := diffserver.NewManager(nil, logging.NewNopLogger(), diffserver.WithSessionID("s"), diffserver.WithReadyTimeout(10*time.Millisecond))
+	sp := &recordingSpinner{SpinnerPrinter: terminal.NewNopSpinnerPrinter()}
+	inputs := []diffserver.Input{
+		{Runtime: diffserver.RuntimeDevelopment, Name: "a", DevelopmentTarget: "localhost:1", APIGroups: []string{"a.example.org"}},
+	}
+	for _, step := range []struct {
+		name   string
+		inputs []diffserver.Input
+		want   int
+	}{
+		{"Empty", nil, 0},
+		{"New", inputs, 1},
+		{"Repeat", inputs, 1},
+	} {
+		_ = EnsureServers(ctx, sp, io.Discard, mgr, step.inputs)
+		if sp.runs != step.want {
+			t.Errorf("%s: want %d spinner runs in total, got %d", step.name, step.want, sp.runs)
+		}
+	}
+}
+
+func TestEnsureServersWaitsForInFlight(t *testing.T) {
+	ctx := context.Background()
+	// Nothing answers at the target, so the first Start holds the input in
+	// flight for the whole ready timeout.
+	const hold = 500 * time.Millisecond
+	mgr := diffserver.NewManager(nil, logging.NewNopLogger(), diffserver.WithSessionID("s"), diffserver.WithReadyTimeout(hold))
+	inputs := []diffserver.Input{
+		{Runtime: diffserver.RuntimeDevelopment, Name: "a", DevelopmentTarget: "localhost:1", APIGroups: []string{"a.example.org"}},
+	}
+	began := time.Now()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = mgr.Start(ctx, inputs, nil)
+	}()
+	for len(mgr.Unclaimed(inputs)) != 0 {
+		time.Sleep(time.Millisecond)
+	}
+	sp := &recordingSpinner{SpinnerPrinter: terminal.NewNopSpinnerPrinter()}
+	if err := EnsureServers(ctx, sp, io.Discard, mgr, inputs); err != nil {
+		t.Fatalf("EnsureServers(...): %v", err)
+	}
+	if elapsed := time.Since(began); elapsed < hold {
+		t.Errorf("EnsureServers returned after %s, before the in-flight start's %s ready timeout", elapsed, hold)
+	}
+	if sp.runs != 0 {
+		t.Errorf("EnsureServers ran %d spinners for an in-flight input, want 0", sp.runs)
+	}
+	<-done
 }

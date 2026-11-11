@@ -241,7 +241,7 @@ func parseContext(a complete.Args) string {
 	context := ""
 
 	for i, arg := range a.All {
-		if (arg == "--context" || arg == "-c") && i < len(a.All) {
+		if (arg == "--context" || arg == "-c") && i+1 < len(a.All) {
 			context = a.All[i+1]
 			break
 		}
@@ -281,7 +281,7 @@ func parseNamespaceOverride(a complete.Args) string {
 	namespace := ""
 
 	for i, arg := range a.All {
-		if (arg == "--namespace" || arg == "-n") && i < len(a.All) {
+		if (arg == "--namespace" || arg == "-n") && i+1 < len(a.All) {
 			namespace = a.All[i+1]
 			break
 		}

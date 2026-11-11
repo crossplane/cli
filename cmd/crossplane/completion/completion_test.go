@@ -68,6 +68,16 @@ func TestParseContext(t *testing.T) {
 			args:   []string{"-c", "other", "x"},
 			want:   "other",
 		},
+		"LongAttached": {
+			reason: "The --context=value form is parsed.",
+			args:   []string{"trace", "--context=other", "x"},
+			want:   "other",
+		},
+		"ShortAttached": {
+			reason: "The -cvalue form is parsed.",
+			args:   []string{"-cother", "x"},
+			want:   "other",
+		},
 		"FlagLast": {
 			reason: "A --context that is the last word, its value not yet typed, yields no context.",
 			args:   []string{"trace", "--context"},
@@ -106,6 +116,16 @@ func TestParseNamespaceOverride(t *testing.T) {
 		"Short": {
 			reason: "The -n value is parsed.",
 			args:   []string{"-n", "team-a", "x"},
+			want:   "team-a",
+		},
+		"LongAttached": {
+			reason: "The --namespace=value form is parsed.",
+			args:   []string{"trace", "--namespace=team-a", "x"},
+			want:   "team-a",
+		},
+		"ShortAttached": {
+			reason: "The -nvalue form is parsed.",
+			args:   []string{"-nteam-a", "x"},
 			want:   "team-a",
 		},
 		"FlagLast": {

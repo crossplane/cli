@@ -335,6 +335,16 @@ func TestNamespacePredictorIntegration(t *testing.T) {
 			args:   args{currentContext: ctxUnreachable, line: "-c admin --namespace team"},
 			want:   []string{"team-a", "team-b"},
 		},
+		"AttachedContextOverride": {
+			reason: "--context=value selects the cluster to list, like --context value.",
+			args:   args{currentContext: ctxUnreachable, line: "--context=admin --namespace team"},
+			want:   []string{"team-a", "team-b"},
+		},
+		"AttachedShortContextOverride": {
+			reason: "-cvalue selects the cluster to list, like -c value.",
+			args:   args{currentContext: ctxUnreachable, line: "-cadmin --namespace team"},
+			want:   []string{"team-a", "team-b"},
+		},
 		"ContextOverrideUnreachable": {
 			reason: "Nothing is predicted when the --context cluster can't be reached.",
 			args:   args{currentContext: ctxAdmin, line: "--context unreachable --namespace team"},

@@ -238,16 +238,26 @@ func kubernetesClient(kubeContext string, imp kube.ImpersonationFlags) (controll
 
 // parseContext parses the Kubernetes context override from the completed command line arguments.
 func parseContext(a complete.Args) string {
-	context := ""
+	return parseFlagValue(a, "context", "c")
+}
 
+// parseFlagValue returns the value of the first occurrence of the flag with the
+// given long and short names, in any form kong accepts: "--long value",
+// "--long=value", "-s value" and "-svalue". It returns "" if the flag is absent
+// or its value is not yet typed.
+func parseFlagValue(a complete.Args, long, short string) string {
 	for i, arg := range a.All {
-		if (arg == "--context" || arg == "-c") && i+1 < len(a.All) {
-			context = a.All[i+1]
-			break
+		switch {
+		case (arg == "--"+long || arg == "-"+short) && i+1 < len(a.All):
+			return a.All[i+1]
+		case strings.HasPrefix(arg, "--"+long+"="):
+			return strings.TrimPrefix(arg, "--"+long+"=")
+		case len(arg) > 2 && strings.HasPrefix(arg, "-"+short):
+			return strings.TrimPrefix(arg, "-"+short)
 		}
 	}
 
-	return context
+	return ""
 }
 
 // parseImpersonation parses the kubectl-compatible impersonation flags (--as,
@@ -278,14 +288,5 @@ func parseImpersonation(a complete.Args) kube.ImpersonationFlags {
 
 // parseNamespaceOverride parses the namespace override from the completed command line arguments.
 func parseNamespaceOverride(a complete.Args) string {
-	namespace := ""
-
-	for i, arg := range a.All {
-		if (arg == "--namespace" || arg == "-n") && i+1 < len(a.All) {
-			namespace = a.All[i+1]
-			break
-		}
-	}
-
-	return namespace
+	return parseFlagValue(a, "namespace", "n")
 }

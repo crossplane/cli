@@ -1,0 +1,36 @@
+# Two namespaces for the namespace predictor, and widgets in two namespaces for
+# the resource-name predictor's namespace resolution.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-b
+---
+apiVersion: completion.example.org/v1alpha1
+kind: Widget
+metadata:
+  name: widget-alpha
+  namespace: default
+---
+apiVersion: completion.example.org/v1alpha1
+kind: Widget
+metadata:
+  name: widget-beta
+  namespace: default
+---
+apiVersion: completion.example.org/v1alpha1
+kind: Widget
+metadata:
+  name: widget-gamma
+  namespace: team-a
+---
+# The RBAC-limited user may list widgets but not configmaps.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: default

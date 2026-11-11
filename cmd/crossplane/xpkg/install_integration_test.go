@@ -260,32 +260,39 @@ func TestInstallIntegration(t *testing.T) {
 func TestInstallWaitIntegration(t *testing.T) {
 	cluster := startInstallCluster(t)
 
-	cases := map[string]struct {
-		reason  string
+	type args struct {
 		name    string
 		healthy bool
-		wantErr error
+	}
+
+	type want struct {
+		err error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
 	}{
 		"BecomesHealthy": {
-			reason:  "Run returns success once the package's Healthy condition turns true.",
-			name:    "provider-healthy",
-			healthy: true,
+			reason: "Run returns success once the package's Healthy condition turns true.",
+			args:   args{name: "provider-healthy", healthy: true},
 		},
 		"NeverHealthy": {
-			reason:  "Run fails when the package isn't healthy before the wait times out.",
-			name:    "provider-unhealthy",
-			wantErr: errors.Wrap(context.DeadlineExceeded, "Package did not become ready"),
+			reason: "Run fails when the package isn't healthy before the wait times out.",
+			args:   args{name: "provider-unhealthy"},
+			want:   want{err: errors.Wrap(context.DeadlineExceeded, "Package did not become ready")},
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if tc.healthy {
+			if tc.args.healthy {
 				// No package manager runs under envtest, so mark the package healthy once Run has created it.
 				go func() {
 					p := &v1.Provider{}
 					for cluster.Context.Err() == nil {
-						if err := cluster.Client.Get(cluster.Context, client.ObjectKey{Name: tc.name}, p); err == nil {
+						if err := cluster.Client.Get(cluster.Context, client.ObjectKey{Name: tc.args.name}, p); err == nil {
 							p.SetConditions(v1.Healthy())
 							if err := cluster.Client.Status().Update(cluster.Context, p); err == nil {
 								return
@@ -298,13 +305,13 @@ func TestInstallWaitIntegration(t *testing.T) {
 			}
 
 			start := time.Now()
-			_, err := runInstall(t, "provider", "xpkg.crossplane.io/acme/prov:v1.0.0", tc.name, "--wait=5s")
+			_, err := runInstall(t, "provider", "xpkg.crossplane.io/acme/prov:v1.0.0", tc.args.name, "--wait=5s")
 
-			if diff := cmp.Diff(tc.wantErr, err, test.EquateErrors()); diff != "" {
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
 				t.Fatalf("\n%s\nRun(): -want error, +got error:\n%s", tc.reason, diff)
 			}
 
-			if tc.wantErr != nil {
+			if tc.want.err != nil {
 				return
 			}
 
@@ -337,15 +344,40 @@ func TestInstallMissingCRDIntegration(t *testing.T) {
 		}
 	}
 
-	// The client's RESTMapper fails before any request, so the error is a no-match, not the 404 warnIfNotFound
-	// annotates with a hint that the CLI might be out of date. Comparing the whole error checks both.
-	_, err := runInstall(t, "provider", "xpkg.crossplane.io/acme/prov:v1.0.0", "provider-missing")
+	type args struct {
+		install []string
+	}
 
-	want := errors.Wrap(&meta.NoKindMatchError{
-		GroupKind:        schema.GroupKind{Group: "pkg.crossplane.io", Kind: "Provider"},
-		SearchedVersions: []string{"v1"},
-	}, "cannot create package")
-	if diff := cmp.Diff(want, err, test.EquateErrors()); diff != "" {
-		t.Errorf("Run(): -want error, +got error:\n%s", diff)
+	type want struct {
+		err error
+	}
+
+	// Deleting a CRD is cluster-wide setup the install cases can't share, so this scenario keeps its own table.
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"ProviderCRDMissing": {
+			// The client's RESTMapper fails before any request, so the error is a no-match, not the 404
+			// warnIfNotFound annotates with a hint that the CLI might be out of date. Comparing the whole error
+			// checks both.
+			reason: "Installing a kind the cluster doesn't serve fails with a no-match error.",
+			args:   args{install: []string{"provider", "xpkg.crossplane.io/acme/prov:v1.0.0", "provider-missing"}},
+			want: want{err: errors.Wrap(&meta.NoKindMatchError{
+				GroupKind:        schema.GroupKind{Group: "pkg.crossplane.io", Kind: "Provider"},
+				SearchedVersions: []string{"v1"},
+			}, "cannot create package")},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := runInstall(t, tc.args.install...)
+
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nRun(): -want error, +got error:\n%s", tc.reason, diff)
+			}
+		})
 	}
 }

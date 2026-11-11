@@ -25,9 +25,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 
 	"github.com/crossplane/cli/v2/internal/kube"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
@@ -63,50 +67,56 @@ func TestFetchCrossplaneVersionIntegration(t *testing.T) {
 		return map[string]string{"app": "crossplane", "app.kubernetes.io/version": v}
 	}
 
-	type want struct {
-		version string
-		errSub  string
+	type args struct {
+		deployments []*appsv1.Deployment
 	}
 
+	type want struct {
+		version string
+		err     error
+	}
+
+	errNotFound := errors.New("Crossplane version or image tag not found")
+
 	cases := map[string]struct {
-		reason      string
-		deployments []*appsv1.Deployment
-		want        want
+		reason string
+		args   args
+		want   want
 	}{
 		"VersionLabel": {
-			reason:      "A version label without a leading v is returned with one.",
-			deployments: []*appsv1.Deployment{deployment("crossplane", withVersion("2.0.0"), "xpkg.crossplane.io/crossplane/crossplane:v9.9.9")},
-			want:        want{version: "v2.0.0"},
+			reason: "A version label without a leading v is returned with one.",
+			args:   args{deployments: []*appsv1.Deployment{deployment("crossplane", withVersion("2.0.0"), "xpkg.crossplane.io/crossplane/crossplane:v9.9.9")}},
+			want:   want{version: "v2.0.0"},
 		},
 		"VersionLabelWithV": {
-			reason:      "A version label that already has a leading v is returned unchanged.",
-			deployments: []*appsv1.Deployment{deployment("crossplane", withVersion("v2.0.0"), "xpkg.crossplane.io/crossplane/crossplane:v9.9.9")},
-			want:        want{version: "v2.0.0"},
+			reason: "A version label that already has a leading v is returned unchanged.",
+			args:   args{deployments: []*appsv1.Deployment{deployment("crossplane", withVersion("v2.0.0"), "xpkg.crossplane.io/crossplane/crossplane:v9.9.9")}},
+			want:   want{version: "v2.0.0"},
 		},
 		"ImageTag": {
-			reason:      "Without a version label, the image tag is returned with a leading v added.",
-			deployments: []*appsv1.Deployment{deployment("crossplane", xp, "xpkg.crossplane.io/crossplane/crossplane:2.1.0")},
-			want:        want{version: "v2.1.0"},
+			reason: "Without a version label, the image tag is returned with a leading v added.",
+			args:   args{deployments: []*appsv1.Deployment{deployment("crossplane", xp, "xpkg.crossplane.io/crossplane/crossplane:2.1.0")}},
+			want:   want{version: "v2.1.0"},
 		},
 		"ImageTagWithV": {
-			reason:      "Without a version label, an image tag that has a leading v is returned unchanged.",
-			deployments: []*appsv1.Deployment{deployment("crossplane", xp, "xpkg.crossplane.io/crossplane/crossplane:v2.1.0")},
-			want:        want{version: "v2.1.0"},
+			reason: "Without a version label, an image tag that has a leading v is returned unchanged.",
+			args:   args{deployments: []*appsv1.Deployment{deployment("crossplane", xp, "xpkg.crossplane.io/crossplane/crossplane:v2.1.0")}},
+			want:   want{version: "v2.1.0"},
 		},
 		"ImageDigest": {
 			reason: "An image referenced by digest has no tag, so no version is found.",
-			deployments: []*appsv1.Deployment{deployment("crossplane", xp,
-				"xpkg.crossplane.io/crossplane/crossplane@sha256:"+strings.Repeat("a", 64))},
-			want: want{errSub: "Crossplane version or image tag not found"},
+			args: args{deployments: []*appsv1.Deployment{deployment("crossplane", xp,
+				"xpkg.crossplane.io/crossplane/crossplane@sha256:"+strings.Repeat("a", 64))}},
+			want: want{err: errNotFound},
 		},
 		"NoDeployments": {
 			reason: "With no Deployments there is no version to find.",
-			want:   want{errSub: "Crossplane version or image tag not found"},
+			want:   want{err: errNotFound},
 		},
 		"NoMatchingDeployments": {
-			reason:      "Deployments without the app=crossplane label are ignored.",
-			deployments: []*appsv1.Deployment{deployment("other", map[string]string{"app": "other", "app.kubernetes.io/version": "2.0.0"}, "example.com/other:v1.0.0")},
-			want:        want{errSub: "Crossplane version or image tag not found"},
+			reason: "Deployments without the app=crossplane label are ignored.",
+			args:   args{deployments: []*appsv1.Deployment{deployment("other", map[string]string{"app": "other", "app.kubernetes.io/version": "2.0.0"}, "example.com/other:v1.0.0")}},
+			want:   want{err: errNotFound},
 		},
 	}
 
@@ -119,7 +129,7 @@ func TestFetchCrossplaneVersionIntegration(t *testing.T) {
 				t.Fatalf("cannot create namespace: %v", err)
 			}
 
-			for _, d := range tc.deployments {
+			for _, d := range tc.args.deployments {
 				if err := cluster.Client.Create(cluster.Context, d); err != nil {
 					t.Fatalf("cannot create deployment %s: %v", d.GetName(), err)
 				}
@@ -135,20 +145,12 @@ func TestFetchCrossplaneVersionIntegration(t *testing.T) {
 
 			got, err := FetchCrossplaneVersion(cluster.Context, kube.ImpersonationFlags{})
 
-			if tc.want.errSub != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.want.errSub) {
-					t.Fatalf("\n%s\nFetchCrossplaneVersion(): want error containing %q, got %q, %v", tc.reason, tc.want.errSub, got, err)
-				}
-
-				return
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nFetchCrossplaneVersion(): -want error, +got error:\n%s", tc.reason, diff)
 			}
 
-			if err != nil {
-				t.Fatalf("\n%s\nFetchCrossplaneVersion(): %v", tc.reason, err)
-			}
-
-			if got != tc.want.version {
-				t.Errorf("\n%s\nFetchCrossplaneVersion(): want %q, got %q", tc.reason, tc.want.version, got)
+			if diff := cmp.Diff(tc.want.version, got); diff != "" {
+				t.Errorf("\n%s\nFetchCrossplaneVersion(): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

@@ -79,11 +79,9 @@ func TestFetchCrossplaneVersionIntegration(t *testing.T) {
 			want:        want{version: "v2.0.0"},
 		},
 		"VersionLabelWithV": {
-			// BUG: fetch.go only assigns version when it prepends a v, so a label that already starts with v
-			// returns "". This case asserts the current behavior; the correct result is "v2.0.0".
-			reason:      "A version label that already has a leading v is (currently, wrongly) returned as an empty string.",
+			reason:      "A version label that already has a leading v is returned unchanged.",
 			deployments: []*appsv1.Deployment{deployment("crossplane", withVersion("v2.0.0"), "xpkg.crossplane.io/crossplane/crossplane:v9.9.9")},
-			want:        want{version: ""},
+			want:        want{version: "v2.0.0"},
 		},
 		"ImageTag": {
 			reason:      "Without a version label, the image tag is returned with a leading v added.",

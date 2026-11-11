@@ -20,10 +20,10 @@ package xpkg
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -31,11 +31,16 @@ import (
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 
 	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
@@ -97,15 +102,16 @@ func TestInstallIntegration(t *testing.T) {
 		spec   v1.PackageSpec
 		rcName string
 		stdout string
-		errSub string
+		err    error
 	}
 
 	auto, manual := v1.AutomaticActivation, v1.ManualActivation
 
 	cases := map[string]struct {
-		reason string
-		args   []string
-		want   want
+		reason   string
+		existing v1.Package
+		args     []string
+		want     want
 	}{
 		"Provider": {
 			reason: "A provider is created with automatic activation, no pull secrets and a zero history limit by default.",
@@ -169,7 +175,7 @@ func TestInstallIntegration(t *testing.T) {
 		"ConfigurationWithRuntimeConfig": {
 			reason: "A configuration has no runtime, so a runtime config is refused before anything is created.",
 			args:   []string{"configuration", "xpkg.crossplane.io/acme/config:v1.0.0", "config-rc", "--runtime-config=rc"},
-			want:   want{errSub: "does not support runtime configuration"},
+			want:   want{err: errors.New("package kind *v1.Configuration does not support runtime configuration")},
 		},
 		"DefaultName": {
 			reason: "Without a name the package is named for its repository, as a DNS label.",
@@ -186,31 +192,31 @@ func TestInstallIntegration(t *testing.T) {
 			},
 		},
 		"AlreadyExists": {
-			reason: "Installing a package under a name that is taken fails.",
-			args:   []string{"provider", "xpkg.crossplane.io/crossplane-contrib/provider-nop:v0.4.0", "provider-a"},
-			want:   want{errSub: "already exists"},
+			reason:   "Installing a package under a name that is taken fails.",
+			existing: &v1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "provider-taken"}, Spec: v1.ProviderSpec{PackageSpec: v1.PackageSpec{Package: "xpkg.crossplane.io/crossplane-contrib/provider-nop:v0.4.0"}}},
+			args:     []string{"provider", "xpkg.crossplane.io/crossplane-contrib/provider-nop:v0.4.0", "provider-taken"},
+			want: want{err: errors.Wrap(kerrors.NewAlreadyExists(schema.GroupResource{Group: "pkg.crossplane.io", Resource: "providers"}, "provider-taken"),
+				"cannot create package")},
 		},
 	}
 
-	// Cases share a cluster and AlreadyExists depends on Provider, so they run in order.
-	for _, name := range []string{
-		"Provider", "ConfigurationWithFlags", "FunctionWithRuntimeConfig", "ProviderWithRuntimeConfig",
-		"ConfigurationWithRuntimeConfig", "DefaultName", "AlreadyExists",
-	} {
-		tc := cases[name]
+	// Cases share a cluster but use distinct package names, so they don't depend on each other.
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			stdout, err := runInstall(t, tc.args...)
-
-			if tc.want.errSub != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.want.errSub) {
-					t.Fatalf("\n%s\nRun(): want error containing %q, got %v", tc.reason, tc.want.errSub, err)
+			if tc.existing != nil {
+				if err := cluster.Client.Create(cluster.Context, tc.existing); err != nil {
+					t.Fatalf("cannot create existing package %s: %v", tc.existing.GetName(), err)
 				}
-
-				return
 			}
 
-			if err != nil {
-				t.Fatalf("\n%s\nRun(): %v", tc.reason, err)
+			stdout, err := runInstall(t, tc.args...)
+
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Fatalf("\n%s\nRun(): -want error, +got error:\n%s", tc.reason, diff)
+			}
+
+			if tc.want.err != nil {
+				return
 			}
 
 			if diff := cmp.Diff(tc.want.stdout, stdout); diff != "" {
@@ -258,7 +264,7 @@ func TestInstallWaitIntegration(t *testing.T) {
 		reason  string
 		name    string
 		healthy bool
-		wantErr bool
+		wantErr error
 	}{
 		"BecomesHealthy": {
 			reason:  "Run returns success once the package's Healthy condition turns true.",
@@ -268,7 +274,7 @@ func TestInstallWaitIntegration(t *testing.T) {
 		"NeverHealthy": {
 			reason:  "Run fails when the package isn't healthy before the wait times out.",
 			name:    "provider-unhealthy",
-			wantErr: true,
+			wantErr: errors.Wrap(context.DeadlineExceeded, "Package did not become ready"),
 		},
 	}
 
@@ -294,16 +300,12 @@ func TestInstallWaitIntegration(t *testing.T) {
 			start := time.Now()
 			_, err := runInstall(t, "provider", "xpkg.crossplane.io/acme/prov:v1.0.0", tc.name, "--wait=5s")
 
-			if tc.wantErr {
-				if err == nil || !strings.Contains(err.Error(), "Package did not become ready") {
-					t.Fatalf("\n%s\nRun(): want a not-ready error, got %v", tc.reason, err)
-				}
-
-				return
+			if diff := cmp.Diff(tc.wantErr, err, test.EquateErrors()); diff != "" {
+				t.Fatalf("\n%s\nRun(): -want error, +got error:\n%s", tc.reason, diff)
 			}
 
-			if err != nil {
-				t.Fatalf("\n%s\nRun(): %v", tc.reason, err)
+			if tc.wantErr != nil {
+				return
 			}
 
 			if elapsed := time.Since(start); elapsed >= 5*time.Second {
@@ -324,18 +326,26 @@ func TestInstallMissingCRDIntegration(t *testing.T) {
 		t.Fatalf("cannot delete the Provider CRD: %v", err)
 	}
 
-	for cluster.Client.Get(cluster.Context, client.ObjectKeyFromObject(crd), crd) == nil {
-		time.Sleep(100 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(cluster.Context, 30*time.Second)
+	defer cancel()
+
+	for cluster.Client.Get(ctx, client.ObjectKeyFromObject(crd), crd) == nil {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the Provider CRD was not deleted: %v", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 
 	// The client's RESTMapper fails before any request, so the error is a no-match, not the 404 warnIfNotFound
-	// annotates with a hint that the CLI might be out of date.
+	// annotates with a hint that the CLI might be out of date. Comparing the whole error checks both.
 	_, err := runInstall(t, "provider", "xpkg.crossplane.io/acme/prov:v1.0.0", "provider-missing")
-	if err == nil || !strings.Contains(err.Error(), `no matches for kind "Provider"`) {
-		t.Fatalf("Run(): want a no-match error for the Provider kind, got %v", err)
-	}
 
-	if strings.Contains(err.Error(), "might be out of date") {
-		t.Errorf("Run(): warnIfNotFound unexpectedly annotated a no-match error: %v", err)
+	want := errors.Wrap(&meta.NoKindMatchError{
+		GroupKind:        schema.GroupKind{Group: "pkg.crossplane.io", Kind: "Provider"},
+		SearchedVersions: []string{"v1"},
+	}, "cannot create package")
+	if diff := cmp.Diff(want, err, test.EquateErrors()); diff != "" {
+		t.Errorf("Run(): -want error, +got error:\n%s", diff)
 	}
 }

@@ -77,28 +77,47 @@ func TestTraceIntegration(t *testing.T) {
 	// trace loads its kubeconfig the way kubectl does.
 	t.Setenv("KUBECONFIG", kubeconfig)
 
-	// Children sort by apiVersion, kind and name, so failing comes before ready. No controller runs under envtest,
-	// so the claim and XR have no conditions.
-	//nolint:dupword // Columns of the table repeat values.
-	claimTree := `
-NAME                                      SYNCED   READY   STATUS
-NopClaim/test-claim (test-namespace)      -        -
-└─ XNop/test-claim-xr                     -        -
-   ├─ NopResource/test-claim-xr-failing   False    -       ReconcileError: cannot observe external resource
-   └─ NopResource/test-claim-xr-ready     True     True    Available
-`
-
-	claimNodes := &node{Kind: "NopClaim", Name: "test-claim", Children: []*node{
-		{Kind: "XNop", Name: "test-claim-xr", Children: []*node{
-			{Kind: "NopResource", Name: "test-claim-xr-failing"},
-			{Kind: "NopResource", Name: "test-claim-xr-ready"},
-		}},
+	// The resources trace finds, as parseTree reads them from its json or yaml output. No controller runs under
+	// envtest, so the claim and XRs have no conditions.
+	failing := &node{
+		Kind: "NopResource", Name: "test-claim-xr-failing",
+		Synced: "False ReconcileError: cannot observe external resource",
+	}
+	ready := &node{Kind: "NopResource", Name: "test-claim-xr-ready", Synced: "True ReconcileSuccess", Ready: "True Available"}
+	claimTree := &node{Kind: "NopClaim", Name: "test-claim", Namespace: "test-namespace", Children: []*node{
+		{Kind: "XNop", Name: "test-claim-xr", Children: []*node{failing, ready}},
 	}}
 
+	healthy := "True HealthyPackageRevision"
+	installed := "True ActivePackageRevision"
+	pkg := func(kind, name, image string, children ...*node) *node {
+		return &node{Kind: kind, Name: name, Package: image, Installed: installed, Healthy: healthy, Children: children}
+	}
+	rev := func(kind, name, image, state string) *node {
+		return &node{Kind: kind, Name: name, Package: image, Healthy: healthy, State: state}
+	}
+	configuration := func(children ...*node) *node {
+		return pkg("Configuration", "platform", "xpkg.example.org/acme/platform:v1.0.0", children...)
+	}
+	platformInactive := rev("ConfigurationRevision", "platform-1111", "xpkg.example.org/acme/platform:v0.9.0", "Inactive")
+	platformActive := rev("ConfigurationRevision", "platform-2222", "xpkg.example.org/acme/platform:v1.0.0", "Active")
+	provider := func(children ...*node) *node {
+		p := pkg("Provider", "provider-nop", "xpkg.example.org/acme/provider-nop:v0.5.0",
+			append([]*node{rev("ProviderRevision", "provider-nop-aaaa", "xpkg.example.org/acme/provider-nop:v0.5.0", "Active")}, children...)...)
+		p.Healthy = "False UnhealthyPackageRevision: runtime is not ready"
+
+		return p
+	}
+	function := func(children ...*node) *node {
+		return pkg("Function", "function-dummy", "xpkg.example.org/acme/function-dummy:v0.3.0",
+			append(children, rev("FunctionRevision", "function-dummy-bbbb", "xpkg.example.org/acme/function-dummy:v0.3.0", "Active"))...)
+	}
+
 	type want struct {
-		// stdout is the whole output, compared with trimLines.
+		// stdout is the whole output, compared with trimLines. Only the cases that check a printer's wiring to
+		// stdout set it.
 		stdout string
-		// tree is the kind, name and children of each resource in json or yaml output.
+		// tree is the json or yaml output, as parseTree reads it.
 		tree *node
 		// err is a substring of the error Run returns.
 		err string
@@ -110,29 +129,16 @@ NopClaim/test-claim (test-namespace)      -        -
 		want   want
 	}{
 		"Default": {
-			reason: "The default printer should draw the claim, its XR and the XR's composed resources as a tree.",
+			reason: "The default printer should draw the claim, its XR and the XR's composed resources as a tree on stdout.",
 			args:   []string{"nopclaim", "test-claim", "--namespace=test-namespace"},
-			want:   want{stdout: claimTree},
-		},
-		"ConcurrencyOne": {
-			reason: "Loading the tree one resource at a time should draw the same tree.",
-			args:   []string{"nopclaim", "test-claim", "--namespace=test-namespace", "--concurrency=1"},
-			want:   want{stdout: claimTree},
-		},
-		"TypeVersionGroupSlashName": {
-			reason: "A TYPE.VERSION.GROUP/NAME resource should trace the same claim.",
-			args:   []string{"nopclaims.v1alpha1.trace.example.org/test-claim", "-n", "test-namespace"},
-			want:   want{stdout: claimTree},
-		},
-		"KindSlashName": {
-			reason: "A kind, rather than a plural, with the name after a slash should trace the same claim.",
-			args:   []string{"NopClaim/test-claim", "-n", "test-namespace"},
-			want:   want{stdout: claimTree},
-		},
-		"PluralSeparateName": {
-			reason: "A plural resource with a separate name argument should trace the same claim.",
-			args:   []string{"nopclaims", "test-claim", "-n", "test-namespace"},
-			want:   want{stdout: claimTree},
+			//nolint:dupword // Columns of the table repeat values.
+			want: want{stdout: `
+NAME                                      SYNCED   READY   STATUS
+NopClaim/test-claim (test-namespace)      -        -
+└─ XNop/test-claim-xr                     -        -
+   ├─ NopResource/test-claim-xr-failing   False    -       ReconcileError: cannot observe external resource
+   └─ NopResource/test-claim-xr-ready     True     True    Available
+`},
 		},
 		"Wide": {
 			reason: "The wide printer should add each composed resource's composition resource name.",
@@ -146,44 +152,68 @@ NopClaim/test-claim (test-namespace)                 -        -
    └─ NopResource/test-claim-xr-ready     ready      True     True    Available
 `},
 		},
-		"JSON": {
-			reason: "The json printer should print the same tree.",
-			args:   []string{"nopclaim", "test-claim", "--namespace=test-namespace", "-o", "json"},
-			want:   want{tree: claimNodes},
+		"Dot": {
+			reason: "The dot printer should draw a node per resource, numbered breadth first, and an edge from each to its parent.",
+			args:   []string{"nopclaim", "test-claim", "--namespace=test-namespace", "-o", "dot"},
+			want: want{stdout: `graph  {
+	
+	n1[label="Name: NopClaim/test-claim\nApiVersion: trace.example.org/v1alpha1\nNamespace: test-namespace\nReady: \nSynced: \n",penwidth="2"];
+	n2[label="Name: XNop/test-claim-xr\nApiVersion: trace.example.org/v1alpha1\nReady: \nSynced: \n",penwidth="2"];
+	n3[label="Name: NopResource/test-claim-xr-failing\nApiVersion: nop.example.org/v1alpha1\nReady: \nSynced: False\n",penwidth="2"];
+	n4[label="Name: NopResource/test-claim-xr-ready\nApiVersion: nop.example.org/v1alpha1\nReady: True\nSynced: True\n",penwidth="2"];
+	n1--n2;
+	n2--n3;
+	n2--n4;
+	
+}`},
 		},
 		"YAML": {
-			reason: "The yaml printer should print the same tree.",
+			reason: "The yaml printer should print the claim's tree.",
 			args:   []string{"nopclaim", "test-claim", "--namespace=test-namespace", "-o", "yaml"},
-			want:   want{tree: claimNodes},
+			want:   want{tree: claimTree},
 		},
-		"Dot": {
-			reason: "The dot printer should draw a node per resource, and an edge from each to its parent.",
-			args:   []string{"nopclaim", "test-claim", "--namespace=test-namespace", "-o", "dot"},
-			want:   want{stdout: dotClaimTree},
+		"JSON": {
+			reason: "The json printer should print the claim, its XR and the XR's composed resources with their conditions.",
+			args:   []string{"nopclaim", "test-claim", "--namespace=test-namespace", "-o", "json"},
+			want:   want{tree: claimTree},
+		},
+		"ConcurrencyOne": {
+			reason: "Loading the tree one resource at a time should find the same tree, in the same order.",
+			args:   []string{"nopclaim", "test-claim", "--namespace=test-namespace", "--concurrency=1", "-o", "json"},
+			want:   want{tree: claimTree},
+		},
+		"TypeVersionGroupSlashName": {
+			reason: "A TYPE.VERSION.GROUP/NAME resource argument should resolve to the claim.",
+			args:   []string{"nopclaims.v1alpha1.trace.example.org/test-claim", "-n", "test-namespace", "-o", "json"},
+			want:   want{tree: claimTree},
+		},
+		"KindSlashName": {
+			reason: "A kind, rather than a plural, with the name after a slash should resolve to the claim.",
+			args:   []string{"NopClaim/test-claim", "-n", "test-namespace", "-o", "json"},
+			want:   want{tree: claimTree},
+		},
+		"PluralSeparateName": {
+			reason: "A plural resource argument with a separate name argument should resolve to the claim.",
+			args:   []string{"nopclaims", "test-claim", "-n", "test-namespace", "-o", "json"},
+			want:   want{tree: claimTree},
 		},
 		"ShowConnectionSecrets": {
-			reason: "With --show-connection-secrets the claim's and the XR's connection secrets should be children.",
-			args:   []string{"nopclaim", "test-claim", "--namespace=test-namespace", "--show-connection-secrets"},
-			//nolint:dupword // Columns of the table repeat values.
-			want: want{stdout: `
-NAME                                               SYNCED   READY   STATUS
-NopClaim/test-claim (test-namespace)               -        -
-├─ XNop/test-claim-xr                              -        -
-│  ├─ NopResource/test-claim-xr-failing            False    -       ReconcileError: cannot observe external resource
-│  ├─ NopResource/test-claim-xr-ready              True     True    Available
-│  └─ Secret/test-claim-xr-conn (test-namespace)   -        -
-└─ Secret/test-claim-conn (test-namespace)         -        -
-`},
+			reason: "With --show-connection-secrets the claim's and the XR's connection secrets should follow their other children.",
+			args:   []string{"nopclaim", "test-claim", "--namespace=test-namespace", "--show-connection-secrets", "-o", "json"},
+			want: want{tree: &node{Kind: "NopClaim", Name: "test-claim", Namespace: "test-namespace", Children: []*node{
+				{Kind: "XNop", Name: "test-claim-xr", Children: []*node{
+					failing, ready,
+					{Kind: "Secret", Name: "test-claim-xr-conn", Namespace: "test-namespace"},
+				}},
+				{Kind: "Secret", Name: "test-claim-conn", Namespace: "test-namespace"},
+			}}},
 		},
 		"ClusterScopedXR": {
-			reason: "An XR no claim binds should be traced with no namespace.",
-			args:   []string{"xnop", "standalone-xr"},
-			//nolint:dupword // Columns of the table repeat values.
-			want: want{stdout: `
-NAME                                SYNCED   READY   STATUS
-XNop/standalone-xr                  -        -
-└─ NopResource/standalone-xr-only   True     True    Available
-`},
+			reason: "An XR no claim binds should be traced by name alone, with no namespace.",
+			args:   []string{"xnop", "standalone-xr", "-o", "json"},
+			want: want{tree: &node{Kind: "XNop", Name: "standalone-xr", Children: []*node{
+				{Kind: "NopResource", Name: "standalone-xr-only", Synced: "True ReconcileSuccess", Ready: "True Available"},
+			}}},
 		},
 		"Nonexistent": {
 			reason: "A resource that does not exist should be reported as such.",
@@ -192,55 +222,24 @@ XNop/standalone-xr                  -        -
 				`(verify context, namespace, and that the resource exists): nopclaims.trace.example.org "missing" not found`},
 		},
 		"PackageDefaults": {
-			reason: "A Configuration should show its active revision and each dependency once, by default.",
-			args:   []string{"configuration", "platform"},
-			//nolint:dupword // Columns of the table repeat values.
-			want: want{stdout: `
-NAME                                         VERSION   INSTALLED   HEALTHY   STATE    STATUS
-Configuration/platform                       v1.0.0    True        True      -        HealthyPackageRevision
-├─ ConfigurationRevision/platform-2222       v1.0.0    -           True      Active   HealthyPackageRevision
-├─ Provider/provider-nop                     v0.5.0    True        False     -        UnhealthyPackageRevision: runtime is not ready
-│  └─ ProviderRevision/provider-nop-aaaa     v0.5.0    -           True      Active   HealthyPackageRevision
-└─ Function/function-dummy                   v0.3.0    True        True      -        HealthyPackageRevision
-   └─ FunctionRevision/function-dummy-bbbb   v0.3.0    -           True      Active   HealthyPackageRevision
-`},
+			reason: "By default a Configuration should show only its active revision, and each dependency once, with the dependency's active revision.",
+			args:   []string{"configuration", "platform", "-o", "json"},
+			want:   want{tree: configuration(platformActive, provider(), function())},
 		},
 		"PackageAllRevisionsAllDependencies": {
-			reason: "With all revisions and all dependencies, the inactive revision and the Provider's own dependency on the Function should show too.",
-			args:   []string{"configuration", "platform", "--show-package-revisions=all", "--show-package-dependencies=all"},
-			//nolint:dupword // Columns of the table repeat values.
-			want: want{stdout: `
-NAME                                            VERSION   INSTALLED   HEALTHY   STATE      STATUS
-Configuration/platform                          v1.0.0    True        True      -          HealthyPackageRevision
-├─ ConfigurationRevision/platform-1111          v0.9.0    -           True      Inactive   HealthyPackageRevision
-├─ ConfigurationRevision/platform-2222          v1.0.0    -           True      Active     HealthyPackageRevision
-├─ Provider/provider-nop                        v0.5.0    True        False     -          UnhealthyPackageRevision: runtime is not ready
-│  ├─ ProviderRevision/provider-nop-aaaa        v0.5.0    -           True      Active     HealthyPackageRevision
-│  └─ Function/function-dummy                   v0.3.0    True        True      -          HealthyPackageRevision
-│     └─ FunctionRevision/function-dummy-bbbb   v0.3.0    -           True      Active     HealthyPackageRevision
-└─ Function/function-dummy                      v0.3.0    True        True      -          HealthyPackageRevision
-   └─ FunctionRevision/function-dummy-bbbb      v0.3.0    -           True      Active     HealthyPackageRevision
-`},
+			reason: "With all revisions and all dependencies, the inactive revision, oldest first, and the Provider's own dependency on the Function should show too.",
+			args:   []string{"configuration", "platform", "--show-package-revisions=all", "--show-package-dependencies=all", "-o", "json"},
+			want:   want{tree: configuration(platformInactive, platformActive, provider(function()), function())},
 		},
 		"PackageNoRevisionsNoDependencies": {
 			reason: "With no revisions and no dependencies, only the Configuration should show.",
-			args:   []string{"configuration", "platform", "--show-package-revisions=none", "--show-package-dependencies=none"},
-			//nolint:dupword // Columns of the table repeat values.
-			want: want{stdout: `
-NAME                     VERSION   INSTALLED   HEALTHY   STATE   STATUS
-Configuration/platform   v1.0.0    True        True      -       HealthyPackageRevision
-`},
+			args:   []string{"configuration", "platform", "--show-package-revisions=none", "--show-package-dependencies=none", "-o", "json"},
+			want:   want{tree: configuration()},
 		},
 		"PackageRuntimeConfigs": {
-			reason: "With --show-package-runtime-configs the Function should show the runtime config it references.",
-			args:   []string{"function", "function-dummy", "--show-package-runtime-configs"},
-			//nolint:dupword // Columns of the table repeat values.
-			want: want{stdout: `
-NAME                                      VERSION   INSTALLED   HEALTHY   STATE    STATUS
-Function/function-dummy                   v0.3.0    True        True      -        HealthyPackageRevision
-├─ DeploymentRuntimeConfig/default                  -           -         -
-└─ FunctionRevision/function-dummy-bbbb   v0.3.0    -           True      Active   HealthyPackageRevision
-`},
+			reason: "With --show-package-runtime-configs the Function should show the runtime config it references before its revision.",
+			args:   []string{"function", "function-dummy", "--show-package-runtime-configs", "-o", "json"},
+			want:   want{tree: function(&node{Kind: "DeploymentRuntimeConfig", Name: "default"})},
 		},
 	}
 
@@ -275,20 +274,6 @@ Function/function-dummy                   v0.3.0    True        True      -     
 	}
 }
 
-// dotClaimTree is the dot printer's graph of the claim: nodes are numbered breadth first.
-const dotClaimTree = `graph  {
-	
-	n1[label="Name: NopClaim/test-claim\nApiVersion: trace.example.org/v1alpha1\nNamespace: test-namespace\nReady: \nSynced: \n",penwidth="2"];
-	n2[label="Name: XNop/test-claim-xr\nApiVersion: trace.example.org/v1alpha1\nReady: \nSynced: \n",penwidth="2"];
-	n3[label="Name: NopResource/test-claim-xr-failing\nApiVersion: nop.example.org/v1alpha1\nReady: \nSynced: False\n",penwidth="2"];
-	n4[label="Name: NopResource/test-claim-xr-ready\nApiVersion: nop.example.org/v1alpha1\nReady: True\nSynced: True\n",penwidth="2"];
-	n1--n2;
-	n2--n3;
-	n2--n4;
-	
-}
-`
-
 // runTrace parses args as the trace command's and runs it, returning what it prints.
 func runTrace(t *testing.T, args []string) (string, error) {
 	t.Helper()
@@ -313,14 +298,28 @@ func runTrace(t *testing.T, args []string) (string, error) {
 	return stdout.String(), err
 }
 
-// node is a resource's kind and name in a trace tree, with its children's.
+// node is a resource in a trace tree, with what trace reports of it, and its children's. Each condition is
+// its status, then its reason and any message, as the default printer's columns and STATUS show them; a field the
+// resource doesn't have is empty.
 type node struct {
-	Kind     string
-	Name     string
+	Kind      string
+	Name      string
+	Namespace string
+	Synced    string
+	Ready     string
+	Installed string
+	Healthy   string
+	// Package is a package's spec.package or a package revision's spec.image.
+	Package string
+	// State is a package revision's spec.desiredState.
+	State    string
 	Children []*node
 }
 
-// parseTree reads the tree trace printed as json or yaml; sigs.k8s.io/yaml reads both.
+// parseTree reads the tree trace printed as json or yaml; sigs.k8s.io/yaml reads both. Children are left in the
+// order trace printed them, which is deterministic and the text tree's: the XR client sorts each resource's
+// children by apiVersion, kind and name, and the package client orders them runtime config, revisions oldest
+// first, then dependencies in lock order.
 func parseTree(t *testing.T, args []string, out string) *node {
 	t.Helper()
 
@@ -337,7 +336,34 @@ func parseTree(t *testing.T, args []string, out string) *node {
 	var toNode func(p *printed) *node
 	toNode = func(p *printed) *node {
 		o := &un.Unstructured{Object: p.Object}
-		n := &node{Kind: o.GetKind(), Name: o.GetName()}
+		n := &node{Kind: o.GetKind(), Name: o.GetName(), Namespace: o.GetNamespace()}
+
+		conds, _, _ := un.NestedSlice(o.Object, "status", "conditions")
+		for _, c := range conds {
+			c, _ := c.(map[string]any)
+			v := fmt.Sprintf("%v %v", c["status"], c["reason"])
+			if m, ok := c["message"].(string); ok && m != "" {
+				v += ": " + m
+			}
+
+			switch c["type"] {
+			case "Synced":
+				n.Synced = v
+			case "Ready":
+				n.Ready = v
+			case "Installed":
+				n.Installed = v
+			case "Healthy":
+				n.Healthy = v
+			}
+		}
+
+		n.Package, _, _ = un.NestedString(o.Object, "spec", "package")
+		if img, _, _ := un.NestedString(o.Object, "spec", "image"); img != "" {
+			n.Package = img
+		}
+
+		n.State, _, _ = un.NestedString(o.Object, "spec", "desiredState")
 
 		for _, c := range p.Children {
 			n.Children = append(n.Children, toNode(c))

@@ -180,12 +180,13 @@ func contextPredictor() complete.PredictFunc {
 	}
 }
 
-// namespacePredictor returns a predictor that suggests Kubernetes namespaces from the current context.
+// namespacePredictor returns a predictor that suggests Kubernetes namespaces from the current context
+// or the context specified in the command line arguments.
 // It uses the Kubernetes client to retrieve the available namespaces and filters them based on the
 // last completed argument.
 func namespacePredictor() complete.PredictFunc {
 	return func(a complete.Args) []string {
-		client, err := kubernetesClientset(parseImpersonation(a))
+		client, err := kubernetesClientset(parseContext(a), parseImpersonation(a))
 		if err != nil {
 			return nil
 		}
@@ -207,10 +208,10 @@ func namespacePredictor() complete.PredictFunc {
 	}
 }
 
-// kubernetesClientset returns a Kubernetes clientset for the current context
-// of the default kubeconfig and the given impersonation flags.
-func kubernetesClientset(imp kube.ImpersonationFlags) (*kubernetes.Clientset, error) {
-	cfg, _, err := kube.RESTConfig("", imp)
+// kubernetesClientset returns a Kubernetes clientset for the given context
+// (the current one if empty) and impersonation flags.
+func kubernetesClientset(kubeContext string, imp kube.ImpersonationFlags) (*kubernetes.Clientset, error) {
+	cfg, _, err := kube.RESTConfig(kubeContext, imp)
 	if err != nil {
 		return nil, err
 	}

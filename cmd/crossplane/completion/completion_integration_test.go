@@ -325,6 +325,20 @@ func TestNamespacePredictorIntegration(t *testing.T) {
 			reason: "Nothing is predicted when the current context's cluster can't be reached.",
 			args:   args{currentContext: ctxUnreachable, line: "--namespace team"},
 		},
+		"ContextOverride": {
+			reason: "--context selects the cluster to list, over the kubeconfig's current context.",
+			args:   args{currentContext: ctxUnreachable, line: "--context admin --namespace team"},
+			want:   []string{"team-a", "team-b"},
+		},
+		"ShortContextOverride": {
+			reason: "-c is --context's short form.",
+			args:   args{currentContext: ctxUnreachable, line: "-c admin --namespace team"},
+			want:   []string{"team-a", "team-b"},
+		},
+		"ContextOverrideUnreachable": {
+			reason: "Nothing is predicted when the --context cluster can't be reached.",
+			args:   args{currentContext: ctxAdmin, line: "--context unreachable --namespace team"},
+		},
 		"ImpersonateForbidden": {
 			reason: "Nothing is predicted for an impersonated user who may not list namespaces.",
 			args:   args{currentContext: ctxAdmin, line: "--as " + user + " --namespace team"},

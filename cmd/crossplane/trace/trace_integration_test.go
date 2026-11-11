@@ -20,9 +20,11 @@ package trace
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -260,7 +262,7 @@ NopClaim/test-claim (test-namespace)                 -        -
 			}
 
 			if tc.want.tree != nil {
-				if diff := cmp.Diff(tc.want.tree, parseTree(t, tc.args, stdout)); diff != "" {
+				if diff := cmp.Diff(tc.want.tree, parseTree(t, outputFormat(tc.args), stdout)); diff != "" {
 					t.Errorf("\n%s\ntrace tree: -want, +got:\n%s", tc.reason, diff)
 				}
 
@@ -316,27 +318,40 @@ type node struct {
 	Children []*node
 }
 
-// parseTree reads the tree trace printed as json or yaml; sigs.k8s.io/yaml reads both. Children are left in the
-// order trace printed them, which is deterministic and the text tree's: the XR client sorts each resource's
-// children by apiVersion, kind and name, and the package client orders them runtime config, revisions oldest
-// first, then dependencies in lock order.
-func parseTree(t *testing.T, args []string, out string) *node {
+// parseTree reads the tree trace printed in format, json with encoding/json so that YAML output fails it, and
+// yaml with sigs.k8s.io/yaml. Children are left in the order trace printed them, which is deterministic and the
+// text tree's: the XR client sorts each resource's children by apiVersion, kind and name, and the package client
+// orders them runtime config, revisions oldest first, then dependencies in lock order.
+func parseTree(t *testing.T, format, out string) *node {
 	t.Helper()
 
 	type printed struct {
-		Object   map[string]any `json:"object"`
-		Children []*printed     `json:"children"`
+		Object map[string]any `json:"object"`
+		// Error is set when trace could not get the resource, which then keeps only the kind, name and namespace
+		// it was looked up by, so it would otherwise match the node a test wants. A Go error marshals as {},
+		// so only the key's presence says there was one.
+		Error    json.RawMessage `json:"error"`
+		Children []*printed      `json:"children"`
+	}
+
+	unmarshal := map[string]func([]byte, any) error{"json": json.Unmarshal, "yaml": func(b []byte, v any) error { return yaml.Unmarshal(b, v) }}[format]
+	if unmarshal == nil {
+		t.Fatalf("parseTree: unknown format %q", format)
 	}
 
 	var p printed
-	if err := yaml.Unmarshal([]byte(out), &p); err != nil {
-		t.Fatalf("cannot unmarshal the output of trace %v: %v", args, err)
+	if err := unmarshal([]byte(out), &p); err != nil {
+		t.Fatalf("cannot unmarshal the %s output of trace: %v", format, err)
 	}
 
 	var toNode func(p *printed) *node
 	toNode = func(p *printed) *node {
 		o := &un.Unstructured{Object: p.Object}
 		n := &node{Kind: o.GetKind(), Name: o.GetName(), Namespace: o.GetNamespace()}
+
+		if len(p.Error) > 0 {
+			t.Errorf("trace could not get %s %s: error %s", n.Kind, n.Name, p.Error)
+		}
 
 		conds, _, _ := un.NestedSlice(o.Object, "status", "conditions")
 		for _, c := range conds {
@@ -373,6 +388,15 @@ func parseTree(t *testing.T, args []string, out string) *node {
 	}
 
 	return toNode(&p)
+}
+
+// outputFormat returns the value of the -o flag in args.
+func outputFormat(args []string) string {
+	if i := slices.Index(args, "-o"); i >= 0 && i+1 < len(args) {
+		return args[i+1]
+	}
+
+	return "default"
 }
 
 // createFromFile creates the resources in path.

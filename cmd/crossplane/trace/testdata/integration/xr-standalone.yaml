@@ -1,0 +1,9 @@
+# A cluster-scoped XR no claim binds.
+apiVersion: trace.example.org/v1alpha1
+kind: XNop
+metadata:
+  name: standalone-xr
+spec:
+  coolField: standalone-value
+  compositionRef:
+    name: xnops.trace.example.org

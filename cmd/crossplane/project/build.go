@@ -38,7 +38,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/functions"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/schemas/manager"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -100,13 +99,7 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 	}
 
 	schemasFS := afero.NewBasePathFs(c.projFS, c.proj.Spec.Paths.Schemas)
-	generators := generator.Filter(
-		generator.AllLanguages(
-			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
-		),
-		c.proj.Spec.Schemas.GetLanguages(),
-	)
+	generators := project.SchemaGenerators(c.proj, cfg)
 	schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs))
 	schemaMgr := manager.New(schemasFS, generators, schemaRunner)
 	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(c.proj.Spec.ImageConfigs))

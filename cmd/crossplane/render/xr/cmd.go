@@ -51,7 +51,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 	"github.com/crossplane/cli/v2/pkg/render"
@@ -461,10 +460,7 @@ func (c *Cmd) loadFunctionsFromProject(ctx context.Context, log logging.Logger, 
 		return nil, errors.Wrap(err, "cannot create xpkg client")
 	}
 
-	generators := generator.AllLanguages(
-		generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-		generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
-	)
+	generators := project.SchemaGenerators(proj, cfg)
 
 	depMgr := dependency.NewManager(proj, projFS,
 		dependency.WithProjectFile(projFileName),

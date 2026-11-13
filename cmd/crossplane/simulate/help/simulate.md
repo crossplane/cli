@@ -16,6 +16,14 @@ claims, use `crossplane xr simulate`; to simulate Compositions, use
 `crossplane composition simulate`; to simulate a project, use
 `crossplane project simulate`.
 
+The command connects to the cluster in your current Kubernetes context, or the
+one `--context` names. Use `--as`, `--as-group`, and `--as-uid` to simulate as
+another user.
+
+`-f` (`--filename`) names a file, or a directory of YAML files, of managed
+resources to simulate, and is required. Give a comma-separated list for more;
+`-f -` reads standard input.
+
 Which providers run as diff servers comes from the current kubeconfig context
 by default: the CLI follows each resource's kind to the provider that
 installed it on the cluster, so the preview matches the provider versions
@@ -88,44 +96,3 @@ the result:
   replace a resource.
 - 80: the flags were invalid, so nothing was simulated.
 - 130: the simulation was interrupted.
-
-## Examples
-
-Preview what applying resources.yaml would do:
-
-```shell
-crossplane resource simulate -f resources.yaml
-```
-
-Preview against specific provider versions instead of the installed ones,
-from a checked-in file of Provider manifests:
-
-```shell
-crossplane resource simulate -f resources.yaml --providers providers.yaml
-```
-
-Keep diff servers running so later runs start faster, via a provider manifest
-annotated with `simulate.crossplane.io/runtime-docker-cleanup: Orphan`:
-
-```shell
-crossplane resource simulate -f resources.yaml --providers providers.yaml
-```
-
-Iterate on a provider's diff server from source, with no package to build or
-push: run `go run ./cmd/provider internal diff-server` in the provider
-repository, then simulate with a Provider manifest annotated with
-`simulate.crossplane.io/runtime: Development` and
-`simulate.crossplane.io/runtime-development-api-groups: ec2.aws.upbound.io,ec2.aws.m.upbound.io`:
-
-```shell
-crossplane resource simulate -f resources.yaml --providers providers.yaml
-```
-
-Emit machine-readable results for CI gating. Each plan carries the live
-object as `before` (absent for a create) and the desired manifest as `after`,
-both without status, server-managed metadata and ignored paths, and with
-Secret values redacted:
-
-```shell
-crossplane resource simulate -f resources.yaml -o json
-```

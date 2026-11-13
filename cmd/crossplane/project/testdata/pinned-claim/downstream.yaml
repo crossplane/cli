@@ -1,0 +1,10 @@
+# The composed resource of xr.yaml.
+apiVersion: nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  name: manual-claim-x1y2z
+  annotations:
+    crossplane.io/composition-resource-name: nop-resource
+spec:
+  forProvider:
+    configData: existing-value

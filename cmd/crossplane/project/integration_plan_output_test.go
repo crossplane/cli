@@ -458,6 +458,118 @@ func TestSimulatePinnedChangedFunction(t *testing.T) {
 	}
 }
 
+// TestSimulatePinnedClaimChangedFunction is TestSimulatePinnedChangedFunction
+// for a Manual claim of a legacy cluster-scoped XR: the pin lives on the
+// claim's backing XR, and the claim is rendered against it (or left deferred)
+// just as that XR would be.
+func TestSimulatePinnedClaimChangedFunction(t *testing.T) {
+	t.Parallel()
+
+	const pinned = "testdata/pinned-claim/"
+
+	cases := map[string]struct {
+		reason string
+		// composition is the cluster's copy of the project's Composition,
+		// whose current revision the backing XR is pinned to.
+		composition string
+		// wantDeferred is whether the claim stays deferred; otherwise it is
+		// rendered against its backing XR's pinned revision.
+		wantDeferred bool
+	}{
+		"PinnedClaimWithChangedFunctionRendersPinnedRevision": {
+			reason:      "A Manual claim whose backing XR's pinned revision calls a changed function is rendered against that revision, not deferred.",
+			composition: "testdata/project/embedded-claim/apis/composition.yaml",
+		},
+		"PinnedClaimWithUnchangedFunctionDeferred": {
+			reason:       "A Manual claim whose backing XR's pinned revision calls no changed function stays deferred.",
+			composition:  pinned + "unchanged-composition.yaml",
+			wantDeferred: true,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if reason := integrationEnvGap(); reason != "" {
+				t.Skip(reason)
+			}
+
+			cluster := integration.Start(t, integration.Setup{
+				CRDDirs: []string{"../../../internal/testutils/integration/testdata/comp/crds"},
+				SetupFiles: []string{
+					pinned + "xrd.yaml",
+					tc.composition,
+					"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
+					"testdata/project/embedded-claim/cluster-function.yaml",
+					pinned + "claim.yaml",
+				},
+				CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+					integration.Composes(pinned+"xr.yaml", pinned+"downstream.yaml"),
+				},
+				XRDAPIVersion: integration.XRDV1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			})
+			cfg := cluster.Config
+
+			// The harness pins the backing XR to its Composition's current revision.
+			xr := &un.Unstructured{}
+			xr.SetAPIVersion("pinned.diff.example.org/v1alpha1")
+			xr.SetKind("XPinned")
+			if err := cluster.Client.Get(cluster.Context, client.ObjectKey{Name: "manual-claim-x1y2z"}, xr); err != nil {
+				t.Fatalf("cannot get the pinned backing XR: %v", err)
+			}
+			rev, _, _ := un.NestedString(xr.Object, "spec", "compositionRevisionRef", "name")
+
+			base := simharness.WithRenderBinary([]string{
+				"project", "simulate", "--timeout=" + simharness.DefaultTimeout.String(),
+				"-f", copyProjectFixture(t, "embedded-claim"),
+				"--cache-dir=" + t.TempDir(), "--skip-plan", "-n", "default",
+			}, simharness.LocalCrossplaneBinary(t))
+
+			var stdout, stderr bytes.Buffer
+			code, err := simharness.RunSimulateArgvWith(t, cfg, append(slices.Clip(base), "-o", "json"), &simulate.Hooks{}, &stdout, &stderr)
+			if err != nil {
+				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
+			}
+			var res simulate.Result
+			if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+				t.Fatalf("\n%s\nsimulate -o json: output is not a simulate.Result: %v\n%s", tc.reason, err, stdout.String())
+			}
+			if len(res.Composites) != 1 {
+				t.Fatalf("\n%s\nsimulate -o json: want 1 composite, got %+v", tc.reason, res.Composites)
+			}
+			c := res.Composites[0]
+
+			if tc.wantDeferred {
+				if c.Status != simulate.CompositeDeferred || strings.HasPrefix(c.Detail, "rendered against") {
+					t.Errorf("\n%s\nsimulate -o json: want a deferred pinned claim, got %+v", tc.reason, c)
+				}
+				return
+			}
+
+			if code != dp.ExitCodeDiffDetected {
+				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, dp.ExitCodeDiffDetected, code)
+			}
+			if c.Status != simulate.CompositeChanged || !c.Pinned || c.Detail != "rendered against pinned revision "+rev+" with the changed functions" {
+				t.Errorf("\n%s\nsimulate -o json: want a changed pinned claim rendered against %s, got %+v", tc.reason, rev, c)
+			}
+			// The plan is rendered by the project's build of the function the
+			// pinned revision calls, which prefixes configData with "embedded-".
+			var found bool
+			for _, p := range res.Plans {
+				for _, ch := range p.Changes {
+					if ch.Path == "spec.forProvider.configData" && ch.Planned != nil && ch.Planned.Value == "embedded-existing-value" {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Errorf("\n%s\nsimulate -o json: want a configData change to the embedded function's output, got plans %+v", tc.reason, res.Plans)
+			}
+		})
+	}
+}
+
 // TestSimulateNameRejected runs the --name scopes simulate refuses: one
 // naming a composite no supplied Composition reaches, and a namespace/name
 // combined with --namespace.

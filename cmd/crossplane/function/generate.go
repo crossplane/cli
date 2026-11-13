@@ -42,8 +42,8 @@ import (
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	"github.com/crossplane/cli/v2/internal/kcl"
+	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/schemas/manager"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -160,13 +160,7 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter, cfg *config.Config) error 
 	}
 	schemaMgr := manager.New(
 		c.schemasFS,
-		generator.Filter(
-			generator.AllLanguages(
-				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-				generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
-			),
-			c.proj.Spec.Schemas.GetLanguages(),
-		),
+		project.SchemaGenerators(c.proj, cfg),
 		runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs)),
 	)
 

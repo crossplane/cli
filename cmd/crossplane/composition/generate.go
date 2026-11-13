@@ -39,8 +39,8 @@ import (
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
+	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
@@ -96,13 +96,7 @@ func (c *generateCmd) AfterApply(cfg *config.Config) error {
 
 	c.depManager = dependency.NewManager(proj, c.projFS,
 		dependency.WithProjectFile(filepath.Base(c.ProjectFile)),
-		dependency.WithSchemaGenerators(generator.Filter(
-			generator.AllLanguages(
-				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-				generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
-			),
-			proj.Spec.Schemas.GetLanguages(),
-		)),
+		dependency.WithSchemaGenerators(project.SchemaGenerators(proj, cfg)),
 		dependency.WithXpkgClient(client),
 	)
 	return nil

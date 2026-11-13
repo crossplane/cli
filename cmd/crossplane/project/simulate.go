@@ -31,7 +31,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -106,10 +105,7 @@ func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, s
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create xpkg client")
 	}
-	generators := generator.AllLanguages(
-		generator.WithGoModelAccessors(cliCfg.Features.GenerateGoModelAccessors),
-		generator.WithGoRuntimeObjects(cliCfg.Features.GenerateGoRuntimeObjects),
-	)
+	generators := project.SchemaGenerators(proj, cliCfg)
 	depMgr := dependency.NewManager(proj, projFS,
 		dependency.WithProjectFile(projFileName),
 		dependency.WithSchemaGenerators(generators),

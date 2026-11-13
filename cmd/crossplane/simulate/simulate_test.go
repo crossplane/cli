@@ -22,8 +22,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/plan"
-	isimulate "github.com/crossplane/cli/v2/internal/simulate"
 )
 
 func TestExitStatus(t *testing.T) {
@@ -62,7 +62,7 @@ func TestExitStatus(t *testing.T) {
 			// other error with 1.
 			got := 0
 			err := exitStatus(tc.args.plans)
-			if code, ok := isimulate.SilentExit(err); ok {
+			if code, ok := exitcode.SilentExit(err); ok {
 				got = code
 			} else if err != nil {
 				got = 1

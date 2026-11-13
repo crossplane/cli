@@ -38,6 +38,7 @@ import (
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/docker"
+	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/kube"
 	"github.com/crossplane/cli/v2/internal/plan"
 	isimulate "github.com/crossplane/cli/v2/internal/simulate"
@@ -158,7 +159,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 }
 
 // exitStatus ranks the plans' outcome: an error, which exits 1, when any
-// plan errored; otherwise a silent isimulate.ExitError that exits 3 when a plan
+// plan errored; otherwise a silent exitcode.ExitError that exits 3 when a plan
 // would change anything; otherwise nil.
 func exitStatus(plans []*plan.ResourcePlan) error {
 	s := plan.Summarize(plans)
@@ -166,7 +167,7 @@ func exitStatus(plans []*plan.ResourcePlan) error {
 		return errors.Errorf("cannot plan %d of %d resources; see their errors in the output", s.Errored, len(plans))
 	}
 	if s.Changes() > 0 {
-		return isimulate.ExitError{Code: isimulate.ExitCodeChanges}
+		return exitcode.ExitError{Code: exitcode.ExitCodeChanges}
 	}
 	return nil
 }

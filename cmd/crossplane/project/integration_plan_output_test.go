@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
+	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
@@ -486,7 +487,7 @@ func TestSimulateNameRejected(t *testing.T) {
 			reason:   "namespace/name with --namespace is ambiguous and is rejected.",
 			args:     []string{"--namespace=default", "--name=default/test-resource"},
 			wantErr:  "can't be combined with --namespace",
-			wantCode: simulate.ExitCodeUsage,
+			wantCode: exitcode.ExitCodeUsage,
 		},
 		"NamePartiallyUnmatchedFailsBeforeRendering": {
 			reason:   "one --name no composite matches fails the run, and no plan is rendered.",

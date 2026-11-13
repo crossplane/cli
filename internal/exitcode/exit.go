@@ -14,17 +14,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package simulate
+// Package exitcode holds the exit statuses and the ExitError the commands
+// share.
+package exitcode
 
 import "errors"
 
-// Exit statuses the simulate commands share.
+// Exit statuses the commands share.
 const (
 	// ExitCodeUsage is the status kong exits with on a parse error. Kong does
 	// not export it, so it is mirrored here for the flag errors main finds
 	// before Parse.
 	ExitCodeUsage = 80
-	// ExitCodeSchemaValidation means only schema validation failed.
+	// ExitCodeSchemaValidation means only schema validation failed in a
+	// simulate command.
 	ExitCodeSchemaValidation = 2
 	// ExitCodeChanges is the status a simulate command exits with when the
 	// simulation succeeded and found changes.

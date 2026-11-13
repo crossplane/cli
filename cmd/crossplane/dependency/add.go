@@ -19,20 +19,15 @@ package dependency
 import (
 	"cmp"
 	"context"
-	"path/filepath"
-	"strings"
 
-	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/afero"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/git"
-	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -45,11 +40,14 @@ var addHelp string
 
 // addCmd adds a dependency to the current project.
 type addCmd struct {
-	Package     string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
-	ProjectFile string `default:"${project_file}"   help:"Path to project definition file."                                                        short:"f"`
 	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
 	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"  help:"Token for git HTTPS authentication."`
-	GitUsername string `default:"x-access-token"    env:"CROSSPLANE_GIT_USERNAME"                                                                  help:"Username for git HTTPS authentication."`
+	GitUsername string `default:"x-access-token"    env:"CROSSPLANE_GIT_USERNAME" help:"Username for git HTTPS authentication."`
+	Package     string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
+
+	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                           optional:""             predictor:"yaml_file" short:"f" type:"path"`
+	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."                 name:"schemas-dir"`
+	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python, rust). Overrides the project's schemas.languages; defaults to all." name:"schema-languages"`
 
 	// Flags for specific dependency types.
 	APIOnly bool   `help:"Mark an xpkg dependency as API-only (not a runtime dependency)." name:"api-only"`
@@ -65,14 +63,10 @@ func (c *addCmd) Help() string {
 func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
-	projFilePath, err := filepath.Abs(c.ProjectFile)
-	if err != nil {
-		return err
-	}
-	projDirPath := filepath.Dir(projFilePath)
-	projFS := afero.NewBasePathFs(afero.NewOsFs(), projDirPath)
-
-	proj, err := projectfile.Parse(projFS, filepath.Base(c.ProjectFile))
+	proj, store, projFS, err := loadProject(c.ProjectFile, Overrides{
+		SchemasDir:      c.SchemasDir,
+		SchemaLanguages: c.SchemaLanguages,
+	})
 	if err != nil {
 		return err
 	}
@@ -83,7 +77,7 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	}
 
 	opts := []dependency.ManagerOption{
-		dependency.WithProjectFile(c.ProjectFile),
+		dependency.WithStore(store),
 		dependency.WithSchemaGenerators(generator.Filter(
 			generator.AllLanguages(
 				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
@@ -103,9 +97,15 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 
 	m := dependency.NewManager(proj, projFS, opts...)
 
-	dep, err := c.buildDependency()
+	dep, err := dependency.ParseSource(c.Package, c.GitRef, c.GitPath)
 	if err != nil {
 		return err
+	}
+	if c.APIOnly {
+		if dep.Xpkg == nil {
+			return errors.New("--api-only is only valid for xpkg dependencies")
+		}
+		dep.Xpkg.APIOnly = true
 	}
 
 	desc := dependency.GetSourceDescription(dep)
@@ -113,83 +113,4 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	return sp.WrapWithSuccessSpinner("Adding "+desc, func() error {
 		return m.AddDependency(ctx, &dep)
 	})
-}
-
-func (c *addCmd) buildDependency() (v1alpha1.Dependency, error) {
-	// k8s dependency: k8s:vX.Y.Z
-	if version, found := strings.CutPrefix(c.Package, "k8s:"); found {
-		if version == "" {
-			return v1alpha1.Dependency{}, errors.New("k8s version is required (e.g., k8s:v1.33.0)")
-		}
-		if c.APIOnly {
-			return v1alpha1.Dependency{}, errors.New("--api-only is only valid for xpkg dependencies")
-		}
-		return v1alpha1.Dependency{
-			Type: v1alpha1.DependencyTypeK8s,
-			K8s: &v1alpha1.K8sDependency{
-				Version: version,
-			},
-		}, nil
-	}
-
-	// CRD dependency via git ref.
-	if c.GitRef != "" {
-		if c.Package == "" {
-			return v1alpha1.Dependency{}, errors.New("repository URL is required for git-based CRD dependencies")
-		}
-		if c.APIOnly {
-			return v1alpha1.Dependency{}, errors.New("--api-only is only valid for xpkg dependencies")
-		}
-		return v1alpha1.Dependency{
-			Type: v1alpha1.DependencyTypeCRD,
-			Git: &v1alpha1.GitDependency{
-				Repository: c.Package,
-				Ref:        c.GitRef,
-				Path:       c.GitPath,
-			},
-		}, nil
-	}
-
-	// CRD dependency via HTTP URL.
-	if strings.HasPrefix(c.Package, "http://") || strings.HasPrefix(c.Package, "https://") {
-		if c.APIOnly {
-			return v1alpha1.Dependency{}, errors.New("--api-only is only valid for xpkg dependencies")
-		}
-		return v1alpha1.Dependency{
-			Type: v1alpha1.DependencyTypeCRD,
-			HTTP: &v1alpha1.HTTPDependency{
-				URL: c.Package,
-			},
-		}, nil
-	}
-
-	// Default: xpkg dependency. We allow three formats:
-	//
-	// 1. registry.example.com/repo:<tag / semver constraint>
-	// 2. registry.example.com/repo@<digest>
-	// 3. registry.example.com/repo (implies a semver constraint of '>=v0.0.0').
-	pkg := c.Package
-	version := ">=v0.0.0"
-	if ref, err := name.NewDigest(c.Package, name.StrictValidation); err == nil {
-		pkg = ref.Context().String()
-		version = ref.DigestStr()
-	} else if repo, tag, ok := strings.Cut(c.Package, ":"); ok {
-		// NOTE(adamwg): This doesn't work properly if the dependency has a
-		// colon in the registry part for a port number (e.g.,
-		// example.com:5000/my-repo:v1.2.3). But there's no easy way to handle
-		// that correctly in all cases (since we also allow
-		// `example.com:5000/my-repo, with no tag/constraint), so leave the
-		// corner case unhandled for now.
-		pkg = repo
-		version = tag
-	}
-
-	return v1alpha1.Dependency{
-		Type: v1alpha1.DependencyTypeXpkg,
-		Xpkg: &v1alpha1.XpkgDependency{
-			Package: pkg,
-			Version: version,
-			APIOnly: c.APIOnly,
-		},
-	}, nil
 }

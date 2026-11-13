@@ -1,0 +1,145 @@
+# A Configuration depending on a Provider and a Function, the Provider also
+# depending on the Function, with their revisions and the Lock, as the package
+# manager leaves them. The API server drops status on create, so the test
+# writes each object's status, and points each revision's controller reference
+# at its package, after Start.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: default
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Configuration
+metadata:
+  name: platform
+spec:
+  package: xpkg.example.org/acme/platform:v1.0.0
+status:
+  currentRevision: platform-2222
+  conditions:
+    - type: Installed
+      status: "True"
+      reason: ActivePackageRevision
+      lastTransitionTime: "2026-01-01T00:00:00Z"
+    - type: Healthy
+      status: "True"
+      reason: HealthyPackageRevision
+      lastTransitionTime: "2026-01-01T00:00:00Z"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-nop
+spec:
+  package: xpkg.example.org/acme/provider-nop:v0.5.0
+status:
+  currentRevision: provider-nop-aaaa
+  conditions:
+    - type: Installed
+      status: "True"
+      reason: ActivePackageRevision
+      lastTransitionTime: "2026-01-01T00:00:00Z"
+    - type: Healthy
+      status: "False"
+      reason: UnhealthyPackageRevision
+      message: runtime is not ready
+      lastTransitionTime: "2026-01-01T00:00:00Z"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-dummy
+spec:
+  package: xpkg.example.org/acme/function-dummy:v0.3.0
+status:
+  currentRevision: function-dummy-bbbb
+  conditions:
+    - type: Installed
+      status: "True"
+      reason: ActivePackageRevision
+      lastTransitionTime: "2026-01-01T00:00:00Z"
+    - type: Healthy
+      status: "True"
+      reason: HealthyPackageRevision
+      lastTransitionTime: "2026-01-01T00:00:00Z"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: ConfigurationRevision
+metadata:
+  name: platform-1111
+  labels:
+    pkg.crossplane.io/package: platform
+spec:
+  desiredState: Inactive
+  image: xpkg.example.org/acme/platform:v0.9.0
+  revision: 1
+status:
+  conditions:
+    - type: Healthy
+      status: "True"
+      reason: HealthyPackageRevision
+      lastTransitionTime: "2026-01-01T00:00:00Z"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: ProviderRevision
+metadata:
+  name: provider-nop-aaaa
+  labels:
+    pkg.crossplane.io/package: provider-nop
+spec:
+  desiredState: Active
+  image: xpkg.example.org/acme/provider-nop:v0.5.0
+  revision: 1
+status:
+  conditions:
+    - type: Healthy
+      status: "True"
+      reason: HealthyPackageRevision
+      lastTransitionTime: "2026-01-01T00:00:00Z"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: FunctionRevision
+metadata:
+  name: function-dummy-bbbb
+  labels:
+    pkg.crossplane.io/package: function-dummy
+spec:
+  desiredState: Active
+  image: xpkg.example.org/acme/function-dummy:v0.3.0
+  revision: 1
+status:
+  conditions:
+    - type: Healthy
+      status: "True"
+      reason: HealthyPackageRevision
+      lastTransitionTime: "2026-01-01T00:00:00Z"
+---
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Lock
+metadata:
+  name: lock
+packages:
+  - name: platform-2222
+    type: Configuration
+    source: xpkg.example.org/acme/platform
+    version: v1.0.0
+    dependencies:
+      - package: xpkg.example.org/acme/provider-nop
+        type: Provider
+        constraints: ">=v0.5.0"
+      - package: xpkg.example.org/acme/function-dummy
+        type: Function
+        constraints: ">=v0.3.0"
+  - name: provider-nop-aaaa
+    type: Provider
+    source: xpkg.example.org/acme/provider-nop
+    version: v0.5.0
+    dependencies:
+      - package: xpkg.example.org/acme/function-dummy
+        type: Function
+        constraints: ">=v0.3.0"
+  - name: function-dummy-bbbb
+    type: Function
+    source: xpkg.example.org/acme/function-dummy
+    version: v0.3.0
+    dependencies: []

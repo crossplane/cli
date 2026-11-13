@@ -11,5 +11,8 @@ spec:
     name: test-claim
     namespace: test-namespace
   coolField: claim-value
+  writeConnectionSecretToRef:
+    name: test-claim-xr-conn
+    namespace: test-namespace
   compositionRef:
     name: xnops.trace.example.org

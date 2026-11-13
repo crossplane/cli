@@ -2001,6 +2001,75 @@ Summary: 1 modified`,
 			ExpectedExitCode: dp.ExitCodeDiffDetected,
 			NoColor:          true,
 		},
+		"NestedXRUsesRunComposition": {
+			Reason: "Validates that a nested XR whose Composition is in the run renders with the run's, not the cluster's",
+			SetupFiles: []string{
+				"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/original-composition.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
+				"testdata/comp/resources/nested-xr/parent-xrd.yaml",
+				"testdata/comp/resources/nested-xr/parent-composition.yaml",
+			},
+			CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+				{
+					OwnerFile: "testdata/comp/resources/nested-xr/existing-parent-xr.yaml",
+					OwnedFiles: map[string]*integration.HierarchicalOwnershipRelation{
+						"testdata/comp/resources/nested-xr/existing-parent-direct-downstream.yaml": nil,
+						"testdata/comp/resources/nested-xr/existing-nested-child-xr.yaml": {
+							OwnedFiles: map[string]*integration.HierarchicalOwnershipRelation{
+								"testdata/comp/resources/nested-xr/existing-child-downstream.yaml": nil,
+							},
+						},
+					},
+				},
+			},
+			// Both the parent's and the child's Compositions change.
+			InputFiles: []string{"testdata/comp/updated-parent-composition.yaml", "../../../internal/testutils/integration/testdata/comp/updated-composition.yaml"},
+			Namespace:  "default",
+			// Under the parent, the nested XR's downstream is rendered with the run's child Composition, so
+			// it shows the same change as under the nested XR's own entry.
+			ExpectedOutput: `=== Impact Analysis ===
+
+~~~ XDownstreamResource/test-parent-direct
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: direct-resource
+    labels:
+      crossplane.io/composite: test-parent
+    name: test-parent-direct
+    namespace: default
+  spec:
+    forProvider:
+      configData: parent-parent-value
+-     resourceTier: parent-tier
++     resourceTier: premium-tier
+
+---
+~~~ XDownstreamResource/test-parent-nested
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: test-parent
+    name: test-parent-nested
+    namespace: default
+  spec:
+    forProvider:
+-     configData: child-config-value
+-     resourceTier: basic
++     configData: updated-child-config-value
++     resourceTier: premium
+
+---
+
+Summary: 2 modified`,
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
+			NoColor:          true,
+		},
 		"CrossNamespaceResourceCollision": {
 			Reason: "Validates that resources with the same name in different namespaces are correctly distinguished",
 			Skip:   true,

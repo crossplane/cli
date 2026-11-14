@@ -32,6 +32,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 
 	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
+	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
 	"github.com/crossplane/cli/v2/pkg/resource"
@@ -207,6 +208,9 @@ func (p *DefaultPrinter) printResourceTree(tw *tabwriter.Writer, root *resource.
 		depth    int
 		isLast   bool
 		prefix   string
+		// related is true if an ancestor of this resource is not part of
+		// the tree, but only related to it, e.g. an operation watching it.
+		related bool
 	}
 
 	// Initialize LIFO queue with root element to traverse the tree depth-first,
@@ -224,17 +228,27 @@ func (p *DefaultPrinter) printResourceTree(tw *tabwriter.Writer, root *resource.
 		// show the tree structure
 		name := strings.Builder{}
 
+		// Resources that are not part of the tree, but only related to it,
+		// e.g. an operation watching the parent resource, get an arrow
+		// pointing at the resource they relate to instead of a tree line.
+		// Their own children are real children, e.g. an Operation created
+		// by a WatchOperation, so they get regular tree lines.
+		line := "─"
+		if item.resource.Relation != "" && !item.related {
+			line = "◀"
+		}
+
 		childPrefix := item.prefix // Inherited prefix for all the children of the current node
 		switch {
 		case item.depth == 0:
 			// We don't need a prefix for the root, nor a custom
 			// prefix for its children
 		case item.isLast:
-			name.WriteString(item.prefix + "└─ ")
+			name.WriteString(item.prefix + "└" + line + " ")
 
 			childPrefix += "   "
 		default:
-			name.WriteString(item.prefix + "├─ ")
+			name.WriteString(item.prefix + "├" + line + " ")
 
 			childPrefix += "│  "
 		}
@@ -262,7 +276,8 @@ func (p *DefaultPrinter) printResourceTree(tw *tabwriter.Writer, root *resource.
 		// the way they are defined by the resources.
 		for idx, child := range slices.Backward(item.resource.Children) {
 			isLast := idx == len(item.resource.Children)-1
-			queue = append(queue, &queueItem{resource: child, depth: item.depth + 1, isLast: isLast, prefix: childPrefix})
+			related := item.related || item.resource.Relation != ""
+			queue = append(queue, &queueItem{resource: child, depth: item.depth + 1, isLast: isLast, prefix: childPrefix, related: related})
 		}
 	}
 	return nil
@@ -271,7 +286,19 @@ func (p *DefaultPrinter) printResourceTree(tw *tabwriter.Writer, root *resource.
 // getResourceStatus returns a string that represents an entire row of status
 // information for the resource.
 func getResourceStatus(r *resource.Resource, name string, wide bool) fmt.Stringer {
-	readyCond := r.GetCondition(xpv2.TypeReady)
+	// Operations don't have a Ready condition, show the condition
+	// representing their lifecycle in the READY column instead.
+	readyType := xpv2.TypeReady
+	switch r.Unstructured.GroupVersionKind().GroupKind() {
+	case opsv1alpha1.OperationGroupVersionKind.GroupKind():
+		readyType = opsv1alpha1.TypeSucceeded
+	case opsv1alpha1.WatchOperationGroupVersionKind.GroupKind():
+		readyType = opsv1alpha1.TypeWatching
+	case opsv1alpha1.CronOperationGroupVersionKind.GroupKind():
+		readyType = opsv1alpha1.TypeScheduling
+	}
+
+	readyCond := r.GetCondition(readyType)
 	syncedCond := r.GetCondition(xpv2.TypeSynced)
 
 	var status, m string

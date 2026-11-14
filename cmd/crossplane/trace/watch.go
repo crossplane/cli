@@ -36,6 +36,7 @@ import (
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/trace/internal/printer"
 	"github.com/crossplane/cli/v2/pkg/resource"
+	"github.com/crossplane/cli/v2/pkg/resource/xpkg"
 )
 
 // Bubble Tea messages for watch mode.
@@ -145,32 +146,15 @@ func (c *Cmd) watchProducer(ctx context.Context, logger logging.Logger, kClient 
 
 	// Helper to fetch and render the resource tree, then send to Bubble Tea
 	renderAndSend := func() error {
-		current := resource.GetResource(ctx, kClient, &v1.ObjectReference{
-			Kind:       root.Unstructured.GetKind(),
-			APIVersion: root.Unstructured.GetAPIVersion(),
-			Name:       root.Unstructured.GetName(),
-			Namespace:  root.Unstructured.GetNamespace(),
-		})
-
-		if current.Error != nil {
-			if apierrors.IsNotFound(current.Error) {
-				logger.Debug("Resource deleted, stopping watch")
-				prog.Send(treeQuitMsg{})
-				return nil
-			}
-			return current.Error
-		}
-
-		tree, err := c.getResourceTree(ctx, current, mapping, kClient, logger)
+		rendered, err := c.renderCurrentTree(ctx, logger, kClient, root, mapping, p)
 		if err != nil {
 			return err
 		}
 
-		logger.Debug("Got resource tree", "root", tree)
-
-		rendered, err := renderTreeToString(p, tree)
-		if err != nil {
-			return err
+		// The resource was deleted, stop watching
+		if rendered == "" {
+			prog.Send(treeQuitMsg{})
+			return nil
 		}
 
 		// Only send if changed
@@ -217,6 +201,41 @@ func (c *Cmd) watchProducer(ctx context.Context, logger logging.Logger, kClient 
 			return
 		}
 	}
+}
+
+// renderCurrentTree re-fetches the resource tree and renders it, returning an
+// empty string once the resource is deleted.
+func (c *Cmd) renderCurrentTree(ctx context.Context, logger logging.Logger, kClient client.Client, root *resource.Resource, mapping *meta.RESTMapping, p printer.Printer) (string, error) {
+	current := resource.GetResource(ctx, kClient, &v1.ObjectReference{
+		Kind:       root.Unstructured.GetKind(),
+		APIVersion: root.Unstructured.GetAPIVersion(),
+		Name:       root.Unstructured.GetName(),
+		Namespace:  root.Unstructured.GetNamespace(),
+	})
+
+	if current.Error != nil {
+		if apierrors.IsNotFound(current.Error) {
+			logger.Debug("Resource deleted, stopping watch")
+			return "", nil
+		}
+
+		return "", current.Error
+	}
+
+	tree, err := c.getResourceTree(ctx, current, mapping, kClient, logger)
+	if err != nil {
+		return "", err
+	}
+
+	if !xpkg.IsPackageType(mapping.GroupVersionKind.GroupKind()) {
+		if err := c.enrichOperations(ctx, kClient, tree); err != nil {
+			return "", errors.Wrap(err, errGetOperations)
+		}
+	}
+
+	logger.Debug("Got resource tree", "root", tree)
+
+	return renderTreeToString(p, tree)
 }
 
 // handleProducerError handles errors from the watch producer.

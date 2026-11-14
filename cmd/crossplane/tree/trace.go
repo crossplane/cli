@@ -14,11 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package trace contains the trace command.
-package trace
+// Package tree contains commands that operate on a Crossplane resource
+// and its tree of children: trace, suspend, resume and reconcile.
+package tree
 
 import (
 	"context"
+	"io"
 	"strings"
 
 	"github.com/alecthomas/kong"
@@ -34,7 +36,7 @@ import (
 	"github.com/crossplane/crossplane/apis/v2/pkg"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/internal"
-	"github.com/crossplane/cli/v2/cmd/crossplane/trace/internal/printer"
+	"github.com/crossplane/cli/v2/cmd/crossplane/tree/internal/printer"
 	"github.com/crossplane/cli/v2/internal/kube"
 	"github.com/crossplane/cli/v2/pkg/resource"
 	"github.com/crossplane/cli/v2/pkg/resource/xpkg"
@@ -60,10 +62,12 @@ const (
 	errNameDoubled            = "name provided twice, must be provided separately 'TYPE[.VERSION][.GROUP] [NAME]' or in the 'TYPE[.VERSION][.GROUP][/NAME]' format"
 	errInvalidResource        = "invalid resource, must be provided in the 'TYPE[.VERSION][.GROUP][/NAME]' format"
 	errInvalidResourceAndName = "invalid resource and name"
+	errFmtResourcePaused      = "cannot reconcile paused resource: kind=%s name=%s namespace=%s (resume it first with 'crossplane resource resume')"
+	errFmtUpdateResource      = "cannot update resource: kind=%s name=%s namespace=%s (resources processed before it may already have been updated; rerun the command to retry)"
 )
 
-// Cmd builds the trace tree for a Crossplane resource.
-type Cmd struct {
+// TraceCmd builds the trace tree for a Crossplane resource.
+type TraceCmd struct {
 	Resource string `arg:"" help:"Kind of the Crossplane resource, accepts the 'TYPE[.VERSION][.GROUP][/NAME]' format." predictor:"k8s_resource"`
 	Name     string `arg:"" help:"Name of the Crossplane resource, if not passed as part of the resource."              optional:""              predictor:"k8s_resource_name"`
 
@@ -82,11 +86,11 @@ type Cmd struct {
 }
 
 // Help returns help message for the trace command.
-func (c *Cmd) Help() string {
+func (c *TraceCmd) Help() string {
 	return helpDetail
 }
 
-func (c *Cmd) setupKubeClient(logger logging.Logger) (clientcmd.ClientConfig, client.WithWatch, meta.RESTMapper, error) {
+func (c *TraceCmd) setupKubeClient(logger logging.Logger) (clientcmd.ClientConfig, client.WithWatch, meta.RESTMapper, error) {
 	clientconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(),
 		&clientcmd.ConfigOverrides{CurrentContext: c.Context},
@@ -136,7 +140,7 @@ func (c *Cmd) setupKubeClient(logger logging.Logger) (clientcmd.ClientConfig, cl
 }
 
 // Run runs the trace command.
-func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
+func (c *TraceCmd) Run(k *kong.Context, logger logging.Logger) error {
 	ctx := context.Background()
 	logger = logger.WithValues("Resource", c.Resource, "Name", c.Name)
 
@@ -230,31 +234,10 @@ func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
 		return c.watchResourceTree(ctx, k, logger, client, root, mapping, p)
 	}
 
-	if shouldPrintAsList {
-		// Print list of resources
-		err = p.PrintList(k.Stdout, resourceList)
-		if err != nil {
-			return errors.Wrap(err, errCliOutput)
-		}
-		// Warn if watch mode was requested with multiple resources
-		if c.Watch {
-			if _, err := k.Stdout.Write([]byte("error: you may only watch a single resource at a time\n")); err != nil {
-				return errors.Wrap(err, errCliOutput)
-			}
-		}
-		return nil
-	}
-
-	// Print a single resource
-	err = p.Print(k.Stdout, resourceList.Items[0])
-	if err != nil {
-		return errors.Wrap(err, errCliOutput)
-	}
-
-	return nil
+	return printResources(k.Stdout, p, resourceList, shouldPrintAsList, c.Watch)
 }
 
-func (c *Cmd) getResourceAndName() (string, string, error) {
+func (c *TraceCmd) getResourceAndName() (string, string, error) {
 	// If no resource was provided, error out (should never happen as it's
 	// required by Kong)
 	if c.Resource == "" {
@@ -284,7 +267,7 @@ func (c *Cmd) getResourceAndName() (string, string, error) {
 	return "", "", errors.New(errInvalidResource)
 }
 
-func (c *Cmd) getResourceTree(ctx context.Context, root *resource.Resource, mapping *meta.RESTMapping, client client.Client, logger logging.Logger) (*resource.Resource, error) {
+func (c *TraceCmd) getResourceTree(ctx context.Context, root *resource.Resource, mapping *meta.RESTMapping, client client.Client, logger logging.Logger) (*resource.Resource, error) {
 	var treeClient resource.TreeClient
 	var err error
 	switch {
@@ -310,4 +293,31 @@ func (c *Cmd) getResourceTree(ctx context.Context, root *resource.Resource, mapp
 	logger.Debug("Built client")
 
 	return treeClient.GetResourceTree(ctx, root)
+}
+
+// printResources prints the supplied resources to w. If asList is true all
+// resources are printed as a list, otherwise only the first one is printed.
+func printResources(w io.Writer, p printer.Printer, resourceList *resource.ResourceList, asList, watch bool) error {
+	if asList {
+		if err := p.PrintList(w, resourceList); err != nil {
+			return errors.Wrap(err, errCliOutput)
+		}
+		// Warn if watch mode was requested with multiple resources
+		if watch {
+			if _, err := w.Write([]byte("error: you may only watch a single resource at a time\n")); err != nil {
+				return errors.Wrap(err, errCliOutput)
+			}
+		}
+		return nil
+	}
+
+	if len(resourceList.Items) == 0 {
+		return nil
+	}
+
+	if err := p.Print(w, resourceList.Items[0]); err != nil {
+		return errors.Wrap(err, errCliOutput)
+	}
+
+	return nil
 }

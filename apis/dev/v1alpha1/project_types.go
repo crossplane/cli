@@ -194,6 +194,11 @@ type Dependency struct {
 	// +optional
 	HTTP *HTTPDependency `json:"http,omitempty"`
 
+	// Local defines a local filesystem source for the dependency.
+	// Only used when Type is "crd".
+	// +optional
+	Local *LocalDependency `json:"local,omitempty"`
+
 	// K8s defines the Kubernetes API version for the dependency.
 	// Only used when Type is "k8s".
 	// +optional
@@ -241,6 +246,14 @@ type GitDependency struct {
 type HTTPDependency struct {
 	// URL is the HTTP/HTTPS URL to fetch the API dependency from.
 	URL string `json:"url"`
+}
+
+// LocalDependency defines a local filesystem source for an API dependency.
+type LocalDependency struct {
+	// Path is the path to a CRD file, or to a directory containing CRDs,
+	// relative to the project directory. Files in a directory that aren't CRDs
+	// are ignored.
+	Path string `json:"path"`
 }
 
 // K8sDependency defines a Kubernetes API version reference.

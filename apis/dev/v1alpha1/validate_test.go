@@ -205,6 +205,114 @@ func TestValidate(t *testing.T) {
 				},
 			},
 		},
+		"ValidAPIDependencyLocal": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Dependencies: []Dependency{
+						{
+							Type:  "crd",
+							Local: &LocalDependency{Path: "vendor/crds"},
+						},
+					},
+				},
+			},
+		},
+		"ValidAPIDependencyLocalDotSlash": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Dependencies: []Dependency{
+						{
+							Type:  "crd",
+							Local: &LocalDependency{Path: "./vendor/crds"},
+						},
+					},
+				},
+			},
+		},
+		"InvalidAPIDependencyLocalEmptyPath": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Dependencies: []Dependency{
+						{
+							Type:  "crd",
+							Local: &LocalDependency{Path: ""},
+						},
+					},
+				},
+			},
+			expectedErrors: []string{
+				"dependency 0: local: path must not be empty",
+			},
+		},
+		"InvalidAPIDependencyLocalAbsolutePath": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Dependencies: []Dependency{
+						{
+							Type:  "crd",
+							Local: &LocalDependency{Path: "/etc/crds"},
+						},
+					},
+				},
+			},
+			expectedErrors: []string{
+				"dependency 0: local: path must be relative to the project directory",
+			},
+		},
+		"InvalidAPIDependencyLocalEscapesProject": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Dependencies: []Dependency{
+						{
+							Type:  "crd",
+							Local: &LocalDependency{Path: "../crds"},
+						},
+					},
+				},
+			},
+			expectedErrors: []string{
+				"dependency 0: local: path must not escape the project directory",
+			},
+		},
+		"InvalidAPIDependencyLocalEscapesProjectNested": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Dependencies: []Dependency{
+						{
+							Type:  "crd",
+							Local: &LocalDependency{Path: "vendor/../../crds"},
+						},
+					},
+				},
+			},
+			expectedErrors: []string{
+				"dependency 0: local: path must not escape the project directory",
+			},
+		},
 		"InvalidAPIDependencyNoType": {
 			input: &Project{
 				ObjectMeta: metav1.ObjectMeta{
@@ -240,7 +348,7 @@ func TestValidate(t *testing.T) {
 				},
 			},
 			expectedErrors: []string{
-				"dependency 0: exactly one source (xpkg, git, http, or k8s) must be specified",
+				"dependency 0: exactly one source (xpkg, git, http, local, or k8s) must be specified",
 			},
 		},
 		"InvalidAPIDependencyMultipleSources": {
@@ -264,7 +372,7 @@ func TestValidate(t *testing.T) {
 				},
 			},
 			expectedErrors: []string{
-				"dependency 0: exactly one source (xpkg, git, http, or k8s) must be specified",
+				"dependency 0: exactly one source (xpkg, git, http, local, or k8s) must be specified",
 			},
 		},
 		"InvalidAPIDependencyGitEmptyRepository": {

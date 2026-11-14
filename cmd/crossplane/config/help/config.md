@@ -57,3 +57,12 @@ Regenerate your models after upgrading. The schema manager skips regeneration wh
 dependency's version hasn't changed, so run
 `crossplane dependency clean-cache` first if regenerating doesn't pick up
 the new output.
+
+Generate a required object-typed property (for example, a managed resource's
+`spec.forProvider`) on generated Go models as a non-pointer value instead of a
+pointer (off by default; this is a breaking change for code that constructs
+such a field as a pointer or nil-checks it):
+
+```shell
+crossplane config set features.generateGoRequiredObjectFields true
+```

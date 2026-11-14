@@ -45,7 +45,7 @@ var addHelp string
 
 // addCmd adds a dependency to the current project.
 type addCmd struct {
-	Package     string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
+	Package     string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, HTTP(S) URL, or local path)."`
 	ProjectFile string `default:"${project_file}"   help:"Path to project definition file."                                                        short:"f"`
 	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
 	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"  help:"Token for git HTTPS authentication."`
@@ -103,7 +103,7 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 
 	m := dependency.NewManager(proj, projFS, opts...)
 
-	dep, err := c.buildDependency()
+	dep, err := c.buildDependency(projDirPath)
 	if err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	})
 }
 
-func (c *addCmd) buildDependency() (v1alpha1.Dependency, error) {
+func (c *addCmd) buildDependency(projDir string) (v1alpha1.Dependency, error) {
 	// k8s dependency: k8s:vX.Y.Z
 	if version, found := strings.CutPrefix(c.Package, "k8s:"); found {
 		if version == "" {
@@ -163,6 +163,21 @@ func (c *addCmd) buildDependency() (v1alpha1.Dependency, error) {
 		}, nil
 	}
 
+	// CRD dependency from the local filesystem.
+	if isLocalRef(c.Package) {
+		if c.APIOnly {
+			return v1alpha1.Dependency{}, errors.New("--api-only is only valid for xpkg dependencies")
+		}
+		path, err := localPath(c.Package, projDir)
+		if err != nil {
+			return v1alpha1.Dependency{}, err
+		}
+		return v1alpha1.Dependency{
+			Type:  v1alpha1.DependencyTypeCRD,
+			Local: &v1alpha1.LocalDependency{Path: path},
+		}, nil
+	}
+
 	// Default: xpkg dependency. We allow three formats:
 	//
 	// 1. registry.example.com/repo:<tag / semver constraint>
@@ -192,4 +207,32 @@ func (c *addCmd) buildDependency() (v1alpha1.Dependency, error) {
 			APIOnly: c.APIOnly,
 		},
 	}, nil
+}
+
+// isLocalRef returns true if ref refers to a path on the local filesystem
+// rather than a package. Local paths must start with ./, ../ or file:// since
+// anything else could be a valid xpkg reference.
+func isLocalRef(ref string) bool {
+	for _, prefix := range []string{"./", "../", "file://"} {
+		if strings.HasPrefix(ref, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// localPath converts a local reference to a slash-separated path relative to
+// the project directory. Relative references are resolved against the current
+// working directory, as for any other CLI path argument.
+func localPath(ref, projDir string) (string, error) {
+	path := filepath.FromSlash(strings.TrimPrefix(ref, "file://"))
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", errors.Wrapf(err, "cannot resolve local path %q", ref)
+	}
+	rel, err := filepath.Rel(projDir, abs)
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", errors.Errorf("local path %q must be inside the project directory", ref)
+	}
+	return filepath.ToSlash(rel), nil
 }

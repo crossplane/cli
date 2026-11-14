@@ -141,6 +141,58 @@ func NewFSSource(id string, fs afero.Fs) Source {
 	return &fsSource{id: id, fs: fs}
 }
 
+// localSource is a resource source backed by a file or directory in the
+// project.
+type localSource struct {
+	projFS afero.Fs
+	path   string
+}
+
+func (l *localSource) ID() string {
+	return "fs://" + filepath.ToSlash(filepath.Clean(l.path))
+}
+
+func (l *localSource) Version(ctx context.Context) (string, error) {
+	resources, err := l.Resources(ctx)
+	if err != nil {
+		return "", err
+	}
+	return calculateFilesystemHash(resources, SourceTypeCRD)
+}
+
+func (l *localSource) Resources(_ context.Context) (afero.Fs, error) {
+	info, err := l.projFS.Stat(l.path)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot read local dependency %q", l.path)
+	}
+
+	if info.IsDir() {
+		return afero.NewBasePathFs(l.projFS, l.path), nil
+	}
+
+	// Expose a single file as a filesystem containing just that file, so that
+	// its siblings aren't picked up.
+	content, err := afero.ReadFile(l.projFS, l.path)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot read local dependency %q", l.path)
+	}
+	single := afero.NewMemMapFs()
+	if err := afero.WriteFile(single, filepath.Base(l.path), content, 0o644); err != nil {
+		return nil, errors.Wrapf(err, "cannot stage local dependency %q", l.path)
+	}
+	return single, nil
+}
+
+func (l *localSource) Type() SourceType {
+	return SourceTypeCRD
+}
+
+// NewLocalSource returns a new resource source backed by a CRD file, or a
+// directory of CRDs, at the given path within projFS.
+func NewLocalSource(dep v1alpha1.Dependency, projFS afero.Fs) Source {
+	return &localSource{projFS: projFS, path: dep.Local.Path}
+}
+
 // xpkgSource is a source backed by extracted CRDs from an xpkg. Unlike the
 // up CLI, this always generates client-side (never uses pre-packaged schemas).
 type xpkgSource struct {

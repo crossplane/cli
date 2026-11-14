@@ -21,6 +21,7 @@ package dependency
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -368,6 +369,8 @@ func (m *Manager) addDependencyNoWrite(ctx context.Context, dep *v1alpha1.Depend
 		return nil, m.schemas.Add(ctx, smanager.NewGitSource(*dep, m.gitCloner, m.gitAuthProvider))
 	case dep.HTTP != nil:
 		return nil, m.schemas.Add(ctx, smanager.NewHTTPSource(*dep))
+	case dep.Local != nil:
+		return nil, m.schemas.Add(ctx, smanager.NewLocalSource(*dep, m.projFS))
 	case dep.K8s != nil:
 		return nil, m.schemas.Add(ctx, smanager.NewK8sSource(*dep))
 	default:
@@ -408,6 +411,8 @@ func GetSourceDescription(dep v1alpha1.Dependency) string {
 		return desc
 	case dep.HTTP != nil:
 		return dep.HTTP.URL
+	case dep.Local != nil:
+		return dep.Local.Path
 	case dep.K8s != nil:
 		return "Kubernetes API " + dep.K8s.Version
 	default:
@@ -437,6 +442,8 @@ func matchesDependency(a, b v1alpha1.Dependency) bool {
 		return a.Git.Repository == b.Git.Repository
 	case a.HTTP != nil && b.HTTP != nil:
 		return a.HTTP.URL == b.HTTP.URL
+	case a.Local != nil && b.Local != nil:
+		return filepath.Clean(a.Local.Path) == filepath.Clean(b.Local.Path)
 	case a.K8s != nil && b.K8s != nil:
 		return true // Only one k8s dep makes sense.
 	}

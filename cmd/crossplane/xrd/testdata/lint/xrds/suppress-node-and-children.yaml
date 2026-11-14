@@ -1,0 +1,33 @@
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xqueues.example.org
+spec:
+  group: example.org
+  names:
+    kind: XQueue
+    plural: xqueues
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          # crossplane-lint-disable-next-line xrd/no-bools -- kept for v1 compatibility
+          spec:
+            type: object
+            properties:
+              fifo:
+                type: boolean
+              encryption:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+          status:
+            type: object
+            properties:
+              ready:
+                type: boolean

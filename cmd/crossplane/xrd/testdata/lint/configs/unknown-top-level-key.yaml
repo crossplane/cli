@@ -1,0 +1,4 @@
+apiVersion: lint.crossplane.io/v1alpha1
+kind: LintConfig
+rulez:
+  xrd/no-bools: warn

@@ -1,0 +1,52 @@
+# Breaks only xrd/lists-need-list-type.
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xclusters.example.org
+spec:
+  group: example.org
+  names:
+    kind: XCluster
+    plural: xclusters
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              zones:
+                type: array
+                items:
+                  type: string
+              nodePools:
+                type: array
+                x-kubernetes-list-type: map
+                x-kubernetes-list-map-keys: [name]
+                items:
+                  type: object
+                  required: [name]
+                  properties:
+                    name:
+                      type: string
+                    taints:
+                      type: array
+                      items:
+                        type: string
+              labels:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    type: string
+          status:
+            type: object
+            properties:
+              addresses:
+                type: array
+                items:
+                  type: string

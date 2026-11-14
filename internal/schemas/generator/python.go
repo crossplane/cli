@@ -271,6 +271,7 @@ func (p pythonGenerator) generatePythonSchemas(ctx context.Context, inputFS afer
 			"--enum-field-as-literal",
 			"all",
 			"--use-one-literal-as-default",
+			"--use-default-kwarg",
 			"--output",
 			pythonModelsFolder,
 		},

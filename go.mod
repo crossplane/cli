@@ -47,6 +47,7 @@ require (
 	github.com/oapi-codegen/oapi-codegen/v2 v2.8.2
 	github.com/pkg/errors v0.9.1
 	github.com/posener/complete v1.2.3
+	github.com/posener/complete/v2 v2.1.0
 	github.com/sergi/go-diff v1.4.0
 	github.com/shirou/gopsutil/v4 v4.26.10
 	github.com/spf13/afero v1.15.0

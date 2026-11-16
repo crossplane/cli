@@ -1,6 +1,6 @@
 apiVersion: dev.crossplane.io/v1alpha1
 kind: Project
 metadata:
-  name: it-project
+  name: it-project-claim
 spec:
-  repository: xpkg.crossplane.io/example/itproject
+  repository: xpkg.crossplane.io/example/itprojectclaim

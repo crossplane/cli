@@ -69,6 +69,9 @@ type GenerateOptions struct {
 	CopyToPath    string
 	CopyFromPath  string
 	WorkDirectory string
+
+	// VolumeMounts maps named Docker volumes to container paths.
+	VolumeMounts map[string]string
 }
 
 // Option is a function that modifies GenerateOptions.
@@ -92,6 +95,17 @@ func WithCopyFromPath(path string) Option {
 func WithWorkDirectory(dir string) Option {
 	return func(o *GenerateOptions) {
 		o.WorkDirectory = dir
+	}
+}
+
+// WithVolumeMount mounts a named Docker volume at the given path, e.g. to
+// give the container a cache that outlives it.
+func WithVolumeMount(name, containerPath string) Option {
+	return func(o *GenerateOptions) {
+		if o.VolumeMounts == nil {
+			o.VolumeMounts = make(map[string]string)
+		}
+		o.VolumeMounts[name] = containerPath
 	}
 }
 
@@ -139,12 +153,17 @@ func (r RealSchemaRunner) Generate(ctx context.Context, fromFS afero.Fs, baseFol
 		}
 	}
 
-	cid, err := docker.StartContainer(ctx, "", imageName,
+	startOpts := []docker.StartContainerOption{
 		docker.StartWithCopyFiles(tarBuffer, o.CopyToPath),
 		docker.StartWithCommand(command),
 		docker.StartWithEnv(envVars...),
 		docker.StartWithWorkingDirectory(o.WorkDirectory),
-	)
+	}
+	for name, path := range o.VolumeMounts {
+		startOpts = append(startOpts, docker.StartWithVolumeMount(name, path))
+	}
+
+	cid, err := docker.StartContainer(ctx, "", imageName, startOpts...)
 	if err != nil {
 		return err
 	}

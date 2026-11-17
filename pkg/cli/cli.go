@@ -34,7 +34,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/maturity"
-	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
@@ -51,15 +50,6 @@ type Config = config.Config
 // EventChannel carries asynchronous progress events during long-running
 // operations such as builds.
 type EventChannel = async.EventChannel
-
-// ProjectFile is the default name of a project's definition file.
-const ProjectFile = clixpkg.ProjectFile
-
-// ProjectAPIVersion and ProjectKind identify the project file's type.
-const (
-	ProjectAPIVersion = projectfile.APIVersion
-	ProjectKind       = projectfile.Kind
-)
 
 // NewSpinnerPrinter returns a SpinnerPrinter writing to out. If pretty is
 // true, animated spinners are rendered; otherwise plain text.

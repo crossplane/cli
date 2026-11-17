@@ -29,9 +29,9 @@ import (
 
 const (
 	// APIVersion is the supported API version for project files.
-	APIVersion = "dev.crossplane.io/v1alpha1"
+	APIVersion = v1alpha1.APIVersion
 	// Kind is the supported Kind for project files.
-	Kind = "Project"
+	Kind = v1alpha1.Kind
 )
 
 // IsProjectFile reads the TypeMeta from the given YAML file and returns true

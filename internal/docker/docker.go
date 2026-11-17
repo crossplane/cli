@@ -36,6 +36,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	"github.com/spf13/afero"
@@ -229,6 +230,22 @@ type copyFilesConfig struct {
 
 // StartContainerOption provides optional options for StartContainer.
 type StartContainerOption func(*startContainerConfig)
+
+// StartWithVolumeMount mounts a named Docker volume at the given path in the
+// container, e.g. to give the container a cache that outlives it.
+func StartWithVolumeMount(name, containerPath string) StartContainerOption {
+	return func(cfg *startContainerConfig) {
+		if cfg.hostConfig == nil {
+			cfg.hostConfig = &container.HostConfig{}
+		}
+		cfg.hostConfig.Mounts = append(cfg.hostConfig.Mounts, mount.Mount{
+			Type:          mount.TypeVolume,
+			Source:        name,
+			Target:        containerPath,
+			VolumeOptions: &mount.VolumeOptions{NoCopy: true},
+		})
+	}
+}
 
 // StartWithCommand sets the command to use when starting a container.
 func StartWithCommand(cmd []string) StartContainerOption {

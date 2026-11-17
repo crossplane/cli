@@ -237,9 +237,14 @@ type SchemaRunner = runner.SchemaRunner
 type SchemaRunnerOption = runner.Option
 
 // NewSchemaRunner returns a SchemaRunner that rewrites tooling images
-// according to the given image configs.
-func NewSchemaRunner(cfgs []pkgv1beta1.ImageConfig) SchemaRunner {
-	return runner.NewRealSchemaRunner(runner.WithImageConfig(cfgs))
+// according to the given image configs. Environment variables with the given
+// extra prefixes are forwarded into the tooling containers in addition to
+// the default CROSSPLANE_ prefix.
+func NewSchemaRunner(cfgs []pkgv1beta1.ImageConfig, extraEnvPrefixes ...string) SchemaRunner {
+	return runner.NewRealSchemaRunner(
+		runner.WithImageConfig(cfgs),
+		runner.WithEnvPrefixes(extraEnvPrefixes...),
+	)
 }
 
 // WithWorkDirectory sets the working directory for a Generate invocation.

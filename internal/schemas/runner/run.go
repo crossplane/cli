@@ -43,6 +43,7 @@ type SchemaRunner interface {
 // RealSchemaRunner implements the SchemaRunner interface.
 type RealSchemaRunner struct {
 	configStore xpkg.ConfigStore
+	envPrefixes []string
 }
 
 // NewRealSchemaRunner creates a new RealSchemaRunner.
@@ -56,6 +57,16 @@ func NewRealSchemaRunner(opts ...ROption) *RealSchemaRunner {
 
 // ROption configures the SchemaRunner.
 type ROption func(*RealSchemaRunner)
+
+// WithEnvPrefixes forwards environment variables with the given prefixes into
+// the tooling container, in addition to the default CROSSPLANE_ prefix. Host
+// CLIs use this to make their own variables visible to language tooling
+// (e.g. tests reading credentials from the environment).
+func WithEnvPrefixes(prefixes ...string) ROption {
+	return func(r *RealSchemaRunner) {
+		r.envPrefixes = append(r.envPrefixes, prefixes...)
+	}
+}
 
 // WithImageConfig adds image rewriting rules to the SchemaRunner.
 func WithImageConfig(cfgs []pkgv1beta1.ImageConfig) ROption {
@@ -99,13 +110,15 @@ func WithWorkDirectory(dir string) Option {
 }
 
 // WithVolumeMount mounts a named Docker volume at the given path, e.g. to
-// give the container a cache that outlives it.
+// give the container a cache that outlives it. Mounts are keyed by container
+// path, so one volume can be mounted at several paths; a second mount at the
+// same path replaces the first.
 func WithVolumeMount(name, containerPath string) Option {
 	return func(o *GenerateOptions) {
 		if o.VolumeMounts == nil {
 			o.VolumeMounts = make(map[string]string)
 		}
-		o.VolumeMounts[name] = containerPath
+		o.VolumeMounts[containerPath] = name
 	}
 }
 
@@ -146,10 +159,18 @@ func (r RealSchemaRunner) Generate(ctx context.Context, fromFS afero.Fs, baseFol
 		return errors.Wrapf(err, "failed to create tar from fs")
 	}
 
+	prefixes := append([]string{"CROSSPLANE_"}, r.envPrefixes...)
 	var envVars []string
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "CROSSPLANE_") {
-			envVars = append(envVars, e)
+		for _, prefix := range prefixes {
+			// An empty prefix would forward the entire host environment.
+			if prefix == "" {
+				continue
+			}
+			if strings.HasPrefix(e, prefix) {
+				envVars = append(envVars, e)
+				break
+			}
 		}
 	}
 
@@ -159,7 +180,7 @@ func (r RealSchemaRunner) Generate(ctx context.Context, fromFS afero.Fs, baseFol
 		docker.StartWithEnv(envVars...),
 		docker.StartWithWorkingDirectory(o.WorkDirectory),
 	}
-	for name, path := range o.VolumeMounts {
+	for path, name := range o.VolumeMounts {
 		startOpts = append(startOpts, docker.StartWithVolumeMount(name, path))
 	}
 

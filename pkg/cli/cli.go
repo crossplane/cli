@@ -33,6 +33,7 @@ import (
 
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
+	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/maturity"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -111,6 +112,14 @@ func Options(logger logging.Logger, cfg *Config) []kong.Option {
 func BindRuntime(k *kong.Context, sp SpinnerPrinter, sigCtx context.Context) {
 	k.BindTo(sp, (*SpinnerPrinter)(nil))
 	k.BindTo(sigCtx, (*context.Context)(nil))
+}
+
+// SilentExit reports whether err is a silent exit request from a command (a
+// result such as simulate finding changes, not an error) and the status to
+// exit with. Hosts embedding crossplane commands should exit with the code
+// without printing anything when it returns true.
+func SilentExit(err error) (int, bool) {
+	return exitcode.SilentExit(err)
 }
 
 // ApplyMaturity applies the crossplane CLI's maturity gating to a host

@@ -37,11 +37,11 @@ import (
 )
 
 // parseSimulate parses args as `simulate` flags, running kong's validation.
-func parseSimulate(t *testing.T, args ...string) (*simulateCmd, error) {
+func parseSimulate(t *testing.T, args ...string) (*SimulateCmd, error) {
 	t.Helper()
 
 	var cli struct {
-		Simulate simulateCmd `cmd:""`
+		Simulate SimulateCmd `cmd:""`
 	}
 	parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}))
 	if err != nil {
@@ -59,7 +59,7 @@ func TestSimulateFlags(t *testing.T) {
 	}
 
 	type want struct {
-		cmd *simulateCmd
+		cmd *SimulateCmd
 		err bool
 	}
 
@@ -71,7 +71,7 @@ func TestSimulateFlags(t *testing.T) {
 	}{
 		"Defaults": {
 			reason: "With no flags the defaults should apply.",
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -87,7 +87,7 @@ func TestSimulateFlags(t *testing.T) {
 				"--max-concurrency", "2", "-o", "json", "--crossplane-version", "v2.3.4",
 				"--as", "jane", "--as-group", "admins",
 			},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 2, ProjectFile: "p.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 2, ProjectFile: "p.yaml", Flags: simulate.Flags{
 				Context:        "staging",
 				MaxIterations:  3,
 				Timeout:        2 * time.Minute,
@@ -104,7 +104,7 @@ func TestSimulateFlags(t *testing.T) {
 				"--eventual-state", "--max-recv-message-size", "16",
 				"--minimize-composition", "--analyze-on", "always", "--dry-run-on", "existing",
 			},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:      dp.DefaultMaxRenderIterations,
 				Timeout:            2 * time.Minute,
 				Output:             "plan",
@@ -121,7 +121,7 @@ func TestSimulateFlags(t *testing.T) {
 			reason: "--function-credentials should land on its field; Run loads the Secrets.",
 			args:   []string{"--function-credentials", creds},
 			want: want{
-				cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+				cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 					MaxIterations:       dp.DefaultMaxRenderIterations,
 					Timeout:             2 * time.Minute,
 					Output:              "plan",
@@ -144,7 +144,7 @@ func TestSimulateFlags(t *testing.T) {
 		"PlanFlags": {
 			reason: "The provider plan flags should land on their fields.",
 			args:   []string{"--providers", dir, "--image-configs", creds, "--session-id", "s1"},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -158,7 +158,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderEngineFlags": {
 			reason: "The render engine flags should land on the embedded EngineFlags.",
 			args:   []string{"--crossplane-binary", creds, "--session-id", "s1"},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -170,7 +170,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderDockerNetwork": {
 			reason: "--crossplane-docker-network should land on the embedded EngineFlags.",
 			args:   []string{"--crossplane-docker-network", "ci"},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -182,7 +182,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderDockerNetworkEnv": {
 			reason: "CROSSPLANE_DOCKER_NETWORK should land on the embedded EngineFlags.",
 			env:    map[string]string{"CROSSPLANE_DOCKER_NETWORK": "env-net"},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -195,7 +195,7 @@ func TestSimulateFlags(t *testing.T) {
 			reason: "--crossplane-docker-network should win over CROSSPLANE_DOCKER_NETWORK.",
 			env:    map[string]string{"CROSSPLANE_DOCKER_NETWORK": "env-net"},
 			args:   []string{"--crossplane-docker-network", "ci"},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -207,7 +207,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderBinaryWithNetwork": {
 			reason: "A local render binary ignores a Docker network rather than rejecting it.",
 			args:   []string{"--crossplane-binary", creds, "--crossplane-docker-network", "ci"},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -219,7 +219,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlan": {
 			reason: "--skip-plan alone should be accepted.",
 			args:   []string{"--skip-plan"},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -231,7 +231,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlanWithProviders": {
 			reason: "--providers does nothing with --skip-plan, so Run warns rather than Validate rejecting it.",
 			args:   []string{"--skip-plan", "--providers", dir},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -244,7 +244,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlanWithImageConfigs": {
 			reason: "--image-configs also rewrites function images, so it applies with --skip-plan.",
 			args:   []string{"--skip-plan", "--image-configs", creds},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -257,7 +257,7 @@ func TestSimulateFlags(t *testing.T) {
 		"SkipPlanWithSessionID": {
 			reason: "--session-id does nothing with --skip-plan, so Run warns rather than Validate rejecting it.",
 			args:   []string{"--skip-plan", "--session-id", "s1"},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -275,7 +275,7 @@ func TestSimulateFlags(t *testing.T) {
 		"ZeroConcurrency": {
 			reason: "Zero build slots should be accepted; the builder runs one build at a time.",
 			args:   []string{"--max-concurrency", "0"},
-			want: want{cmd: &simulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -326,7 +326,7 @@ func TestSimulateFlags(t *testing.T) {
 		"RenderImageUncomparable": {
 			reason: "A render image with no comparable version should be accepted.",
 			args:   []string{"--crossplane-image", "example.com/crossplane:stable"},
-			want: want{cmd: &simulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
+			want: want{cmd: &SimulateCmd{MaxConcurrency: 8, ProjectFile: "crossplane-project.yaml", Flags: simulate.Flags{
 				MaxIterations:  dp.DefaultMaxRenderIterations,
 				Timeout:        2 * time.Minute,
 				Output:         "plan",
@@ -371,7 +371,7 @@ func TestSimulateBuildProjectRejectsComposition(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := &simulateCmd{ProjectFile: path}
+	c := &SimulateCmd{ProjectFile: path}
 	_, err := c.buildProject(context.Background(), logging.NewNopLogger(), nil, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), "failed to parse project file") {
 		t.Errorf("buildProject(-f %s): want a project file parse error, got %v", path, err)
@@ -405,7 +405,7 @@ func TestSimulateBuildProjectErrors(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			c := &simulateCmd{ProjectFile: filepath.Join("testdata", "project", tc.project, "crossplane-project.yaml")}
+			c := &SimulateCmd{ProjectFile: filepath.Join("testdata", "project", tc.project, "crossplane-project.yaml")}
 			_, err := c.buildProject(context.Background(), logging.NewNopLogger(), nil, &config.Config{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("\n%s\nbuildProject(%s): want error containing %q, got %v", tc.reason, tc.project, tc.want, err)
@@ -420,7 +420,7 @@ func TestSimulateNameFlagParse(t *testing.T) {
 		"CommaSeparated": {"--name=a/db,b/db"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var c simulateCmd
+			var c SimulateCmd
 			k, err := kong.New(&c, kong.Vars{"project_file": "crossplane-project.yaml"})
 			if err != nil {
 				t.Fatal(err)

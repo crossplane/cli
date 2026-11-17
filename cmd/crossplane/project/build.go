@@ -50,8 +50,8 @@ import (
 //go:embed help/build.md
 var buildHelp string
 
-// buildCmd builds a project into Crossplane packages.
-type buildCmd struct {
+// BuildCmd builds a project into Crossplane packages.
+type BuildCmd struct {
 	ProjectFile    string `default:"${project_file}"                           help:"Path to project definition."                 short:"f"`
 	Repository     string `help:"Override the repository in the project file." optional:""`
 	OutputDir      string `default:"_output"                                   help:"Output directory for packages."              short:"o"`
@@ -64,12 +64,13 @@ type buildCmd struct {
 	projFS afero.Fs
 }
 
-func (c *buildCmd) Help() string {
+// Help returns help for the build command.
+func (c *BuildCmd) Help() string {
 	return buildHelp
 }
 
 // AfterApply parses flags and reads the project file.
-func (c *buildCmd) AfterApply() error {
+func (c *BuildCmd) AfterApply() error {
 	projFilePath, err := filepath.Abs(c.ProjectFile)
 	if err != nil {
 		return err
@@ -88,7 +89,7 @@ func (c *buildCmd) AfterApply() error {
 }
 
 // Run executes the build command.
-func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
+func (c *BuildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
 	if c.Repository != "" {

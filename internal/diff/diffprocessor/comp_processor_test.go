@@ -1748,8 +1748,11 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 		run map[string]runComposition
 	}
 
+	// errBoom is the error a run Composition that could not be read carries.
+	errBoom := errors.New("boom")
+
 	// want is the composition the nested XR renders with: its name, labels (the run's copy carries
-	// version 2) and revision, or the error resolving it.
+	// version 2) and revision, or the message of the error resolving it.
 	type want struct {
 		Composition string
 		Labels      map[string]string
@@ -1761,6 +1764,8 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 		reason string
 		args   args
 		want   want
+		// wantErrIs, when set, is an error the returned one must wrap.
+		wantErrIs error
 	}{
 		"RefToRunCompositionGetsIt": {
 			reason: "A nested XR naming a Composition in the run renders with the run's copy and its predicted revision.",
@@ -1792,7 +1797,7 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 				nested: nested("child").WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
 					WithNestedField(map[string]any{"name": "child-0ld0001"}, "spec", "crossplane", "compositionRevisionRef").Build(),
 				cluster: types.ResolvedComposition{Composition: clusterChild, RevisionName: "child-0ld0001"},
-				run:     map[string]runComposition{"child": {err: errors.New("boom")}},
+				run:     map[string]runComposition{"child": {err: errBoom}},
 			},
 			want: want{Composition: "child", Revision: "child-0ld0001"},
 		},
@@ -1819,9 +1824,10 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 			args: args{
 				nested:  nested("child").Build(),
 				cluster: types.ResolvedComposition{Composition: clusterChild, RevisionName: "child-0ld0001"},
-				run:     map[string]runComposition{"child": {err: errors.New("boom")}},
+				run:     map[string]runComposition{"child": {err: errBoom}},
 			},
-			want: want{Err: `cannot use composition "child" from the run: boom`},
+			want:      want{Err: `cannot use composition "child" from the run: boom`},
+			wantErrIs: errBoom,
 		},
 		"IncompatibleRunCompositionIsAnError": {
 			reason: "A nested XR naming a run Composition of another composite type fails.",
@@ -1878,6 +1884,12 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 			}
 			if diff := gcmp.Diff(tc.want, gotWant); diff != "" {
 				t.Errorf("%s\ncollectXRDiffs() nested XR's composition (-want +got):\n%s", tc.reason, diff)
+			}
+
+			if tc.wantErrIs != nil {
+				if diff := gcmp.Diff(tc.wantErrIs, gotErr, cmpopts.EquateErrors()); diff != "" {
+					t.Errorf("%s\ncollectXRDiffs() nested XR's error (-want +got):\n%s", tc.reason, diff)
+				}
 			}
 		})
 	}

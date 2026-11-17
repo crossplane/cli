@@ -104,6 +104,12 @@ type BuildOptions struct {
 	// BasePath is the real on-disk base path of projFS, needed to build
 	// embedded functions whose runtimes are built with Docker.
 	BasePath string
+	// ExtraPackageAnnotations adds annotations to the built packages'
+	// metadata, on the configuration and every embedded function.
+	ExtraPackageAnnotations map[string]string
+	// Ignore excludes files matching the given gitignore-style patterns
+	// (relative to the project root) from resource collection.
+	Ignore []string
 }
 
 // Build builds a project into its package images, generating schemas and
@@ -184,6 +190,12 @@ func Build(ctx context.Context, cfg *config.Config, proj *devv1alpha1.Project, p
 	}
 	if o.BasePath != "" {
 		buildOpts = append(buildOpts, internalproject.BuildWithProjectBasePath(o.BasePath))
+	}
+	if len(o.ExtraPackageAnnotations) > 0 {
+		buildOpts = append(buildOpts, internalproject.BuildWithExtraAnnotations(o.ExtraPackageAnnotations))
+	}
+	if len(o.Ignore) > 0 {
+		buildOpts = append(buildOpts, internalproject.BuildWithIgnore(o.Ignore))
 	}
 
 	imgMap, deps, err := b.Build(ctx, proj, projFS, buildOpts...)

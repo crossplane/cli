@@ -44,7 +44,8 @@ type FilterReason string
 
 const (
 	// FilterReasonManualPolicy indicates the XR was excluded because it has a Manual
-	// compositionUpdatePolicy and --include-pinned was not set. Such XRs are pinned to a specific
+	// compositionUpdatePolicy, names a compositionRevisionRef (for a claim, its backing XR does), and
+	// --include-pinned was not set. Such XRs are pinned to a specific
 	// revision and would not adopt the composition change automatically.
 	FilterReasonManualPolicy FilterReason = "manual_policy"
 	// FilterReasonRevisionSelectorMismatch indicates the XR was excluded because it has an Automatic
@@ -131,8 +132,12 @@ type RevisionImpact struct {
 	// RepointedComposites counts the composites that would adopt that revision and reconcile as a
 	// result: those with an Automatic (or defaulted) compositionUpdatePolicy whose
 	// compositionRevisionSelector, if any, selects the resulting revision, and which are not being
-	// deleted. A Manual-policy composite is never counted — it is pinned by compositionRevisionRef, so
-	// --include-pinned keeping it for analysis does not make it re-point (issue #479).
+	// deleted, plus those with a Manual policy that name no compositionRevisionRef yet, which Crossplane
+	// gives the latest revision. A Manual-policy composite that names a revision (for a claim, whose
+	// backing XR does) is never counted — it is pinned to it, so --include-pinned keeping it for
+	// analysis does not make it re-point (issue #479). Nor is a Manual claim naming no revision whose
+	// backing XR could not be resolved: it is reported as an XRStatusError instead, even when the
+	// analysis is skipped.
 	//
 	// Note this counts composites that re-point, which is not the same as composites whose rendered
 	// output changes; re-pointing alone usually renders identically.
@@ -205,8 +210,8 @@ type AffectedResourcesSummary struct {
 	WithChanges int `json:"withChanges"`
 	Unchanged   int `json:"unchanged"`
 	WithErrors  int `json:"withErrors"`
-	// FilteredByPolicy counts XRs excluded because of a Manual compositionUpdatePolicy
-	// (FilterReasonManualPolicy).
+	// FilteredByPolicy counts XRs excluded because a Manual compositionUpdatePolicy pins them to a
+	// compositionRevisionRef (FilterReasonManualPolicy).
 	FilteredByPolicy int `json:"filteredByPolicy,omitempty"`
 	// FilteredBySelector counts XRs excluded because their compositionRevisionSelector does not match
 	// the diffed composition's labels (FilterReasonRevisionSelectorMismatch). Kept separate from
@@ -230,12 +235,14 @@ type XRImpact struct {
 	FilterReason FilterReason
 	// FilterDetail is an optional human-readable explanation for a filtered outcome (e.g. which
 	// selector failed to match which labels), surfaced to help users self-diagnose the exclusion. A
-	// Manual-policy composite names the revision it stays pinned to ("compositionRevisionRef: <name>")
-	// when it has a ref.
+	// Manual-policy composite names the revision it stays pinned to ("compositionRevisionRef: <name>").
 	FilterDetail string
 	// Pinned marks an evaluated composite that would not adopt the composition's resulting revision,
 	// because its Manual compositionUpdatePolicy pins it to its compositionRevisionRef. Only
-	// --include-pinned evaluates such a composite; without it, the composite is XRStatusFiltered.
+	// --include-pinned evaluates such a composite; without it, the composite is XRStatusFiltered. A Manual
+	// composite that names no revision is not pinned: Crossplane gives it the latest revision. A claim
+	// whose backing XR could not be resolved is an XRStatusError and not Pinned, since whether it is
+	// pinned is unknown.
 	Pinned bool
 	// RenderedRevision names the CompositionRevision a Pinned composite was rendered against, when that
 	// is its own pinned revision rather than the diffed composition: the revision calls a function that

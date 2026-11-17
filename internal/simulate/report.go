@@ -157,7 +157,7 @@ func FromCompReport(o *dt.CompDiffOutput, plans *ProviderPlans, keep func(*unstr
 }
 
 // compositeResult maps an affected composite's impact onto its status. A
-// Manual-policy composite is deferred: applying changes nothing for it until
+// pinned composite is deferred: applying changes nothing for it until
 // its revision advances, unless it was rendered against its pinned revision
 // because that calls a changed function. Other filtered composites are skipped.
 func compositeResult(impact dt.XRImpact) CompositeResult {

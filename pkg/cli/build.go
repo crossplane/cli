@@ -169,3 +169,32 @@ func Build(ctx context.Context, cfg *Config, proj *devv1alpha1.Project, projFS a
 
 	return imgMap, deps, nil
 }
+
+// SchemaSource is a source of resources (CRDs/XRDs) for which language
+// schemas can be generated.
+type SchemaSource = manager.Source
+
+// SchemaSourceType identifies the kind of resources a SchemaSource provides.
+type SchemaSourceType = manager.SourceType
+
+// SchemaSourceTypeCRD indicates a source containing CRDs/XRDs.
+const SchemaSourceTypeCRD = manager.SourceTypeCRD
+
+// AddSchemas generates language schemas for the resources provided by src
+// into the project's schemas directory, using the same generators and layout
+// as schema generation for the project's dependencies and APIs. Host CLIs
+// use this to merge schemas for their own meta APIs into the project's
+// models.
+func AddSchemas(ctx context.Context, cfg *Config, proj *devv1alpha1.Project, projFS afero.Fs, src SchemaSource) error {
+	schemasFS := afero.NewBasePathFs(projFS, proj.Spec.Paths.Schemas)
+	generators := generator.Filter(
+		generator.AllLanguages(
+			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+		),
+		proj.Spec.Schemas.GetLanguages(),
+	)
+	schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(proj.Spec.ImageConfigs))
+
+	return manager.New(schemasFS, generators, schemaRunner).Add(ctx, src)
+}

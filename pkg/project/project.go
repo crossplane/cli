@@ -279,3 +279,60 @@ func WithCopyFromPath(path string) SchemaRunnerOption {
 func WithVolumeMount(name, containerPath string) SchemaRunnerOption {
 	return runner.WithVolumeMount(name, containerPath)
 }
+
+// DependencySchemasOptions configures DependencySchemas.
+type DependencySchemasOptions struct {
+	// GitUsername and GitToken authenticate git-based dependencies over
+	// HTTPS.
+	GitUsername string
+	GitToken    string
+}
+
+// DependencySchemaSet holds the schema inputs provided by a project's crd
+// and k8s dependencies.
+type DependencySchemaSet struct {
+	// CRDs are filesystems of CustomResourceDefinition manifests, one per
+	// crd-type dependency.
+	CRDs []afero.Fs
+	// OpenAPIs are filesystems of OpenAPI v3 documents, one per k8s-type
+	// dependency.
+	OpenAPIs []afero.Fs
+}
+
+// DependencySchemas fetches the raw schema resources of the project's crd
+// and k8s dependencies - the same sources the dependency manager generates
+// language schemas from. Hosts use them e.g. to validate rendered resources.
+func DependencySchemas(ctx context.Context, proj *devv1alpha1.Project, o DependencySchemasOptions) (*DependencySchemaSet, error) {
+	authProvider := &git.HTTPSAuthProvider{
+		Username: o.GitUsername,
+		Password: o.GitToken,
+	}
+
+	set := &DependencySchemaSet{}
+	for _, dep := range proj.Spec.Dependencies {
+		var src manager.Source
+		switch {
+		case dep.Git != nil:
+			src = manager.NewGitSource(dep, &git.DefaultCloner{}, authProvider)
+		case dep.HTTP != nil:
+			src = manager.NewHTTPSource(dep)
+		case dep.K8s != nil:
+			src = manager.NewK8sSource(dep)
+		default:
+			continue
+		}
+
+		fs, err := src.Resources(ctx)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to fetch resources of dependency %q", src.ID())
+		}
+		switch src.Type() {
+		case manager.SourceTypeOpenAPI:
+			set.OpenAPIs = append(set.OpenAPIs, fs)
+		case manager.SourceTypeCRD:
+			set.CRDs = append(set.CRDs, fs)
+		}
+	}
+
+	return set, nil
+}

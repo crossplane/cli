@@ -224,7 +224,7 @@ func setImageEnvvars(image v1.Image, envVars map[string]string) (v1.Image, error
 
 func newKCLBuilder(imageConfigs []v1beta1.ImageConfig) *kclBuilder {
 	return &kclBuilder{
-		baseImage:   "xpkg.crossplane.io/crossplane-contrib/function-kcl:v0.12.1",
+		baseImage:   "xpkg.crossplane.io/crossplane-contrib/function-kcl:v0.12.3",
 		transport:   http.DefaultTransport,
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}

@@ -367,7 +367,7 @@ const probe = "CROSSPLANE-PROBE-7f3c"
 // are the field's, because sigsyaml writes keys sorted, so the lines before
 // and after a value don't depend on it, and the line diff keeps lines whole.
 //
-// ponytail: a field is found only where setPath reaches it, so a keyed
+// NOTE: a field is found only where setPath reaches it, so a keyed
 // item or index the desired side lacks gets no mark in a modified diff, and a
 // keyed segment matching several items marks the first "+" line from the
 // first match to the last. The header, the summary and -o plan still say

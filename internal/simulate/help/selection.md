@@ -7,10 +7,12 @@ how the change prints:
   `--namespace`, or is cluster scoped without it.
 - `--include-pinned` renders every pinned composite resource against the new
   Composition. By default `simulate` skips composite resources with a `Manual`
-  composition update policy, because they don't adopt a new Composition
-  revision on their own. A pinned composite whose revision calls a function
-  the run changes is still simulated, rendered against the revision it's
-  pinned to.
+  composition update policy that are pinned to a Composition revision by
+  `compositionRevisionRef`, because they don't adopt a new revision on their
+  own. A `Manual` composite resource with no revision yet gets the new one,
+  so it's simulated like any other. A pinned composite whose revision calls
+  a function the run changes is still simulated, rendered against the
+  revision it's pinned to.
 - `--analyze-on` sets the smallest Composition change that triggers impact
   analysis: `spec-change` only when the Composition spec changes;
   `any-change`, the default, also when only its metadata changes, which still

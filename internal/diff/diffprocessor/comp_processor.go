@@ -1021,8 +1021,8 @@ func (p *DefaultCompDiffProcessor) runCompositions(ctx context.Context, composit
 // runCompositionFor resolves the composition of res, a nested XR of a type other than the diffed
 // composition's. The run's Composition is used when it is the one res names in compositionRef, or, when
 // res names none, the one the cluster selects for it (by compositionSelector or type), and res would
-// adopt the revision it produces (see classifyXR). res then renders with that revision's predicted name,
-// as a composite of the diffed composition does (see cliCompositionRevision). Otherwise res gets the
+// adopt the revision it produces (see adoptsRunRevision). res then renders with that revision's predicted
+// name, as a composite of the diffed composition does (see cliCompositionRevision). Otherwise res gets the
 // cluster's composition and revision: a Manual res stays on the revision it is pinned to, as Crossplane
 // would keep it.
 //
@@ -1051,20 +1051,9 @@ func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *u
 
 	rc, inRun := run[name]
 	if inRun {
-		if rc.err != nil {
-			return dtypes.ResolvedComposition{}, errors.Wrapf(rc.err, "cannot use composition %q from the run", name)
-		}
-
-		if ref := rc.comp.Spec.CompositeTypeRef; ref.APIVersion != res.GetAPIVersion() || ref.Kind != res.GetKind() {
-			return dtypes.ResolvedComposition{}, errors.Errorf("composition %q in the run composes %s %s, but nested XR %q is a %s %s", rc.comp.GetName(), ref.APIVersion, ref.Kind, res.GetName(), res.GetAPIVersion(), res.GetKind())
-		}
-
-		disposition, err := p.classifyXR(res, rc.revisionLabels, rc.comp.GetLabels())
-		if err != nil {
+		if inRun, err = p.adoptsRunRevision(res, name, rc); err != nil {
 			return dtypes.ResolvedComposition{}, err
 		}
-
-		inRun = disposition.filtered == nil && !disposition.pinnedToRevision
 	}
 
 	if !inRun {
@@ -1081,6 +1070,44 @@ func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *u
 
 	// classifyXR kept res, so it adopts the revision, as cliCompositionRevision would find.
 	return dtypes.ResolvedComposition{Composition: rc.comp, RevisionName: rc.revisionName()}, nil
+}
+
+// adoptsRunRevision reports whether res, a nested XR naming (or selected for) the run's Composition rc
+// called name, would compose with the revision rc produces (see classifyXR). A Manual res pinned by a
+// compositionRevisionRef does not, and nothing about rc matters to it, so a run entry that cannot be used
+// does not fail it. For any other res, an rc that cannot be read, or composes another type than res, is
+// an error.
+func (p *DefaultCompDiffProcessor) adoptsRunRevision(res *un.Unstructured, name string, rc runComposition) (bool, error) {
+	policy, err := xp.XRUpdatePolicy(res.Object, res.GetAPIVersion())
+	if err != nil {
+		return false, errors.Wrapf(err, "cannot read compositionUpdatePolicy for XR %q", res.GetName())
+	}
+
+	if policy == compositionUpdatePolicyManual {
+		revision, err := xp.XRCompositionRevisionRef(res.Object, res.GetAPIVersion())
+		if err != nil {
+			return false, errors.Wrapf(err, "cannot read compositionRevisionRef for XR %q", res.GetName())
+		}
+
+		if revision != "" {
+			return false, nil
+		}
+	}
+
+	if rc.err != nil {
+		return false, errors.Wrapf(rc.err, "cannot use composition %q from the run", name)
+	}
+
+	if ref := rc.comp.Spec.CompositeTypeRef; ref.APIVersion != res.GetAPIVersion() || ref.Kind != res.GetKind() {
+		return false, errors.Errorf("composition %q in the run composes %s %s, but nested XR %q is a %s %s", rc.comp.GetName(), ref.APIVersion, ref.Kind, res.GetName(), res.GetAPIVersion(), res.GetKind())
+	}
+
+	disposition, err := p.classifyXR(res, rc.revisionLabels, rc.comp.GetLabels())
+	if err != nil {
+		return false, err
+	}
+
+	return disposition.filtered == nil && !disposition.pinnedToRevision, nil
 }
 
 // compositionComparison is the result of comparing a proposed composition against its in-cluster

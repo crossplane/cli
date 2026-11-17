@@ -1786,6 +1786,26 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 			},
 			want: want{Composition: "child", Revision: "child-0ld0001"},
 		},
+		"PinnedNestedXRIgnoresUnreadableRunComposition": {
+			reason: "A Manual nested XR pinned to a revision does not use the run's Composition, so one that could not be read does not fail it.",
+			args: args{
+				nested: nested("child").WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
+					WithNestedField(map[string]any{"name": "child-0ld0001"}, "spec", "crossplane", "compositionRevisionRef").Build(),
+				cluster: types.ResolvedComposition{Composition: clusterChild, RevisionName: "child-0ld0001"},
+				run:     map[string]runComposition{"child": {err: errors.New("boom")}},
+			},
+			want: want{Composition: "child", Revision: "child-0ld0001"},
+		},
+		"PinnedNestedXRIgnoresIncompatibleRunComposition": {
+			reason: "A Manual nested XR pinned to a revision keeps the cluster's pinned one even when the run's Composition of that name composes another type.",
+			args: args{
+				nested: nested("child").WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
+					WithNestedField(map[string]any{"name": "child-0ld0001"}, "spec", "crossplane", "compositionRevisionRef").Build(),
+				cluster:  types.ResolvedComposition{Composition: clusterChild, RevisionName: "child-0ld0001"},
+				runComps: []*un.Unstructured{tu.NewComposition("child").WithCompositeTypeRef("child.example.org/v1", "XOther").WithPipelineMode().BuildAsUnstructured()},
+			},
+			want: want{Composition: "child", Revision: "child-0ld0001"},
+		},
 		"SelectorRejectingRunRevisionGetsClusters": {
 			reason: "An Automatic nested XR whose compositionRevisionSelector rejects the run's revision labels does not adopt it, so it renders with the cluster's.",
 			args: args{

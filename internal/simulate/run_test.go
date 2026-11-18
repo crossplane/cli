@@ -52,6 +52,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 	difftypes "github.com/crossplane/cli/v2/internal/diff/types"
 	"github.com/crossplane/cli/v2/internal/exitcode"
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
@@ -582,6 +583,19 @@ func TestSimulateRun(t *testing.T) {
 		}}}
 	}
 
+	// failing is a report of one Composition whose affected composite, in
+	// status, is failing before apply.
+	failing := func(status dt.XRStatus) *dt.CompDiffOutput {
+		return &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
+			Name: "comp",
+			ImpactAnalysis: []dt.XRImpact{{
+				ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XDB", Name: "db"},
+				Status:          status,
+				Health:          dt.CompositeHealth{XR: &health.Health{State: health.Failing, Synced: &health.Condition{Status: corev1.ConditionFalse}}},
+			}},
+		}}}
+	}
+
 	type args struct {
 		cmd         Runner
 		initClients func(context.Context, logging.Logger) error
@@ -615,6 +629,34 @@ func TestSimulateRun(t *testing.T) {
 				return changed(), nil
 			}}},
 			want: want{code: dp.ExitCodeDiffDetected, diffed: true},
+		},
+		"Failing": {
+			reason: "A run without changes whose composite is failing should exit 4, silently.",
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return failing(dt.XRStatusUnchanged), nil
+			}}},
+			want: want{code: ExitCodeFailing, diffed: true},
+		},
+		"ChangesAndFailing": {
+			reason: "A run with changes whose composite is failing should exit 7, silently.",
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return failing(dt.XRStatusChanged), nil
+			}}},
+			want: want{code: ExitCodeChanges | ExitCodeFailing, diffed: true},
+		},
+		"FailingDiffOutput": {
+			reason: "The failing bit should not depend on the output format.",
+			args: args{cmd: Runner{Flags: &Flags{Output: "diff"}}, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return failing(dt.XRStatusUnchanged), nil
+			}}},
+			want: want{code: ExitCodeFailing, diffed: true},
+		},
+		"ErrorOutranksFailing": {
+			reason: "A tool error should exit 1 even when a composite is failing.",
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return failing(dt.XRStatusChanged), errBoom
+			}}},
+			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
 		},
 		"ErrorWithChanges": {
 			reason: "A tool error should exit 1, not 3, even when there are changes.",

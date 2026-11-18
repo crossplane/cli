@@ -76,7 +76,7 @@ type IntegrationTestCase struct {
 	ExpectedError          bool
 	ExpectedErrorContains  string
 	ExpectedStderrContains []string // substrings that must appear on stderr (warnings, error lines)
-	ExpectedExitCode       int      // Expected exit code (0=success, 1=tool error, 2=schema validation, 3=diff detected)
+	ExpectedExitCode       int      // Expected exit code (0=success, 1=tool error, 2=schema validation; without an error, 3=diff detected, 4=failing resource, 7=both)
 	NoColor                bool
 	Namespace              string                    // For composition tests (optional)
 	XrdAPIVersion          integration.XRDAPIVersion // For XR tests (optional)

@@ -30,6 +30,18 @@ type Expected struct {
 	// noWarnings asserts warnings[] is empty. Separate from len(warnings)==0, which means "no opinion".
 	noWarnings bool
 	xrs        []*XRExpectation
+	// health is summary.health, asserted when set.
+	health *expectedHealth
+}
+
+// expectedHealth is summary.health's counts.
+type expectedHealth struct {
+	composites, failing, notReady, paused int
+}
+
+// unhealthyExpectation is one entry of an xrs[] entry's unhealthy[].
+type unhealthyExpectation struct {
+	kind, name, state string
 }
 
 // warningMatch describes one expected entry in warnings[], shared by the xr and comp builders. Matched
@@ -436,6 +448,10 @@ type XRExpectation struct {
 	summary   *expectedSummary
 	changes   []*ResourceExpectation
 	errorIDs  []string
+	// health is the entry's live health state, asserted when set.
+	health string
+	// unhealthy pins the entry's unhealthy[] when set.
+	unhealthy []unhealthyExpectation
 }
 
 // XR begins a standalone expectation for one xrs[] entry, keyed by the input
@@ -507,6 +523,26 @@ func (x *XRExpectation) Change(changeType, kind, name, namespace string) *Resour
 	x.changes = append(x.changes, r)
 
 	return r
+}
+
+// WithHealthSummary asserts summary.health: the unhealthy top-level composites, and the failing, not
+// ready and paused resources.
+func (e *Expected) WithHealthSummary(composites, failing, notReady, paused int) *Expected {
+	e.health = &expectedHealth{composites: composites, failing: failing, notReady: notReady, paused: paused}
+	return e
+}
+
+// Health asserts the entry's live health state (paused, failing, notReady or healthy).
+func (x *XRExpectation) Health(state string) *XRExpectation {
+	x.health = state
+	return x
+}
+
+// Unhealthy asserts the entry's unhealthy[] holds a resource of this kind and name in this health
+// state. Pinning any pins the count too.
+func (x *XRExpectation) Unhealthy(kind, name, state string) *XRExpectation {
+	x.unhealthy = append(x.unhealthy, unhealthyExpectation{kind: kind, name: name, state: state})
+	return x
 }
 
 // WithErrorID asserts the top-level errors[] contains an error with the given resourceID. Unlike

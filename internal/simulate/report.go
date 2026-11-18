@@ -270,7 +270,12 @@ func (a *assembler) unhealthy() {
 			if !r.Health.Unhealthy() || planned[gk][[2]string{r.Namespace, r.Name}] {
 				continue
 			}
-			a.composites[i].Unhealthy = append(a.composites[i].Unhealthy, UnhealthyResource{Ref: resourceRef(r.ObjectReference), Health: r.Health})
+			u := UnhealthyResource{Ref: resourceRef(r.ObjectReference), Health: r.Health}
+			if r.Via != nil {
+				via := resourceRef(*r.Via)
+				u.Via = &via
+			}
+			a.composites[i].Unhealthy = append(a.composites[i].Unhealthy, u)
 		}
 	}
 }

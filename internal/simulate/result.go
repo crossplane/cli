@@ -91,23 +91,25 @@ type CompositeResult struct {
 	// from Status, the simulated outcome; nil when the cluster has no such
 	// composite, or it was not simulated.
 	Health *health.Health `json:"health,omitempty"`
-	// Unhealthy lists the composed resources, nested composites' included,
-	// that are live, not healthy, and have no plan in the run (so no health
-	// of their own to show).
+	// Unhealthy lists the composed resources, nested composites and theirs
+	// included, that are live, not healthy, and have no plan in the run (so
+	// no health of their own to show).
 	Unhealthy []UnhealthyResource `json:"unhealthy,omitempty"`
 }
 
 // UnhealthyResource is a composed resource that is not healthy before apply.
 type UnhealthyResource struct {
-	Ref    plan.ResourceRef `json:"ref"`
-	Health *health.Health   `json:"health"`
+	Ref plan.ResourceRef `json:"ref"`
+	// Via is the nested composite that directly composes the resource; nil
+	// when the listing composite does.
+	Via    *plan.ResourceRef `json:"via,omitempty"`
+	Health *health.Health    `json:"health"`
 }
 
-// HealthSummary counts what is not healthy before apply, serialized among
-// the summary's other counts. Composites counts
+// HealthSummary counts what is not healthy before apply. Composites counts
 // the composites whose own health is not healthy; Failing, NotReady and
-// Paused count the other resources, each once however many composites or
-// plans reach it.
+// Paused count the other resources. Each is counted once however many
+// composites or plans reach it.
 type HealthSummary struct {
 	Composites int `json:"unhealthyComposites"`
 	Failing    int `json:"failing"`
@@ -217,11 +219,14 @@ func (r Result) Health() HealthSummary {
 		return composites[groupKind(ref)][[2]string{ref.Namespace, ref.Name}]
 	}
 	for _, c := range r.Composites {
-		gk := groupKind(c.Ref)
+		gk, id := groupKind(c.Ref), [2]string{c.Ref.Namespace, c.Ref.Name}
+		if composites[gk][id] {
+			continue
+		}
 		if composites[gk] == nil {
 			composites[gk] = map[[2]string]bool{}
 		}
-		composites[gk][[2]string{c.Ref.Namespace, c.Ref.Name}] = true
+		composites[gk][id] = true
 		if c.Health.Unhealthy() {
 			s.Composites++
 		}
@@ -268,16 +273,15 @@ func groupKind(ref plan.ResourceRef) schema.GroupKind {
 
 // MarshalJSON writes the result with summary, composites and compositions
 // ahead of the plans, which can be long, and with the deferred and health
-// counts inside summary. YAML goes through it too. Decoding needs no
+// counts inside summary (the health ones under summary.health). YAML goes through it too. Decoding needs no
 // counterpart: summary decodes into Result.Summary, Deferred is counted from
 // Composites, and Health from Composites and Plans.
 func (r Result) MarshalJSON() ([]byte, error) {
 	type summary struct {
 		plan.Summary
 
-		HealthSummary
-
-		Deferred int `json:"deferred"`
+		Health   HealthSummary `json:"health"`
+		Deferred int           `json:"deferred"`
 	}
 	return json.Marshal(struct {
 		FormatVersion string               `json:"formatVersion"`
@@ -292,7 +296,7 @@ func (r Result) MarshalJSON() ([]byte, error) {
 	}{
 		FormatVersion: r.FormatVersion,
 		Errored:       r.Errored,
-		Summary:       summary{Summary: r.Summary, HealthSummary: r.Health(), Deferred: r.Deferred()},
+		Summary:       summary{Summary: r.Summary, Health: r.Health(), Deferred: r.Deferred()},
 		Composites:    r.Composites,
 		Compositions:  r.Compositions,
 		Plans:         r.Plans,

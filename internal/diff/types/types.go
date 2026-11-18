@@ -146,50 +146,72 @@ type CredentialFetchResult struct {
 // It also holds, by diff key, the diff of each unchanged rendering the calculator did not keep among
 // the diffs it returns, so input validation sees every rendering whether or not equal diffs are kept.
 //
-// Finally it holds the live cluster objects the render already fetched, for health reporting: the
-// composite's own cluster copy, and by diff key every composed resource observed beneath it.
+// Finally it holds, for health reporting, the health of the live objects the render already fetched,
+// classified as they are recorded so the objects themselves are not retained: the composite's own, and
+// by diff key that of every composed resource observed beneath it, with the nested composite that
+// directly composes each.
 type RenderedResources struct {
 	keys      map[string]bool
 	desired   map[string]map[string]bool // composite identity -> composition resource names it desired
 	unchanged map[string]*dt.ResourceDiff
-	live      *un.Unstructured
-	observed  map[string]*un.Unstructured
+	composite *dt.ResourceHealth
+	composed  map[string]dt.ResourceHealth
 }
 
-// SetLive records the composite's own cluster copy (for a claim, the claim). Merge does not carry it:
-// a nested composite's cluster copy is one of its parent's observed resources.
-func (r *RenderedResources) SetLive(composite *un.Unstructured) {
-	r.live = composite
-}
-
-// AddObserved records a composed resource's cluster copy. A resource observed twice, as a nested
-// composite is (once beneath its parent, once as the composite it is), is recorded once.
-func (r *RenderedResources) AddObserved(res *un.Unstructured) {
-	if r.observed == nil {
-		r.observed = make(map[string]*un.Unstructured)
+// SetComposite records the cluster object of the composite rendered: the XR itself or, for a claim, its
+// backing XR. A nil object, for a composite the cluster does not have yet, records nothing.
+func (r *RenderedResources) SetComposite(live *un.Unstructured) {
+	if live == nil {
+		return
 	}
 
-	r.observed[dt.MakeDiffKeyFromResource(res)] = res
+	h := resourceHealth(live)
+	r.composite = &h
 }
 
-// Health classifies the live objects SetLive and AddObserved recorded.
-func (r *RenderedResources) Health() dt.CompositeHealth {
-	h := dt.CompositeHealth{XR: health.Of(r.live)}
+// AddObserved records a composed resource's cluster copy, which the composite rendered composes
+// directly. A resource recorded twice keeps its first record.
+func (r *RenderedResources) AddObserved(res *un.Unstructured) {
+	r.addComposed(resourceHealth(res))
+}
 
-	for _, key := range slices.Sorted(maps.Keys(r.observed)) {
-		res := r.observed[key]
-		h.Composed = append(h.Composed, dt.ResourceHealth{
-			ObjectReference: corev1.ObjectReference{
-				APIVersion: res.GetAPIVersion(),
-				Kind:       res.GetKind(),
-				Name:       res.GetName(),
-				Namespace:  res.GetNamespace(),
-			},
-			Health: health.Of(res),
-		})
+func (r *RenderedResources) addComposed(h dt.ResourceHealth) {
+	key := dt.MakeDiffKey(h.APIVersion, h.Kind, h.Namespace, h.Name)
+	if _, ok := r.composed[key]; ok {
+		return
+	}
+
+	if r.composed == nil {
+		r.composed = make(map[string]dt.ResourceHealth)
+	}
+
+	r.composed[key] = h
+}
+
+// Health returns the health SetComposite and AddObserved recorded, and Merge carried.
+func (r *RenderedResources) Health() dt.CompositeHealth {
+	var h dt.CompositeHealth
+	if r.composite != nil {
+		h.XR = r.composite.Health
+	}
+
+	for _, key := range slices.Sorted(maps.Keys(r.composed)) {
+		h.Composed = append(h.Composed, r.composed[key])
 	}
 
 	return h
+}
+
+func resourceHealth(u *un.Unstructured) dt.ResourceHealth {
+	return dt.ResourceHealth{
+		ObjectReference: corev1.ObjectReference{
+			APIVersion: u.GetAPIVersion(),
+			Kind:       u.GetKind(),
+			Name:       u.GetName(),
+			Namespace:  u.GetNamespace(),
+		},
+		Health: health.Of(u),
+	}
 }
 
 // AddUnchanged records the diff of an unchanged rendering that is not among the returned diffs.
@@ -246,8 +268,20 @@ func (r *RenderedResources) Merge(other RenderedResources) {
 		r.AddUnchanged(key, d)
 	}
 
-	for _, res := range other.observed {
-		r.AddObserved(res)
+	// What other's composite composed directly, it composed via that composite; and the composite
+	// itself is composed by r's, which records it already when it observed it (but not when the
+	// composite was found by name instead).
+	for _, h := range other.composed {
+		if h.Via == nil && other.composite != nil {
+			via := other.composite.ObjectReference
+			h.Via = &via
+		}
+
+		r.addComposed(h)
+	}
+
+	if other.composite != nil {
+		r.addComposed(*other.composite)
 	}
 }
 

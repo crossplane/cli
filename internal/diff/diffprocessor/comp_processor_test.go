@@ -3030,16 +3030,20 @@ func TestDefaultCompDiffProcessor_DiffComposition_Health(t *testing.T) {
 		status dt.XRStatus
 		health dt.CompositeHealth
 	}
+	type args struct {
+		// changed makes the render produce a change; renderErr makes it fail.
+		changed   bool
+		renderErr error
+	}
 	cases := map[string]struct {
 		reason string
-		// changed makes the render produce a change; errs makes it fail.
-		changed, errs bool
-		want          want
+		args   args
+		want   want
 	}{
 		"Changed": {
-			reason:  "A changed composite carries the health its render read.",
-			changed: true,
-			want:    want{status: dt.XRStatusChanged, health: live},
+			reason: "A changed composite carries the health its render read.",
+			args:   args{changed: true},
+			want:   want{status: dt.XRStatusChanged, health: live},
 		},
 		"Unchanged": {
 			reason: "An unchanged composite carries its health too: being unchanged does not make it healthy.",
@@ -3047,7 +3051,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_Health(t *testing.T) {
 		},
 		"Errored": {
 			reason: "A composite whose render failed carries no health.",
-			errs:   true,
+			args:   args{renderErr: errors.New("render failed")},
 			want:   want{status: dt.XRStatusError},
 		},
 	}
@@ -3058,14 +3062,14 @@ func TestDefaultCompDiffProcessor_DiffComposition_Health(t *testing.T) {
 
 			proc := NewCompDiffProcessor(&tu.MockDiffProcessor{
 				DiffSingleResourceFn: func(_ context.Context, res *un.Unstructured, _ types.CompositionProvider) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
-					if tc.errs {
-						return nil, types.RenderedResources{}, errors.New("render failed")
+					if tc.args.renderErr != nil {
+						return nil, types.RenderedResources{}, tc.args.renderErr
 					}
 					var rendered types.RenderedResources
-					rendered.SetLive(res)
+					rendered.SetComposite(res)
 					rendered.AddObserved(bucket)
 					diffs := map[string]*dt.ResourceDiff{}
-					if tc.changed {
+					if tc.args.changed {
 						d := &dt.ResourceDiff{Gvk: bucket.GroupVersionKind(), ResourceName: "bucket", DiffType: dt.DiffTypeModified, Current: dt.ResourceViews{Raw: bucket}, Desired: dt.ResourceViews{Raw: bucket}}
 						diffs[d.GetDiffKey()] = d
 					}

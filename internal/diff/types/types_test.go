@@ -47,6 +47,10 @@ func TestRenderedResourcesHealth(t *testing.T) {
 	parent := obj("example.org/v1", "XParent", "parent", "")
 	child := obj("example.org/v1", "XChild", "child", "False")
 	grandchild := obj("v1", "ConfigMap", "grandchild", "")
+	leaf := obj("v1", "Secret", "leaf", "")
+	childRef := ref("example.org/v1", "XChild", "child")
+	grandchildRef := ref("v1", "ConfigMap", "grandchild")
+	leafRef := ref("v1", "Secret", "leaf")
 
 	type args struct {
 		build func() RenderedResources
@@ -61,11 +65,11 @@ func TestRenderedResourcesHealth(t *testing.T) {
 			args:   args{build: func() RenderedResources { return RenderedResources{} }},
 			want:   dt.CompositeHealth{},
 		},
-		"LiveAndObserved": {
-			reason: "The live composite gives XR, and each observed resource an entry, in diff key order.",
+		"CompositeAndObserved": {
+			reason: "The composite gives XR, and each observed resource an entry with no via, in diff key order.",
 			args: args{build: func() RenderedResources {
 				var r RenderedResources
-				r.SetLive(parent)
+				r.SetComposite(parent)
 				r.AddObserved(grandchild)
 				r.AddObserved(child)
 				return r
@@ -73,28 +77,71 @@ func TestRenderedResourcesHealth(t *testing.T) {
 			want: dt.CompositeHealth{
 				XR: healthy,
 				Composed: []dt.ResourceHealth{
-					{ObjectReference: ref("example.org/v1", "XChild", "child"), Health: notReady},
-					{ObjectReference: ref("v1", "ConfigMap", "grandchild"), Health: healthy},
+					{ObjectReference: childRef, Health: notReady},
+					{ObjectReference: grandchildRef, Health: healthy},
 				},
 			},
 		},
-		"NestedMergedOnce": {
-			reason: "Merging a nested composite's render adds what it observed, but not its own live copy as XR; one observed by both levels counts once.",
+		"NoComposite": {
+			reason: "A composite the cluster does not have yet records no XR health.",
+			args: args{build: func() RenderedResources {
+				var r RenderedResources
+				r.SetComposite(nil)
+				return r
+			}},
+			want: dt.CompositeHealth{},
+		},
+		"NestedMergedOnceWithVia": {
+			reason: "Merging a nested composite's render lists what it composed with the nested composite as via, and the nested composite itself once, as the parent observed it.",
 			args: args{build: func() RenderedResources {
 				var r, nested RenderedResources
-				r.SetLive(parent)
+				r.SetComposite(parent)
 				r.AddObserved(child)
-				nested.SetLive(child)
+				nested.SetComposite(child)
 				nested.AddObserved(grandchild)
-				nested.AddObserved(child)
 				r.Merge(nested)
 				return r
 			}},
 			want: dt.CompositeHealth{
 				XR: healthy,
 				Composed: []dt.ResourceHealth{
-					{ObjectReference: ref("example.org/v1", "XChild", "child"), Health: notReady},
-					{ObjectReference: ref("v1", "ConfigMap", "grandchild"), Health: healthy},
+					{ObjectReference: childRef, Health: notReady},
+					{ObjectReference: grandchildRef, Via: &childRef, Health: healthy},
+				},
+			},
+		},
+		"NestedNotObservedByParent": {
+			reason: "A nested composite the parent did not observe (found by name instead) is still listed, from its own render.",
+			args: args{build: func() RenderedResources {
+				var r, nested RenderedResources
+				r.SetComposite(parent)
+				nested.SetComposite(child)
+				r.Merge(nested)
+				return r
+			}},
+			want: dt.CompositeHealth{
+				XR:       healthy,
+				Composed: []dt.ResourceHealth{{ObjectReference: childRef, Health: notReady}},
+			},
+		},
+		"DeeplyNestedKeepsDirectParent": {
+			reason: "Via names the composite that directly composes a resource, however deep, not an intermediate one.",
+			args: args{build: func() RenderedResources {
+				var r, nested, deeper RenderedResources
+				r.SetComposite(parent)
+				nested.SetComposite(child)
+				deeper.SetComposite(grandchild)
+				deeper.AddObserved(leaf)
+				nested.Merge(deeper)
+				r.Merge(nested)
+				return r
+			}},
+			want: dt.CompositeHealth{
+				XR: healthy,
+				Composed: []dt.ResourceHealth{
+					{ObjectReference: childRef, Health: notReady},
+					{ObjectReference: grandchildRef, Via: &childRef, Health: healthy},
+					{ObjectReference: leafRef, Via: &grandchildRef, Health: healthy},
 				},
 			},
 		},

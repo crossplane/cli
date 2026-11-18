@@ -528,9 +528,11 @@ func (p *DefaultDiffProcessor) diffSingleResourceInternal(ctx context.Context, r
 		return nil, types.RenderedResources{}, errors.Wrap(err, "cannot calculate diffs for composed resources")
 	}
 
-	// Record the live objects already fetched, for health. The observed resources are the cluster's,
-	// never the copies --eventual-state synthesizes Ready on (see RenderToStableState).
-	rendered.SetLive(composite.Cluster)
+	// Record the health of the live objects already fetched: the composite that composes (for a claim,
+	// its backing XR, whose conditions the claim only partly mirrors) and what it composes. The observed
+	// resources are the cluster's, never the copies --eventual-state synthesizes Ready on (see
+	// RenderToStableState).
+	rendered.SetComposite(composite.Composed())
 
 	for i := range observedResources {
 		rendered.AddObserved(&observedResources[i].Unstructured)

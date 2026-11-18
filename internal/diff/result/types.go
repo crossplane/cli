@@ -56,8 +56,8 @@ type XRDiffGroup struct {
 // render already fetched. It describes the cluster, not the desired state: a resource the render
 // would create has no entry, and one it would delete has one.
 type CompositeHealth struct {
-	// XR is the health of the input's own cluster object (for a claim, the claim); nil when the
-	// cluster has none.
+	// XR is the health of the cluster object the input composes: the XR itself or, for a claim, its
+	// backing XR. It is nil when the cluster has none.
 	XR *health.Health
 	// Composed holds the health of each observed composed resource, once each, in diff key order.
 	Composed []ResourceHealth
@@ -66,6 +66,10 @@ type CompositeHealth struct {
 // ResourceHealth is the live health of one composed resource.
 type ResourceHealth struct {
 	corev1.ObjectReference
+
+	// Via is the nested composite that directly composes the resource, or nil when the input's own
+	// composite does.
+	Via *corev1.ObjectReference
 
 	Health *health.Health
 }

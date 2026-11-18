@@ -53,9 +53,11 @@ type XRDiffResult struct {
 	// Error contains any error that occurred while processing this XR.
 	// nil means processing was successful.
 	Error error
-	// rendered is what the render produced: the unchanged renderings Diffs leaves out, for the overlap
-	// check, and the live objects the impact's health is read from.
-	rendered dtypes.RenderedResources
+	// unchanged holds the unchanged renderings Diffs leaves out, for the overlap check only.
+	unchanged map[string]*dt.ResourceDiff
+	// health is the live health the render read, computed as the XR is diffed so that the live objects
+	// are not retained until impact analysis.
+	health dt.CompositeHealth
 }
 
 // HasChanges returns true if this XR has downstream resource changes.
@@ -601,7 +603,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	for _, xr := range keptXRs {
 		if r := xrResults[dt.MakeDiffKeyFromResource(xr)]; r != nil && !r.HasError() {
 			group := dt.XRDiffGroup{XR: objectRef(xr), Diffs: r.Diffs}
-			composites = append(composites, renderedComposite{xr: xr, group: withUnchanged([]dt.XRDiffGroup{group}, []map[string]*dt.ResourceDiff{r.rendered.Unchanged()})[0]})
+			composites = append(composites, renderedComposite{xr: xr, group: withUnchanged([]dt.XRDiffGroup{group}, []map[string]*dt.ResourceDiff{r.unchanged})[0]})
 		}
 	}
 
@@ -830,8 +832,9 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 		} else {
 			// Store successful result with diffs
 			results[resourceID] = &XRDiffResult{
-				Diffs:    diffs,
-				rendered: rendered,
+				Diffs:     diffs,
+				unchanged: rendered.Unchanged(),
+				health:    rendered.Health(),
 			}
 		}
 	}
@@ -1643,7 +1646,7 @@ func (p *DefaultCompDiffProcessor) buildImpactAnalysis(xrs []*un.Unstructured, r
 		case result != nil && result.HasChanges():
 			impact.Status = dt.XRStatusChanged
 			impact.Diffs = result.Diffs
-			impact.Health = result.rendered.Health()
+			impact.Health = result.health
 			summary.WithChanges++
 		default:
 			impact.Status = dt.XRStatusUnchanged
@@ -1653,7 +1656,7 @@ func (p *DefaultCompDiffProcessor) buildImpactAnalysis(xrs []*un.Unstructured, r
 				impact.Diffs = result.Diffs
 			}
 			if result != nil {
-				impact.Health = result.rendered.Health()
+				impact.Health = result.health
 			}
 			summary.Unchanged++
 		}

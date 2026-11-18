@@ -51,10 +51,11 @@ type DiffProcessor interface {
 	// error, so the successful inputs' results and the failures' errors can still be rendered.
 	PerformDiff(ctx context.Context, resources []*un.Unstructured, compositionProvider types.CompositionProvider) (*dt.XRReport, error)
 
-	// DiffSingleResource processes a single resource and returns its diffs and, by diff key, the
-	// unchanged renderings its diffs leave out (see DefaultDiffCalculator.CalculateNonRemovalDiffs),
-	// which only the render-overlap check consumes.
-	DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error)
+	// DiffSingleResource processes a single resource and returns its diffs and what its render
+	// produced: the unchanged renderings its diffs leave out (see
+	// DefaultDiffCalculator.CalculateNonRemovalDiffs), which only the render-overlap check consumes,
+	// and the live objects health is read from.
+	DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, types.RenderedResources, error)
 
 	// ResolveComposite returns the composite DiffSingleResource hands its composition provider for res:
 	// the defaulted effective composite (see CompositeResolver), which for a claim is its backing XR.
@@ -281,6 +282,7 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 				// We don't emit partial results for a single XR: on success the
 				// whole diff tree is attached, on failure none of it.
 				group.Diffs = diffs
+				group.Health = rendered.Health()
 				unchanged[i] = rendered.Unchanged()
 			}
 		}
@@ -296,6 +298,7 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 		}
 
 		groups[i].Diffs = nil
+		groups[i].Health = dt.CompositeHealth{}
 
 		res := toRender[i].Resource
 		resourceID := fmt.Sprintf("%s/%s", groups[i].XR.Kind, groups[i].XR.Name)
@@ -364,9 +367,8 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 // DiffSingleResource handles one resource at a time and returns its diffs.
 // The compositionProvider function is called to obtain the composition to use for rendering.
 // This is the public method for top-level XR diffing, which enables removal detection.
-func (p *DefaultDiffProcessor) DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error) {
-	diffs, rendered, err := p.diffSingleResourceInternal(ctx, res, compositionProvider, nil, nil, true, 0)
-	return diffs, rendered.Unchanged(), err
+func (p *DefaultDiffProcessor) DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+	return p.diffSingleResourceInternal(ctx, res, compositionProvider, nil, nil, true, 0)
 }
 
 // ResolveComposite returns the defaulted effective composite of res; see DiffProcessor.
@@ -524,6 +526,14 @@ func (p *DefaultDiffProcessor) diffSingleResourceInternal(ctx context.Context, r
 		// Fail completely rather than emit potentially incorrect partial results (design principle)
 		p.config.Logger.Debug("Error calculating diffs - failing XR", "resource", resourceID, "error", err)
 		return nil, types.RenderedResources{}, errors.Wrap(err, "cannot calculate diffs for composed resources")
+	}
+
+	// Record the live objects already fetched, for health. The observed resources are the cluster's,
+	// never the copies --eventual-state synthesizes Ready on (see RenderToStableState).
+	rendered.SetLive(composite.Cluster)
+
+	for i := range observedResources {
+		rendered.AddObserved(&observedResources[i].Unstructured)
 	}
 
 	// Check for nested XRs in the composed resources and process them recursively

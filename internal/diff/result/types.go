@@ -14,6 +14,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/crossplane/cli/v2/internal/health"
 )
 
 // XRDiffGroup pairs one input XR/claim with the diffs its render produced (or
@@ -45,6 +47,27 @@ type XRDiffGroup struct {
 	NameGenerated bool
 	Diffs         map[string]*ResourceDiff
 	Err           *OutputError
+	// Health is the live health of the XR and of what it composed, set alongside Diffs.
+	Health CompositeHealth
+}
+
+// CompositeHealth is the live health of one input composite and of every resource the cluster
+// observes it composing, nested composites and their resources included, taken from the objects the
+// render already fetched. It describes the cluster, not the desired state: a resource the render
+// would create has no entry, and one it would delete has one.
+type CompositeHealth struct {
+	// XR is the health of the input's own cluster object (for a claim, the claim); nil when the
+	// cluster has none.
+	XR *health.Health
+	// Composed holds the health of each observed composed resource, once each, in diff key order.
+	Composed []ResourceHealth
+}
+
+// ResourceHealth is the live health of one composed resource.
+type ResourceHealth struct {
+	corev1.ObjectReference
+
+	Health *health.Health
 }
 
 // XRReport is what one xr diff run produced: everything a DiffRenderer renders.

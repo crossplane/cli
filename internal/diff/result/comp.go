@@ -249,4 +249,7 @@ type XRImpact struct {
 	// OutputError the command lists in its top-level errors.
 	Error *OutputError
 	Diffs map[string]*ResourceDiff // downstream diffs (nil if unchanged/error)
+	// Health is the live health of the composite and of what it composed, set for a changed or
+	// unchanged composite and zero for an errored or filtered one.
+	Health CompositeHealth
 }

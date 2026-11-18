@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	xpmeta "github.com/crossplane/crossplane-runtime/v2/pkg/meta"
+
 	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 
 	"github.com/crossplane/cli/v2/pkg/resource"

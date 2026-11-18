@@ -36,6 +36,7 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/diff/types"
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/pkg/render"
 	"github.com/crossplane/cli/v2/pkg/resource"
 )
@@ -3111,8 +3112,10 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testing.T) {
 	ctx := t.Context()
 
-	// Create test XR
-	xr := tu.NewResource("example.org/v1", "XR", "test-xr").Build()
+	// Create test XR. Its conditions, and the bucket's, are what the reported health is read from.
+	xr := tu.NewResource("example.org/v1", "XR", "test-xr").
+		WithCondition("Synced", "False", "ReconcileError").
+		Build()
 
 	// Create test observed composed resources
 	observedBucket := tu.NewResource("s3.aws.crossplane.io/v1", "Bucket", "observed-bucket").
@@ -3120,6 +3123,7 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 			"crossplane.io/composition-resource-name": "bucket",
 		}).
 		WithSpecField("bucketName", "my-bucket").
+		WithCondition("Ready", "False", "Creating").
 		Build()
 
 	observedUser := tu.NewResource("iam.aws.crossplane.io/v1", "User", "observed-user").
@@ -3152,6 +3156,7 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 		wantErr              bool
 		wantErrContain       string
 		verifyObservedPassed bool
+		wantHealth           dt.CompositeHealth
 	}{
 		"ObservedResourcesFetchedAndPassedToRender": {
 			setupMocks: func() (k8.Clients, xp.Clients) {
@@ -3250,6 +3255,21 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 			wantObservedCount:    2,
 			verifyObservedPassed: true,
 			wantErr:              false,
+			// Health is read from the cluster XR and the observed resources the render already
+			// fetched, unchanged ones included.
+			wantHealth: dt.CompositeHealth{
+				XR: &health.Health{State: health.Failing, Synced: &health.Condition{Status: corev1.ConditionFalse, Reason: "ReconcileError"}},
+				Composed: []dt.ResourceHealth{
+					{
+						ObjectReference: corev1.ObjectReference{APIVersion: "iam.aws.crossplane.io/v1", Kind: "User", Name: "observed-user"},
+						Health:          &health.Health{State: health.Healthy},
+					},
+					{
+						ObjectReference: corev1.ObjectReference{APIVersion: "s3.aws.crossplane.io/v1", Kind: "Bucket", Name: "observed-bucket"},
+						Health:          &health.Health{State: health.NotReady, Ready: &health.Condition{Status: corev1.ConditionFalse, Reason: "Creating"}},
+					},
+				},
+			},
 		},
 		"EmptyObservedResourcesWhenTreeEmpty": {
 			setupMocks: func() (k8.Clients, xp.Clients) {
@@ -3324,6 +3344,9 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 			wantObservedCount:    0,
 			verifyObservedPassed: true,
 			wantErr:              false,
+			wantHealth: dt.CompositeHealth{
+				XR: &health.Health{State: health.Failing, Synced: &health.Condition{Status: corev1.ConditionFalse, Reason: "ReconcileError"}},
+			},
 		},
 		"FailedObservedResourceFetchIsFatal": {
 			setupMocks: func() (k8.Clients, xp.Clients) {
@@ -3535,7 +3558,7 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 				return xpClients.Composition.FindMatchingComposition(ctx, res)
 			}
 
-			diffs, _, err := processor.(*DefaultDiffProcessor).DiffSingleResource(ctx, xr, compositionProvider)
+			diffs, rendered, err := processor.(*DefaultDiffProcessor).DiffSingleResource(ctx, xr, compositionProvider)
 
 			// Check error expectations
 			if (err != nil) != tt.wantErr {
@@ -3572,6 +3595,10 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 			// Verify diffs were returned (even if empty)
 			if diffs == nil {
 				t.Errorf("DiffSingleResource() returned nil diffs, expected non-nil map")
+			}
+
+			if diff := gcmp.Diff(tt.wantHealth, rendered.Health()); diff != "" {
+				t.Errorf("DiffSingleResource() health: -want, +got:\n%s", diff)
 			}
 		})
 	}

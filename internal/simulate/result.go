@@ -55,8 +55,9 @@ type CompositeReason string
 
 const (
 	// CompositeReasonManualPolicy means the composite has a Manual
-	// compositionUpdatePolicy and names a compositionRevisionRef (for a
-	// claim, its composite resource does), so it is pinned to that revision.
+	// compositionUpdatePolicy and is pinned to a revision by a
+	// compositionRevisionRef: its own or, for a claim naming none, its
+	// composite resource's.
 	CompositeReasonManualPolicy CompositeReason = "manualPolicy"
 	// CompositeReasonRevisionSelectorMismatch means the composite's
 	// compositionRevisionSelector does not match the changed revision.

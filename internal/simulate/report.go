@@ -158,10 +158,12 @@ func FromCompReport(o *dt.CompDiffOutput, plans *ProviderPlans, keep func(*unstr
 	return res
 }
 
-// compositeResult maps an affected composite's impact onto its status. A
-// pinned composite is deferred: applying changes nothing for it until
-// its revision advances, unless it was rendered against its pinned revision
-// because that calls a changed function. Other filtered composites are skipped.
+// compositeResult maps an affected composite's impact onto its status. Pinned
+// is an attribute, not a status: a composite filtered for its Manual policy is
+// deferred, since applying changes nothing for it until its revision advances,
+// while a pinned one that was simulated anyway (under --include-pinned, or
+// rendered against its pinned revision because that calls a changed function)
+// keeps the status of its simulation. Other filtered composites are skipped.
 func compositeResult(impact dt.XRImpact) CompositeResult {
 	c := CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned || impact.FilterReason == dt.FilterReasonManualPolicy}
 	if impact.ComposedBy != nil {

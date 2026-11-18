@@ -44,8 +44,9 @@ type FilterReason string
 
 const (
 	// FilterReasonManualPolicy indicates the XR was excluded because it has a Manual
-	// compositionUpdatePolicy, names a compositionRevisionRef (for a claim, its backing XR does), and
-	// --include-pinned was not set. Such XRs are pinned to a specific
+	// compositionUpdatePolicy, is pinned by a compositionRevisionRef, and --include-pinned was not set.
+	// The ref is the XR's own or, for a claim naming none, its backing XR's: Crossplane writes the pin
+	// onto the backing XR alone unless the claim sets one. Such XRs are pinned to a specific
 	// revision and would not adopt the composition change automatically.
 	FilterReasonManualPolicy FilterReason = "manual_policy"
 	// FilterReasonRevisionSelectorMismatch indicates the XR was excluded because it has an Automatic
@@ -242,8 +243,10 @@ type XRImpact struct {
 	// Manual-policy composite names the revision it stays pinned to ("compositionRevisionRef: <name>").
 	FilterDetail string
 	// Pinned marks an evaluated composite that would not adopt the composition's resulting revision,
-	// because its Manual compositionUpdatePolicy pins it to its compositionRevisionRef. Only
-	// --include-pinned evaluates such a composite; without it, the composite is XRStatusFiltered. A Manual
+	// because its Manual compositionUpdatePolicy pins it to its compositionRevisionRef. It is an
+	// attribute of the composite, not a status: only one filtered for it (FilterReasonManualPolicy) is
+	// deferred. Such a composite is evaluated under --include-pinned, or without it when its pinned
+	// revision calls a changed function (see RenderedRevision); otherwise it is XRStatusFiltered. A Manual
 	// composite that names no revision is not pinned: Crossplane gives it the latest revision. A claim
 	// whose backing XR could not be resolved is an XRStatusError and not Pinned, since whether it is
 	// pinned is unknown.

@@ -41,6 +41,33 @@ const (
 	wrapRunes = 100
 )
 
+// Tier returns the marker and the tier of h alone, e.g. "⚠ failing", or "" when
+// h is nil or healthy.
+func Tier(h *Health) string {
+	if !h.Unhealthy() {
+		return ""
+	}
+
+	name, _, _ := tier(h)
+
+	return Marker + " " + name
+}
+
+// tier returns the name of h's tier, and the condition it was read from as
+// "Type=Status" with that condition. A paused object has no condition, as its
+// conditions are stale.
+func tier(h *Health) (name, cond string, c *Condition) {
+	switch h.State {
+	case Failing:
+		return "failing", "Synced=False", h.Synced
+	case NotReady:
+		return "not ready", "Ready=False", h.Ready
+	case Paused, Healthy:
+	}
+
+	return "paused", "", nil
+}
+
 // Lines describes h for text output, or returns nil when h is nil or healthy.
 // The first line is the marker, the tier, the condition it was read from with
 // that condition's reason, and its message cut to one line, e.g.
@@ -52,19 +79,12 @@ func Lines(h *Health, full bool) []string {
 		return nil
 	}
 
-	var (
-		line string
-		c    *Condition
-	)
-
-	switch h.State {
-	case Failing:
-		line, c = Marker+" failing (Synced=False", h.Synced
-	case NotReady:
-		line, c = Marker+" not ready (Ready=False", h.Ready
-	case Paused, Healthy:
-		return []string{Marker + " paused"}
+	name, cond, c := tier(h)
+	if cond == "" {
+		return []string{Marker + " " + name}
 	}
+
+	line := Marker + " " + name + " (" + cond
 
 	if c == nil {
 		return []string{line + ")"}

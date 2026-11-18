@@ -312,6 +312,14 @@ func TestSimulateDiffOptions(t *testing.T) {
 				o.Compact = true
 			},
 		},
+		"FullMessagesCarryThrough": {
+			reason: "--full-messages should reach the renderer.",
+			cmd:    Flags{NoColor: true, FullMessages: true},
+			want: func(o *renderer.DiffOptions) {
+				o.UseColors = false
+				o.FullMessages = true
+			},
+		},
 		"HooksColorizeAsTerminal": {
 			reason: "The test hooks should colorize as for a terminal.",
 			cmd:    Flags{Hooks: &Hooks{Terminal: true}},

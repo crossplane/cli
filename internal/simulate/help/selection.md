@@ -11,8 +11,10 @@ how the change prints:
   `compositionRevisionRef`, because they don't adopt a new revision on their
   own. A `Manual` composite resource with no revision yet gets the new one,
   so it's simulated like any other. A pinned composite whose revision calls
-  a function the run changes is still simulated, rendered against the
-  revision it's pinned to.
+  a function the run changes is simulated even without the flag, rendered
+  against the revision it's pinned to, so the preview shows what applying
+  the change does to it today. With the flag it's rendered against the new
+  Composition instead, which previews the composite advancing to it.
 - `--analyze-on` sets the smallest Composition change that triggers impact
   analysis: `spec-change` only when the Composition spec changes;
   `any-change`, the default, also when only its metadata changes, which still

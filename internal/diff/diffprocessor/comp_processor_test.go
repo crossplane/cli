@@ -819,7 +819,8 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 	tests := map[string]struct {
 		reason        string
 		includeManual bool
-		compName      string // defaults to "test-comp" when empty
+		xrTimeout     time.Duration // the per-XR budget; zero adds none
+		compName      string        // defaults to "test-comp" when empty
 		compLabels    map[string]string
 		xrs           []*un.Unstructured
 		wantKept      []string
@@ -941,6 +942,21 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			},
 			wantKept:       []string{"my-claim"},
 			wantUnresolved: map[string]error{"my-claim": errBackingXRGone},
+		},
+		"ManualClaimWithoutRevisionRefSlowLookupTimesOutAlone": {
+			reason:    "The backing XR read runs under the claim's own XRTimeout, so a slow one fails that claim alone, as a failed read does.",
+			xrTimeout: 10 * time.Millisecond,
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "Resource", "my-claim").WithNamespace("default").
+					WithNestedField("Manual", "spec", "compositionUpdatePolicy").Build(),
+			},
+			resolve: func(ctx context.Context, _ *un.Unstructured) (*un.Unstructured, error) {
+				<-ctx.Done()
+
+				return nil, context.Cause(ctx)
+			},
+			wantKept:       []string{"my-claim"},
+			wantUnresolved: map[string]error{"my-claim": ErrXRTimedOut},
 		},
 		// A claim naming its own revision is pinned by it, without resolving its backing XR.
 		"ManualClaimWithRevisionRefIsDroppedWithoutResolving": {
@@ -1195,6 +1211,7 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			processor := &DefaultCompDiffProcessor{
 				config: ProcessorConfig{
 					IncludeManual: tt.includeManual,
+					XRTimeout:     tt.xrTimeout,
 					Logger:        tu.TestLogger(t, false),
 				},
 				xrProc: &tu.MockDiffProcessor{ResolveCompositeFn: tt.resolve},

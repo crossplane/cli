@@ -1598,7 +1598,12 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 		}
 
 		if revision == "" && xr.GetKind() != xrKind {
-			revision, err = p.pinnedRevision(ctx, xr)
+			// The backing XR read is cluster I/O for this claim alone, so it runs under the claim's own
+			// XRTimeout budget: a slow read fails this claim, not the run.
+			xrCtx, cancel := p.config.xrContext(ctx)
+			revision, err = p.pinnedRevision(xrCtx, xr)
+			cancel()
+
 			if err != nil {
 				return xrDisposition{unresolved: err}, nil //nolint:nilerr // The claim's own error, not the run's.
 			}

@@ -134,10 +134,10 @@ func (r *DefaultDiffRenderer) renderDiffList(diffs map[string]*dt.ResourceDiff, 
 		}
 
 		// A resource the cluster has is marked when it is not healthy.
-		if desc := healthDescription(health.Of(diff.Current.Raw), r.diffOpts.FullMessages); len(desc) > 0 {
+		h := health.Of(diff.Current.Raw)
+		if desc := healthDescription(h, r.diffOpts.FullMessages); len(desc) > 0 {
 			if described != "" && diffKey(diff) == described {
-				tier, _, _ := strings.Cut(desc[0], " (")
-				desc = []string{tier}
+				desc = []string{health.Tier(h)}
 			}
 
 			header = strings.Join(append([]string{header + " " + desc[0]}, desc[1:]...), "\n")

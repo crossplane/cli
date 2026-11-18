@@ -102,6 +102,45 @@ func TestLines(t *testing.T) {
 	}
 }
 
+func TestTier(t *testing.T) {
+	cases := map[string]struct {
+		reason string
+		h      *Health
+		want   string
+	}{
+		"Nil": {
+			reason: "No live object has no tier.",
+		},
+		"Healthy": {
+			reason: "A healthy object has no tier.",
+			h:      &Health{State: Healthy},
+		},
+		"Failing": {
+			reason: "A failing object is named by its tier alone, without condition, reason or message.",
+			h:      &Health{State: Failing, Synced: &Condition{Status: "False", Reason: "ReconcileError", Message: "cannot update"}},
+			want:   "⚠ failing",
+		},
+		"NotReady": {
+			reason: "A not-ready object is named by its tier alone.",
+			h:      &Health{State: NotReady, Ready: &Condition{Status: "False", Reason: "Creating"}},
+			want:   "⚠ not ready",
+		},
+		"Paused": {
+			reason: "A paused object is named by its tier.",
+			h:      &Health{State: Paused},
+			want:   "⚠ paused",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if diff := cmp.Diff(tc.want, Tier(tc.h)); diff != "" {
+				t.Errorf("\n%s\nTier(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
 func TestBlock(t *testing.T) {
 	failing := &Health{State: Failing, Synced: &Condition{Status: "False", Reason: "ReconcileError", Message: "boom"}}
 	notReady := &Health{State: NotReady, Ready: &Condition{Status: "False", Reason: "Creating"}}

@@ -18,6 +18,7 @@ limitations under the License.
 package git
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/go-git/go-billy/v5"
@@ -28,6 +29,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/go-git/go-git/v5/storage"
+	cryptossh "golang.org/x/crypto/ssh"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
@@ -38,6 +40,11 @@ type CloneOptions struct {
 	RefName   string
 	Directory string
 	Path      string // Optional path for sparse checkout
+
+	// ProxyURL, when set, tunnels the clone via an HTTP CONNECT proxy (e.g.
+	// http://proxy:8080). For SSH URLs the connection is tunneled through
+	// the proxy via CONNECT; see proxy.go.
+	ProxyURL string
 }
 
 // AuthProvider wraps a specific auth method.
@@ -85,6 +92,10 @@ func (a *SSHAuthProvider) GetAuthMethod() (transport.AuthMethod, error) {
 // SSHAgentAuthProvider provides authentication using the SSH agent.
 type SSHAgentAuthProvider struct {
 	Username string
+	// InsecureIgnoreHostKey disables SSH host key verification when true.
+	// This makes connections vulnerable to man-in-the-middle attacks and
+	// should only be enabled when the user explicitly opts in.
+	InsecureIgnoreHostKey bool
 }
 
 // GetAuthMethod returns the SSH agent auth method.
@@ -93,7 +104,54 @@ func (a *SSHAgentAuthProvider) GetAuthMethod() (transport.AuthMethod, error) {
 	if username == "" {
 		username = "git"
 	}
-	return ssh.NewSSHAgentAuth(username)
+
+	auth, err := ssh.NewSSHAgentAuth(username)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to authenticate to the git repository as user %q via the SSH agent; check that an SSH agent is running and reachable (SSH_AUTH_SOCK)", username)
+	}
+
+	if a.InsecureIgnoreHostKey {
+		auth.HostKeyCallback = cryptossh.InsecureIgnoreHostKey() //nolint:gosec // G106: opt-in via an explicit flag.
+	}
+
+	return auth, nil
+}
+
+// IsSSHURL returns true if the given repository URL uses the SSH protocol.
+// It recognizes both SCP-style URLs (user@host:path) and ssh:// scheme URLs.
+// URLs with any other explicit scheme (http://, https://, git://, etc.) are
+// not considered SSH, regardless of case.
+func IsSSHURL(repo string) bool {
+	// If the URL has an explicit scheme (contains "://"), only ssh counts.
+	if before, _, ok := strings.Cut(repo, "://"); ok {
+		return strings.EqualFold(before, "ssh")
+	}
+	// SCP-style URLs have a user@host:path shape.
+	before, _, ok := strings.Cut(repo, ":")
+	return ok && strings.Contains(before, "@")
+}
+
+// ExtractSSHUsername extracts the SSH username from a repository URL.
+// For SCP-style URLs (user@host:path), it returns the part before "@".
+// For ssh:// URLs (ssh://user@host/path), it returns the user component.
+// Returns an empty string if no username is found or the URL is not SSH.
+func ExtractSSHUsername(repo string) string {
+	if before, _, ok := strings.Cut(repo, "://"); ok {
+		if !strings.EqualFold(before, "ssh") {
+			return ""
+		}
+		// Parse as a URL so percent-encoded userinfo is decoded, the same
+		// way go-git's endpoint parsing would.
+		u, err := url.Parse(repo)
+		if err != nil || u.User == nil {
+			return ""
+		}
+		return u.User.Username()
+	}
+	if before, _, ok := strings.Cut(repo, "@"); ok {
+		return before
+	}
+	return ""
 }
 
 // CompositeAuthProvider tries multiple auth providers in order until one succeeds.
@@ -122,8 +180,12 @@ type Cloner interface {
 	CloneRepository(store storage.Storer, fs billy.Filesystem, auth AuthProvider, opts CloneOptions) (*plumbing.Reference, error)
 }
 
-// DefaultCloner is the default implementation of Cloner.
-type DefaultCloner struct{}
+// DefaultCloner is the default implementation of Cloner. ProxyURL, when
+// set, tunnels clones and fetches via an HTTP CONNECT proxy; it applies when
+// the CloneOptions don't set their own proxy.
+type DefaultCloner struct {
+	ProxyURL string
+}
 
 // CheckSHA1Hash checks if a string is a valid git SHA hash (40 hex characters).
 func CheckSHA1Hash(ref string) bool {
@@ -150,13 +212,20 @@ func extractBranchName(ref string) string {
 	return "main"
 }
 
-func handleSHACheckout(repoObj *git.Repository, authMethod transport.AuthMethod, sha string, sparsePath string) error {
-	err := repoObj.Fetch(&git.FetchOptions{
+func handleSHACheckout(repoObj *git.Repository, authMethod transport.AuthMethod, sha string, sparsePath string, proxyURL string) error {
+	fetchOpts := &git.FetchOptions{
 		Auth: authMethod,
 		RefSpecs: []config.RefSpec{
 			config.RefSpec("+refs/heads/*:refs/remotes/origin/*"),
 		},
-	})
+	}
+	// The fetch opens a new session that does not inherit the clone's proxy.
+	if proxyURL != "" {
+		fetchOpts.ProxyOptions = transport.ProxyOptions{
+			URL: proxyURL,
+		}
+	}
+	err := repoObj.Fetch(fetchOpts)
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return errors.Wrap(err, "failed to fetch refs")
 	}
@@ -185,6 +254,15 @@ func handleSHACheckout(repoObj *git.Repository, authMethod transport.AuthMethod,
 
 // CloneRepository clones a git repository using the provided CloneOptions and AuthProvider.
 func (dc *DefaultCloner) CloneRepository(store storage.Storer, fs billy.Filesystem, auth AuthProvider, opts CloneOptions) (*plumbing.Reference, error) {
+	if opts.ProxyURL == "" {
+		opts.ProxyURL = dc.ProxyURL
+	}
+	if opts.ProxyURL != "" {
+		// SSH URLs tunnel through the proxy via a dialer that must be
+		// registered with golang.org/x/net/proxy before dialing.
+		registerProxyOnce()
+	}
+
 	authMethod, err := auth.GetAuthMethod()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get authentication method")
@@ -203,6 +281,14 @@ func (dc *DefaultCloner) CloneRepository(store storage.Storer, fs billy.Filesyst
 		Tags:       git.NoTags,
 	}
 
+	// For SSH URLs the proxy is used via HTTP CONNECT tunneling; the dialer
+	// registered in proxy.go handles this.
+	if opts.ProxyURL != "" {
+		cloneOptions.ProxyOptions = transport.ProxyOptions{
+			URL: opts.ProxyURL,
+		}
+	}
+
 	if !isSHA {
 		cloneOptions.ReferenceName = plumbing.ReferenceName(opts.RefName)
 		cloneOptions.SingleBranch = !isTag
@@ -214,7 +300,7 @@ func (dc *DefaultCloner) CloneRepository(store storage.Storer, fs billy.Filesyst
 	}
 
 	if isSHA {
-		if err := handleSHACheckout(repoObj, authMethod, refToCheck, opts.Path); err != nil {
+		if err := handleSHACheckout(repoObj, authMethod, refToCheck, opts.Path, opts.ProxyURL); err != nil {
 			return nil, err
 		}
 	}

@@ -54,8 +54,9 @@ type Manager struct {
 	projFile string
 	schemas  *smanager.Manager
 
-	gitCloner       git.Cloner
-	gitAuthProvider git.AuthProvider
+	gitCloner          git.Cloner
+	gitAuthProvider    git.AuthProvider
+	gitInsecureHostKey bool
 
 	client clixpkg.Client
 
@@ -71,12 +72,14 @@ type Manager struct {
 type ManagerOption func(*managerOptions)
 
 type managerOptions struct {
-	projFile         string
-	schemaFS         afero.Fs
-	schemaGenerators []generator.Interface
-	schemaRunner     runner.SchemaRunner
-	gitAuthProvider  git.AuthProvider
-	client           clixpkg.Client
+	projFile           string
+	schemaFS           afero.Fs
+	schemaGenerators   []generator.Interface
+	schemaRunner       runner.SchemaRunner
+	gitAuthProvider    git.AuthProvider
+	gitProxyURL        string
+	gitInsecureHostKey bool
+	client             clixpkg.Client
 }
 
 // WithProjectFile sets the path to the project file.
@@ -114,6 +117,24 @@ func WithGitAuthProvider(p git.AuthProvider) ManagerOption {
 	}
 }
 
+// WithGitProxyURL tunnels git-based dependency clones via an HTTP CONNECT
+// proxy.
+func WithGitProxyURL(u string) ManagerOption {
+	return func(opts *managerOptions) {
+		opts.gitProxyURL = u
+	}
+}
+
+// WithGitInsecureHostKey disables SSH host key verification for git-based
+// dependencies over SSH. This makes connections vulnerable to
+// man-in-the-middle attacks and should only be enabled when the user
+// explicitly opts in.
+func WithGitInsecureHostKey(insecure bool) ManagerOption {
+	return func(opts *managerOptions) {
+		opts.gitInsecureHostKey = insecure
+	}
+}
+
 // WithXpkgClient sets the xpkg client used to resolve version constraints and
 // to fetch and parse xpkg dependencies.
 func WithXpkgClient(c clixpkg.Client) ManagerOption {
@@ -134,7 +155,6 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 		schemaRunner: runner.NewRealSchemaRunner(
 			runner.WithImageConfig(proj.Spec.ImageConfigs),
 		),
-		gitAuthProvider: &git.HTTPSAuthProvider{},
 	}
 
 	for _, opt := range opts {
@@ -148,14 +168,15 @@ func NewManager(proj *v1alpha1.Project, projFS afero.Fs, opts ...ManagerOption) 
 	)
 
 	return &Manager{
-		proj:            proj,
-		projFS:          projFS,
-		projFile:        options.projFile,
-		schemas:         schemas,
-		gitCloner:       &git.DefaultCloner{},
-		gitAuthProvider: options.gitAuthProvider,
-		client:          options.client,
-		visited:         make(map[string]struct{}),
+		proj:               proj,
+		projFS:             projFS,
+		projFile:           options.projFile,
+		schemas:            schemas,
+		gitCloner:          &git.DefaultCloner{ProxyURL: options.gitProxyURL},
+		gitAuthProvider:    options.gitAuthProvider,
+		gitInsecureHostKey: options.gitInsecureHostKey,
+		client:             options.client,
+		visited:            make(map[string]struct{}),
 	}
 }
 
@@ -365,7 +386,7 @@ func (m *Manager) addDependencyNoWrite(ctx context.Context, dep *v1alpha1.Depend
 
 		return m.addPackage(ctx, xpkgRef(dep.Xpkg.Package, dep.Xpkg.Version), refresh)
 	case dep.Git != nil:
-		return nil, m.schemas.Add(ctx, smanager.NewGitSource(*dep, m.gitCloner, m.gitAuthProvider))
+		return nil, m.schemas.Add(ctx, smanager.NewGitSource(*dep, m.gitCloner, m.gitProviderFor(dep.Git.Repository)))
 	case dep.HTTP != nil:
 		return nil, m.schemas.Add(ctx, smanager.NewHTTPSource(*dep))
 	case dep.K8s != nil:
@@ -373,6 +394,22 @@ func (m *Manager) addDependencyNoWrite(ctx context.Context, dep *v1alpha1.Depend
 	default:
 		return nil, errors.New("dependency has no source configured")
 	}
+}
+
+// gitProviderFor returns the auth provider for a git dependency. When the
+// caller hasn't supplied one, pick the right default for the transport: SSH
+// agent for SSH URLs, anonymous HTTPS otherwise.
+func (m *Manager) gitProviderFor(repo string) git.AuthProvider {
+	if m.gitAuthProvider != nil {
+		return m.gitAuthProvider
+	}
+	if git.IsSSHURL(repo) {
+		return &git.SSHAgentAuthProvider{
+			Username:              git.ExtractSSHUsername(repo),
+			InsecureIgnoreHostKey: m.gitInsecureHostKey,
+		}
+	}
+	return &git.HTTPSAuthProvider{}
 }
 
 // Clean removes all generated schemas.

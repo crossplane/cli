@@ -501,7 +501,8 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 
 	// A dropped backing XR is reported under its claim, so it does not re-point on its own. Nor does its
 	// pin apply to the claim's render, which is handed the backing XR (see collectXRDiffs): the claim's
-	// spec, policy included, is what Crossplane syncs into that XR.
+	// spec, policy included, is what Crossplane syncs into that XR, so only the claim's own pin, resolved
+	// for that synced XR, does.
 	maps.DeleteFunc(repointingXRs, func(key string, _ bool) bool { return !slices.ContainsFunc(keptXRs, isKey(key)) })
 	maps.DeleteFunc(pinnedXRs, func(key string, _ pinnedResolution) bool { return !slices.ContainsFunc(keptXRs, isKey(key)) })
 
@@ -655,8 +656,8 @@ func objectRef(res *un.Unstructured) corev1.ObjectReference {
 // another kind) in scope, read from the binding Crossplane records on either side (see managedBy), so the
 // change is reported once, under the claim. A filtered XR is removed whenever its claim is in scope. A
 // kept XR is removed only when its claim is kept too: one whose claim is filtered, such as a Manual claim
-// whose backing XR is pinned to a revision calling a changed function, is still rendered, since nothing
-// else reports it.
+// naming a revision that calls no changed function while its backing XR is still pinned to one that
+// does, is still rendered, since nothing else reports it.
 func withoutClaimedXRs(kept []*un.Unstructured, dropped []filteredXR, xrKind string) ([]*un.Unstructured, []filteredXR) {
 	boundIn := func(claims []*un.Unstructured) func(*un.Unstructured) bool {
 		return func(xr *un.Unstructured) bool {
@@ -707,7 +708,8 @@ func overlapGroups(composites []renderedComposite) []dt.XRDiffGroup {
 // cliCompositionRevision for which composites are rendered with that name.
 //
 // pinned, keyed by dt.MakeDiffKeyFromResource, holds the composites rendered against their own pinned
-// revision instead of cliComp; see pinnedFunctionChangeXRs.
+// revision instead of cliComp, each with the key of the composite its render resolves the composition
+// for; see pinnedFunctionChangeXRs.
 func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string, pinned map[string]pinnedResolution) map[string]*XRDiffResult {
 	// Extract the target GVK from the CLI composition's compositeTypeRef
 	cliCompTargetAPIVersion := cliComp.Spec.CompositeTypeRef.APIVersion
@@ -729,6 +731,15 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 		rootResourceKeys[key] = true
 	}
 
+	// The provider is handed the composite the pin was resolved for, which for a claim is its backing
+	// XR, so it looks pins up under that composite's key.
+	pinnedComposites := make(map[string]dtypes.ResolvedComposition, len(pinned))
+	for _, pin := range pinned {
+		if pin.err == nil {
+			pinnedComposites[pin.composite] = pin.resolved
+		}
+	}
+
 	// Composition provider that returns CLI composition for:
 	// 1. Root-level resources (XRs and Claims that use this composition)
 	// 2. XRs whose type matches the CLI composition's compositeTypeRef
@@ -746,12 +757,12 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 		// Check 1: Is this a root-level resource (XR or Claim supplied as affectedXRs to this composition)?
 		// Root-level resources always use the CLI composition, even claims whose GVK differs from the XR type.
 		key := dt.MakeDiffKeyFromResource(res)
-		if pin, ok := pinned[key]; ok {
+		if pin, ok := pinnedComposites[key]; ok {
 			p.config.Logger.Debug("Resource is pinned to a revision calling a changed function, using that revision",
 				"resource", resourceID,
-				"revision", pin.resolved.RevisionName)
+				"revision", pin.RevisionName)
 
-			return pin.resolved, nil
+			return pin, nil
 		}
 
 		if rootResourceKeys[key] {
@@ -825,6 +836,10 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 type pinnedResolution struct {
 	resolved dtypes.ResolvedComposition
 	err      error
+
+	// composite is the dt.MakeDiffKeyFromResource of the composite the render resolves the composition
+	// for: the XR itself or, for a claim, its backing XR (see DiffProcessor.ResolveComposite).
+	composite string
 }
 
 // anyResolved reports whether any pinned lookup succeeded.
@@ -843,6 +858,9 @@ func anyResolved(m map[string]pinnedResolution) bool {
 // it runs is unchanged, but the function it calls is not, so it is kept and rendered against that
 // revision instead of the diffed composition. It returns those XRs' resolutions (keyed by
 // dt.MakeDiffKeyFromResource), kept with the moved XRs appended, and dropped without them.
+//
+// The revision is looked up for the composite the render resolves the composition for: the XR itself
+// or, for a Manual claim, its backing XR with the claim synced in, whose pin is the claim's.
 //
 // It does nothing when no function changed or under IncludeManual, which keeps Manual XRs and renders
 // them against the diffed composition. A Manual XR whose revision calls no changed function stays dropped.
@@ -865,8 +883,14 @@ func (p *DefaultCompDiffProcessor) pinnedFunctionChangeXRs(ctx context.Context, 
 			continue
 		}
 
-		resolved, err := p.compositionClient.FindMatchingComposition(ctx, d.xr)
-		if err == nil && !pinnedRevisionCallsChangedFunction(d.xr, resolved, p.config.ChangedFunctions) {
+		var resolved dtypes.ResolvedComposition
+
+		composite, err := p.xrProc.ResolveComposite(ctx, d.xr)
+		if err == nil {
+			resolved, err = p.compositionClient.FindMatchingComposition(ctx, composite)
+		}
+
+		if err == nil && !pinnedRevisionCallsChangedFunction(composite, resolved, p.config.ChangedFunctions) {
 			remaining = append(remaining, d)
 			continue
 		}
@@ -875,19 +899,23 @@ func (p *DefaultCompDiffProcessor) pinnedFunctionChangeXRs(ctx context.Context, 
 			pinned = make(map[string]pinnedResolution)
 		}
 
-		pinned[dt.MakeDiffKeyFromResource(d.xr)] = pinnedResolution{resolved: resolved, err: errors.Wrapf(err, "cannot resolve the revision %s is pinned to", d.xr.GetName())}
+		pin := pinnedResolution{resolved: resolved, err: errors.Wrapf(err, "cannot resolve the revision %s is pinned to", d.xr.GetName())}
+		if err == nil {
+			pin.composite = dt.MakeDiffKeyFromResource(composite)
+		}
+
+		pinned[dt.MakeDiffKeyFromResource(d.xr)] = pin
 		kept = append(kept, d.xr)
 	}
 
 	return pinned, kept, remaining
 }
 
-// pinnedRevisionCallsChangedFunction reports whether resolved is the pinned revision of xr and calls a
-// changed function. A resolution with no revision name (the composition itself) or for another type
-// (a claim, whose backing XR the render looks up under a different key) is not.
-// TODO(jcogilvie): a pinned claim stays deferred, so a legacy cluster-scoped XR's claim pinned to a
-// revision that calls a changed function is missed; route the backing XR's key to support it.
-func pinnedRevisionCallsChangedFunction(xr *un.Unstructured, resolved dtypes.ResolvedComposition, changed sets.Set[string]) bool {
+// pinnedRevisionCallsChangedFunction reports whether resolved is the pinned revision of composite and
+// calls a changed function. composite is the one the render resolves the composition for, so for a
+// claim it is the backing XR, whose type the revision's compositeTypeRef names. A resolution with no
+// revision name (the composition itself) or for another type is not.
+func pinnedRevisionCallsChangedFunction(composite *un.Unstructured, resolved dtypes.ResolvedComposition, changed sets.Set[string]) bool {
 	if resolved.Composition == nil || resolved.RevisionName == "" {
 		return false
 	}
@@ -896,7 +924,7 @@ func pinnedRevisionCallsChangedFunction(xr *un.Unstructured, resolved dtypes.Res
 	ref := resolved.Composition.Spec.CompositeTypeRef
 
 	refGV, err := schema.ParseGroupVersion(ref.APIVersion)
-	if err != nil || refGV.Group != xr.GroupVersionKind().Group || ref.Kind != xr.GetKind() {
+	if err != nil || refGV.Group != composite.GroupVersionKind().Group || ref.Kind != composite.GetKind() {
 		return false
 	}
 

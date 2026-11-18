@@ -259,7 +259,18 @@ type MockDiffProcessor struct {
 	InitializeFn         func(ctx context.Context) error
 	PerformDiffFn        func(ctx context.Context, resources []*un.Unstructured, compositionProvider types.CompositionProvider) (*dt.XRReport, error)
 	DiffSingleResourceFn func(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error)
+	ResolveCompositeFn   func(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
 	CleanupFn            func(ctx context.Context) error
+}
+
+// ResolveComposite implements the DiffProcessor.ResolveComposite method. Unset, res is its own
+// effective composite.
+func (m *MockDiffProcessor) ResolveComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error) {
+	if m.ResolveCompositeFn != nil {
+		return m.ResolveCompositeFn(ctx, res)
+	}
+
+	return res, nil
 }
 
 // Initialize implements the DiffProcessor interface.

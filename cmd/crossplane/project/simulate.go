@@ -63,7 +63,7 @@ func (c *simulateCmd) Help() string {
 // Run previews the project's compositions against the cluster, with its
 // functions built locally.
 func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config) error {
-	return c.Flags.Run(sigCtx, k, logger, sp, &simulate.Inputs{Build: func(ctx context.Context) (*simulate.Built, error) {
+	return simulate.NewRunner(&c.Flags).Run(sigCtx, k, logger, sp, &simulate.Inputs{Build: func(ctx context.Context) (*simulate.Built, error) {
 		return c.buildProject(ctx, logger, sp, cliCfg)
 	}, Selection: &c.CompositionFlags})
 }

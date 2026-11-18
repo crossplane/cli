@@ -56,6 +56,10 @@ type DiffProcessor interface {
 	// which only the render-overlap check consumes.
 	DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error)
 
+	// ResolveComposite returns the composite DiffSingleResource hands its composition provider for res:
+	// the defaulted effective composite (see CompositeResolver), which for a claim is its backing XR.
+	ResolveComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
+
 	// Initialize prepares the processor's providers before the first diff.
 	Initialize(ctx context.Context) error
 
@@ -365,6 +369,46 @@ func (p *DefaultDiffProcessor) DiffSingleResource(ctx context.Context, res *un.U
 	return diffs, rendered.Unchanged(), err
 }
 
+// ResolveComposite returns the defaulted effective composite of res; see DiffProcessor.
+func (p *DefaultDiffProcessor) ResolveComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error) {
+	resourceID := fmt.Sprintf("%s/%s", res.GetKind(), res.GetName())
+
+	authoredXR, _, err := p.SanitizeXR(res, resourceID)
+	if err != nil {
+		return nil, err
+	}
+
+	_, defaultedXR, err := p.resolveComposite(ctx, authoredXR, nil, resourceID)
+
+	return defaultedXR, err
+}
+
+// resolveComposite returns the effective composite of authoredXR and its defaulted effective XR, from
+// which the composition is resolved and which render consumes. existing is as for Resolve.
+func (p *DefaultDiffProcessor) resolveComposite(ctx context.Context, authoredXR *cmp.Unstructured, existing *un.Unstructured, resourceID string) (EffectiveComposite, *un.Unstructured, error) {
+	// What Crossplane would actually reconcile: the input over its cluster copy or, for a claim, its
+	// backing XR with the claim synced in. Computed before anything reads the composite's composition,
+	// revision or update policy, so that resolving the composition and rendering agree on them.
+	composite, err := p.compositeResolver.Resolve(ctx, authoredXR, existing)
+	if err != nil {
+		p.config.Logger.Debug("Failed to resolve the effective composite", "resource", resourceID, "error", err)
+		return EffectiveComposite{}, nil, errors.Wrap(err, "cannot resolve the effective composite")
+	}
+
+	// Default the effective XR the way the apiserver would, so that composition resolution and render
+	// see the spec Crossplane would see. This follows inheriting the cluster's fields, so that a default
+	// never overrides a value the cluster already holds (a Manual policy, say). The policy is strict:
+	// rendering without those defaults could produce a wrong diff. The storage version it reports is
+	// only for describing a predicted addition (see predictLocally), so it is not wanted here.
+	defaultedXR, _, err := p.renderDefaulter.Default(ctx, composite.Effective)
+	if err != nil {
+		p.config.Logger.Debug("Failed to apply XRD defaults", "resource", resourceID, "error", err)
+		return EffectiveComposite{}, nil, errors.Wrap(err, "cannot apply XRD defaults")
+	}
+
+	return composite, defaultedXR, nil
+}
+
 // diffSingleResourceInternal is the internal implementation that allows control over removal detection.
 // parentXR should be nil for root XRs, and the parent XR for nested XRs.
 // existing is res's cluster copy when the caller already has it (a nested XR found among its parent's
@@ -386,27 +430,12 @@ func (p *DefaultDiffProcessor) diffSingleResourceInternal(ctx context.Context, r
 		return nil, types.RenderedResources{}, err
 	}
 
-	// What Crossplane would actually reconcile: the input over its cluster copy or, for a claim, its
-	// backing XR with the claim synced in. Computed before anything reads the composite's composition,
-	// revision or update policy, so that resolving the composition and rendering agree on them.
-	composite, err := p.compositeResolver.Resolve(ctx, authoredXR, existing)
+	composite, defaultedXR, err := p.resolveComposite(ctx, authoredXR, existing, resourceID)
 	if err != nil {
-		p.config.Logger.Debug("Failed to resolve the effective composite", "resource", resourceID, "error", err)
-		return nil, types.RenderedResources{}, errors.Wrap(err, "cannot resolve the effective composite")
+		return nil, types.RenderedResources{}, err
 	}
 
 	p.warnIfDeleting(composite.Cluster, parentXR, resourceID)
-
-	// Default the effective XR the way the apiserver would, so that composition resolution and render
-	// see the spec Crossplane would see. This follows inheriting the cluster's fields, so that a default
-	// never overrides a value the cluster already holds (a Manual policy, say). The policy is strict:
-	// rendering without those defaults could produce a wrong diff. The storage version it reports is
-	// only for describing a predicted addition (see predictLocally), so it is not wanted here.
-	defaultedXR, _, err := p.renderDefaulter.Default(ctx, composite.Effective)
-	if err != nil {
-		p.config.Logger.Debug("Failed to apply XRD defaults", "resource", resourceID, "error", err)
-		return nil, types.RenderedResources{}, errors.Wrap(err, "cannot apply XRD defaults")
-	}
 
 	// Get the composition using the provided function. It is resolved from the defaulted effective XR,
 	// so that it sees the revision a composite is pinned to and the update policy an XRD defaults.

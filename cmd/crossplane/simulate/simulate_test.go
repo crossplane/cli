@@ -17,12 +17,13 @@ limitations under the License.
 package simulate
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/plan"
-	isimulate "github.com/crossplane/cli/v2/internal/simulate"
 )
 
 func TestExitStatus(t *testing.T) {
@@ -61,13 +62,43 @@ func TestExitStatus(t *testing.T) {
 			// other error with 1.
 			got := 0
 			err := exitStatus(tc.args.plans)
-			if code, ok := isimulate.SilentExit(err); ok {
+			if code, ok := exitcode.SilentExit(err); ok {
 				got = code
 			} else if err != nil {
 				got = 1
 			}
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("\n%s\nexitStatus(...): -want exit code, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestHelp(t *testing.T) {
+	type args struct {
+		want string
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   bool
+	}{
+		"Detail": {
+			reason: "Help should include the command description.",
+			args:   args{want: "-f` (`--filename`)"},
+			want:   true,
+		},
+		"Examples": {
+			reason: "Help should include the examples section.",
+			args:   args{want: "## Examples"},
+			want:   true,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := strings.Contains((&Cmd{}).Help(), tc.args.want)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("\n%s\nHelp() contains %q: -want, +got:\n%s", tc.reason, tc.args.want, diff)
 			}
 		})
 	}

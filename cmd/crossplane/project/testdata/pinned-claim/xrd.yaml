@@ -1,0 +1,26 @@
+# A legacy cluster-scoped XRD (v1, with claimNames) for the pinned-claim project simulate cases.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xpinneds.pinned.diff.example.org
+spec:
+  group: pinned.diff.example.org
+  names:
+    kind: XPinned
+    plural: xpinneds
+  claimNames:
+    kind: Pinned
+    plural: pinneds
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                coolField:
+                  type: string

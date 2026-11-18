@@ -31,6 +31,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
@@ -100,5 +101,60 @@ spec:
 		}
 	default:
 		t.Fatalf("command did not reach git server: %v", err)
+	}
+}
+
+func TestBuildDependencyLocal(t *testing.T) {
+	projDir := t.TempDir()
+	t.Chdir(projDir)
+
+	tcs := map[string]struct {
+		pkg     string
+		apiOnly bool
+		want    string
+		wantErr bool
+	}{
+		"RelativeDir":     {pkg: "./vendor/crds", want: "vendor/crds"},
+		"RelativeFile":    {pkg: "./vendor/crds/thing.yaml", want: "vendor/crds/thing.yaml"},
+		"TrailingSlash":   {pkg: "./vendor/crds/", want: "vendor/crds"},
+		"FileScheme":      {pkg: "file://vendor/crds", want: "vendor/crds"},
+		"FileSchemeAbs":   {pkg: "file://" + filepath.ToSlash(filepath.Join(projDir, "vendor")), want: "vendor"},
+		"ParentEscapes":   {pkg: "../crds", wantErr: true},
+		"AbsoluteOutside": {pkg: "file://" + filepath.ToSlash(filepath.Dir(projDir)), wantErr: true},
+		"APIOnlyRejected": {pkg: "./vendor/crds", apiOnly: true, wantErr: true},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			c := &addCmd{Package: tc.pkg, APIOnly: tc.apiOnly}
+			dep, err := c.buildDependency(projDir)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %+v", dep)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dep.Type != v1alpha1.DependencyTypeCRD || dep.Local == nil || dep.Local.Path != tc.want {
+				t.Errorf("got %+v, want a local crd dependency at %q", dep, tc.want)
+			}
+			if err := dep.Validate(); err != nil {
+				t.Errorf("dependency is invalid: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildDependencyLocalPrefixesAreNotXpkgRefs(t *testing.T) {
+	// Anything that doesn't start with ./, ../ or file:// is still an xpkg.
+	c := &addCmd{Package: "xpkg.crossplane.io/crossplane-contrib/provider-aws-eks:v1.0.0"}
+	dep, err := c.buildDependency(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dep.Type != v1alpha1.DependencyTypeXpkg || dep.Local != nil {
+		t.Errorf("got %+v, want an xpkg dependency", dep)
 	}
 }

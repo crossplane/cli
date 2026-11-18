@@ -153,6 +153,12 @@ func (d *Dependency) Validate() error {
 			errs = append(errs, fmt.Errorf("http: %w", err))
 		}
 	}
+	if d.Local != nil {
+		sourceCount++
+		if err := d.Local.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("local: %w", err))
+		}
+	}
 	if d.K8s != nil {
 		sourceCount++
 		if err := d.K8s.Validate(); err != nil {
@@ -161,7 +167,7 @@ func (d *Dependency) Validate() error {
 	}
 
 	if sourceCount != 1 {
-		errs = append(errs, errors.New("exactly one source (xpkg, git, http, or k8s) must be specified"))
+		errs = append(errs, errors.New("exactly one source (xpkg, git, http, local, or k8s) must be specified"))
 	}
 
 	return errors.Join(errs...)
@@ -207,6 +213,20 @@ func (h *HTTPDependency) Validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// Validate validates a local dependency.
+func (l *LocalDependency) Validate() error {
+	switch {
+	case l.Path == "":
+		return errors.New("path must not be empty")
+	case filepath.IsAbs(l.Path):
+		return errors.New("path must be relative to the project directory")
+	case !filepath.IsLocal(l.Path):
+		return errors.New("path must not escape the project directory")
+	}
+
+	return nil
 }
 
 // Validate validates a Kubernetes API dependency.

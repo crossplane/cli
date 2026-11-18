@@ -17,6 +17,8 @@ limitations under the License.
 package manager
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/go-git/go-billy/v5"
@@ -676,6 +678,89 @@ func TestCalculateFilesystemHashDifferentContent(t *testing.T) {
 
 			if hash1 == hash2 {
 				t.Errorf("different content should produce different hashes")
+			}
+		})
+	}
+}
+
+func TestLocalSource(t *testing.T) {
+	t.Parallel()
+
+	projFS := afero.NewMemMapFs()
+	_ = afero.WriteFile(projFS, "crds/a.yaml", []byte("kind: A"), 0o644)
+	_ = afero.WriteFile(projFS, "crds/nested/b.yaml", []byte("kind: B"), 0o644)
+	_ = afero.WriteFile(projFS, "crds/c.json", []byte("{}"), 0o644)
+
+	tcs := map[string]struct {
+		path      string
+		wantID    string
+		wantFiles []string
+		wantErr   bool
+	}{
+		"Directory": {
+			path:      "crds",
+			wantID:    "fs://crds",
+			wantFiles: []string{"a.yaml", "c.json", "nested/b.yaml"},
+		},
+		"DirectoryUncleanPath": {
+			path:      "./crds/",
+			wantID:    "fs://crds",
+			wantFiles: []string{"a.yaml", "c.json", "nested/b.yaml"},
+		},
+		"SingleFileExcludesSiblings": {
+			path:      "crds/a.yaml",
+			wantID:    "fs://crds/a.yaml",
+			wantFiles: []string{"a.yaml"},
+		},
+		"Missing": {
+			path:    "nope",
+			wantErr: true,
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			src := NewLocalSource(v1alpha1.Dependency{
+				Type:  v1alpha1.DependencyTypeCRD,
+				Local: &v1alpha1.LocalDependency{Path: tc.path},
+			}, projFS)
+
+			fs, err := src.Resources(t.Context())
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				if _, err := src.Version(t.Context()); err == nil {
+					t.Fatal("expected an error from Version")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if diff := cmp.Diff(tc.wantID, src.ID()); diff != "" {
+				t.Errorf("ID (-want +got):\n%s", diff)
+			}
+			if src.Type() != SourceTypeCRD {
+				t.Errorf("Type() = %q, want %q", src.Type(), SourceTypeCRD)
+			}
+
+			var got []string
+			_ = afero.Walk(fs, ".", func(path string, info os.FileInfo, err error) error {
+				if err == nil && !info.IsDir() {
+					got = append(got, filepath.ToSlash(path))
+				}
+				return nil
+			})
+			if diff := cmp.Diff(tc.wantFiles, got); diff != "" {
+				t.Errorf("files (-want +got):\n%s", diff)
+			}
+
+			if _, err := src.Version(t.Context()); err != nil {
+				t.Errorf("Version: %v", err)
 			}
 		})
 	}

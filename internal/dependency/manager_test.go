@@ -1009,3 +1009,110 @@ func TestManager_AddDependency_TransitiveNotPersisted(t *testing.T) {
 		t.Errorf("on-disk project deps (-want +got):\n%s", diff)
 	}
 }
+
+func TestManager_AddDependency_Local(t *testing.T) {
+	localDep := func(path string) *v1alpha1.Dependency {
+		return &v1alpha1.Dependency{
+			Type:  v1alpha1.DependencyTypeCRD,
+			Local: &v1alpha1.LocalDependency{Path: path},
+		}
+	}
+
+	projFS := afero.NewMemMapFs()
+	for path, body := range map[string]string{
+		"vendor/crds/things.yaml": configurationPackageYAML,
+		"vendor/crds/README.md":   "not a CRD",
+		"other/widgets.yaml":      configurationPackageYAML,
+	} {
+		if err := afero.WriteFile(projFS, path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	proj := &v1alpha1.Project{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dev.crossplane.io/v1alpha1",
+			Kind:       "Project",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+		Spec: v1alpha1.ProjectSpec{
+			Repository: "xpkg.crossplane.io/test/test",
+			Paths:      &v1alpha1.ProjectPaths{Schemas: "schemas"},
+		},
+	}
+	bs, err := yaml.Marshal(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := afero.WriteFile(projFS, "crossplane-project.yaml", bs, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	schemaFS := afero.NewMemMapFs()
+	m := NewManager(proj, projFS,
+		WithProjectFile("crossplane-project.yaml"),
+		WithSchemaFS(schemaFS),
+		WithSchemaGenerators([]generator.Interface{}),
+	)
+
+	// A directory and a single file are both supported.
+	if err := m.AddDependency(context.Background(), localDep("vendor/crds")); err != nil {
+		t.Fatalf("AddDependency(directory): %v", err)
+	}
+	if err := m.AddDependency(context.Background(), localDep("other/widgets.yaml")); err != nil {
+		t.Fatalf("AddDependency(file): %v", err)
+	}
+	wantKeys := []string{"fs://other/widgets.yaml", "fs://vendor/crds"}
+	if diff := cmp.Diff(wantKeys, readLockKeys(t, schemaFS)); diff != "" {
+		t.Errorf("lock keys (-want +got):\n%s", diff)
+	}
+
+	// Adding the same path spelled differently updates the existing entry.
+	if err := m.AddDependency(context.Background(), localDep("./vendor/crds/")); err != nil {
+		t.Fatalf("AddDependency(duplicate): %v", err)
+	}
+	wantDeps := []v1alpha1.Dependency{
+		{Type: v1alpha1.DependencyTypeCRD, Local: &v1alpha1.LocalDependency{Path: "./vendor/crds/"}},
+		{Type: v1alpha1.DependencyTypeCRD, Local: &v1alpha1.LocalDependency{Path: "other/widgets.yaml"}},
+	}
+	if diff := cmp.Diff(wantDeps, proj.Spec.Dependencies); diff != "" {
+		t.Errorf("project deps (-want +got):\n%s", diff)
+	}
+
+	// A missing path is an error.
+	if err := m.AddDependency(context.Background(), localDep("missing")); err == nil {
+		t.Error("expected an error for a missing path")
+	}
+
+	// Changing a CRD changes the recorded version, so schemas are regenerated.
+	before := readLockPackages(t, schemaFS)
+	if err := afero.WriteFile(projFS, "vendor/crds/things.yaml", []byte(configurationPackageYAML+"# changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var ch async.EventChannel // nil channel; SendEvent is a no-op.
+	if err := m.AddAll(context.Background(), ch); err != nil {
+		t.Fatalf("AddAll: %v", err)
+	}
+	after := readLockPackages(t, schemaFS)
+	if before["fs://vendor/crds"] == after["fs://vendor/crds"] {
+		t.Error("version of changed directory was not updated")
+	}
+	if before["fs://other/widgets.yaml"] != after["fs://other/widgets.yaml"] {
+		t.Error("version of unchanged file was updated")
+	}
+}
+
+func readLockPackages(t *testing.T, schemaFS afero.Fs) map[string]string {
+	t.Helper()
+	bs, err := afero.ReadFile(schemaFS, ".lock.json")
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	var lock struct {
+		Packages map[string]string `json:"packages"`
+	}
+	if err := json.Unmarshal(bs, &lock); err != nil {
+		t.Fatalf("unmarshal lock: %v", err)
+	}
+	return lock.Packages
+}

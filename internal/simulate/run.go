@@ -343,12 +343,12 @@ func (c *CompositionFlags) scope() (string, []k8stypes.NamespacedName, error) {
 // XR and composition processors get the same options, so they share one advisory collector. fns are the project's
 // functions, of which embedded are the locally built ones, and ics rewrite
 // the other functions' images.
-func (c *Runner) processorOptions(k *kong.Context, logger logging.Logger, creds []corev1.Secret, fns []pkgv1.Function, embedded map[string]name.Digest, ics []pkgv1beta1.ImageConfig) []dp.ProcessorOption {
+func (c *Runner) processorOptions(advisories *dp.AdvisoryCollector, logger logging.Logger, creds []corev1.Secret, fns []pkgv1.Function, embedded map[string]name.Digest, ics []pkgv1beta1.ImageConfig) []dp.ProcessorOption {
 	c.SetDefaultCrossplaneDockerNetwork(fns)
 
 	opts := []dp.ProcessorOption{
 		dp.WithLogger(logger),
-		dp.WithAdvisories(dp.NewAdvisoryCollector(k.Stderr)),
+		dp.WithAdvisories(advisories),
 		dp.WithMaxNestedDepth(c.MaxNestedDepth),
 		dp.WithEventualState(c.EventualState),
 		dp.WithAnalyzeOn(dp.AnalyzeOn(c.sel.AnalyzeOn)),
@@ -625,7 +625,12 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 		return err
 	}
 
-	opts := append(c.processorOptions(k, logger, creds, fns, digests, pkgs.ICs), dp.WithChangedFunctions(changed...), dp.WithXRTimeout(c.Timeout))
+	// Both processors share one advisory collector; summarize the advisory
+	// families it withheld from streaming once the run is done.
+	advisories := dp.NewAdvisoryCollector(k.Stderr)
+	defer advisories.Summarize()
+
+	opts := append(c.processorOptions(advisories, logger, creds, fns, digests, pkgs.ICs), dp.WithChangedFunctions(changed...), dp.WithXRTimeout(c.Timeout))
 
 	// xrPlanner and servers are for rendering the plans; they stay nil with
 	// --skip-plan, and servers also when hooks.Router supplies the router.

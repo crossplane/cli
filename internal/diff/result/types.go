@@ -459,6 +459,14 @@ type FieldValidationError struct {
 type OutputWarning struct {
 	Message string            `json:"message"`
 	Context map[string]string `json:"context,omitempty"`
+
+	// GroupBy names the context keys that identify a family of related
+	// occurrences, as a rendering hint: a human reader told once that
+	// composite A's resources will be assumed by composite B does not need a
+	// line per resource, so a renderer may stream only the first occurrence
+	// per group and summarize the rest. Structured output is unaffected:
+	// every occurrence is kept. Not serialized.
+	GroupBy []string `json:"-"`
 }
 
 // Advisories is the channel for user-facing advisories. A component that discovers something the

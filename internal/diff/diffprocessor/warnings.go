@@ -67,12 +67,23 @@ type AdvisoryCollector struct {
 	// seen holds the identity of every advisory already recorded, so an identical repeat is dropped
 	// from both channels rather than re-emitted. Keyed by warningKey.
 	seen map[string]struct{}
+	// groups tracks advisory families (see dt.OutputWarning.GroupBy): the first member of a family
+	// is streamed to stderr as usual, later members are only collected, and Summarize reports how
+	// many were withheld per family. Keyed by message plus the GroupBy context pairs.
+	groups map[string]*advisoryGroup
+}
+
+// advisoryGroup is the stderr-side state of one advisory family.
+type advisoryGroup struct {
+	message    string
+	context    map[string]string
+	suppressed int
 }
 
 // NewAdvisoryCollector returns a collector that writes each advisory to stderr and collects it for
 // structured output. A nil stderr only collects.
 func NewAdvisoryCollector(stderr io.Writer) *AdvisoryCollector {
-	return &AdvisoryCollector{stderr: stderr, seen: map[string]struct{}{}}
+	return &AdvisoryCollector{stderr: stderr, seen: map[string]struct{}{}, groups: map[string]*advisoryGroup{}}
 }
 
 // Raise records w: written to stderr now, and collected for structured output. An advisory identical
@@ -90,11 +101,65 @@ func (c *AdvisoryCollector) Raise(w dt.OutputWarning) {
 	c.seen[key] = struct{}{}
 	c.advisories = append(c.advisories, w)
 
-	if c.stderr != nil {
-		// A failed write to stderr is not worth failing a diff over, and there is nowhere useful to
-		// report it: the reporting channel is the thing that just failed.
-		_, _ = fmt.Fprintln(c.stderr, w.FormatWarning())
+	if c.stderr == nil {
+		return
 	}
+
+	// A grouped advisory streams only its family's first member; Summarize reports the rest.
+	if len(w.GroupBy) > 0 {
+		gk := groupKeyOf(w)
+		if g, ok := c.groups[gk]; ok {
+			g.suppressed++
+			return
+		}
+		gctx := make(map[string]string, len(w.GroupBy))
+		for _, k := range w.GroupBy {
+			gctx[k] = w.Context[k]
+		}
+		c.groups[gk] = &advisoryGroup{message: w.Message, context: gctx}
+	}
+
+	// A failed write to stderr is not worth failing a diff over, and there is nowhere useful to
+	// report it: the reporting channel is the thing that just failed.
+	_, _ = fmt.Fprintln(c.stderr, w.FormatWarning())
+}
+
+// Summarize writes one stderr line per advisory family with withheld members, reporting how many
+// similar advisories were not streamed. Call it once the run is done raising advisories; structured
+// output needs no equivalent, since it kept every occurrence.
+func (c *AdvisoryCollector) Summarize() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.stderr == nil {
+		return
+	}
+
+	keys := slices.Sorted(maps.Keys(c.groups))
+	for _, gk := range keys {
+		g := c.groups[gk]
+		if g.suppressed == 0 {
+			continue
+		}
+		_, _ = fmt.Fprintln(c.stderr, dt.OutputWarning{
+			Message: fmt.Sprintf("...and %d more of: %s", g.suppressed, g.message),
+			Context: g.context,
+		}.FormatWarning())
+	}
+}
+
+// groupKeyOf builds the family identity of a grouped warning: its message plus the GroupBy context
+// pairs, quoted the same way warningKey quotes, so values containing separators cannot collide.
+func groupKeyOf(w dt.OutputWarning) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "%q", w.Message)
+
+	for _, k := range slices.Sorted(slices.Values(w.GroupBy)) {
+		fmt.Fprintf(&b, " %q=%q", k, w.Context[k])
+	}
+
+	return b.String()
 }
 
 // Advisories returns the advisories raised so far, sorted by message and then context (by warningKey),

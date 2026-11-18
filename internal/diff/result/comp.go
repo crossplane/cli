@@ -225,6 +225,10 @@ type AffectedResourcesSummary struct {
 type XRImpact struct {
 	corev1.ObjectReference
 
+	// ComposedBy references the parent composite of a nested XR, derived
+	// from its controller owner reference; nil for a top-level XR.
+	ComposedBy *corev1.ObjectReference
+
 	Status XRStatus
 	// FilterReason explains a Status == XRStatusFiltered outcome; empty otherwise.
 	FilterReason FilterReason

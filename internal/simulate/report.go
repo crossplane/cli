@@ -25,10 +25,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -78,7 +80,7 @@ func FromXRReport(r *dt.XRReport, plans *ProviderPlans, keep func(*unstructured.
 		if a.addDiffs(g.Diffs, &xr) && c.Status == CompositeUnchanged {
 			c.Status = CompositeChanged
 		}
-		a.composites = append(a.composites, c)
+		a.addComposite(c, g.Health)
 	}
 
 	a.addRunErrors(r.Errors, owned)
@@ -144,7 +146,7 @@ func FromCompReport(o *dt.CompDiffOutput, plans *ProviderPlans, keep func(*unstr
 			if a.addDiffs(impact.Diffs, &xr) && c.Status == CompositeUnchanged {
 				c.Status = CompositeChanged
 			}
-			a.composites = append(a.composites, c)
+			a.addComposite(c, impact.Health)
 		}
 	}
 
@@ -220,7 +222,10 @@ type assembler struct {
 	keep       func(*unstructured.Unstructured) bool
 	plans      []*plan.ResourcePlan
 	composites []CompositeResult
-	errors     []Error
+	// composed holds, by composite, the health of what it composed, which
+	// result reduces to Unhealthy once every plan is known.
+	composed [][]dt.ResourceHealth
+	errors   []Error
 	// listed holds, per resource, the unredacted changes already planned,
 	// so a change two inputs reach identically is listed once.
 	listed map[string][]listedChange
@@ -237,6 +242,37 @@ type listedChange struct {
 
 func newAssembler(provider *ProviderPlans, keep func(*unstructured.Unstructured) bool) *assembler {
 	return &assembler{provider: provider, keep: keep, plans: []*plan.ResourcePlan{}, listed: map[string][]listedChange{}}
+}
+
+// addComposite adds c with the live health h the engine read for it.
+func (a *assembler) addComposite(c CompositeResult, h dt.CompositeHealth) {
+	c.Health = h.XR
+	a.composites = append(a.composites, c)
+	a.composed = append(a.composed, h.Composed)
+}
+
+// unhealthy sets each composite's Unhealthy: what it composed that is not
+// healthy and has no plan in the run, matched across API versions. A
+// resource with a plan shows its health there.
+func (a *assembler) unhealthy() {
+	planned := map[schema.GroupKind]map[[2]string]bool{}
+	for _, p := range a.plans {
+		gk := p.GroupVersionKind().GroupKind()
+		if planned[gk] == nil {
+			planned[gk] = map[[2]string]bool{}
+		}
+		planned[gk][[2]string{p.Namespace, p.Name}] = true
+	}
+
+	for i, composed := range a.composed {
+		for _, r := range composed {
+			gk := schema.FromAPIVersionAndKind(r.APIVersion, r.Kind).GroupKind()
+			if !r.Health.Unhealthy() || planned[gk][[2]string{r.Namespace, r.Name}] {
+				continue
+			}
+			a.composites[i].Unhealthy = append(a.composites[i].Unhealthy, UnhealthyResource{Ref: resourceRef(r.ObjectReference), Health: r.Health})
+		}
+	}
 }
 
 // addDiffs adds a plan per diff, in the structured renderer's canonical order.
@@ -367,6 +403,7 @@ func (a *assembler) addRunErrors(all, owned []dt.OutputError) {
 }
 
 func (a *assembler) result(warnings []dt.OutputWarning) Result {
+	a.unhealthy()
 	res := NewResult(a.plans, a.composites, a.errors)
 	if a.provider == nil {
 		res.Notes = []string{noteProviderPlanNotRun}
@@ -395,6 +432,8 @@ func resourcePlan(d *dt.ResourceDiff) *plan.ResourcePlan {
 		// neither: its Raw views are uncleaned, unlike every other plan's.
 		Before: plan.RedactSecret(d.Current.Clean),
 		After:  plan.RedactSecret(d.Desired.Clean),
+		// Read from the uncleaned live object: Clean has no status.
+		Health: health.Of(d.Current.Raw),
 	}
 
 	switch d.DiffType {

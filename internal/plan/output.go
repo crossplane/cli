@@ -87,7 +87,7 @@ func Summarize(plans []*ResourcePlan) Summary {
 // ResultFormatVersion versions the serialized result schema so automation
 // consuming it can detect incompatible changes. The schema is alpha; the
 // version moves to 1.0 when it stabilizes.
-const ResultFormatVersion = "0.1"
+const ResultFormatVersion = "0.2"
 
 // Result is the serialized form of a simulate run, for -o json|yaml. Errored
 // is the primary gate for wrapping automation: when true, at least one

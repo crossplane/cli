@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -299,6 +300,82 @@ func TestNewResult(t *testing.T) {
 			}
 			if got.FormatVersion != plan.ResultFormatVersion {
 				t.Errorf("\n%s\nNewResult(...).FormatVersion: want %q, got %q", tc.reason, plan.ResultFormatVersion, got.FormatVersion)
+			}
+		})
+	}
+}
+
+func TestRenderJSONHealth(t *testing.T) {
+	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
+	failing := &health.Health{State: health.Failing, Synced: &health.Condition{Status: "False", Reason: "ReconcileError", Message: "boom"}}
+
+	type want struct {
+		composites string
+		plans      string
+		summary    string
+	}
+	cases := map[string]struct {
+		reason string
+		in     Result
+		want   want
+	}{
+		"NoLiveObjects": {
+			reason: "Without live objects no health or unhealthy key is written, and every health count is zero.",
+			in: NewResult(
+				[]*plan.ResourcePlan{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionCreate, Composite: &xr}},
+				[]CompositeResult{{Ref: xr, Status: CompositeChanged}}, nil),
+			want: want{
+				composites: `[{"ref":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"},"status":"changed"}]`,
+				plans:      `[{"apiVersion":"v1","kind":"ConfigMap","name":"cm","action":"create","composite":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"}}]`,
+				summary:    `{"create":1,"update":0,"destroy":0,"replace":0,"noop":0,"approximate":0,"errored":0,"unhealthyComposites":0,"failing":0,"notReady":0,"paused":0,"deferred":0}`,
+			},
+		},
+		"Unhealthy": {
+			reason: "Composite and plan health, and the unhealthy list, are written under their keys with the conditions they came from.",
+			in: NewResult(
+				[]*plan.ResourcePlan{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionNoOp, Composite: &xr, Health: &health.Health{State: health.Paused}}},
+				[]CompositeResult{{
+					Ref: xr, Status: CompositeUnchanged, Health: failing,
+					Unhealthy: []UnhealthyResource{{Ref: plan.ResourceRef{APIVersion: "v1", Kind: "Secret", Name: "s"}, Health: &health.Health{State: health.NotReady, Ready: &health.Condition{Status: "False"}}}},
+				}}, nil),
+			want: want{
+				composites: `[{"ref":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"},"status":"unchanged",` +
+					`"health":{"state":"failing","synced":{"status":"False","reason":"ReconcileError","message":"boom"}},` +
+					`"unhealthy":[{"ref":{"apiVersion":"v1","kind":"Secret","name":"s"},"health":{"state":"notReady","ready":{"status":"False"}}}]}]`,
+				plans:   `[{"apiVersion":"v1","kind":"ConfigMap","name":"cm","action":"no-op","composite":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"},"health":{"state":"paused"}}]`,
+				summary: `{"create":0,"update":0,"destroy":0,"replace":0,"noop":1,"approximate":0,"errored":0,"unhealthyComposites":1,"failing":0,"notReady":1,"paused":1,"deferred":0}`,
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			r, _ := NewRenderer(plan.FormatJSON)
+			if err := r.Render(&buf, tc.in); err != nil {
+				t.Fatalf("%s\nRender(json): unexpected error: %v", tc.reason, err)
+			}
+			var top map[string]json.RawMessage
+			if err := json.Unmarshal(buf.Bytes(), &top); err != nil {
+				t.Fatalf("%s\nRender(json): output is not valid JSON: %v", tc.reason, err)
+			}
+			compact := func(raw json.RawMessage) string {
+				var b bytes.Buffer
+				_ = json.Compact(&b, raw)
+				return b.String()
+			}
+			got := want{composites: compact(top["composites"]), plans: compact(top["plans"]), summary: compact(top["summary"])}
+			if diff := cmp.Diff(tc.want, got, cmp.AllowUnexported(want{})); diff != "" {
+				t.Errorf("%s\nRender(json): -want, +got:\n%s", tc.reason, diff)
+			}
+
+			// What is written decodes back to what was rendered.
+			var back Result
+			if err := json.Unmarshal(buf.Bytes(), &back); err != nil {
+				t.Fatalf("%s\nRender(json): cannot decode: %v", tc.reason, err)
+			}
+			if diff := cmp.Diff(tc.in, back); diff != "" {
+				t.Errorf("%s\nRender(json) round trip: -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

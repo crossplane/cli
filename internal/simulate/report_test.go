@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -608,5 +609,147 @@ func TestProviderPlanOnlyForItsRendering(t *testing.T) {
 	// Another XR's removal of the resource is never planned, so never takes prod's create.
 	if p := plans.For(rdiff(cmGVK, "shared", dt.DiffTypeRemoved, data("v"), nil)); p != nil {
 		t.Errorf("For(removal) = %v, want no plan", p)
+	}
+}
+
+// TestHealth covers how the engine's live health reaches the result: on each
+// plan from its live object, on each composite, and in each composite's
+// unhealthy list for what has no plan; and how Result.Health counts it.
+func TestHealth(t *testing.T) {
+	cond := func(typ, status string) map[string]any {
+		return map[string]any{"status": map[string]any{"conditions": []any{map[string]any{"type": typ, "status": status, "reason": "R"}}}}
+	}
+	live := func(d *dt.ResourceDiff, fields map[string]any) *dt.ResourceDiff {
+		d.Current.Raw = obj(d.Gvk, d.ResourceName, fields)
+		return d
+	}
+	failing := &health.Health{State: health.Failing, Synced: &health.Condition{Status: corev1.ConditionFalse, Reason: "R"}}
+	notReady := &health.Health{State: health.NotReady, Ready: &health.Condition{Status: corev1.ConditionFalse, Reason: "R"}}
+	healthy := &health.Health{State: health.Healthy}
+	ref := func(apiVersion, kind, name string) corev1.ObjectReference {
+		return corev1.ObjectReference{APIVersion: apiVersion, Kind: kind, Name: name}
+	}
+	cmRef := func(name string) corev1.ObjectReference { return ref("v1", "ConfigMap", name) }
+	cmPlan := func(name string) plan.ResourceRef {
+		return plan.ResourceRef{APIVersion: "v1", Kind: "ConfigMap", Name: name}
+	}
+	bucketV1 := ref("s3.example.org/v1", "Bucket", "b")
+	bucketV2 := ref("s3.example.org/v2", "Bucket", "b")
+
+	type want struct {
+		plans      map[string]*health.Health // plan name -> health
+		composites []CompositeResult
+		summary    HealthSummary
+	}
+	cases := map[string]struct {
+		reason string
+		in     *dt.XRReport
+		want   want
+	}{
+		"AllHealthy": {
+			reason: "A healthy run carries health on the composite and plans but emits no unhealthy entries, and counts nothing.",
+			in: &dt.XRReport{Groups: []dt.XRDiffGroup{{
+				XR:     xrRef,
+				Diffs:  diffs(live(rdiff(cmGVK, "cm", dt.DiffTypeModified, map[string]any{}, map[string]any{"data": "x"}), nil)),
+				Health: dt.CompositeHealth{XR: healthy, Composed: []dt.ResourceHealth{{ObjectReference: cmRef("cm"), Health: healthy}}},
+			}}},
+			want: want{
+				plans:      map[string]*health.Health{"cm": healthy},
+				composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged, Health: healthy}},
+			},
+		},
+		"CreateHasNoHealth": {
+			reason: "A created resource has no live object, so its plan carries no health; nor does a composite not in the cluster.",
+			in: &dt.XRReport{Groups: []dt.XRDiffGroup{{
+				XR:    xrRef,
+				Diffs: diffs(rdiff(cmGVK, "new", dt.DiffTypeAdded, nil, map[string]any{})),
+			}}},
+			want: want{
+				plans:      map[string]*health.Health{"new": nil},
+				composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged}},
+			},
+		},
+		"PlannedAndUnplanned": {
+			reason: "An unhealthy resource with a plan shows its health there; one without a plan, under a version the plan does not use either, is listed as unhealthy once.",
+			in: &dt.XRReport{Groups: []dt.XRDiffGroup{{
+				XR:    xrRef,
+				Diffs: diffs(live(rdiff(cmGVK, "cm", dt.DiffTypeRemoved, map[string]any{}, nil), cond("Ready", "False"))),
+				Health: dt.CompositeHealth{XR: failing, Composed: []dt.ResourceHealth{
+					{ObjectReference: cmRef("cm"), Health: notReady},
+					{ObjectReference: cmRef("quiet"), Health: healthy},
+					{ObjectReference: bucketV1, Health: failing},
+				}},
+			}}},
+			want: want{
+				plans: map[string]*health.Health{"cm": notReady},
+				composites: []CompositeResult{{
+					Ref: xrPlan, Status: CompositeChanged, Health: failing,
+					Unhealthy: []UnhealthyResource{{Ref: resourceRef(bucketV1), Health: failing}},
+				}},
+				summary: HealthSummary{Composites: 1, Failing: 1, NotReady: 1},
+			},
+		},
+		"PlannedAcrossVersions": {
+			reason: "A composed resource observed under another API version than its plan's is matched to the plan, not listed again.",
+			in: &dt.XRReport{Groups: []dt.XRDiffGroup{{
+				XR: xrRef,
+				Diffs: diffs(live(rdiff(schema.FromAPIVersionAndKind(bucketV2.APIVersion, bucketV2.Kind), "b", dt.DiffTypeModified,
+					map[string]any{}, map[string]any{"spec": "x"}), cond("Synced", "False"))),
+				Health: dt.CompositeHealth{XR: healthy, Composed: []dt.ResourceHealth{{ObjectReference: bucketV1, Health: failing}}},
+			}}},
+			want: want{
+				plans:      map[string]*health.Health{"b": failing},
+				composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged, Health: healthy}},
+				summary:    HealthSummary{Failing: 1},
+			},
+		},
+		"NestedCountedOnce": {
+			reason: "A nested composite that is its own input is counted as a composite, not again as a resource, and a resource two composites reach counts once.",
+			in: &dt.XRReport{Groups: []dt.XRDiffGroup{
+				{
+					XR: xrRef,
+					Health: dt.CompositeHealth{XR: healthy, Composed: []dt.ResourceHealth{
+						{ObjectReference: ref("example.org/v1", "XSubnet", "child"), Health: notReady},
+						{ObjectReference: cmRef("deep"), Health: failing},
+					}},
+				},
+				{
+					XR:     ref("example.org/v1", "XSubnet", "child"),
+					Health: dt.CompositeHealth{XR: notReady, Composed: []dt.ResourceHealth{{ObjectReference: cmRef("deep"), Health: failing}}},
+				},
+			}},
+			want: want{
+				plans: map[string]*health.Health{},
+				composites: []CompositeResult{
+					{Ref: xrPlan, Status: CompositeUnchanged, Health: healthy, Unhealthy: []UnhealthyResource{
+						{Ref: plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XSubnet", Name: "child"}, Health: notReady},
+						{Ref: cmPlan("deep"), Health: failing},
+					}},
+					{Ref: plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XSubnet", Name: "child"}, Status: CompositeUnchanged, Health: notReady, Unhealthy: []UnhealthyResource{
+						{Ref: cmPlan("deep"), Health: failing},
+					}},
+				},
+				summary: HealthSummary{Composites: 1, Failing: 1},
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := FromXRReport(tc.in, nil, nil)
+			gotPlans := map[string]*health.Health{}
+			for _, p := range got.Plans {
+				gotPlans[p.Name] = p.Health
+			}
+			if diff := cmp.Diff(tc.want.plans, gotPlans, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("%s\nFromXRReport(...) plan health: -want, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(tc.want.composites, got.Composites, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("%s\nFromXRReport(...) composites: -want, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(tc.want.summary, got.Health()); diff != "" {
+				t.Errorf("%s\nHealth(): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
 	}
 }

@@ -41,6 +41,11 @@ const (
 	// ExitCodeDiffDetected indicates that differences were detected.
 	ExitCodeDiffDetected = 3
 
+	// ExitCodeFailing indicates that a resource was failing (Synced=False) before apply. It is a bit
+	// that composes with ExitCodeDiffDetected: a run that finds changes and a failing resource exits
+	// 7.
+	ExitCodeFailing = 4
+
 	// ExitCodeInterrupted indicates the run was cancelled by SIGINT (Ctrl+C) or SIGTERM. It is 130 by
 	// the shell convention for SIGINT (128 + 2); the signal handler does not report which signal
 	// arrived, so SIGTERM uses the same code.
@@ -345,11 +350,12 @@ func isOnlySchemaValidationErrors(err error) bool {
 	return false
 }
 
-// DetermineExitCode determines the appropriate exit code based on the error and diff status.
-// Priority: interrupted (130) > tool error (1) > schema validation error (2) > diff detected (3) >
-// success (0). An interruption outranks everything because the other errors of an interrupted run are
-// mostly the cancelled calls it caused.
-func DetermineExitCode(err error, hasDiffs bool) int {
+// DetermineExitCode determines the appropriate exit code based on the error, diff and health status.
+// Errors come first, by priority: interrupted (130) > tool error (1) > schema validation error (2).
+// An interruption outranks everything because the other errors of an interrupted run are mostly the
+// cancelled calls it caused. A run without errors exits with a bitmask: ExitCodeDiffDetected (3) when
+// it found differences, ORed with ExitCodeFailing (4) when a resource was failing, so 0, 3, 4 or 7.
+func DetermineExitCode(err error, hasDiffs, failing bool) int {
 	if errors.Is(err, ErrInterrupted) {
 		return ExitCodeInterrupted
 	}
@@ -366,9 +372,14 @@ func DetermineExitCode(err error, hasDiffs bool) int {
 		return ExitCodeToolError
 	}
 
+	code := ExitCodeSuccess
 	if hasDiffs {
-		return ExitCodeDiffDetected
+		code |= ExitCodeDiffDetected
 	}
 
-	return ExitCodeSuccess
+	if failing {
+		code |= ExitCodeFailing
+	}
+
+	return code
 }

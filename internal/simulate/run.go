@@ -217,8 +217,8 @@ func changedFunctions(ctx context.Context, rc k8client.ResourceClient, digests m
 // diffCompositions returns the diff simulate runs for Compositions: their
 // impact on the composite resources in scope, rendered to k's writers.
 // Errors are wrapped with msg.
-func (c *Runner) diffCompositions(k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, progress *dp.Progress, proc dp.CompDiffProcessor, comps []*un.Unstructured, msg string) func(context.Context) (bool, error) {
-	return func(ctx context.Context) (bool, error) {
+func (c *Runner) diffCompositions(k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, progress *dp.Progress, proc dp.CompDiffProcessor, comps []*un.Unstructured, msg string) func(context.Context) (outcome, error) {
+	return func(ctx context.Context) (outcome, error) {
 		var output *dt.CompDiffOutput
 		var err error
 		simulateWithProgress(sp, progress, func() {
@@ -228,11 +228,11 @@ func (c *Runner) diffCompositions(k *kong.Context, logger logging.Logger, sp ter
 		// Render the report even when there are errors (e.g. every
 		// composition failed), so structured output stays valid. A render
 		// failure is joined with the processing error, so neither is lost.
-		changed := output != nil && output.HasChanges()
+		var o outcome
 		if output != nil {
-			changed, err = c.renderCompReport(k, logger, output, err)
+			o, err = c.renderCompReport(k, logger, output, err)
 		}
-		return changed, errors.Wrap(err, msg)
+		return o, errors.Wrap(err, msg)
 	}
 }
 
@@ -241,10 +241,10 @@ func (c *Runner) diffCompositions(k *kong.Context, logger logging.Logger, sp ter
 // crossplane-diff's xr command. A claim is simulated as its XR, but the
 // report names the input, so its result is listed under the claim's name
 // (crossplane/cli#367).
-func (c *Runner) diffComposites(k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, progress *dp.Progress, proc dp.DiffProcessor, xp *xpclient.Clients, ns string, xrs []*un.Unstructured) func(context.Context) (bool, error) {
-	return func(ctx context.Context) (bool, error) {
+func (c *Runner) diffComposites(k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, progress *dp.Progress, proc dp.DiffProcessor, xp *xpclient.Clients, ns string, xrs []*un.Unstructured) func(context.Context) (outcome, error) {
+	return func(ctx context.Context) (outcome, error) {
 		if err := checkComposites(ctx, xp.Definition, ns, xrs); err != nil {
-			return false, err
+			return outcome{}, err
 		}
 		var report *dt.XRReport
 		var err error
@@ -255,11 +255,11 @@ func (c *Runner) diffComposites(k *kong.Context, logger logging.Logger, sp termi
 		// Render the report even when there are errors, so successful XRs
 		// are shown and structured output stays valid. The renderer
 		// includes the errors in structured output.
-		changed := report != nil && report.HasChanges()
+		var o outcome
 		if report != nil {
-			changed, err = c.renderXRReport(k, logger, report, err)
+			o, err = c.renderXRReport(k, logger, report, err)
 		}
-		return changed, errors.Wrap(err, "cannot simulate composite resources")
+		return o, errors.Wrap(err, "cannot simulate composite resources")
 	}
 }
 
@@ -273,6 +273,16 @@ func setFlags(k *kong.Context) map[string]bool {
 		}
 	}
 	return set
+}
+
+// outcome is what a diff found that sets the exit status of a run without
+// errors.
+type outcome struct {
+	// changed is whether the run changed anything, provider plans included.
+	changed bool
+	// failing is whether a composite or a resource it composes was failing
+	// (Synced=False) before apply.
+	failing bool
 }
 
 // processor is what simulate initializes and cleans up around a diff.
@@ -307,12 +317,13 @@ func simulateWithProgress(sp terminal.SpinnerPrinter, progress *dp.Progress, fn 
 	})
 }
 
-// simulate initializes the clients and processor and runs diff. A run that
-// finds changes and fails nothing returns a silent ExitError that
-// exits 3; one that fails only schema validation returns one that exits 2.
+// simulate initializes the clients and processor and runs diff. A run without
+// errors that finds changes or a failing resource returns a silent ExitError
+// that exits 3, 4 or 7 (see DetermineExitCode); one that fails only schema
+// validation returns one that exits 2.
 // ctx must not be cancelled by its owner until simulate returns, so a
 // cancellation reads as an interrupt.
-func (c *Runner) simulate(ctx context.Context, logger logging.Logger, initClients func(context.Context, logging.Logger) error, proc processor, diff func(context.Context) (bool, error)) (err error) {
+func (c *Runner) simulate(ctx context.Context, logger logging.Logger, initClients func(context.Context, logging.Logger) error, proc processor, diff func(context.Context) (outcome, error)) (err error) {
 	// An interrupted run reports the interruption, not the cancelled calls it
 	// caused. main exits 130 for it.
 	defer func() {
@@ -331,18 +342,26 @@ func (c *Runner) simulate(ctx context.Context, logger logging.Logger, initClient
 		return errors.Wrap(err, "cannot initialize diff processor")
 	}
 
-	// Exit codes rank by severity: a tool error (1) over schema
-	// validation (2) over changes found (3) over success (0).
-	hasDiffs, err := diff(ctx)
-	switch dp.DetermineExitCode(err, hasDiffs) {
+	// Errors rank by severity: a tool error (1) over schema validation (2).
+	// Without one, changes found (3) and a failing resource (4) are bits.
+	o, err := diff(ctx)
+	switch code := dp.DetermineExitCode(err, o.changed, o.failing); code {
+	case dp.ExitCodeSuccess, dp.ExitCodeToolError, dp.ExitCodeInterrupted:
+		return err
 	case dp.ExitCodeSchemaValidation:
 		return exitcode.ExitError{Err: err, Code: ExitCodeSchemaValidation}
-	case dp.ExitCodeDiffDetected:
-		// Changes found are a result, not an error, so nothing is printed.
-		return exitcode.ExitError{Code: ExitCodeChanges}
+	default:
+		// Changes found and failing resources are results, not errors, so
+		// nothing is printed.
+		ec := 0
+		if code&dp.ExitCodeDiffDetected != 0 {
+			ec |= ExitCodeChanges
+		}
+		if code&dp.ExitCodeFailing != 0 {
+			ec |= ExitCodeFailing
+		}
+		return exitcode.ExitError{Code: ec}
 	}
-
-	return err
 }
 
 // scope returns the namespace and composite resource refs DiffComposition
@@ -494,7 +513,7 @@ func (c *Runner) notes() []string {
 
 // renderXRReport writes an xr run's report in the format -o selects, as
 // renderReport does.
-func (c *Runner) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport, runErr error) (bool, error) {
+func (c *Runner) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport, runErr error) (outcome, error) {
 	plans := c.providerPlans()
 	return c.renderReport(k, logger, runErr, FromXRReport(r, plans, c.keep), r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
 		// Annotated even without plans, so a Secret's values are redacted.
@@ -505,7 +524,7 @@ func (c *Runner) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XR
 
 // renderCompReport writes a composition run's report in the format -o
 // selects, as renderReport does.
-func (c *Runner) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput, runErr error) (bool, error) {
+func (c *Runner) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput, runErr error) (outcome, error) {
 	plans := c.providerPlans()
 	return c.renderReport(k, logger, runErr, FromCompReport(o, plans, c.keep), o.HasChanges(), dt.CompDryRunWarnings(o), func(opts renderer.DiffOptions) error {
 		opts.MinimizeComposition = c.sel.MinimizeComposition
@@ -517,10 +536,11 @@ func (c *Runner) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.
 
 // renderReport writes a run's report in the format -o selects: renderDiff's
 // human diff for diff, and res otherwise, followed by warnings. It returns
-// whether the run changed anything, provider plans included, and runErr
-// with any render failure joined to it, so neither is lost. changed is
-// whether the report itself has changes.
-func (c *Runner) renderReport(k *kong.Context, logger logging.Logger, runErr error, res Result, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (bool, error) {
+// the run's outcome: whether it changed anything, provider plans included,
+// and whether anything was failing; and runErr with any render failure
+// joined to it, so neither is lost. changed is whether the report itself
+// has changes.
+func (c *Runner) renderReport(k *kong.Context, logger logging.Logger, runErr error, res Result, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (outcome, error) {
 	opts := c.diffOptions(k)
 	plans := c.providerPlans()
 	if plans != nil {
@@ -531,7 +551,7 @@ func (c *Runner) renderReport(k *kong.Context, logger logging.Logger, runErr err
 		res.Notes = n
 	}
 	c.noteNoServers(k, n)
-	changed = changed || (plans != nil && res.Summary.Changes() > 0)
+	o := outcome{changed: changed || (plans != nil && res.Summary.Changes() > 0), failing: res.Failing()}
 
 	var err error
 	if c.Output == string(renderer.OutputFormatDiff) {
@@ -541,9 +561,9 @@ func (c *Runner) renderReport(k *kong.Context, logger logging.Logger, runErr err
 	}
 	if err != nil {
 		logger.Debug("Failed to render diffs", "error", err)
-		return changed, withRenderError(runErr, errors.Wrap(err, "failed to render diffs"))
+		return o, withRenderError(runErr, errors.Wrap(err, "failed to render diffs"))
 	}
-	return changed, runErr
+	return o, runErr
 }
 
 // renderPlan writes res to stdout in the plan, json or yaml format, then

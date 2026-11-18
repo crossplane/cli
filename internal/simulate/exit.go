@@ -23,4 +23,9 @@ const (
 	// ExitCodeChanges is the status a simulate command exits with when the
 	// simulation succeeded and found changes.
 	ExitCodeChanges = 3
+	// ExitCodeFailing is the bit a simulate command's exit status carries
+	// when the simulation succeeded and a resource was failing (Synced=False)
+	// before apply. It composes with ExitCodeChanges: a run that finds
+	// changes and a failing resource exits 7.
+	ExitCodeFailing = 4
 )

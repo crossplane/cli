@@ -43,9 +43,12 @@ func TestOf(t *testing.T) {
 	readyFalse := cond("Ready", "False", "Creating", "")
 	readyTrue := cond("Ready", "True", "Available", "")
 
+	type args struct {
+		u *unstructured.Unstructured
+	}
 	cases := map[string]struct {
 		reason string
-		in     *unstructured.Unstructured
+		args   args
 		want   *Health
 	}{
 		"NilObject": {
@@ -54,12 +57,12 @@ func TestOf(t *testing.T) {
 		},
 		"NoConditions": {
 			reason: "An object with no Synced or Ready condition, such as a ConfigMap, is healthy.",
-			in:     obj(""),
+			args:   args{u: obj("")},
 			want:   &Health{State: Healthy},
 		},
 		"SyncedAndReady": {
 			reason: "Synced=True and Ready=True is healthy, carrying both conditions.",
-			in:     obj("", syncedTrue, readyTrue),
+			args:   args{u: obj("", syncedTrue, readyTrue)},
 			want: &Health{
 				State:  Healthy,
 				Synced: &Condition{Status: corev1.ConditionTrue, Reason: "ReconcileSuccess"},
@@ -68,7 +71,7 @@ func TestOf(t *testing.T) {
 		},
 		"Unknown": {
 			reason: "Unknown conditions are healthy.",
-			in:     obj("", cond("Synced", "Unknown", "", ""), cond("Ready", "Unknown", "", "")),
+			args:   args{u: obj("", cond("Synced", "Unknown", "", ""), cond("Ready", "Unknown", "", ""))},
 			want: &Health{
 				State:  Healthy,
 				Synced: &Condition{Status: corev1.ConditionUnknown},
@@ -77,7 +80,7 @@ func TestOf(t *testing.T) {
 		},
 		"SyncedFalse": {
 			reason: "Synced=False is failing, even when Ready=False too.",
-			in:     obj("", syncedFalse, readyFalse),
+			args:   args{u: obj("", syncedFalse, readyFalse)},
 			want: &Health{
 				State:  Failing,
 				Synced: &Condition{Status: corev1.ConditionFalse, Reason: "ReconcileError", Message: "cannot update: denied"},
@@ -86,7 +89,7 @@ func TestOf(t *testing.T) {
 		},
 		"ReadyFalse": {
 			reason: "Ready=False with Synced not False is not ready.",
-			in:     obj("", syncedTrue, readyFalse),
+			args:   args{u: obj("", syncedTrue, readyFalse)},
 			want: &Health{
 				State:  NotReady,
 				Synced: &Condition{Status: corev1.ConditionTrue, Reason: "ReconcileSuccess"},
@@ -95,12 +98,12 @@ func TestOf(t *testing.T) {
 		},
 		"ReadyFalseOnly": {
 			reason: "Ready=False with no Synced condition is not ready.",
-			in:     obj("", readyFalse),
+			args:   args{u: obj("", readyFalse)},
 			want:   &Health{State: NotReady, Ready: &Condition{Status: corev1.ConditionFalse, Reason: "Creating"}},
 		},
 		"PausedOverridesFailing": {
 			reason: "The paused annotation overrides Synced=False; the stale conditions are still reported.",
-			in:     obj("true", syncedFalse),
+			args:   args{u: obj("true", syncedFalse)},
 			want: &Health{
 				State:  Paused,
 				Synced: &Condition{Status: corev1.ConditionFalse, Reason: "ReconcileError", Message: "cannot update: denied"},
@@ -108,7 +111,7 @@ func TestOf(t *testing.T) {
 		},
 		"PausedNotTrue": {
 			reason: "Only the value \"true\" pauses an object.",
-			in:     obj("false", syncedFalse),
+			args:   args{u: obj("false", syncedFalse)},
 			want: &Health{
 				State:  Failing,
 				Synced: &Condition{Status: corev1.ConditionFalse, Reason: "ReconcileError", Message: "cannot update: denied"},
@@ -116,14 +119,14 @@ func TestOf(t *testing.T) {
 		},
 		"MalformedStatus": {
 			reason: "A status whose conditions cannot be read is treated as having none.",
-			in:     &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"conditions": "nope"}}},
+			args:   args{u: &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"conditions": "nope"}}}},
 			want:   &Health{State: Healthy},
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := Of(tc.in)
+			got := Of(tc.args.u)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("%s\nOf(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -132,21 +135,24 @@ func TestOf(t *testing.T) {
 }
 
 func TestUnhealthy(t *testing.T) {
+	type args struct {
+		h *Health
+	}
 	cases := map[string]struct {
 		reason string
-		in     *Health
+		args   args
 		want   bool
 	}{
-		"Nil":      {reason: "No live object is not unhealthy.", in: nil, want: false},
-		"Healthy":  {reason: "Healthy is not unhealthy.", in: &Health{State: Healthy}, want: false},
-		"Failing":  {reason: "Failing is unhealthy.", in: &Health{State: Failing}, want: true},
-		"NotReady": {reason: "Not ready is unhealthy.", in: &Health{State: NotReady}, want: true},
-		"Paused":   {reason: "Paused is unhealthy.", in: &Health{State: Paused}, want: true},
+		"Nil":      {reason: "No live object is not unhealthy.", args: args{h: nil}, want: false},
+		"Healthy":  {reason: "Healthy is not unhealthy.", args: args{h: &Health{State: Healthy}}, want: false},
+		"Failing":  {reason: "Failing is unhealthy.", args: args{h: &Health{State: Failing}}, want: true},
+		"NotReady": {reason: "Not ready is unhealthy.", args: args{h: &Health{State: NotReady}}, want: true},
+		"Paused":   {reason: "Paused is unhealthy.", args: args{h: &Health{State: Paused}}, want: true},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := tc.in.Unhealthy(); got != tc.want {
+			if got := tc.args.h.Unhealthy(); got != tc.want {
 				t.Errorf("%s\nUnhealthy(): want %t, got %t", tc.reason, tc.want, got)
 			}
 		})

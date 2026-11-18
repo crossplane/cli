@@ -38,6 +38,7 @@ import (
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/async"
+	"github.com/crossplane/cli/v2/internal/project/metafile"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
@@ -1007,5 +1008,67 @@ func TestManager_AddDependency_TransitiveNotPersisted(t *testing.T) {
 	}
 	if diff := cmp.Diff(wantDeps, gotProj.Spec.Dependencies); diff != "" {
 		t.Errorf("on-disk project deps (-want +got):\n%s", diff)
+	}
+}
+
+func TestManager_AddDependency_PackageMetadata(t *testing.T) {
+	const (
+		prov   = "xpkg.example/prov"
+		digest = "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+		meta   = `apiVersion: meta.pkg.crossplane.io/v1
+kind: Configuration
+metadata:
+  name: test-config
+`
+	)
+
+	fc := &fakeClient{
+		packages: map[string]*runtimexpkg.Package{
+			prov + ":v0.1.0": makePackageWithBody(t, prov, digest, "", providerPackageYAML),
+		},
+		tags: []string{"v0.1.0"},
+	}
+
+	projFS := afero.NewMemMapFs()
+	if err := afero.WriteFile(projFS, "crossplane.yaml", []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	proj := &v1alpha1.Project{}
+	proj.Default()
+
+	m := NewManager(proj, projFS,
+		WithStore(metafile.NewStore(projFS, "crossplane.yaml")),
+		WithSchemaFS(afero.NewMemMapFs()),
+		WithSchemaGenerators([]generator.Interface{}),
+		WithXpkgClient(clixpkg.WrapClient(fc)),
+	)
+
+	if err := m.AddDependency(t.Context(), xpkgDep(prov, "v0.1.0")); err != nil {
+		t.Fatalf("AddDependency: %v", err)
+	}
+
+	// The dependency is persisted to spec.dependsOn and loads back.
+	gotPkg, err := metafile.Parse(projFS, "crossplane.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := metafile.ToProject(gotPkg)
+	want := []v1alpha1.Dependency{{
+		Type: v1alpha1.DependencyTypeXpkg,
+		Xpkg: &v1alpha1.XpkgDependency{
+			APIVersion: "pkg.crossplane.io/v1",
+			Kind:       "Provider",
+			Package:    prov,
+			Version:    "v0.1.0",
+		},
+	}}
+	if diff := cmp.Diff(want, got.Spec.Dependencies); diff != "" {
+		t.Errorf("on-disk deps (-want +got):\n%s", diff)
+	}
+
+	// Dependencies package metadata can't express are rejected.
+	k8s := &v1alpha1.Dependency{Type: v1alpha1.DependencyTypeK8s, K8s: &v1alpha1.K8sDependency{Version: "v1.33.0"}}
+	if err := m.AddDependency(t.Context(), k8s); err == nil {
+		t.Error("expected error adding k8s dependency to package metadata, got nil")
 	}
 }

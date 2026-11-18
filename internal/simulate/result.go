@@ -273,9 +273,10 @@ func groupKind(ref plan.ResourceRef) schema.GroupKind {
 
 // MarshalJSON writes the result with summary, composites and compositions
 // ahead of the plans, which can be long, and with the deferred and health
-// counts inside summary (the health ones under summary.health). YAML goes through it too. Decoding needs no
-// counterpart: summary decodes into Result.Summary, Deferred is counted from
-// Composites, and Health from Composites and Plans.
+// counts inside summary (the health ones under summary.health). YAML goes
+// through it too. Decoding needs no counterpart: summary decodes into
+// Result.Summary, Deferred is counted from Composites, and Health from
+// Composites and Plans.
 func (r Result) MarshalJSON() ([]byte, error) {
 	type summary struct {
 		plan.Summary

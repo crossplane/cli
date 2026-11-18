@@ -29,6 +29,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
@@ -71,7 +72,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 	changed := func(refs ...plan.ResourceRef) []simulate.CompositeResult {
 		out := make([]simulate.CompositeResult, 0, len(refs))
 		for _, r := range refs {
-			out = append(out, simulate.CompositeResult{Ref: r, Status: simulate.CompositeChanged, Composition: &comp})
+			out = append(out, simulate.CompositeResult{Ref: r, Status: simulate.CompositeChanged, Composition: &comp, Health: &health.Health{State: health.Healthy}})
 		}
 		return out
 	}

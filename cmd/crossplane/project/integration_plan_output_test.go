@@ -84,7 +84,10 @@ func TestSimulatePlanOutput(t *testing.T) {
 	unhealthyCase := compCase
 	unhealthyCase.CrossplaneManagedResources = []integration.HierarchicalOwnershipRelation{
 		integration.Composes("../../../internal/testutils/integration/testdata/comp/resources/existing-xr-1-failing.yaml", "../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-1-not-ready.yaml"),
-		integration.Composes("../../../internal/testutils/integration/testdata/comp/resources/existing-xr-2.yaml", "../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-2-paused.yaml"),
+		integration.Composes("../../../internal/testutils/integration/testdata/comp/resources/existing-xr-2.yaml", "../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-2.yaml"),
+	}
+	unhealthyCase.FieldManagerApplies = []integration.FieldManagerApply{
+		{File: "../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-2-paused-annotation.yaml", FieldManager: "kubectl"},
 	}
 
 	xrArgs := []string{"-f", "../../../internal/testutils/integration/testdata/diff/modified-xr.yaml"}
@@ -231,9 +234,6 @@ Note: Provider plan not run: no provider diff server planned these resources.
 XR: XNopResource.ns.diff.example.org default/another-resource
   [~] XDownstreamResource.ns.nop.example.org default/another-resource (update)
       ⚠ paused
-      metadata:
-        annotations:
-          - crossplane.io/paused: "true"
       spec:
         forProvider:
           ~ configData: "another-existing-value" -> "updated-another-existing-value"

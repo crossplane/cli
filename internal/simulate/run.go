@@ -56,6 +56,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/kube"
+	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -549,7 +550,7 @@ func (c *Runner) renderReport(k *kong.Context, logger logging.Logger, runErr err
 // engine's renderers do. The run's other warnings went to stderr when they
 // were raised.
 func (c *Runner) renderPlan(k *kong.Context, res Result, derived []dt.OutputWarning) error {
-	r, err := NewRenderer(c.Output)
+	r, err := NewRenderer(c.Output, c.FullMessages)
 	if err != nil {
 		return err
 	}
@@ -618,7 +619,7 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 		c.sel = *in.Selection
 	}
 	project := in.Build != nil
-	warnIgnoredFlags(k.Stderr, setFlags(k), c.SkipPlan, project)
+	warnIgnoredFlags(k.Stderr, setFlags(k), c.Output, c.SkipPlan, project)
 
 	if err := docker.Check(sigCtx); err != nil {
 		return errors.Wrap(err, "cannot connect to Docker, which simulate needs to run functions")
@@ -723,8 +724,10 @@ func (c *Flags) flagImageConfigs() ([]pkgv1beta1.ImageConfig, error) {
 // warnIgnoredFlags prints a warning to stderr for each flag set on the
 // command line that does nothing in this run: --skip-plan runs no diff
 // servers, so --providers and --session-id do nothing with it, and
-// --cache-dir caches nothing with --skip-plan unless the run builds a project.
-func warnIgnoredFlags(stderr io.Writer, set map[string]bool, skipPlan, project bool) {
+// --cache-dir caches nothing with --skip-plan unless the run builds a project,
+// and --full-messages changes nothing in json or yaml output, which always
+// carries messages in full.
+func warnIgnoredFlags(stderr io.Writer, set map[string]bool, output string, skipPlan, project bool) {
 	for _, f := range []string{"providers", "session-id"} {
 		if skipPlan && set[f] {
 			_, _ = fmt.Fprintf(stderr, "Warning: ignoring --%s; --skip-plan runs no diff servers.\n", f)
@@ -732,6 +735,9 @@ func warnIgnoredFlags(stderr io.Writer, set map[string]bool, skipPlan, project b
 	}
 	if !project && skipPlan && set["cache-dir"] {
 		_, _ = fmt.Fprintln(stderr, "Warning: ignoring --cache-dir; with --skip-plan and no project file there is nothing to cache.")
+	}
+	if set["full-messages"] && (output == plan.FormatJSON || output == plan.FormatYAML) {
+		_, _ = fmt.Fprintf(stderr, "Warning: ignoring --full-messages; -o %s always prints messages in full.\n", output)
 	}
 }
 

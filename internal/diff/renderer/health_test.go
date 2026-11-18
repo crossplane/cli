@@ -141,6 +141,35 @@ Summary: 1 modified
 Health: 1 resource failing (Synced=False).
 `,
 		},
+		"XRMessageOnce": {
+			reason: "An unhealthy XR's message prints once, on its XR: line, with full messages too, and its own diff entry carries only its tier; a composed resource keeps its whole marker.",
+			args: args{full: true, groups: []dt.XRDiffGroup{group("net", failing, nil,
+				liveWith(modifiedDiffFor("XNetwork", "net"), "vpc does not exist"),
+				liveWith(modifiedDiffFor("Bucket", "b"), "boom"))}},
+			want: `XR: XNetwork/net ⚠ failing (Synced=False, ReconcileError)
+    vpc does not exist
+
+~~~ Bucket/b ⚠ failing (Synced=False, ReconcileError)
+    boom
+- spec:
+-   field: old
++ spec:
++   field: new
+
+---
+~~~ XNetwork/net ⚠ failing
+- spec:
+-   field: old
++ spec:
++   field: new
+
+---
+
+Summary: 2 modified
+
+Health: 1 of 1 XR unhealthy before apply; 1 resource failing (Synced=False).
+`,
+		},
 	}
 
 	for name, tc := range cases {

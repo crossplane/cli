@@ -32,6 +32,7 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -640,10 +641,32 @@ func createResourceFromFile(ctx context.Context, c client.Client, d *crossplaneD
 		}
 	}
 
+	if err := writeStatus(ctx, c, resource, serverResource); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
 	// Store and return the created resource
 	createdResources[path] = serverResource
 
 	return serverResource, nil
+}
+
+// writeStatus writes want's status to server, the object as created from want, through the status
+// subresource when creating it dropped the status, as it does for a type with that subresource, such as
+// an XR. Under envtest no controller writes status, so this is how a fixture carries live conditions.
+// server is updated in place.
+func writeStatus(ctx context.Context, c client.Client, want, server *un.Unstructured) error {
+	status, ok := want.Object["status"]
+	if !ok || equality.Semantic.DeepEqual(status, server.Object["status"]) {
+		return nil
+	}
+
+	server.Object["status"] = status
+	if err := c.Status().Update(ctx, server); err != nil {
+		return fmt.Errorf("cannot write status: %w", err)
+	}
+
+	return nil
 }
 
 // withoutCompositeReconcilerFields returns a copy of resource without the compositeReconcilerFields it

@@ -45,6 +45,7 @@ type Flags struct {
 
 	NoColor             bool     `help:"Disable colorized output."`
 	Compact             bool     `help:"Show compact diffs with minimal context."`
+	FullMessages        bool     `help:"Print health condition messages in full in plan and diff output, rather than cut to one line."`
 	MaxNestedDepth      int      `default:"10"                                                                                          help:"Maximum depth for nested XR recursion."`
 	IgnorePaths         []string `help:"Paths to ignore in diffs (e.g., 'metadata.annotations[argocd.argoproj.io/tracking-id]')."`
 	FunctionCredentials string   `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."     placeholder:"PATH"                            predictor:"yaml_file_or_directory"                                                      type:"path"`

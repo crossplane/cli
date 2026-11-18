@@ -745,6 +745,7 @@ func TestWarnIgnoredFlags(t *testing.T) {
 	cases := map[string]struct {
 		reason   string
 		args     []string
+		output   string
 		skipPlan bool
 		project  bool
 		warn     string
@@ -783,6 +784,28 @@ func TestWarnIgnoredFlags(t *testing.T) {
 			skipPlan: true,
 			warn:     "ignoring --session-id",
 		},
+		"FullMessagesPlan": {
+			reason: "--full-messages applies to plan output.",
+			args:   []string{"--full-messages"},
+			output: "plan",
+		},
+		"FullMessagesDiff": {
+			reason: "--full-messages applies to diff output.",
+			args:   []string{"--full-messages"},
+			output: "diff",
+		},
+		"FullMessagesJSON": {
+			reason: "json always carries messages in full, so --full-messages is ignored with a warning.",
+			args:   []string{"--full-messages"},
+			output: "json",
+			warn:   "ignoring --full-messages; -o json",
+		},
+		"FullMessagesYAML": {
+			reason: "yaml always carries messages in full, so --full-messages is ignored with a warning.",
+			args:   []string{"--full-messages"},
+			output: "yaml",
+			warn:   "ignoring --full-messages; -o yaml",
+		},
 		"DefaultsAreNotSet": {
 			reason:   "Flags left at their defaults, or set from the environment, are not warned about.",
 			skipPlan: true,
@@ -809,7 +832,7 @@ func TestWarnIgnoredFlags(t *testing.T) {
 			}
 
 			var stderr bytes.Buffer
-			warnIgnoredFlags(&stderr, setFlags(k), tc.skipPlan, tc.project)
+			warnIgnoredFlags(&stderr, setFlags(k), tc.output, tc.skipPlan, tc.project)
 			if tc.warn == "" && stderr.Len() > 0 || !strings.Contains(stderr.String(), tc.warn) {
 				t.Errorf("\n%s\nwarnIgnoredFlags(...): want warning containing %q, got %q", tc.reason, tc.warn, stderr.String())
 			}

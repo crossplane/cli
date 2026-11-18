@@ -596,7 +596,7 @@ Summary: 2 modified`,
 +     configData: modified-value
 
 ---
-~~~ XNopResource/test-resource ⚠ failing (Synced=False, ReconcileError): cannot compose resources: the vpc does not exist
+~~~ XNopResource/test-resource ⚠ failing
   apiVersion: ns.diff.example.org/v1alpha1
   kind: XNopResource
   metadata:

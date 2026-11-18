@@ -83,8 +83,10 @@ type diffCounts struct {
 // renderDiffList renders a flat set of diffs (sorted by kind/name) to stdout in
 // the human-readable +++/~~~/--- form and returns the per-type counts. It does
 // not print a summary; callers decide whether to emit a per-section or
-// aggregate summary from the returned counts. Equal diffs are skipped.
-func (r *DefaultDiffRenderer) renderDiffList(diffs map[string]*dt.ResourceDiff) (diffCounts, error) {
+// aggregate summary from the returned counts. Equal diffs are skipped. The
+// diff whose diffKey is described, an XR whose health line was already
+// printed, is marked with its tier alone.
+func (r *DefaultDiffRenderer) renderDiffList(diffs map[string]*dt.ResourceDiff, described string) (diffCounts, error) {
 	stdout := r.diffOpts.Stdout
 
 	// Sort by GetKindName, which is how it's displayed to the user. The same kind and name in two
@@ -133,6 +135,11 @@ func (r *DefaultDiffRenderer) renderDiffList(diffs map[string]*dt.ResourceDiff) 
 
 		// A resource the cluster has is marked when it is not healthy.
 		if desc := healthDescription(health.Of(diff.Current.Raw), r.diffOpts.FullMessages); len(desc) > 0 {
+			if described != "" && diffKey(diff) == described {
+				tier, _, _ := strings.Cut(desc[0], " (")
+				desc = []string{tier}
+			}
+
 			header = strings.Join(append([]string{header + " " + desc[0]}, desc[1:]...), "\n")
 		}
 
@@ -284,8 +291,8 @@ func (r *DefaultDiffRenderer) renderFlat(diffs map[string]*dt.ResourceDiff, xrGr
 	full := r.diffOpts.FullMessages
 
 	var (
-		head, block string
-		t           health.Tally
+		head, block, described string
+		t                      health.Tally
 	)
 
 	if len(xrGroups) == 1 {
@@ -293,6 +300,7 @@ func (r *DefaultDiffRenderer) renderFlat(diffs map[string]*dt.ResourceDiff, xrGr
 		if desc := healthDescription(g.Health.XR, full); len(desc) > 0 {
 			desc[0] = "XR: " + groupTitle(g) + " " + desc[0]
 			head = joinLines(desc) + "\n"
+			described = refKey(g.XR)
 		}
 
 		block = joinLines(unhealthyBlock(g.Health, g.Diffs, full))
@@ -303,7 +311,7 @@ func (r *DefaultDiffRenderer) renderFlat(diffs map[string]*dt.ResourceDiff, xrGr
 		return err
 	}
 
-	counts, err := r.renderDiffList(diffs)
+	counts, err := r.renderDiffList(diffs, described)
 	if err != nil {
 		return err
 	}
@@ -376,7 +384,7 @@ func (r *DefaultDiffRenderer) renderGrouped(groups []dt.XRDiffGroup) error {
 		// owning XR to head a section, so fold its diffs into the aggregate
 		// without a header or per-section summary.
 		if !hasIdentity(g) {
-			counts, err := r.renderDiffList(g.Diffs)
+			counts, err := r.renderDiffList(g.Diffs, "")
 			if err != nil {
 				return err
 			}
@@ -423,10 +431,13 @@ func (r *DefaultDiffRenderer) renderSection(g dt.XRDiffGroup) (diffCounts, error
 		return diffCounts{}, errors.Wrap(err, "failed to write XR section header")
 	}
 
+	described := ""
 	if s := joinLines(healthDescription(g.Health.XR, r.diffOpts.FullMessages)); s != "" {
 		if err := write(stdout, s+"\n"); err != nil {
 			return diffCounts{}, err
 		}
+
+		described = refKey(g.XR)
 	}
 
 	if g.Err != nil {
@@ -437,7 +448,7 @@ func (r *DefaultDiffRenderer) renderSection(g dt.XRDiffGroup) (diffCounts, error
 		return diffCounts{}, nil
 	}
 
-	counts, err := r.renderDiffList(g.Diffs)
+	counts, err := r.renderDiffList(g.Diffs, described)
 	if err != nil {
 		return counts, err
 	}

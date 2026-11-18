@@ -732,6 +732,11 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 	cliCompTargetAPIVersion := cliComp.Spec.CompositeTypeRef.APIVersion
 	cliCompTargetKind := cliComp.Spec.CompositeTypeRef.Kind
 
+	// Only the group is compared: an XR may use a served version that is not the referenceable one the
+	// compositeTypeRef names, and Crossplane still composes it with this composition. A malformed
+	// apiVersion matches nothing, as in pinnedRevisionCallsChangedFunction.
+	cliCompTargetGV, cliCompTargetGVErr := schema.ParseGroupVersion(cliCompTargetAPIVersion)
+
 	p.config.Logger.Debug("CLI composition targets",
 		"apiVersion", cliCompTargetAPIVersion,
 		"kind", cliCompTargetKind)
@@ -791,8 +796,9 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 		}
 
 		// Check 2: Does this resource's type match the CLI composition's target type?
-		// This handles XRs encountered during rendering that match the composition's type.
-		if resAPIVersion == cliCompTargetAPIVersion && resKind == cliCompTargetKind {
+		// This handles XRs encountered during rendering that match the composition's type, whichever
+		// served version they use.
+		if cliCompTargetGVErr == nil && resGVK.Group == cliCompTargetGV.Group && resKind == cliCompTargetKind {
 			p.config.Logger.Debug("Resource matches CLI composition type, using CLI composition",
 				"resource", resourceID,
 				"composition", cliComp.GetName())

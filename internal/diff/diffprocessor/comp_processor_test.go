@@ -1403,6 +1403,8 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_RevisionName(t *testing.T) {
 		WithCompositionRevisionSelector(xp.CrossplaneAPIExtGroupV2, map[string]string{"channel": "stable"}, nil).Build()
 	claim := tu.NewResource("example.org/v1", "Resource", "my-claim").WithNamespace("default").Build()
 	backing := tu.NewResource("example.org/v1", "XResource", "my-claim-x7k2p").Build()
+	// backingOlderVersion is a backing XR on a served version that is not the referenceable one.
+	backingOlderVersion := tu.NewResource("example.org/v1alpha1", "XResource", "my-claim-x7k2p").Build()
 
 	// The labels the predicted revision would carry; the selective composite's selector rejects them.
 	revisionLabels := map[string]string{xp.LabelCompositionName: "comp"}
@@ -1428,6 +1430,13 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_RevisionName(t *testing.T) {
 			reason:       "A claim is rendered as its backing XR, which is matched by type and gets the name.",
 			xr:           claim,
 			rendered:     backing,
+			revisionName: predicted,
+			wantRevision: predicted,
+		},
+		"ClaimsBackingXROnOlderServedVersionGetsThePredictedName": {
+			reason:       "A backing XR on a served version other than the compositeTypeRef's is matched by group and kind, so it renders with the diffed composition and gets the name, as the report says.",
+			xr:           claim,
+			rendered:     backingOlderVersion,
 			revisionName: predicted,
 			wantRevision: predicted,
 		},

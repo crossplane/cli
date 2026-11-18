@@ -25,6 +25,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/health"
 )
 
 const (
@@ -75,6 +76,21 @@ func (r *DefaultCompDiffRenderer) RenderCompDiff(output *dt.CompDiffOutput) erro
 
 		if err := r.renderComposition(&comp); err != nil {
 			return err
+		}
+	}
+
+	// What is not healthy before apply is summarized once for the run, as in plan output.
+	var t health.Tally
+
+	for _, comp := range output.Compositions {
+		for _, impact := range comp.ImpactAnalysis {
+			tallyComposite(&t, impact.ObjectReference, impact.Health, impact.Diffs)
+		}
+	}
+
+	if line := health.SummaryLine(t.Counts()); line != "" {
+		if _, err := fmt.Fprintf(stdout, "\n%s\n", line); err != nil {
+			return errors.Wrap(err, "cannot write health summary")
 		}
 	}
 
@@ -438,7 +454,44 @@ func (r *DefaultCompDiffRenderer) renderImpactAnalysis(comp *dt.CompositionDiff)
 		}
 	}
 
-	return nil
+	return r.renderUnhealthyBlocks(comp, len(allDiffs) > 0)
+}
+
+// renderUnhealthyBlocks writes, for each composite the composition affects,
+// the resources it composes that are not healthy and have no changes, under a
+// line naming the composite. afterDiffs separates the first from the diffs
+// above it.
+func (r *DefaultCompDiffRenderer) renderUnhealthyBlocks(comp *dt.CompositionDiff, afterDiffs bool) error {
+	var sb strings.Builder
+
+	for _, impact := range listedImpacts(comp) {
+		block := unhealthyBlock(impact.Health, impact.Diffs, r.opts.FullMessages)
+		if len(block) == 0 {
+			continue
+		}
+
+		if afterDiffs || sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+
+		sb.WriteString("XR: " + impactTitle(impact) + "\n")
+
+		for _, l := range block {
+			sb.WriteString("  " + l + "\n")
+		}
+	}
+
+	return write(r.opts.Stdout, sb.String())
+}
+
+// impactTitle names an affected composite, e.g. "XNetwork/prod/net", as the
+// xr diff names its sections.
+func impactTitle(impact dt.XRImpact) string {
+	if impact.Namespace != "" {
+		return impact.Kind + "/" + impact.Namespace + "/" + impact.Name
+	}
+
+	return impact.Kind + "/" + impact.Name
 }
 
 // totalFiltered sums the per-reason filter counters. Kept in one place so adding a reason cannot
@@ -568,12 +621,26 @@ func (r *DefaultCompDiffRenderer) buildXRStatusList(impacts []dt.XRImpact) strin
 			suffix = filteredSuffix(impact)
 		}
 
-		fmt.Fprintf(&sb, "%s  %s %s/%s (%s)%s%s\n",
+		// What is not healthy before apply follows, uncoloured: its marker is
+		// not the status indicator.
+		desc := healthDescription(impact.Health.XR, r.opts.FullMessages)
+		if len(desc) > 0 {
+			desc[0] = " " + desc[0]
+		} else {
+			desc = []string{""}
+		}
+
+		fmt.Fprintf(&sb, "%s  %s %s/%s (%s)%s%s%s\n",
 			color,
 			indicator,
 			impact.Kind, impact.Name, scope,
 			suffix,
-			colorReset)
+			colorReset,
+			desc[0])
+
+		for _, l := range desc[1:] {
+			fmt.Fprintf(&sb, "    %s\n", l)
+		}
 
 		// Include error details for XRStatusError impacts so users can diagnose issues.
 		if impact.Status == dt.XRStatusError && impact.Error != nil {

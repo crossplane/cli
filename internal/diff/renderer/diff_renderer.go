@@ -11,6 +11,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/health"
 )
 
 // flattenGroups merges every group's diffs into a single map, for the human
@@ -128,6 +129,11 @@ func (r *DefaultDiffRenderer) renderDiffList(diffs map[string]*dt.ResourceDiff) 
 		if r.diffOpts.Replaced != nil && r.diffOpts.Replaced(diff) {
 			counts.replaced++
 			header += " (requires replacement)"
+		}
+
+		// A resource the cluster has is marked when it is not healthy.
+		if desc := healthDescription(health.Of(diff.Current.Raw), r.diffOpts.FullMessages); len(desc) > 0 {
+			header = strings.Join(append([]string{header + " " + desc[0]}, desc[1:]...), "\n")
 		}
 
 		content := FormatDiff(diff.LineDiffs, r.diffOpts)
@@ -257,7 +263,7 @@ func (r *DefaultDiffRenderer) RenderDiffs(groups []dt.XRDiffGroup, errs []dt.Out
 	if len(xrGroups) > 1 {
 		err = r.renderGrouped(groups)
 	} else {
-		err = r.renderFlat(flattenGroups(groups))
+		err = r.renderFlat(flattenGroups(groups), xrGroups)
 	}
 
 	if err != nil {
@@ -268,8 +274,35 @@ func (r *DefaultDiffRenderer) RenderDiffs(groups []dt.XRDiffGroup, errs []dt.Out
 }
 
 // renderFlat renders a single flat block of diffs plus a "Summary:" line. This
-// is the pre-grouping behavior, used for identity-less groups (comp reuse).
-func (r *DefaultDiffRenderer) renderFlat(diffs map[string]*dt.ResourceDiff) error {
+// is the pre-grouping behavior, used for identity-less groups (comp reuse) and
+// a single input XR. That XR, in xrGroups when there is one, is described
+// when it or what it composes is not healthy: its health on a line before the
+// diffs, its unhealthy resources without changes after them, and a Health:
+// line after the summary.
+func (r *DefaultDiffRenderer) renderFlat(diffs map[string]*dt.ResourceDiff, xrGroups []dt.XRDiffGroup) error {
+	stdout := r.diffOpts.Stdout
+	full := r.diffOpts.FullMessages
+
+	var (
+		head, block string
+		t           health.Tally
+	)
+
+	if len(xrGroups) == 1 {
+		g := xrGroups[0]
+		if desc := healthDescription(g.Health.XR, full); len(desc) > 0 {
+			desc[0] = "XR: " + groupTitle(g) + " " + desc[0]
+			head = joinLines(desc) + "\n"
+		}
+
+		block = joinLines(unhealthyBlock(g.Health, g.Diffs, full))
+		tallyComposite(&t, g.XR, g.Health, g.Diffs)
+	}
+
+	if err := write(stdout, head); err != nil {
+		return err
+	}
+
 	counts, err := r.renderDiffList(diffs)
 	if err != nil {
 		return err
@@ -277,15 +310,50 @@ func (r *DefaultDiffRenderer) renderFlat(diffs map[string]*dt.ResourceDiff) erro
 
 	r.logger.Debug("Diff rendering complete", "counts", counts)
 
+	summary := ""
 	if counts.output > 0 {
-		if line := counts.summaryLine(); line != "" {
-			if _, err := fmt.Fprintf(r.diffOpts.Stdout, "\nSummary: %s\n", line); err != nil {
-				return errors.Wrap(err, "failed to write summary to output")
-			}
+		summary = counts.summaryLine()
+	}
+
+	// The block, Summary and Health lines are separated by blank lines from
+	// whatever precedes them.
+	written := head != "" || counts.output > 0
+	for _, s := range []string{block, summaryText(summary), joinLines([]string{health.SummaryLine(t.Counts())})} {
+		if s == "" || s == "\n" {
+			continue
 		}
+
+		if written {
+			s = "\n" + s
+		}
+
+		if err := write(stdout, s); err != nil {
+			return err
+		}
+
+		written = true
 	}
 
 	return nil
+}
+
+// summaryText returns the "Summary:" line for line, or "" when it is empty.
+func summaryText(line string) string {
+	if line == "" {
+		return ""
+	}
+
+	return "Summary: " + line + "\n"
+}
+
+// groupTitle names a group's XR, e.g. "XNetwork/prod/net". The namespace is
+// part of the identity: same-named XRs in different namespaces are distinct.
+func groupTitle(g dt.XRDiffGroup) string {
+	if g.XR.Namespace != "" {
+		return g.XR.Kind + "/" + g.XR.Namespace + "/" + g.XR.Name
+	}
+
+	return g.XR.Kind + "/" + g.XR.Name
 }
 
 // renderGrouped renders each group as a per-input-XR section (header + diffs +
@@ -300,6 +368,7 @@ func (r *DefaultDiffRenderer) renderGrouped(groups []dt.XRDiffGroup) error {
 		xrCount     int
 		unchangedXR int
 		errorXR     int
+		t           health.Tally
 	)
 
 	for _, g := range groups {
@@ -319,51 +388,87 @@ func (r *DefaultDiffRenderer) renderGrouped(groups []dt.XRDiffGroup) error {
 
 		xrCount++
 
-		// The namespace is part of the identity: same-named XRs in different namespaces are distinct.
-		title := g.XR.Kind + "/" + g.XR.Name
-		if g.XR.Namespace != "" {
-			title = g.XR.Kind + "/" + g.XR.Namespace + "/" + g.XR.Name
-		}
+		tallyComposite(&t, g.XR, g.Health, g.Diffs)
 
-		if _, err := fmt.Fprintf(stdout, "=== %s ===\n\n", title); err != nil {
-			return errors.Wrap(err, "failed to write XR section header")
-		}
-
-		if g.Err != nil {
-			errorXR++
-
-			if _, err := fmt.Fprintf(stdout, "Error: %s\n\n", g.Err.Message); err != nil {
-				return errors.Wrap(err, "failed to write XR error")
-			}
-
-			continue
-		}
-
-		counts, err := r.renderDiffList(g.Diffs)
+		counts, err := r.renderSection(g)
 		if err != nil {
 			return err
 		}
 
 		total = total.plus(counts)
 
-		if counts.output == 0 {
+		switch {
+		case g.Err != nil:
+			errorXR++
+		case counts.output == 0:
 			unchangedXR++
-
-			if _, err := fmt.Fprintf(stdout, "No changes.\n\n"); err != nil {
-				return errors.Wrap(err, "failed to write no-changes message")
-			}
-
-			continue
-		}
-
-		if line := counts.summaryLine(); line != "" {
-			if _, err := fmt.Fprintf(stdout, "\nSummary: %s\n\n", line); err != nil {
-				return errors.Wrap(err, "failed to write section summary")
-			}
 		}
 	}
 
-	return r.renderAggregateFooter(xrCount, total, unchangedXR, errorXR)
+	if err := r.renderAggregateFooter(xrCount, total, unchangedXR, errorXR); err != nil {
+		return err
+	}
+
+	return writeHealthLine(stdout, &t)
+}
+
+// renderSection renders one input XR's section: its header and health, then
+// its error, or its diffs, unhealthy resources without changes and summary,
+// or "No changes." with those resources. It returns the section's counts,
+// zero for an errored XR.
+func (r *DefaultDiffRenderer) renderSection(g dt.XRDiffGroup) (diffCounts, error) {
+	stdout := r.diffOpts.Stdout
+
+	if _, err := fmt.Fprintf(stdout, "=== %s ===\n\n", groupTitle(g)); err != nil {
+		return diffCounts{}, errors.Wrap(err, "failed to write XR section header")
+	}
+
+	if s := joinLines(healthDescription(g.Health.XR, r.diffOpts.FullMessages)); s != "" {
+		if err := write(stdout, s+"\n"); err != nil {
+			return diffCounts{}, err
+		}
+	}
+
+	if g.Err != nil {
+		if _, err := fmt.Fprintf(stdout, "Error: %s\n\n", g.Err.Message); err != nil {
+			return diffCounts{}, errors.Wrap(err, "failed to write XR error")
+		}
+
+		return diffCounts{}, nil
+	}
+
+	counts, err := r.renderDiffList(g.Diffs)
+	if err != nil {
+		return counts, err
+	}
+
+	block := joinLines(unhealthyBlock(g.Health, g.Diffs, r.diffOpts.FullMessages))
+
+	if counts.output == 0 {
+		if _, err := fmt.Fprintf(stdout, "No changes.\n\n"); err != nil {
+			return counts, errors.Wrap(err, "failed to write no-changes message")
+		}
+
+		if block != "" {
+			return counts, write(stdout, block+"\n")
+		}
+
+		return counts, nil
+	}
+
+	if block != "" {
+		if err := write(stdout, "\n"+block); err != nil {
+			return counts, err
+		}
+	}
+
+	if line := counts.summaryLine(); line != "" {
+		if _, err := fmt.Fprintf(stdout, "\nSummary: %s\n\n", line); err != nil {
+			return counts, errors.Wrap(err, "failed to write section summary")
+		}
+	}
+
+	return counts, nil
 }
 
 // renderAggregateFooter writes the cross-XR totals line shown when more than one

@@ -457,6 +457,7 @@ func (c *Runner) diffOptions(k *kong.Context) renderer.DiffOptions {
 	opts := renderer.DefaultDiffOptions()
 	opts.UseColors = !c.NoColor && (c.Hooks != nil && c.Hooks.Terminal || isTerminal(k.Stdout))
 	opts.Compact = c.Compact
+	opts.FullMessages = c.FullMessages
 	opts.Stdout = k.Stdout
 	opts.Stderr = k.Stderr
 	return opts

@@ -51,6 +51,7 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 	difftypes "github.com/crossplane/cli/v2/internal/diff/types"
+	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/plan"
 	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
@@ -135,10 +136,7 @@ func TestSimulateScope(t *testing.T) {
 }
 
 func TestSimulateProcessorOptions(t *testing.T) {
-	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: stderr}}
-	c := &Flags{
-		sel:           CompositionFlags{IncludePinned: true, AnalyzeOn: "spec-change"},
+	c := &Runner{sel: CompositionFlags{IncludePinned: true, AnalyzeOn: "spec-change"}, Flags: &Flags{
 		MaxIterations: 7,
 		EngineFlags:   xprender.EngineFlags{CrossplaneVersion: "v2.3.4", CrossplaneDockerNetwork: "ci"},
 
@@ -147,12 +145,16 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		EventualState:      true,
 		MaxRecvMessageSize: 16,
 		DryRunOn:           "existing",
-	}
+	}}
 
 	creds := []corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "creds"}}}
 	cfg := dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), creds, []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn"}}}, nil, nil) {
+	advisories := dp.NewAdvisoryCollector(nil)
+	for _, o := range c.processorOptions(advisories, logging.NewNopLogger(), creds, []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn"}}}, nil, nil) {
 		o(&cfg)
+	}
+	if cfg.Advisories != advisories {
+		t.Error("processorOptions(...): the injected advisory collector was not preserved; Run would summarize a collector that received no advisories")
 	}
 
 	type got struct {
@@ -209,7 +211,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	// Without project functions or ImageConfigs every function comes from the
 	// cluster as is, so there is nothing to wrap.
 	cfg = dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil, nil, nil, nil) {
+	for _, o := range c.processorOptions(dp.NewAdvisoryCollector(nil), logging.NewNopLogger(), nil, nil, nil, nil) {
 		o(&cfg)
 	}
 	if cfg.Factories.FunctionProvider != nil {
@@ -218,7 +220,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 
 	// ImageConfigs alone still wrap the cluster's functions.
 	cfg = dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil, nil, nil, []pkgv1beta1.ImageConfig{{}}) {
+	for _, o := range c.processorOptions(dp.NewAdvisoryCollector(nil), logging.NewNopLogger(), nil, nil, nil, []pkgv1beta1.ImageConfig{{}}) {
 		o(&cfg)
 	}
 	if cfg.Factories.FunctionProvider == nil {
@@ -228,7 +230,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	// --crossplane-binary renders with a local binary.
 	c.EngineFlags = xprender.EngineFlags{CrossplaneBinary: "/bin/crossplane"}
 	cfg = dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil, nil, nil, nil) {
+	for _, o := range c.processorOptions(dp.NewAdvisoryCollector(nil), logging.NewNopLogger(), nil, nil, nil, nil) {
 		o(&cfg)
 	}
 	if cfg.CrossplaneRenderBinary != "/bin/crossplane" {
@@ -329,7 +331,7 @@ func TestSimulateDiffOptions(t *testing.T) {
 			want := renderer.DefaultDiffOptions()
 			tc.want(&want)
 
-			got := tc.cmd.diffOptions(k)
+			got := (&Runner{Flags: &tc.cmd}).diffOptions(k)
 			// Writers are interfaces holding the kong context's streams; compare them by identity.
 			if got.Stdout != stdout || got.Stderr != stderr {
 				t.Errorf("\n%s\ndiffOptions(...) writers: got (%v, %v), want the kong context's", tc.reason, got.Stdout, got.Stderr)
@@ -425,11 +427,11 @@ func TestSimulateRenderReports(t *testing.T) {
 				want   func(*testing.T, string)
 			}{
 				"xr": {func(k *kong.Context) error {
-					_, err := tc.cmd.renderXRReport(k, logging.NewNopLogger(), xrReport, nil)
+					_, err := (&Runner{Flags: &tc.cmd}).renderXRReport(k, logging.NewNopLogger(), xrReport, nil)
 					return err
 				}, tc.wantXR},
 				"comp": {func(k *kong.Context) error {
-					_, err := tc.cmd.renderCompReport(k, logging.NewNopLogger(), compReport, nil)
+					_, err := (&Runner{Flags: &tc.cmd}).renderCompReport(k, logging.NewNopLogger(), compReport, nil)
 					return err
 				}, tc.wantComp},
 			} {
@@ -573,7 +575,7 @@ func TestSimulateRun(t *testing.T) {
 	}
 
 	type args struct {
-		cmd         Flags
+		cmd         Runner
 		initClients func(context.Context, logging.Logger) error
 		proc        *fakeCompProc
 		cancel      bool
@@ -622,19 +624,19 @@ func TestSimulateRun(t *testing.T) {
 		},
 		"RenderErrorKeepsDiffError": {
 			reason: "A render failure should be joined with the simulation's error, not replace it.",
-			args: args{cmd: Flags{Output: "xml"}, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+			args: args{cmd: Runner{Flags: &Flags{Output: "xml"}}, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
 				return changed(), errBoom
 			}}},
 			want: want{code: dp.ExitCodeToolError, err: errBoom, errMsg: "failed to render diffs", diffed: true},
 		},
 		"Namespaced": {
 			reason: "The namespace Validate scoped to should reach DiffComposition.",
-			args:   args{cmd: Flags{sel: CompositionFlags{ns: "team-a"}}, initClients: noInit, proc: &fakeCompProc{}},
+			args:   args{cmd: Runner{sel: CompositionFlags{ns: "team-a"}}, initClients: noInit, proc: &fakeCompProc{}},
 			want:   want{diffed: true, namespace: "team-a"},
 		},
 		"Scoped": {
 			reason: "The refs Validate scoped to should reach DiffComposition.",
-			args:   args{cmd: Flags{sel: CompositionFlags{refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}}}}, initClients: noInit, proc: &fakeCompProc{}},
+			args:   args{cmd: Runner{sel: CompositionFlags{refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}}}}, initClients: noInit, proc: &fakeCompProc{}},
 			want:   want{diffed: true, refs: []k8stypes.NamespacedName{{Namespace: "team-a", Name: "db"}}},
 		},
 		"ClientInitError": {
@@ -696,6 +698,9 @@ func TestSimulateRun(t *testing.T) {
 			}
 
 			// kong sets -o's default when it parses the flags.
+			if tc.args.cmd.Flags == nil {
+				tc.args.cmd.Flags = &Flags{}
+			}
 			if tc.args.cmd.Output == "" {
 				tc.args.cmd.Output = "plan"
 			}
@@ -711,7 +716,7 @@ func TestSimulateRun(t *testing.T) {
 				t.Errorf("\n%s\nsimulate(...): -want exit code, +got:\n%s", tc.reason, diff)
 			}
 			// Changes found return a silent ExitError, which main prints nothing for.
-			if _, silent := SilentExit(err); tc.want.err == nil && err != nil && !silent {
+			if _, silent := exitcode.SilentExit(err); tc.want.err == nil && err != nil && !silent {
 				t.Errorf("\n%s\nsimulate(...): want no error or a silent exit, got %v", tc.reason, err)
 			}
 			if tc.want.err != nil && !errors.Is(err, tc.want.err) {
@@ -864,7 +869,7 @@ func TestNoteNoServers(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			stderr := &bytes.Buffer{}
 			k := &kong.Context{Kong: &kong.Kong{Stderr: stderr}}
-			c := &Flags{Output: tc.output}
+			c := &Runner{Flags: &Flags{Output: tc.output}}
 			c.noteNoServers(k, tc.notes)
 			c.noteNoServers(k, tc.notes)
 			if diff := cmp.Diff(tc.want, stderr.String()); diff != "" {
@@ -934,9 +939,8 @@ func TestSimulateProcessorOptionsDockerNetwork(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseFlags(%v): %v", tc.args, err)
 			}
-			k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
 			cfg := dp.ProcessorConfig{}
-			for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil, fns, nil, nil) {
+			for _, o := range (&Runner{Flags: c}).processorOptions(dp.NewAdvisoryCollector(nil), logging.NewNopLogger(), nil, fns, nil, nil) {
 				o(&cfg)
 			}
 			if cfg.CrossplaneDockerNetwork != tc.want {
@@ -1038,7 +1042,7 @@ func TestDiffComposites(t *testing.T) {
 				}
 				return &dt.XRReport{Groups: []dt.XRDiffGroup{g}}, tc.diffErr
 			}}
-			c := &Flags{Output: "plan", NoColor: true}
+			c := &Runner{Flags: &Flags{Output: "plan", NoColor: true}}
 			stdout := &bytes.Buffer{}
 			k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: &bytes.Buffer{}}}
 			xp := &xpclient.Clients{Definition: defs, Composition: &testutils.MockCompositionClient{}}

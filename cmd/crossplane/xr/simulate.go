@@ -75,5 +75,5 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 	if err != nil {
 		return err
 	}
-	return c.Flags.Run(sigCtx, k, logger, sp, &simulate.Inputs{Composites: xrs})
+	return simulate.NewRunner(&c.Flags).Run(sigCtx, k, logger, sp, &simulate.Inputs{Composites: xrs})
 }

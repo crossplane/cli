@@ -19,34 +19,23 @@ package simulate
 import (
 	"time"
 
-	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
-	"github.com/crossplane/cli/v2/internal/diffserver"
 	"github.com/crossplane/cli/v2/internal/kube"
 	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
 
-// Flags are the flags, and the run state, of a simulate command.
+// Flags are the flags of a simulate command.
 type Flags struct {
 	// EngineFlags select the crossplane render backend, as for render. Its
 	// SessionID labels the diff server containers; the render's containers
 	// are labelled with the run's own ID, which reclaims them.
 	xprender.EngineFlags `prefix:"" set:"session_id_help=Session ID to apply as the simulate.crossplane.io/session label on diff server containers. Defaults to a random per-process ID. Ignored with --skip-plan."`
 
-	// Run sets these; nil with --skip-plan (servers also when Hooks.Router is set).
-	xrPlanner *XRPlanner
-	// keep is the equal-diff filter the engine and xrPlanner share.
-	keep    func(*un.Unstructured) bool
-	servers *diffserver.Manager
-	// noServersNoted is set once the "no diff servers" line is printed.
-	noServersNoted bool
-	// sel is Inputs.Selection, which Run copies in; zero without one.
-	sel      CompositionFlags
 	CacheDir string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents (functions and providers)." name:"cache-dir"`
 
 	Context       string        `help:"Kubernetes context to simulate against. Defaults to the current context." predictor:"context"                                                          short:"c"`

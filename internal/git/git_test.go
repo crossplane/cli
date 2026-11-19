@@ -566,3 +566,76 @@ func (m *MockCloner) CloneRepository(storage storage.Storer, fs billy.Filesystem
 	}
 	return nil, nil
 }
+
+func TestIsSSHURL(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		reason string
+		repo   string
+		want   bool
+	}{
+		"SCPStyle": {
+			reason: "An SCP-style URL is SSH.",
+			repo:   "git@github.com:org/repo.git",
+			want:   true,
+		},
+		"SSHScheme": {
+			reason: "An ssh:// URL is SSH.",
+			repo:   "ssh://git@github.com/org/repo.git",
+			want:   true,
+		},
+		"HTTPS": {
+			reason: "An https:// URL is not SSH.",
+			repo:   "https://github.com/org/repo.git",
+			want:   false,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if diff := cmp.Diff(tc.want, IsSSHURL(tc.repo)); diff != "" {
+				t.Errorf("\n%s\nIsSSHURL(%q): -want, +got:\n%s", tc.reason, tc.repo, diff)
+			}
+		})
+	}
+}
+
+func TestExtractSSHUsername(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		reason string
+		repo   string
+		want   string
+	}{
+		"SCPStyle": {
+			reason: "The user before @ in an SCP-style URL is returned.",
+			repo:   "git@github.com:org/repo.git",
+			want:   "git",
+		},
+		"SSHScheme": {
+			reason: "The userinfo of an ssh:// URL is returned.",
+			repo:   "ssh://alice@git.example.com/repo.git",
+			want:   "alice",
+		},
+		"SSHSchemePercentEncoded": {
+			reason: "Percent-encoded userinfo is decoded, matching go-git's endpoint parsing.",
+			repo:   "ssh://alice%40example.com@git.example.com/repo.git",
+			want:   "alice@example.com",
+		},
+		"HTTPS": {
+			reason: "A non-SSH URL has no SSH username.",
+			repo:   "https://github.com/org/repo.git",
+			want:   "",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if diff := cmp.Diff(tc.want, ExtractSSHUsername(tc.repo)); diff != "" {
+				t.Errorf("\n%s\nExtractSSHUsername(%q): -want, +got:\n%s", tc.reason, tc.repo, diff)
+			}
+		})
+	}
+}

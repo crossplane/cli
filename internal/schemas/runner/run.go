@@ -43,6 +43,7 @@ type SchemaRunner interface {
 // RealSchemaRunner implements the SchemaRunner interface.
 type RealSchemaRunner struct {
 	configStore xpkg.ConfigStore
+	envPrefixes []string
 }
 
 // NewRealSchemaRunner creates a new RealSchemaRunner.
@@ -57,6 +58,16 @@ func NewRealSchemaRunner(opts ...ROption) *RealSchemaRunner {
 // ROption configures the SchemaRunner.
 type ROption func(*RealSchemaRunner)
 
+// WithEnvPrefixes forwards environment variables with the given prefixes into
+// the tooling container, in addition to the default CROSSPLANE_ prefix. Host
+// CLIs use this to make their own variables visible to language tooling
+// (e.g. tests reading credentials from the environment).
+func WithEnvPrefixes(prefixes ...string) ROption {
+	return func(r *RealSchemaRunner) {
+		r.envPrefixes = append(r.envPrefixes, prefixes...)
+	}
+}
+
 // WithImageConfig adds image rewriting rules to the SchemaRunner.
 func WithImageConfig(cfgs []pkgv1beta1.ImageConfig) ROption {
 	return func(r *RealSchemaRunner) {
@@ -69,6 +80,9 @@ type GenerateOptions struct {
 	CopyToPath    string
 	CopyFromPath  string
 	WorkDirectory string
+
+	// VolumeMounts maps named Docker volumes to container paths.
+	VolumeMounts map[string]string
 }
 
 // Option is a function that modifies GenerateOptions.
@@ -92,6 +106,19 @@ func WithCopyFromPath(path string) Option {
 func WithWorkDirectory(dir string) Option {
 	return func(o *GenerateOptions) {
 		o.WorkDirectory = dir
+	}
+}
+
+// WithVolumeMount mounts a named Docker volume at the given path, e.g. to
+// give the container a cache that outlives it. Mounts are keyed by container
+// path, so one volume can be mounted at several paths; a second mount at the
+// same path replaces the first.
+func WithVolumeMount(name, containerPath string) Option {
+	return func(o *GenerateOptions) {
+		if o.VolumeMounts == nil {
+			o.VolumeMounts = make(map[string]string)
+		}
+		o.VolumeMounts[containerPath] = name
 	}
 }
 
@@ -132,19 +159,32 @@ func (r RealSchemaRunner) Generate(ctx context.Context, fromFS afero.Fs, baseFol
 		return errors.Wrapf(err, "failed to create tar from fs")
 	}
 
+	prefixes := append([]string{"CROSSPLANE_"}, r.envPrefixes...)
 	var envVars []string
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "CROSSPLANE_") {
-			envVars = append(envVars, e)
+		for _, prefix := range prefixes {
+			// An empty prefix would forward the entire host environment.
+			if prefix == "" {
+				continue
+			}
+			if strings.HasPrefix(e, prefix) {
+				envVars = append(envVars, e)
+				break
+			}
 		}
 	}
 
-	cid, err := docker.StartContainer(ctx, "", imageName,
+	startOpts := []docker.StartContainerOption{
 		docker.StartWithCopyFiles(tarBuffer, o.CopyToPath),
 		docker.StartWithCommand(command),
 		docker.StartWithEnv(envVars...),
 		docker.StartWithWorkingDirectory(o.WorkDirectory),
-	)
+	}
+	for path, name := range o.VolumeMounts {
+		startOpts = append(startOpts, docker.StartWithVolumeMount(name, path))
+	}
+
+	cid, err := docker.StartContainer(ctx, "", imageName, startOpts...)
 	if err != nil {
 		return err
 	}

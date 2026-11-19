@@ -36,19 +36,20 @@ import (
 //go:embed help/stop.md
 var stopHelp string
 
-// stopCmd tears down a local dev control plane.
-type stopCmd struct {
+// StopCmd tears down a local dev control plane.
+type StopCmd struct {
 	ProjectFile      string `default:"${project_file}"                                       help:"Path to project definition." short:"f"`
 	ControlPlaneName string `help:"Name of the dev control plane. Defaults to project name."`
 	RegistryDir      string `help:"Directory for local registry images."`
 }
 
-func (c *stopCmd) Help() string {
+// Help returns help for the stop command.
+func (c *StopCmd) Help() string {
 	return stopHelp
 }
 
 // Run executes the stop command.
-func (c *stopCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
+func (c *StopCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
 	ctx := context.Background()
 
 	name := c.ControlPlaneName

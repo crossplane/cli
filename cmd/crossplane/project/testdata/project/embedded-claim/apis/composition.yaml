@@ -10,7 +10,7 @@ spec:
   pipeline:
     - step: generate-resources
       functionRef:
-        name: example-itprojectrender
+        name: example-itprojectclaimrender
     - step: automatically-detect-ready-composed-resources
       functionRef:
         name: function-auto-ready

@@ -83,6 +83,9 @@ type CompositeResult struct {
 	// Composition is the Composition whose change reaches this composite,
 	// set only for a composition simulate run.
 	Composition *plan.ResourceRef `json:"composition,omitempty"`
+	// ComposedBy references the parent composite of a nested XR; nil for a
+	// top-level XR.
+	ComposedBy *plan.ResourceRef `json:"composedBy,omitempty"`
 }
 
 // Error is an error from a simulate run, optionally anchored to a resource.
@@ -348,6 +351,14 @@ func renderGrouped(w io.Writer, r Result, impacts map[plan.ResourceRef]string) {
 // and its plans indented beneath.
 func renderComposite(w io.Writer, c CompositeResult, ref plan.ResourceRef, plans []*plan.ResourcePlan) {
 	_, _ = fmt.Fprintln(w, compositeHeader(c, ref))
+	if c.ComposedBy != nil {
+		gvk := schema.FromAPIVersionAndKind(c.ComposedBy.APIVersion, c.ComposedBy.Kind)
+		name := c.ComposedBy.Name
+		if c.ComposedBy.Namespace != "" {
+			name = c.ComposedBy.Namespace + "/" + name
+		}
+		_, _ = fmt.Fprintf(w, "    ↳ composed by %s.%s %s\n", gvk.Kind, gvk.Group, name)
+	}
 	switch c.Status {
 	case CompositeDeferred:
 		pinned := "Pinned to a composition revision"

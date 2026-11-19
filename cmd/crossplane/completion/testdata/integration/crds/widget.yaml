@@ -1,0 +1,23 @@
+# A namespaced resource with a short name, for the resource and resource-name
+# predictors. It has no status subresource, so discovery lists no widgets/status.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: widgets.completion.example.org
+spec:
+  group: completion.example.org
+  names:
+    kind: Widget
+    listKind: WidgetList
+    plural: widgets
+    singular: widget
+    shortNames:
+      - wdg
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object

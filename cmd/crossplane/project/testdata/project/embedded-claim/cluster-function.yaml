@@ -4,6 +4,6 @@
 apiVersion: pkg.crossplane.io/v1beta1
 kind: Function
 metadata:
-  name: example-itprojectrender
+  name: example-itprojectclaimrender
 spec:
   package: xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0

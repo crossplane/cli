@@ -44,8 +44,8 @@ import (
 //go:embed help/push.md
 var pushHelp string
 
-// pushCmd pushes a built project to an OCI registry.
-type pushCmd struct {
+// PushCmd pushes a built project to an OCI registry.
+type PushCmd struct {
 	ProjectFile           string `default:"${project_file}"                                                  help:"Path to project definition."                                           short:"f"`
 	Repository            string `help:"Override the repository in the project file."                        optional:""`
 	Tag                   string `default:""                                                                 help:"Tag for the pushed package. Defaults to a time-based semver-like tag." short:"t"`
@@ -60,13 +60,14 @@ type pushCmd struct {
 	transport http.RoundTripper
 }
 
-func (c *pushCmd) Help() string {
+// Help returns help for the push command.
+func (c *PushCmd) Help() string {
 	return pushHelp
 }
 
 // AfterApply parses flags, reads the project file, and prepares the push
 // runtime (filesystem views and HTTP transport).
-func (c *pushCmd) AfterApply() error {
+func (c *PushCmd) AfterApply() error {
 	projFilePath, err := filepath.Abs(c.ProjectFile)
 	if err != nil {
 		return err
@@ -102,7 +103,7 @@ func (c *pushCmd) AfterApply() error {
 }
 
 // Run executes the push command.
-func (c *pushCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
+func (c *PushCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
 	ctx := context.Background()
 
 	if c.Repository != "" {
@@ -154,7 +155,7 @@ func (c *pushCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
 	return nil
 }
 
-func (c *pushCmd) loadPackages() (project.ImageTagMap, error) {
+func (c *PushCmd) loadPackages() (project.ImageTagMap, error) {
 	opener := func() (io.ReadCloser, error) {
 		return c.packageFS.Open(c.PackageFile)
 	}

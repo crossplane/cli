@@ -31,10 +31,10 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
-	"github.com/crossplane/cli/v2/internal/git"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/functions"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
@@ -50,26 +50,27 @@ import (
 //go:embed help/build.md
 var buildHelp string
 
-// buildCmd builds a project into Crossplane packages.
-type buildCmd struct {
+// BuildCmd builds a project into Crossplane packages.
+type BuildCmd struct {
+	common.GitFlags
+
 	ProjectFile    string `default:"${project_file}"                           help:"Path to project definition."                 short:"f"`
 	Repository     string `help:"Override the repository in the project file." optional:""`
 	OutputDir      string `default:"_output"                                   help:"Output directory for packages."              short:"o"`
 	MaxConcurrency uint   `default:"8"                                         help:"Max concurrent function builds."`
 	CacheDir       string `env:"CROSSPLANE_XPKG_CACHE"                         help:"Directory for cached xpkg package contents." name:"cache-dir"`
-	GitToken       string `env:"CROSSPLANE_GIT_TOKEN"                          help:"Token for git HTTPS authentication."`
-	GitUsername    string `default:"x-access-token"                            env:"CROSSPLANE_GIT_USERNAME"                      help:"Username for git HTTPS authentication."`
 
 	proj   *devv1alpha1.Project
 	projFS afero.Fs
 }
 
-func (c *buildCmd) Help() string {
+// Help returns help for the build command.
+func (c *BuildCmd) Help() string {
 	return buildHelp
 }
 
 // AfterApply parses flags and reads the project file.
-func (c *buildCmd) AfterApply() error {
+func (c *BuildCmd) AfterApply() error {
 	projFilePath, err := filepath.Abs(c.ProjectFile)
 	if err != nil {
 		return err
@@ -88,7 +89,7 @@ func (c *buildCmd) AfterApply() error {
 }
 
 // Run executes the build command.
-func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
+func (c *BuildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
 	if c.Repository != "" {
@@ -114,20 +115,16 @@ func (c *buildCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *c
 		return errors.Wrap(err, "cannot create xpkg client")
 	}
 
-	opts := []dependency.ManagerOption{
+	gitOpts := c.ManagerOptions()
+	opts := make([]dependency.ManagerOption, 0, 5+len(gitOpts))
+	opts = append(opts,
 		dependency.WithProjectFile(c.ProjectFile),
 		dependency.WithSchemaFS(schemasFS),
 		dependency.WithSchemaGenerators(generators),
 		dependency.WithSchemaRunner(schemaRunner),
 		dependency.WithXpkgClient(client),
-	}
-
-	if c.GitToken != "" {
-		opts = append(opts, dependency.WithGitAuthProvider(&git.HTTPSAuthProvider{
-			Username: c.GitUsername,
-			Password: c.GitToken,
-		}))
-	}
+	)
+	opts = append(opts, gitOpts...)
 
 	depMgr := dependency.NewManager(c.proj, c.projFS, opts...)
 

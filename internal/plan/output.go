@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -262,6 +263,10 @@ func renderChangeTree(w io.Writer, changes []FieldChange) {
 		}
 		switch {
 		case c.Actual != nil && c.Planned != nil:
+			if actual, planned, ok := plainArrays(c.Actual, c.Planned); ok {
+				renderArrayChange(w, indent, leaf, actual, planned, note)
+				continue
+			}
 			_, _ = fmt.Fprintf(w, "%s~ %s: %s -> %s%s\n", indent, leaf, FormatValue(c.Actual), FormatValue(c.Planned), note)
 		case c.Planned != nil:
 			_, _ = fmt.Fprintf(w, "%s+ %s: %s%s\n", indent, leaf, FormatValue(c.Planned), note)
@@ -361,6 +366,62 @@ func SortedChanges(changes []FieldChange) []FieldChange {
 	return slices.SortedStableFunc(slices.Values(changes), func(a, b FieldChange) int {
 		return strings.Compare(a.Path, b.Path)
 	})
+}
+
+// plainArrays returns both sides of a change as arrays when both are
+// concrete array values.
+func plainArrays(actual, planned *Value) ([]any, []any, bool) {
+	if actual.Unknown || actual.Sensitive || actual.Unresolved ||
+		planned.Unknown || planned.Sensitive || planned.Unresolved {
+		return nil, nil, false
+	}
+	a, ok := actual.Value.([]any)
+	if !ok {
+		return nil, nil, false
+	}
+	p, ok := planned.Value.([]any)
+	if !ok {
+		return nil, nil, false
+	}
+	return a, p, true
+}
+
+// renderArrayChange renders a whole-array change element by element. The
+// differ reports an array whose element count changed as a single change;
+// dumping both sides as JSON buries e.g. a one-step Composition pipeline
+// insertion in two full copies of the pipeline. Aligning on the longest
+// common prefix and suffix shows only the elements that differ.
+func renderArrayChange(w io.Writer, indent, leaf string, actual, planned []any, note string) {
+	prefix := 0
+	for prefix < len(actual) && prefix < len(planned) && reflect.DeepEqual(actual[prefix], planned[prefix]) {
+		prefix++
+	}
+	suffix := 0
+	for suffix < len(actual)-prefix && suffix < len(planned)-prefix &&
+		reflect.DeepEqual(actual[len(actual)-1-suffix], planned[len(planned)-1-suffix]) {
+		suffix++
+	}
+
+	_, _ = fmt.Fprintf(w, "%s~ %s (%d -> %d items):%s\n", indent, leaf, len(actual), len(planned), note)
+	inner := indent + "  "
+	aMid := actual[prefix : len(actual)-suffix]
+	pMid := planned[prefix : len(planned)-suffix]
+	for i := 0; i < len(aMid) || i < len(pMid); i++ {
+		switch {
+		case i < len(aMid) && i < len(pMid):
+			_, _ = fmt.Fprintf(w, "%s~ [%d]: %s -> %s\n", inner, prefix+i, formatElement(aMid[i]), formatElement(pMid[i]))
+		case i < len(pMid):
+			_, _ = fmt.Fprintf(w, "%s+ [%d]: %s\n", inner, prefix+i, formatElement(pMid[i]))
+		default:
+			_, _ = fmt.Fprintf(w, "%s- [%d]: %s\n", inner, prefix+i, formatElement(aMid[i]))
+		}
+	}
+}
+
+// formatElement renders one array element the way FormatValue renders a
+// concrete value.
+func formatElement(v any) string {
+	return FormatValue(&Value{Value: v})
 }
 
 // FormatValue renders one side of a change for humans.

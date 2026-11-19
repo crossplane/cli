@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package simulate
+package exitcode
 
 import (
 	"testing"
@@ -38,12 +38,12 @@ func TestSilentExit(t *testing.T) {
 		want   want
 	}{
 		"Nil":      {reason: "No error isn't a silent exit.", args: args{err: nil}},
-		"Silent":   {reason: "A silent ExitError value exits silently with its code.", args: args{err: ExitError{Code: ExitCodeChanges}}, want: want{code: ExitCodeChanges, silent: true}},
+		"Silent":   {reason: "A silent ExitError value exits silently with its code.", args: args{err: ExitError{Code: ExitCodeUsage}}, want: want{code: ExitCodeUsage, silent: true}},
 		"WithErr":  {reason: "An ExitError with an error is printed.", args: args{err: ExitError{Code: 2, Err: errors.New("boom")}}},
-		"Wrapped":  {reason: "A wrapped silent ExitError is printed, so the wrapper's message isn't lost.", args: args{err: errors.Wrap(ExitError{Code: ExitCodeChanges}, "boom")}},
-		"KongJoin": {reason: "kong's Run joins a silent ExitError with nil hook errors, which still exits silently.", args: args{err: errors.Join(ExitError{Code: ExitCodeChanges}, nil)}, want: want{code: ExitCodeChanges, silent: true}},
-		"Joined":   {reason: "A silent ExitError joined with a real error is printed.", args: args{err: errors.Join(ExitError{Code: ExitCodeChanges}, errors.New("boom"))}},
-		"Pointer":  {reason: "A pointer isn't matched; ExitError must be returned by value.", args: args{err: &ExitError{Code: ExitCodeChanges}}},
+		"Wrapped":  {reason: "A wrapped silent ExitError is printed, so the wrapper's message isn't lost.", args: args{err: errors.Wrap(ExitError{Code: ExitCodeUsage}, "boom")}},
+		"KongJoin": {reason: "kong's Run joins a silent ExitError with nil hook errors, which still exits silently.", args: args{err: errors.Join(ExitError{Code: ExitCodeUsage}, nil)}, want: want{code: ExitCodeUsage, silent: true}},
+		"Joined":   {reason: "A silent ExitError joined with a real error is printed.", args: args{err: errors.Join(ExitError{Code: ExitCodeUsage}, errors.New("boom"))}},
+		"Pointer":  {reason: "A pointer isn't matched; ExitError must be returned by value.", args: args{err: &ExitError{Code: ExitCodeUsage}}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

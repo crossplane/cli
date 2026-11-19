@@ -68,6 +68,14 @@ func SupportedSchemaLanguages() []string {
 	}
 }
 
+// APIVersion and Kind identify a Project in its serialized form.
+const (
+	// APIVersion is the apiVersion of a Project file.
+	APIVersion = "dev.crossplane.io/v1alpha1"
+	// Kind is the kind of a Project file.
+	Kind = "Project"
+)
+
 // Project defines a Crossplane Project, which can be built into a Crossplane
 // Configuration package.
 //

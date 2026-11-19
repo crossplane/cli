@@ -18,6 +18,7 @@ package health
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 	"unicode/utf8"
 
@@ -385,4 +386,48 @@ func SummaryLine(c Counts) string {
 	}
 
 	return "Health: " + strings.Join(parts, "; ") + "."
+}
+
+// Entry is a composite entry in a run's output, for OwnedElsewhere: its Key,
+// whether it has health of its own, and the Keys of what it composes.
+type Entry struct {
+	Key       string
+	HasHealth bool
+	Composes  []string
+}
+
+// OwnedElsewhere returns, for each of entries, the Keys it must not list
+// because a nested composite entry with health of its own lists them: that
+// nested composite, and what it composes. So a resource is listed under the
+// most deeply nested composite entry that composes it, once. An entry without
+// health is listed by its parent, as a resource.
+func OwnedElsewhere(entries []Entry) []map[string]bool {
+	composes := make([]map[string]bool, len(entries))
+	withHealth := map[string][]int{}
+
+	for i, e := range entries {
+		composes[i] = map[string]bool{}
+		for _, k := range e.Composes {
+			composes[i][k] = true
+		}
+
+		if e.HasHealth {
+			withHealth[e.Key] = append(withHealth[e.Key], i)
+		}
+	}
+
+	out := make([]map[string]bool, len(entries))
+
+	for i := range entries {
+		out[i] = map[string]bool{}
+
+		for k := range composes[i] {
+			for _, j := range withHealth[k] {
+				out[i][k] = true
+				maps.Copy(out[i], composes[j])
+			}
+		}
+	}
+
+	return out
 }

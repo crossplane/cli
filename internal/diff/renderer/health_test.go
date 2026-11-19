@@ -196,7 +196,11 @@ Health: 1 of 1 XR unhealthy before apply; 1 resource failing (Synced=False).
 func TestRenderCompDiffHealth(t *testing.T) {
 	failing := &health.Health{State: health.Failing, Synced: &health.Condition{Status: "False", Reason: "ReconcileError", Message: "boom"}}
 	notReady := &health.Health{State: health.NotReady, Ready: &health.Condition{Status: "False", Reason: "Creating"}}
+	healthy := &health.Health{State: health.Healthy}
 	rt := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "RouteTable", Name: "rt"}
+	p := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XBucket", Name: "p"}
+	c := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XBucket", Name: "c"}
+	sn := corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "Subnet", Name: "sn"}
 
 	type args struct {
 		impacts []dt.XRImpact
@@ -239,6 +243,43 @@ XR: XBucket/ns/a
     RouteTable/rt ⚠ not ready (Ready=False, Creating)
 
 Health: 1 of 2 XRs unhealthy before apply; 1 resource not ready.
+`,
+		},
+		"NestedListsItsOwn": {
+			reason: "A nested XR listed with health of its own lists what it composes; its parent lists neither, so each resource is listed once, as in plan output.",
+			args: args{impacts: []dt.XRImpact{
+				{
+					ObjectReference: p,
+					Status:          dt.XRStatusUnchanged,
+					Health:          dt.CompositeHealth{XR: healthy, Composed: []dt.ResourceHealth{{ObjectReference: c, Health: notReady}, {ObjectReference: sn, Via: &c, Health: failing}}},
+				},
+				{
+					ObjectReference: c,
+					Status:          dt.XRStatusUnchanged,
+					ComposedBy:      &p,
+					Health:          dt.CompositeHealth{XR: notReady, Composed: []dt.ResourceHealth{{ObjectReference: sn, Health: failing}}},
+				},
+			}},
+			want: `=== Composition Changes ===
+
+No changes detected in composition xbuckets.example.org
+
+=== Affected Composite Resources ===
+
+  ✓ XBucket/p (cluster-scoped)
+  ✓ XBucket/c (cluster-scoped) ⚠ not ready (Ready=False, Creating)
+
+Summary: 2 resources unchanged
+
+=== Impact Analysis ===
+
+All composite resources are up-to-date. No downstream resource changes detected.
+
+XR: XBucket/c
+  Unhealthy resources without changes:
+    Subnet/sn ⚠ failing (Synced=False, ReconcileError): boom
+
+Health: 1 of 2 XRs unhealthy before apply; 1 resource failing (Synced=False).
 `,
 		},
 	}

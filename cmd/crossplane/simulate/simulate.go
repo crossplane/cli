@@ -93,11 +93,10 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		return errors.Errorf("no resources found in %q", c.Filename)
 	}
 
-	renderer, err := plan.NewRenderer(c.Output, c.FullMessages)
+	renderer, err := c.renderer(k)
 	if err != nil {
 		return err
 	}
-	isimulate.WarnIgnoredFullMessages(k.Stderr, isimulate.SetFlags(k), c.Output)
 
 	var inputs []diffserver.Input
 	if c.Providers != "" {
@@ -154,7 +153,23 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		plans = append(plans, planner.Plan(ctx, desired))
 	}
 
-	if err := renderer.Render(k.Stdout, plans); err != nil {
+	return report(k, renderer, plans)
+}
+
+// renderer builds the renderer for --output and --full-messages, and warns on
+// k.Stderr when --full-messages is set but has no effect.
+func (c *Cmd) renderer(k *kong.Context) (plan.Renderer, error) {
+	r, err := plan.NewRenderer(c.Output, c.FullMessages)
+	if err != nil {
+		return nil, err
+	}
+	isimulate.WarnIgnoredFullMessages(k.Stderr, isimulate.SetFlags(k), c.Output)
+	return r, nil
+}
+
+// report renders plans to k.Stdout and returns the run's exit status.
+func report(k *kong.Context, r plan.Renderer, plans []*plan.ResourcePlan) error {
+	if err := r.Render(k.Stdout, plans); err != nil {
 		return err
 	}
 	return exitStatus(plans)

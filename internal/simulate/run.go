@@ -254,9 +254,9 @@ func (c *Runner) diffComposites(k *kong.Context, logger logging.Logger, proc dp.
 	}
 }
 
-// setFlags returns the names of the flags set on the command line, not
+// SetFlags returns the names of the flags set on the command line, not
 // those left at their defaults or set from the environment.
-func setFlags(k *kong.Context) map[string]bool {
+func SetFlags(k *kong.Context) map[string]bool {
 	set := map[string]bool{}
 	for _, p := range k.Path {
 		if p.Flag != nil {
@@ -605,7 +605,7 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 		c.sel = *in.Selection
 	}
 	project := in.Build != nil
-	warnIgnoredFlags(k.Stderr, setFlags(k), c.Output, c.SkipPlan, project)
+	warnIgnoredFlags(k.Stderr, SetFlags(k), c.Output, c.SkipPlan, project)
 
 	if err := docker.Check(sigCtx); err != nil {
 		return errors.Wrap(err, "cannot connect to Docker, which simulate needs to run functions")
@@ -721,6 +721,13 @@ func warnIgnoredFlags(stderr io.Writer, set map[string]bool, output string, skip
 	if !project && skipPlan && set["cache-dir"] {
 		_, _ = fmt.Fprintln(stderr, "Warning: ignoring --cache-dir; with --skip-plan and no project file there is nothing to cache.")
 	}
+	WarnIgnoredFullMessages(stderr, set, output)
+}
+
+// WarnIgnoredFullMessages prints a warning to stderr if --full-messages was
+// set on the command line with json or yaml output, which always carries
+// messages in full.
+func WarnIgnoredFullMessages(stderr io.Writer, set map[string]bool, output string) {
 	if set["full-messages"] && (output == plan.FormatJSON || output == plan.FormatYAML) {
 		_, _ = fmt.Fprintf(stderr, "Warning: ignoring --full-messages; -o %s always prints messages in full.\n", output)
 	}

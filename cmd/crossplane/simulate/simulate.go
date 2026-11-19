@@ -97,6 +97,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 	if err != nil {
 		return err
 	}
+	isimulate.WarnIgnoredFullMessages(k.Stderr, isimulate.SetFlags(k), c.Output)
 
 	var inputs []diffserver.Input
 	if c.Providers != "" {

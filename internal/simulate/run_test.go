@@ -882,7 +882,7 @@ func TestWarnIgnoredFlags(t *testing.T) {
 			}
 
 			var stderr bytes.Buffer
-			warnIgnoredFlags(&stderr, setFlags(k), tc.output, tc.skipPlan, tc.project)
+			warnIgnoredFlags(&stderr, SetFlags(k), tc.output, tc.skipPlan, tc.project)
 			if tc.warn == "" && stderr.Len() > 0 || !strings.Contains(stderr.String(), tc.warn) {
 				t.Errorf("\n%s\nwarnIgnoredFlags(...): want warning containing %q, got %q", tc.reason, tc.warn, stderr.String())
 			}

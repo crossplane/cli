@@ -17,14 +17,17 @@ limitations under the License.
 package simulate
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
+	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
+	isimulate "github.com/crossplane/cli/v2/internal/simulate"
 )
 
 func TestExitStatus(t *testing.T) {
@@ -125,6 +128,58 @@ func TestHelp(t *testing.T) {
 			got := strings.Contains((&Cmd{}).Help(), tc.args.want)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("\n%s\nHelp() contains %q: -want, +got:\n%s", tc.reason, tc.args.want, diff)
+			}
+		})
+	}
+}
+
+func TestWarnIgnoredFullMessages(t *testing.T) {
+	type args struct {
+		args []string
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   string
+	}{
+		"SetWithJSON": {
+			reason: "json always carries messages in full, so --full-messages is ignored with a warning.",
+			args:   args{args: []string{"-f", "x.yaml", "--full-messages", "-o", "json"}},
+			want:   "Warning: ignoring --full-messages; -o json always prints messages in full.\n",
+		},
+		"SetWithYAML": {
+			reason: "yaml always carries messages in full, so --full-messages is ignored with a warning.",
+			args:   args{args: []string{"-f", "x.yaml", "--full-messages", "-o", "yaml"}},
+			want:   "Warning: ignoring --full-messages; -o yaml always prints messages in full.\n",
+		},
+		"SetWithPlan": {
+			reason: "--full-messages applies to the default plan output, so there's no warning.",
+			args:   args{args: []string{"-f", "x.yaml", "--full-messages"}},
+		},
+		"UnsetWithJSON": {
+			reason: "--full-messages left at its default isn't warned about.",
+			args:   args{args: []string{"-f", "x.yaml", "-o", "json"}},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var cli struct {
+				Simulate Cmd `cmd:""`
+			}
+			parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}))
+			if err != nil {
+				t.Fatalf("kong.New(...): %v", err)
+			}
+			k, err := parser.Parse(append([]string{"simulate"}, tc.args.args...))
+			if err != nil {
+				t.Fatalf("Parse(%v): %v", tc.args.args, err)
+			}
+
+			var stderr bytes.Buffer
+			isimulate.WarnIgnoredFullMessages(&stderr, isimulate.SetFlags(k), cli.Simulate.Output)
+			if diff := cmp.Diff(tc.want, stderr.String()); diff != "" {
+				t.Errorf("\n%s\nWarnIgnoredFullMessages(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

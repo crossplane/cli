@@ -434,98 +434,30 @@ func NewHTTPSource(dep v1alpha1.Dependency) Source {
 
 // k8sOpenAPISource is a source that generates OpenAPI schemas for Kubernetes
 // built-in APIs by downloading the swagger spec.
-type k8sOpenAPISource struct {
-	k8sRef *v1alpha1.K8sDependency
-	client *http.Client
-	fs     afero.Fs
-}
-
-func (k *k8sOpenAPISource) ID() string {
-	return fmt.Sprintf("k8s://%s", k.k8sRef.Version)
-}
-
-func (k *k8sOpenAPISource) Version(_ context.Context) (string, error) {
-	return k.k8sRef.Version, nil
-}
-
-func (k *k8sOpenAPISource) Resources(ctx context.Context) (afero.Fs, error) {
-	if k.fs != nil {
-		return k.fs, nil
-	}
-
-	// Download the OpenAPI v3 spec from the Kubernetes repo
-	specURL := fmt.Sprintf("https://raw.githubusercontent.com/kubernetes/kubernetes/v%s/api/openapi-spec/v3/api__v1_openapi.json", strings.TrimPrefix(k.k8sRef.Version, "v"))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, specURL, nil)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to create request")
-	}
-
-	resp, err := k.client.Do(req)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to fetch Kubernetes OpenAPI spec")
-	}
-	defer resp.Body.Close() //nolint:errcheck // nothing to do
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, errors.Errorf("failed to download Kubernetes OpenAPI spec: HTTP %d", resp.StatusCode)
-	}
-
-	content, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPSize))
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to read Kubernetes OpenAPI spec")
-	}
-
-	resultFS := afero.NewMemMapFs()
-	if err := afero.WriteFile(resultFS, "api__v1_openapi.json", content, 0o644); err != nil {
-		return nil, errors.Wrap(err, "failed to write OpenAPI spec")
-	}
-
-	// Also try to download the apis specs
-	apisGroups := []string{
-		"apis__apps__v1",
-		"apis__autoscaling__v1",
-		"apis__batch__v1",
-		"apis__networking.k8s.io__v1",
-		"apis__policy__v1",
-		"apis__rbac.authorization.k8s.io__v1",
-		"apis__storage.k8s.io__v1",
-	}
-
-	for _, group := range apisGroups {
-		groupURL := fmt.Sprintf("https://raw.githubusercontent.com/kubernetes/kubernetes/v%s/api/openapi-spec/v3/%s_openapi.json", strings.TrimPrefix(k.k8sRef.Version, "v"), group)
-		groupReq, err := http.NewRequestWithContext(ctx, http.MethodGet, groupURL, nil)
-		if err != nil {
-			continue
-		}
-
-		groupResp, err := k.client.Do(groupReq)
-		if err != nil {
-			continue
-		}
-
-		if groupResp.StatusCode == http.StatusOK {
-			groupContent, err := io.ReadAll(io.LimitReader(groupResp.Body, maxHTTPSize))
-			if err == nil {
-				_ = afero.WriteFile(resultFS, group+"_openapi.json", groupContent, 0o644)
-			}
-		}
-		_ = groupResp.Body.Close()
-	}
-
-	k.fs = resultFS
-	return k.fs, nil
-}
-
-func (k *k8sOpenAPISource) Type() SourceType {
-	return SourceTypeOpenAPI
-}
-
-// NewK8sSource returns a source for Kubernetes built-in APIs.
+// NewK8sSource returns a source for Kubernetes built-in APIs. The OpenAPI
+// specs are taken from a sparse checkout of kubernetes/kubernetes at the
+// requested version, which carries the complete spec set: every API group
+// and version, not just a fixed list. The checkout is shallow and limited to
+// api/openapi-spec.
 func NewK8sSource(dep v1alpha1.Dependency) Source {
-	return &k8sOpenAPISource{
-		k8sRef: dep.K8s,
-		client: &http.Client{
-			Timeout: defaultHTTPTimeout,
+	return NewGitSource(k8sAsGitDependency(dep), &git.DefaultCloner{}, &git.HTTPSAuthProvider{})
+}
+
+// k8sAsGitDependency converts a k8s dependency to the git dependency its
+// specs are fetched through. The dependency keeps its k8s type, so the git
+// source treats the files as OpenAPI documents.
+func k8sAsGitDependency(dep v1alpha1.Dependency) v1alpha1.Dependency {
+	version := dep.K8s.Version
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
+	}
+	return v1alpha1.Dependency{
+		Type: v1alpha1.DependencyTypeK8s,
+		K8s:  dep.K8s,
+		Git: &v1alpha1.GitDependency{
+			Repository: "https://github.com/kubernetes/kubernetes",
+			Ref:        version,
+			Path:       "api/openapi-spec",
 		},
 	}
 }

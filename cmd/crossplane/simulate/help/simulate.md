@@ -90,7 +90,7 @@ The `-o` flag picks the output format:
 
 - `plan`, the default, prints each resource's field-level plan, including
   the resources it leaves unchanged. A resource whose live object isn't
-  healthy before apply gets a `⚠` line under its plan: `failing` (its Synced
+  healthy before apply gets a `⚠` line under its header: `failing` (its Synced
   condition is False), `not ready` (its Ready condition is False) or `paused`
   (it carries the `crossplane.io/paused: "true"` annotation, whatever its
   conditions), with the condition's reason and message. A `Health:` line

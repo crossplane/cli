@@ -17,7 +17,6 @@ limitations under the License.
 package dependency
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -25,7 +24,6 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 
-	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/cmd/crossplane/common"
@@ -33,11 +31,8 @@ import (
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
-	"github.com/crossplane/cli/v2/internal/schemas/manager"
-	"github.com/crossplane/cli/v2/internal/schemas/runner"
 	"github.com/crossplane/cli/v2/internal/terminal"
-	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/project"
 
 	_ "embed"
 )
@@ -73,56 +68,17 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 		return err
 	}
 
-	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
-	if err != nil {
-		return errors.Wrap(err, "cannot create xpkg client")
-	}
-
-	generators := generator.Filter(
-		generator.AllLanguages(
-			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
-		),
-		proj.Spec.Schemas.GetLanguages(),
-	)
-
-	gitOpts := c.ManagerOptions()
-	opts := make([]dependency.ManagerOption, 0, 3+len(gitOpts))
-	opts = append(opts,
-		dependency.WithProjectFile(c.ProjectFile),
-		dependency.WithSchemaGenerators(generators),
-		dependency.WithXpkgClient(client),
-	)
-	opts = append(opts, gitOpts...)
-
-	m := dependency.NewManager(proj, projFS, opts...)
-
 	logger.Debug("Updating all dependencies")
 	return sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
-		if err := m.RefreshAll(ctx, ch); err != nil {
-			return err
-		}
-
-		// Also regenerate schemas for the project's own APIs, so the models
-		// are complete without a build (e.g. for language tooling in
-		// functions and tests that import them).
-		apisExist, err := afero.DirExists(projFS, proj.Spec.Paths.APIs)
-		if err != nil || !apisExist {
-			return err
-		}
-
-		ch.SendEvent("Generating project API schemas", async.EventStatusStarted)
-		schemasFS := afero.NewBasePathFs(projFS, proj.Spec.Paths.Schemas)
-		schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(proj.Spec.ImageConfigs))
-		schemaMgr := manager.New(schemasFS, generators, schemaRunner)
-		apisFS := afero.NewBasePathFs(projFS, proj.Spec.Paths.APIs)
-		if _, err := schemaMgr.Generate(ctx, manager.NewFSSource(proj.Spec.Paths.APIs, apisFS)); err != nil {
-			ch.SendEvent("Generating project API schemas", async.EventStatusFailure)
-			return errors.Wrap(err, "failed to generate project API schemas")
-		}
-		ch.SendEvent("Generating project API schemas", async.EventStatusSuccess)
-
-		return nil
+		return project.UpdateSchemas(ctx, cfg, proj, projFS, project.UpdateSchemasOptions{
+			CacheDir:           c.CacheDir,
+			GitUsername:        c.GitUsername,
+			GitToken:           c.GitToken,
+			GitProxy:           c.GitProxy,
+			GitInsecureHostKey: c.GitInsecureHostKey,
+			Refresh:            true,
+			EventChannel:       ch,
+		})
 	})
 }
 

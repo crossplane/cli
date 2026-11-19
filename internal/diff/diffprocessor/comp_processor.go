@@ -527,6 +527,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// list them or only count them is the renderer's decision (see CompositionDiff.Scoped).
 	for _, d := range droppedXRs {
 		result.ImpactAnalysis = append(result.ImpactAnalysis, dt.XRImpact{
+			ComposedBy: parentCompositeRef(d.xr, nil),
 			ObjectReference: corev1.ObjectReference{
 				APIVersion: d.xr.GetAPIVersion(),
 				Kind:       d.xr.GetKind(),
@@ -1463,11 +1464,19 @@ func (p *DefaultCompDiffProcessor) buildImpactAnalysis(xrs []*un.Unstructured, r
 		Total: len(xrs),
 	}
 
+	// Parents referenced by nested XRs are usually in the batch; index them
+	// so ComposedBy can report the parent's own namespace rather than
+	// assuming the child's (a cluster-scoped parent has none).
+	byIdentity := make(map[string]*un.Unstructured, len(xrs))
+	for _, xr := range xrs {
+		byIdentity[xrIdentity(xr.GetAPIVersion(), xr.GetKind(), xr.GetName())] = xr
+	}
+
 	for _, xr := range xrs {
 		resourceID := dt.MakeDiffKeyFromResource(xr)
 		result := results[resourceID]
 
-		impact := dt.XRImpact{ObjectReference: objectRef(xr)}
+		impact := dt.XRImpact{ObjectReference: objectRef(xr), ComposedBy: parentCompositeRef(xr, byIdentity)}
 
 		switch {
 		case result != nil && result.HasError():
@@ -1494,4 +1503,41 @@ func (p *DefaultCompDiffProcessor) buildImpactAnalysis(xrs []*un.Unstructured, r
 	}
 
 	return impacts, summary
+}
+
+// parentCompositeRef returns a reference to the parent composite of a nested XR,
+// derived from its controller owner reference; nil for a top-level XR. Only
+// an XR that carries the composite label is considered nested.
+//
+// An owner reference is either in the owner's namespace (which, for owner
+// references, is the child's) or cluster-scoped, and carries no namespace of
+// its own. When the parent is in byIdentity its own namespace is
+// authoritative; otherwise the child's namespace is used, which is correct
+// for a namespaced parent and spurious only for a cluster-scoped parent
+// outside the processed set.
+func parentCompositeRef(xr *un.Unstructured, byIdentity map[string]*un.Unstructured) *corev1.ObjectReference {
+	if _, ok := xr.GetLabels()[LabelComposite]; !ok {
+		return nil
+	}
+	for _, ref := range xr.GetOwnerReferences() {
+		if ref.Controller == nil || !*ref.Controller {
+			continue
+		}
+		namespace := xr.GetNamespace()
+		if parent, ok := byIdentity[xrIdentity(ref.APIVersion, ref.Kind, ref.Name)]; ok {
+			namespace = parent.GetNamespace()
+		}
+		return &corev1.ObjectReference{
+			APIVersion: ref.APIVersion,
+			Kind:       ref.Kind,
+			Name:       ref.Name,
+			Namespace:  namespace,
+		}
+	}
+	return nil
+}
+
+// xrIdentity keys an XR by apiVersion, kind, and name.
+func xrIdentity(apiVersion, kind, name string) string {
+	return apiVersion + "|" + kind + "|" + name
 }

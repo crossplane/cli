@@ -136,8 +136,6 @@ func TestSimulateScope(t *testing.T) {
 }
 
 func TestSimulateProcessorOptions(t *testing.T) {
-	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: stderr}}
 	c := &Runner{sel: CompositionFlags{IncludePinned: true, AnalyzeOn: "spec-change"}, Flags: &Flags{
 		MaxIterations: 7,
 		EngineFlags:   xprender.EngineFlags{CrossplaneVersion: "v2.3.4", CrossplaneDockerNetwork: "ci"},
@@ -151,8 +149,12 @@ func TestSimulateProcessorOptions(t *testing.T) {
 
 	creds := []corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "creds"}}}
 	cfg := dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), creds, []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn"}}}, nil, nil) {
+	advisories := dp.NewAdvisoryCollector(nil)
+	for _, o := range c.processorOptions(advisories, logging.NewNopLogger(), creds, []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn"}}}, nil, nil) {
 		o(&cfg)
+	}
+	if cfg.Advisories != advisories {
+		t.Error("processorOptions(...): the injected advisory collector was not preserved; Run would summarize a collector that received no advisories")
 	}
 
 	type got struct {
@@ -209,7 +211,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	// Without project functions or ImageConfigs every function comes from the
 	// cluster as is, so there is nothing to wrap.
 	cfg = dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil, nil, nil, nil) {
+	for _, o := range c.processorOptions(dp.NewAdvisoryCollector(nil), logging.NewNopLogger(), nil, nil, nil, nil) {
 		o(&cfg)
 	}
 	if cfg.Factories.FunctionProvider != nil {
@@ -218,7 +220,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 
 	// ImageConfigs alone still wrap the cluster's functions.
 	cfg = dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil, nil, nil, []pkgv1beta1.ImageConfig{{}}) {
+	for _, o := range c.processorOptions(dp.NewAdvisoryCollector(nil), logging.NewNopLogger(), nil, nil, nil, []pkgv1beta1.ImageConfig{{}}) {
 		o(&cfg)
 	}
 	if cfg.Factories.FunctionProvider == nil {
@@ -228,7 +230,7 @@ func TestSimulateProcessorOptions(t *testing.T) {
 	// --crossplane-binary renders with a local binary.
 	c.EngineFlags = xprender.EngineFlags{CrossplaneBinary: "/bin/crossplane"}
 	cfg = dp.ProcessorConfig{}
-	for _, o := range c.processorOptions(k, logging.NewNopLogger(), nil, nil, nil, nil) {
+	for _, o := range c.processorOptions(dp.NewAdvisoryCollector(nil), logging.NewNopLogger(), nil, nil, nil, nil) {
 		o(&cfg)
 	}
 	if cfg.CrossplaneRenderBinary != "/bin/crossplane" {
@@ -937,9 +939,8 @@ func TestSimulateProcessorOptionsDockerNetwork(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseFlags(%v): %v", tc.args, err)
 			}
-			k := &kong.Context{Kong: &kong.Kong{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}}
 			cfg := dp.ProcessorConfig{}
-			for _, o := range (&Runner{Flags: c}).processorOptions(k, logging.NewNopLogger(), nil, fns, nil, nil) {
+			for _, o := range (&Runner{Flags: c}).processorOptions(dp.NewAdvisoryCollector(nil), logging.NewNopLogger(), nil, fns, nil, nil) {
 				o(&cfg)
 			}
 			if cfg.CrossplaneDockerNetwork != tc.want {

@@ -136,6 +136,9 @@ reviews:
 
   # Automatic review settings
   auto_review:
+    # Disable auto-review; we're preferring Copilot reviews now.
+    enabled: false
+
     # Skip reviewing draft PRs until they're ready for review (default: false, keeping explicit)
     drafts: false
 

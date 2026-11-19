@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -127,9 +128,27 @@ func BuildWithTempDir(dir string) BuilderOption {
 type BuildOption func(o *buildOptions)
 
 type buildOptions struct {
-	log             logging.Logger
-	projectBasePath string
-	eventCh         async.EventChannel
+	log              logging.Logger
+	projectBasePath  string
+	eventCh          async.EventChannel
+	extraAnnotations map[string]string
+	ignore           *IgnoreMatcher
+}
+
+// BuildWithExtraAnnotations adds annotations to the built packages' metadata,
+// on the configuration and every embedded function.
+func BuildWithExtraAnnotations(annotations map[string]string) BuildOption {
+	return func(o *buildOptions) {
+		o.extraAnnotations = annotations
+	}
+}
+
+// BuildWithIgnore excludes files matching the given gitignore-style patterns
+// (relative to the project root) from resource collection during the build.
+func BuildWithIgnore(patterns []string) BuildOption {
+	return func(o *buildOptions) {
+		o.ignore = NewIgnoreMatcher(patterns)
+	}
 }
 
 // BuildWithLogger provides a logger for progress updates during the build.
@@ -193,7 +212,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 			APIVersion: xpmetav1.SchemeGroupVersion.String(),
 			Kind:       xpmetav1.ConfigurationKind,
 		},
-		ObjectMeta: cfgMetaFromProject(project),
+		ObjectMeta: cfgMetaFromProject(project, o.extraAnnotations),
 		Spec: xpmetav1.ConfigurationSpec{
 			MetaSpec: xpmetav1.MetaSpec{
 				Crossplane: project.Spec.Crossplane,
@@ -219,16 +238,6 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 
 	apisSource := afero.NewBasePathFs(projectFS, project.Spec.Paths.APIs)
 
-	// Not all projects have operations; ignore them if not present.
-	operationsSource := afero.NewMemMapFs()
-	opsExist, err := afero.DirExists(projectFS, project.Spec.Paths.Operations)
-	if err != nil {
-		return nil, nil, err
-	}
-	if opsExist {
-		operationsSource = afero.NewBasePathFs(projectFS, project.Spec.Paths.Operations)
-	}
-
 	// Collect resources (XRDs, MRAPs, compositions, and operations).
 	packageFS := afero.NewMemMapFs()
 	o.log.Debug("Collecting resources")
@@ -240,7 +249,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 		xpv1.CompositionGroupVersionKind.String(),
 		extv1alpha1.ManagedResourceActivationPolicyGroupVersionKind.String(),
 	}
-	if err := collectResources(packageFS, apisSource, apiGVKs); err != nil {
+	if err := collectResources(packageFS, projectFS, project.Spec.Paths.APIs, apiGVKs, o.ignore); err != nil {
 		o.eventCh.SendEvent("Collecting resources", async.EventStatusFailure)
 		return nil, nil, errors.Wrap(err, "failed to collect API resources")
 	}
@@ -250,7 +259,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 		xpv1alpha1.WatchOperationGroupVersionKind.String(),
 		xpv1alpha1.CronOperationGroupVersionKind.String(),
 	}
-	if err := collectResources(packageFS, operationsSource, opsGVKs); err != nil {
+	if err := collectResources(packageFS, projectFS, project.Spec.Paths.Operations, opsGVKs, o.ignore); err != nil {
 		o.eventCh.SendEvent("Collecting resources", async.EventStatusFailure)
 		return nil, nil, errors.Wrap(err, "failed to collect operation resources")
 	}
@@ -277,7 +286,7 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 
 	// Build the resolved functions.
 	o.log.Debug("Building functions")
-	imgMap, deps, digests, err := b.buildFunctions(ctx, projectFS, project, fns, o.projectBasePath, o.eventCh)
+	imgMap, deps, digests, err := b.buildFunctions(ctx, projectFS, project, fns, o.projectBasePath, o.extraAnnotations, o.eventCh)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -359,7 +368,7 @@ func resolveFunctions(project *devv1alpha1.Project, projectFS afero.Fs) ([]devv1
 }
 
 // buildFunctions builds the given list of embedded functions.
-func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fns []devv1alpha1.Function, basePath string, eventCh async.EventChannel) (ImageTagMap, []xpmetav1.Dependency, map[string]name.Digest, error) {
+func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fns []devv1alpha1.Function, basePath string, extraAnnotations map[string]string, eventCh async.EventChannel) (ImageTagMap, []xpmetav1.Dependency, map[string]name.Digest, error) {
 	var (
 		imgMap = make(map[name.Tag]v1.Image)
 		imgMu  sync.Mutex
@@ -383,7 +392,7 @@ func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, projec
 			eventCh.SendEvent(eventText, async.EventStatusStarted)
 
 			fnRepo := fmt.Sprintf("%s_%s", project.Spec.Repository, fnName)
-			imgs, err := b.buildFunction(ctx, projectFS, project, fn, basePath)
+			imgs, err := b.buildFunction(ctx, projectFS, project, fn, basePath, extraAnnotations)
 			if err != nil {
 				eventCh.SendEvent(eventText, async.EventStatusFailure)
 				return errors.Wrapf(err, "failed to build function %q", fnName)
@@ -443,14 +452,14 @@ func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, projec
 // buildFunction builds the package images for a single function. It resolves
 // the function's runtime images (either by building from source or by loading
 // a pre-built tarball) and then wraps each one with the package metadata.
-func (b *Builder) buildFunction(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fn devv1alpha1.Function, basePath string) ([]v1.Image, error) {
+func (b *Builder) buildFunction(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fn devv1alpha1.Function, basePath string, extraAnnotations map[string]string) ([]v1.Image, error) {
 	fnName := fn.Name()
 	meta := &xpmetav1.Function{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: xpmetav1.SchemeGroupVersion.String(),
 			Kind:       xpmetav1.FunctionKind,
 		},
-		ObjectMeta: fnMetaFromProject(project, fnName),
+		ObjectMeta: fnMetaFromProject(project, fnName, extraAnnotations),
 		Spec: xpmetav1.FunctionSpec{
 			MetaSpec: xpmetav1.MetaSpec{
 				Capabilities: []string{
@@ -685,9 +694,8 @@ func gzipOpener(fsys afero.Fs, path, tempDir string) (tarball.Opener, error) {
 // LoadCompositions returns the Compositions under a project's APIs path,
 // discovered the same way project build collects them.
 func LoadCompositions(project *devv1alpha1.Project, projectFS afero.Fs) ([]*unstructured.Unstructured, error) {
-	src := afero.NewBasePathFs(projectFS, project.Spec.Paths.APIs)
 	compFS := afero.NewMemMapFs()
-	if err := collectResources(compFS, src, []string{xpv1.CompositionGroupVersionKind.String()}); err != nil {
+	if err := collectResources(compFS, projectFS, project.Spec.Paths.APIs, []string{xpv1.CompositionGroupVersionKind.String()}, nil); err != nil {
 		return nil, errors.Wrap(err, "failed to collect compositions")
 	}
 
@@ -710,13 +718,28 @@ func LoadCompositions(project *devv1alpha1.Project, projectFS afero.Fs) ([]*unst
 	return comps, err
 }
 
-func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string) error {
-	return afero.Walk(fromFS, "/", func(path string, info fs.FileInfo, err error) error {
+// collectResources copies resources of the given GVKs found under root in
+// projFS into toFS, at paths relative to root. The walk starts at root, so
+// walked paths are project-root-relative and ignore patterns (which are
+// relative to the project root) apply to them directly. A missing root is
+// not an error; not all projects have operations.
+func collectResources(toFS afero.Fs, projFS afero.Fs, root string, gvks []string, ignore *IgnoreMatcher) error {
+	if exists, err := afero.DirExists(projFS, root); err != nil || !exists {
+		return err
+	}
+
+	return afero.Walk(projFS, root, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
 		if info.IsDir() {
+			if ignore.Match(path, true) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if ignore.Match(path, false) {
 			return nil
 		}
 		ext := filepath.Ext(path)
@@ -725,7 +748,7 @@ func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string) error {
 		}
 
 		var u metav1.TypeMeta
-		bs, err := afero.ReadFile(fromFS, path)
+		bs, err := afero.ReadFile(projFS, path)
 		if err != nil {
 			return errors.Wrapf(err, "failed to read file %q", path)
 		}
@@ -738,14 +761,18 @@ func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string) error {
 			return nil
 		}
 
-		err = toFS.MkdirAll(filepath.Dir(path), 0o755)
+		rel, err := filepath.Rel(root, path)
 		if err != nil {
-			return errors.Wrapf(err, "failed to create directory for %q", path)
+			return errors.Wrapf(err, "failed to determine package path for %q", path)
+		}
+		dest := filepath.Join("/", rel)
+
+		if err := toFS.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return errors.Wrapf(err, "failed to create directory for %q", dest)
 		}
 
-		err = afero.WriteFile(toFS, path, bs, 0o644)
-		if err != nil {
-			return errors.Wrapf(err, "failed to write file %q to package", path)
+		if err := afero.WriteFile(toFS, dest, bs, 0o644); err != nil {
+			return errors.Wrapf(err, "failed to write file %q to package", dest)
 		}
 
 		return nil
@@ -775,7 +802,7 @@ func runtimeDependencies(proj *devv1alpha1.Project) []xpmetav1.Dependency {
 	return deps
 }
 
-func cfgMetaFromProject(proj *devv1alpha1.Project) metav1.ObjectMeta {
+func cfgMetaFromProject(proj *devv1alpha1.Project, extra map[string]string) metav1.ObjectMeta {
 	meta := proj.ObjectMeta.DeepCopy()
 
 	if meta.Annotations == nil {
@@ -788,10 +815,12 @@ func cfgMetaFromProject(proj *devv1alpha1.Project) metav1.ObjectMeta {
 	meta.Annotations["meta.crossplane.io/description"] = proj.Spec.Description
 	meta.Annotations["meta.crossplane.io/readme"] = proj.Spec.Readme
 
+	maps.Copy(meta.Annotations, extra)
+
 	return *meta
 }
 
-func fnMetaFromProject(proj *devv1alpha1.Project, fnName string) metav1.ObjectMeta {
+func fnMetaFromProject(proj *devv1alpha1.Project, fnName string, extra map[string]string) metav1.ObjectMeta {
 	meta := proj.ObjectMeta.DeepCopy()
 
 	meta.Name = fmt.Sprintf("%s-%s", meta.Name, fnName)
@@ -804,6 +833,8 @@ func fnMetaFromProject(proj *devv1alpha1.Project, fnName string) metav1.ObjectMe
 	meta.Annotations["meta.crossplane.io/source"] = proj.Spec.Source
 	meta.Annotations["meta.crossplane.io/license"] = proj.Spec.License
 	meta.Annotations["meta.crossplane.io/description"] = fmt.Sprintf("Function %s from project %s", fnName, proj.Name)
+
+	maps.Copy(meta.Annotations, extra)
 
 	return *meta
 }

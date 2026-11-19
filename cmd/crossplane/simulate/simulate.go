@@ -160,17 +160,25 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 }
 
 // exitStatus ranks the plans' outcome: an error, which exits 1, when any
-// plan errored; otherwise a silent exitcode.ExitError that exits 3 when a plan
-// would change anything; otherwise nil.
+// plan errored; otherwise a silent exitcode.ExitError whose code adds 4 when
+// a resource was failing before apply to 3 when a plan would change
+// anything, so 3, 4 or 7; otherwise nil.
 func exitStatus(plans []*plan.ResourcePlan) error {
 	s := plan.Summarize(plans)
 	if s.Errored > 0 {
 		return errors.Errorf("cannot plan %d of %d resources; see their errors in the output", s.Errored, len(plans))
 	}
+	code := 0
 	if s.Changes() > 0 {
-		return exitcode.ExitError{Code: isimulate.ExitCodeChanges}
+		code |= isimulate.ExitCodeChanges
 	}
-	return nil
+	if plan.Failing(plans) {
+		code |= isimulate.ExitCodeFailing
+	}
+	if code == 0 {
+		return nil
+	}
+	return exitcode.ExitError{Code: code}
 }
 
 // setupKubeClient builds the client stack resource simulate plans with: the

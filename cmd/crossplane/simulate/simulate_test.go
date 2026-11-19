@@ -23,10 +23,13 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/crossplane/cli/v2/internal/exitcode"
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
 func TestExitStatus(t *testing.T) {
+	failing := &health.Health{State: health.Failing}
+
 	type args struct {
 		plans []*plan.ResourcePlan
 	}
@@ -53,6 +56,29 @@ func TestExitStatus(t *testing.T) {
 		"ErroredWithChanges": {
 			reason: "An errored plan should exit 1, not 3, even when other plans have changes.",
 			args:   args{plans: []*plan.ResourcePlan{{Action: plan.ActionUpdate}, {Error: "boom"}}},
+			want:   1,
+		},
+		"FailingNoChanges": {
+			reason: "A failing resource with no changes should exit 4.",
+			args:   args{plans: []*plan.ResourcePlan{{Action: plan.ActionNoOp, Health: failing}}},
+			want:   4,
+		},
+		"FailingWithChanges": {
+			reason: "Changes and a failing resource should exit 7, 3 and 4 combined.",
+			args:   args{plans: []*plan.ResourcePlan{{Action: plan.ActionUpdate}, {Action: plan.ActionNoOp, Health: failing}}},
+			want:   7,
+		},
+		"NotReadyAndPaused": {
+			reason: "Not ready and paused resources should not set exit bit 4.",
+			args: args{plans: []*plan.ResourcePlan{
+				{Action: plan.ActionNoOp, Health: &health.Health{State: health.NotReady}},
+				{Action: plan.ActionNoOp, Health: &health.Health{State: health.Paused}},
+			}},
+			want: 0,
+		},
+		"ErroredWithFailing": {
+			reason: "An errored plan should exit 1, not 4 or 7, even when a resource is failing.",
+			args:   args{plans: []*plan.ResourcePlan{{Action: plan.ActionUpdate, Health: failing}, {Error: "boom"}}},
 			want:   1,
 		},
 	}

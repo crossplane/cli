@@ -2511,6 +2511,26 @@ Summary: 2 modified`,
 				WithCompositionModified().
 				WithXRImpact("XNopResource", "selector-match-resource", "default", "changed"),
 		},
+		// A Manual XR that names no revision yet is not pinned: Crossplane gives it the latest revision,
+		// the one this composition produces, so it is evaluated like an Automatic one, not deferred.
+		"ManualXRWithoutRevisionRefIsEvaluated": {
+			Reason: "--resource matching a Manual-policy composite with no compositionRevisionRef evaluates it against the new composition, ignoring a compositionRevisionSelector that rejects it, and counts it as re-pointing instead of marking it filtered",
+			SetupFiles: []string{
+				"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/original-composition.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
+				"testdata/comp/resources/existing-xr-manual-without-revision-ref.yaml",
+			},
+			InputFiles:       []string{"testdata/comp/updated-composition-labeled.yaml"},
+			Resources:        []string{"default/manual-unpinned-resource"},
+			OutputFormat:     "json",
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
+			ExpectedStructured: simtest.Expect().
+				WithComposition("xnopresources.diff.example.org").
+				WithCompositionModified().
+				WithRevisionImpact("spec", true, 1).
+				WithXRImpact("XNopResource", "manual-unpinned-resource", "default", "changed"),
+		},
 	}
 
 	for name, tt := range tests {

@@ -254,20 +254,44 @@ func (a *assembler) addComposite(c CompositeResult, h dt.CompositeHealth) {
 // unhealthy sets each composite's Unhealthy: what it composed that is not
 // healthy and has no plan in the run, matched across API versions. A
 // resource with a plan shows its health there.
+//
+// A nested composite with an entry and health of its own, as a composition
+// run gives one of a diffed composition's type, shows its health on that
+// entry and lists what it composes itself; its parent lists neither. So a
+// resource is listed under the most deeply nested composite entry that
+// composes it, once.
 func (a *assembler) unhealthy() {
-	planned := map[schema.GroupKind]map[[2]string]bool{}
+	planned := map[objectID]bool{}
 	for _, p := range a.plans {
-		gk := p.GroupVersionKind().GroupKind()
-		if planned[gk] == nil {
-			planned[gk] = map[[2]string]bool{}
+		planned[idOf(p.APIVersion, p.Kind, p.Namespace, p.Name)] = true
+	}
+
+	composes := make([]map[objectID]bool, len(a.composed))
+	entries := map[objectID][]int{}
+	for i, composed := range a.composed {
+		composes[i] = map[objectID]bool{}
+		for _, r := range composed {
+			composes[i][idOf(r.APIVersion, r.Kind, r.Namespace, r.Name)] = true
 		}
-		planned[gk][[2]string{p.Namespace, p.Name}] = true
+		if c := a.composites[i]; c.Health != nil {
+			id := idOf(c.Ref.APIVersion, c.Ref.Kind, c.Ref.Namespace, c.Ref.Name)
+			entries[id] = append(entries[id], i)
+		}
 	}
 
 	for i, composed := range a.composed {
+		// What a nested composite entry lists, and the entry itself.
+		ownedElsewhere := map[objectID]bool{}
+		for id := range composes[i] {
+			for _, j := range entries[id] {
+				ownedElsewhere[id] = true
+				maps.Copy(ownedElsewhere, composes[j])
+			}
+		}
+
 		for _, r := range composed {
-			gk := schema.FromAPIVersionAndKind(r.APIVersion, r.Kind).GroupKind()
-			if !r.Health.Unhealthy() || planned[gk][[2]string{r.Namespace, r.Name}] {
+			id := idOf(r.APIVersion, r.Kind, r.Namespace, r.Name)
+			if !r.Health.Unhealthy() || planned[id] || ownedElsewhere[id] {
 				continue
 			}
 			u := UnhealthyResource{Ref: resourceRef(r.ObjectReference), Health: r.Health}
@@ -278,6 +302,16 @@ func (a *assembler) unhealthy() {
 			a.composites[i].Unhealthy = append(a.composites[i].Unhealthy, u)
 		}
 	}
+}
+
+// objectID is an object's identity across API versions.
+type objectID struct {
+	gk              schema.GroupKind
+	namespace, name string
+}
+
+func idOf(apiVersion, kind, namespace, name string) objectID {
+	return objectID{gk: schema.FromAPIVersionAndKind(apiVersion, kind).GroupKind(), namespace: namespace, name: name}
 }
 
 // addDiffs adds a plan per diff, in the structured renderer's canonical order.

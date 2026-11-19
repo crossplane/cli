@@ -26,9 +26,13 @@ The `-o` flag picks the output format:
   simulated (`error`, `skipped`, `deferred`). Each composite also lists under
   `unhealthy` the composed resources that aren't healthy and have no plan of
   their own, each once. That includes nested composites and what they compose;
-  an entry a nested composite composes names it under `via`. `summary.health`
-  counts the composites that aren't healthy (`unhealthyComposites`), and the
-  other resources that are `failing`, `notReady` or `paused`, each once.
+  an entry a nested composite composes names it under `via`. A nested
+  composite that has its own entry with `health` (one with `composedBy`)
+  shows its health there and lists what it composes, so its parent lists
+  neither.
+  `summary.health` counts the composites that aren't healthy
+  (`unhealthyComposites`), and the other resources that are `failing`,
+  `notReady` or `paused`, each once.
 - `diff` prints a line diff of each changed resource's manifest. Every
   Secret value, and any value a provider marks sensitive, reads
   `(sensitive value)`; a value the provider computes on apply reads

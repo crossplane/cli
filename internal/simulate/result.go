@@ -93,7 +93,9 @@ type CompositeResult struct {
 	Health *health.Health `json:"health,omitempty"`
 	// Unhealthy lists the composed resources, nested composites and theirs
 	// included, that are live, not healthy, and have no plan in the run (so
-	// no health of their own to show).
+	// no health of their own to show). A nested composite with an entry and
+	// health of its own lists what it composes there instead, and its
+	// parent lists neither it nor that.
 	Unhealthy []UnhealthyResource `json:"unhealthy,omitempty"`
 }
 
@@ -107,9 +109,10 @@ type UnhealthyResource struct {
 }
 
 // HealthSummary counts what is not healthy before apply. Composites counts
-// the composites whose own health is not healthy; Failing, NotReady and
-// Paused count the other resources. Each is counted once however many
-// composites or plans reach it.
+// the composite entries whose own health is not healthy; Failing, NotReady
+// and Paused count the other resources, a nested composite without health of
+// its own on an entry included. Each is counted once however many composites
+// or plans reach it.
 type HealthSummary struct {
 	Composites int `json:"unhealthyComposites"`
 	Failing    int `json:"failing"`
@@ -220,7 +223,9 @@ func (r Result) Health() HealthSummary {
 	}
 	for _, c := range r.Composites {
 		gk, id := groupKind(c.Ref), [2]string{c.Ref.Namespace, c.Ref.Name}
-		if composites[gk][id] {
+		// A composite with no health of its own here (one not simulated) is
+		// counted as a resource where its parent lists it, if anywhere.
+		if c.Health == nil || composites[gk][id] {
 			continue
 		}
 		if composites[gk] == nil {

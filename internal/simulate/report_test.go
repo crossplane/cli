@@ -731,6 +731,48 @@ func TestHealth(t *testing.T) {
 				summary: HealthSummary{Failing: 1, NotReady: 1},
 			},
 		},
+		"NestedEntryListsItsOwn": {
+			reason: "A nested composite with an impact and health of its own shows its health there and lists what it composes; its parent lists neither, and the summary counts each once.",
+			args: args{comp: &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{Name: "a", ImpactAnalysis: []dt.XRImpact{
+				{ObjectReference: xrRef, Status: dt.XRStatusUnchanged, Health: dt.CompositeHealth{XR: healthy, Composed: []dt.ResourceHealth{
+					{ObjectReference: child, Health: notReady},
+					{ObjectReference: cmRef("deep"), Via: &child, Health: failing},
+					{ObjectReference: cmRef("cm"), Health: failing},
+				}}},
+				{ObjectReference: child, ComposedBy: &xrRef, Status: dt.XRStatusUnchanged, Health: dt.CompositeHealth{XR: notReady, Composed: []dt.ResourceHealth{
+					{ObjectReference: cmRef("deep"), Health: failing},
+				}}},
+			}}}}},
+			want: want{
+				plans: map[string]*health.Health{"a": nil},
+				composites: []CompositeResult{
+					{Ref: xrPlan, Composition: compRef("a"), Status: CompositeUnchanged, Health: healthy, Unhealthy: []UnhealthyResource{{Ref: cmPlan("cm"), Health: failing}}},
+					{Ref: childPlan, Composition: compRef("a"), ComposedBy: &xrPlan, Status: CompositeUnchanged, Health: notReady, Unhealthy: []UnhealthyResource{{Ref: cmPlan("deep"), Health: failing}}},
+				},
+				summary: HealthSummary{Composites: 1, Failing: 2},
+			},
+		},
+		"NestedEntryWithoutHealth": {
+			reason: "A nested composite whose own impact has no health, as when it errored, is listed under its parent with what it composes, and counted there as a resource.",
+			args: args{comp: &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{Name: "a", ImpactAnalysis: []dt.XRImpact{
+				{ObjectReference: xrRef, Status: dt.XRStatusUnchanged, Health: dt.CompositeHealth{XR: healthy, Composed: []dt.ResourceHealth{
+					{ObjectReference: child, Health: notReady},
+					{ObjectReference: cmRef("deep"), Via: &child, Health: failing},
+				}}},
+				{ObjectReference: child, ComposedBy: &xrRef, Status: dt.XRStatusError},
+			}}}}},
+			want: want{
+				plans: map[string]*health.Health{"a": nil},
+				composites: []CompositeResult{
+					{Ref: xrPlan, Composition: compRef("a"), Status: CompositeUnchanged, Health: healthy, Unhealthy: []UnhealthyResource{
+						{Ref: childPlan, Health: notReady},
+						{Ref: cmPlan("deep"), Via: &childPlan, Health: failing},
+					}},
+					{Ref: childPlan, Composition: compRef("a"), ComposedBy: &xrPlan, Status: CompositeError},
+				},
+				summary: HealthSummary{Failing: 1, NotReady: 1},
+			},
+		},
 		"CompImpactsCountedOnce": {
 			reason: "A composition run carries each impact's health; an XR two compositions reach is one composite, so it counts once, and so does what it composes.",
 			args: args{comp: &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{

@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/cli/v2/internal/health"
 )
@@ -458,6 +459,46 @@ func TestRenderJSONHealth(t *testing.T) {
 			}
 			if diff := cmp.Diff(NewResult(tc.args.plans), back); diff != "" {
 				t.Errorf("\n%s\nRender(json) round trip: -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestRenderYAMLHealth(t *testing.T) {
+	type args struct {
+		plans []*ResourcePlan
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   map[string]any
+	}{
+		"Unhealthy": {
+			reason: "summary.health counts each unhealthy resource in YAML output as it does in JSON.",
+			args: args{plans: []*ResourcePlan{
+				{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: ActionNoOp, Health: &health.Health{State: health.Failing}},
+				{APIVersion: "v1", Kind: "ConfigMap", Name: "pm", Action: ActionNoOp, Health: &health.Health{State: health.Paused}},
+			}},
+			want: map[string]any{"unhealthyComposites": float64(0), "failing": float64(1), "notReady": float64(0), "paused": float64(1)},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, _ := NewRenderer(FormatYAML, false)
+			var buf bytes.Buffer
+			if err := r.Render(&buf, tc.args.plans); err != nil {
+				t.Fatalf("\n%s\nRender(yaml): unexpected error: %v", tc.reason, err)
+			}
+			var got struct {
+				Summary struct {
+					Health map[string]any `json:"health"`
+				} `json:"summary"`
+			}
+			if err := yaml.Unmarshal(buf.Bytes(), &got); err != nil {
+				t.Fatalf("\n%s\nRender(yaml): output is not valid YAML: %v", tc.reason, err)
+			}
+			if diff := cmp.Diff(tc.want, got.Summary.Health); diff != "" {
+				t.Errorf("\n%s\nRender(yaml) summary.health: -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

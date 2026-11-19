@@ -42,6 +42,7 @@ import (
 	"github.com/crossplane/crossplane/apis/v2/pkg"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -526,4 +527,64 @@ func TestPlanner(t *testing.T) {
 			t.Errorf("Plan(...): want a create for an unserved kind, got %+v", got)
 		}
 	})
+}
+
+func TestPlannerHealth(t *testing.T) {
+	ctx := context.Background()
+
+	s := runtime.NewScheme()
+	s.AddKnownTypeWithName(vpcGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(vpcGVK.GroupVersion().WithKind("VPCList"), &unstructured.UnstructuredList{})
+
+	rm := meta.NewDefaultRESTMapper([]schema.GroupVersion{vpcGVK.GroupVersion()})
+	rm.Add(vpcGVK, meta.RESTScopeRoot)
+
+	withConditions := func(u *unstructured.Unstructured, conds ...any) *unstructured.Unstructured {
+		u.Object["status"] = map[string]any{"conditions": conds}
+		return u
+	}
+	syncedFalse := map[string]any{"type": "Synced", "status": "False", "reason": "ReconcileError", "message": "boom"}
+
+	type args struct {
+		live   *unstructured.Unstructured
+		router Router
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   *health.Health
+	}{
+		"Create": {
+			reason: "A resource with no live counterpart carries no health.",
+			args:   args{router: &fakeRouter{client: &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}}},
+			want:   nil,
+		},
+		"HealthyWithoutConditions": {
+			reason: "A live resource with no Synced or Ready condition is healthy.",
+			args:   args{live: vpc("my-vpc", "10.0.0.0/16"), router: &fakeRouter{client: &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_NO_OP}}}},
+			want:   &health.Health{State: health.Healthy},
+		},
+		"FailingRouted": {
+			reason: "A diff server plan carries the live resource's Synced=False as failing.",
+			args:   args{live: withConditions(vpc("my-vpc", "10.0.0.0/16"), syncedFalse), router: &fakeRouter{client: &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_UPDATE}}}},
+			want:   &health.Health{State: health.Failing, Synced: &health.Condition{Status: "False", Reason: "ReconcileError", Message: "boom"}},
+		},
+		"FailingApproximate": {
+			reason: "An approximate plan carries the live resource's health too.",
+			args:   args{live: withConditions(vpc("my-vpc", "10.0.0.0/16"), syncedFalse), router: &fakeRouter{}},
+			want:   &health.Health{State: health.Failing, Synced: &health.Condition{Status: "False", Reason: "ReconcileError", Message: "boom"}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := fake.NewClientBuilder().WithScheme(s)
+			if tc.args.live != nil {
+				b = b.WithObjects(tc.args.live)
+			}
+			got := NewPlanner(b.Build(), rm, noCRDs(t), "default", tc.args.router, time.Second).Plan(ctx, vpc("my-vpc", "10.1.0.0/16"))
+			if diff := cmp.Diff(tc.want, got.Health); diff != "" {
+				t.Errorf("\n%s\nPlan(...).Health: -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
 }

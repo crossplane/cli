@@ -93,9 +93,13 @@ func healthDescription(h *health.Health, full bool) []string {
 }
 
 // tallyComposite adds a top-level composite with ref and health h, and what
-// it composes, to t.
+// it composes, to t. A composite without health, as one not yet in the
+// cluster or whose processing errored, is not counted as a composite, as in
+// plan output; where its parent composes it, it counts as a resource.
 func tallyComposite(t *health.Tally, ref corev1.ObjectReference, h dt.CompositeHealth, diffs map[string]*dt.ResourceDiff) {
-	t.Composite(refKey(ref), h.XR)
+	if h.XR != nil {
+		t.Composite(refKey(ref), h.XR)
+	}
 
 	for _, d := range diffs {
 		t.Resource(diffKey(d), health.Of(d.Current.Raw))

@@ -117,6 +117,60 @@ Warning: 1 resource could not be planned.
 	}
 }
 
+func TestRenderPlanArrayChange(t *testing.T) {
+	step := func(fn, name string) any {
+		return map[string]any{"functionRef": map[string]any{"name": fn}, "step": name}
+	}
+	plans := []*ResourcePlan{{
+		APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "networks",
+		Action: ActionUpdate,
+		Changes: []FieldChange{
+			{
+				// An element inserted in the middle: only the insertion is
+				// rendered, not both full copies of the pipeline.
+				Path: "spec.pipeline",
+				Actual: &Value{Value: []any{
+					step("network-fn", "network"),
+					step("auto-ready", "ready"),
+				}},
+				Planned: &Value{Value: []any{
+					step("network-fn", "network"),
+					step("network-fn", "network-again"),
+					step("auto-ready", "ready"),
+				}},
+			},
+			{
+				// An element changed in place renders old -> new at its index.
+				Path:    "spec.refs",
+				Actual:  &Value{Value: []any{"a", "b", "c"}},
+				Planned: &Value{Value: []any{"a", "x", "c"}},
+			},
+		},
+	}}
+
+	want := `[~] Composition.apiextensions.crossplane.io networks (update)
+    spec:
+      ~ pipeline (2 -> 3 items):
+        + [1]: {"functionRef":{"name":"network-fn"},"step":"network-again"}
+      ~ refs (3 -> 3 items):
+        ~ [1]: "b" -> "x"
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+`
+
+	var buf bytes.Buffer
+	r, err := NewRenderer(FormatPlan)
+	if err != nil {
+		t.Fatalf("NewRenderer(plan): unexpected error: %v", err)
+	}
+	if err := r.Render(&buf, plans); err != nil {
+		t.Fatalf("Render(plan): unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(want, buf.String()); diff != "" {
+		t.Errorf("Render(plan): -want, +got:\n%s", diff)
+	}
+}
+
 func TestRenderPlanReplaceWithoutReportedCause(t *testing.T) {
 	// A diff server can decide on a replacement without flagging any reported
 	// change as the cause (the forcing change can be a collection size or an

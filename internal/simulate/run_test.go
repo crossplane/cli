@@ -47,6 +47,7 @@ import (
 
 	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
+	"github.com/crossplane/cli/v2/internal/terminal"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
@@ -709,7 +710,7 @@ func TestSimulateRun(t *testing.T) {
 			if tc.args.files {
 				msg = "cannot simulate Compositions"
 			}
-			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, msg)
+			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), terminal.NewNopSpinnerPrinter(), dp.NewProgress(), tc.args.proc, []*un.Unstructured{{}}, msg)
 			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), tc.args.initClients, tc.args.proc, diff)
 
 			if diff := cmp.Diff(tc.want.code, exitCode(err)); diff != "" {
@@ -1047,7 +1048,7 @@ func TestDiffComposites(t *testing.T) {
 			k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: &bytes.Buffer{}}}
 			xp := &xpclient.Clients{Definition: defs, Composition: &testutils.MockCompositionClient{}}
 
-			_, err := c.diffComposites(k, logging.NewNopLogger(), proc, xp, "", tc.xrs)(context.Background())
+			_, err := c.diffComposites(k, logging.NewNopLogger(), terminal.NewNopSpinnerPrinter(), dp.NewProgress(), proc, xp, "", tc.xrs)(context.Background())
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("\n%s\ndiffComposites(...): want error containing %q, got %v", tc.reason, tc.wantErr, err)
 			}
@@ -1058,5 +1059,35 @@ func TestDiffComposites(t *testing.T) {
 				t.Errorf("\n%s\ndiffComposites(...): want output containing %q, got:\n%s", tc.reason, tc.wantOut, stdout.String())
 			}
 		})
+	}
+}
+
+func TestSimulateWithProgress(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	sp := terminal.NewSpinnerPrinter(&buf, false)
+	progress := dp.NewProgress()
+
+	ran := false
+	simulateWithProgress(sp, progress, func() {
+		ran = true
+		// Reports flow to the reporter the session installed; plain output
+		// drops the updates but must not break the session.
+		progress.Report(0, 14, "example.org/v1, Kind=XNetwork/prod")
+	})
+
+	if !ran {
+		t.Fatal("simulateWithProgress did not run the wrapped function")
+	}
+	if progressFn := progress; progressFn == nil {
+		t.Fatal("progress sink lost")
+	}
+	out := buf.String()
+	if !strings.Contains(out, simulatingMsg+"...") {
+		t.Errorf("expected a started line for %q, got:\n%s", simulatingMsg, out)
+	}
+	if !strings.Contains(out, "✓ "+simulatingMsg) {
+		t.Errorf("expected a success line for %q, got:\n%s", simulatingMsg, out)
 	}
 }

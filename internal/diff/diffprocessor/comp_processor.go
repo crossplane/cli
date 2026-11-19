@@ -802,8 +802,9 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 
 	results := make(map[string]*XRDiffResult)
 
-	for _, xr := range xrs {
+	for i, xr := range xrs {
 		resourceID := dt.MakeDiffKeyFromResource(xr)
+		p.config.Progress.Report(i, len(xrs), resourceID)
 
 		if pin, ok := pinned[resourceID]; ok && pin.err != nil {
 			results[resourceID] = &XRDiffResult{

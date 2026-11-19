@@ -142,11 +142,13 @@ func (p *defaultSpinnerPrinter) asyncPretty(fn func(ch async.EventChannel) error
 	for update := range updateChan {
 		switch update.Status {
 		case async.EventStatusStarted:
-			multi.Add(update.Text)
+			multi.AddKeyed(update.Key(), update.Text)
+		case async.EventStatusUpdated:
+			multi.UpdateKeyed(update.Key(), update.Text)
 		case async.EventStatusSuccess:
-			multi.Success(update.Text)
+			multi.SuccessKeyed(update.Key(), update.Text)
 		case async.EventStatusFailure:
-			multi.Fail(update.Text)
+			multi.FailKeyed(update.Key(), update.Text)
 		}
 	}
 	err := <-doneChan
@@ -171,23 +173,26 @@ func (p *defaultSpinnerPrinter) asyncPlain(fn func(ch async.EventChannel) error)
 	printed := make(map[string]bool)
 
 	for update := range updateChan {
-		prevStatus := statusMap[update.Text]
+		key := update.Key()
+		prevStatus := statusMap[key]
 		switch update.Status {
 		case async.EventStatusStarted:
-			if !printed[update.Text] {
+			if !printed[key] {
 				_, _ = fmt.Fprintln(p.out, update.Text+"...")
-				printed[update.Text] = true
-				statusMap[update.Text] = "started"
+				printed[key] = true
+				statusMap[key] = "started"
 			}
+		case async.EventStatusUpdated:
+			// Plain output has no line to update; progress is dropped.
 		case async.EventStatusSuccess:
 			if prevStatus != "success" {
 				_, _ = fmt.Fprintln(p.out, "✓ "+update.Text)
-				statusMap[update.Text] = "success"
+				statusMap[key] = "success"
 			}
 		case async.EventStatusFailure:
 			if prevStatus != "failure" {
 				_, _ = fmt.Fprintln(p.out, "✗ "+update.Text)
-				statusMap[update.Text] = "failure"
+				statusMap[key] = "failure"
 			}
 		}
 	}
@@ -198,6 +203,9 @@ func (p *defaultSpinnerPrinter) asyncPlain(fn func(ch async.EventChannel) error)
 // MultiSpinner is a collection of independent spinners that get displayed
 // together. Spinners can be dynamically added.
 type MultiSpinner struct {
+	// keys identifies spinners[i] independently of its (mutable) title, so
+	// an operation whose text changes over time keeps one line.
+	keys     []string
 	spinners []*SuccessSpinner
 	mu       sync.Mutex
 	program  *tea.Program
@@ -246,43 +254,79 @@ func (m *MultiSpinner) View() tea.View {
 
 // Add adds a spinner to the multi-spinner.
 func (m *MultiSpinner) Add(title string) {
+	m.AddKeyed(title, title)
+}
+
+// AddKeyed adds a new spinner under the given key, which identifies it even
+// when later updates change its title.
+func (m *MultiSpinner) AddKeyed(key, title string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, sp := range m.spinners {
-		if sp.title == title {
-			return
-		}
+	if m.find(key) != nil {
+		return
 	}
 
+	m.keys = append(m.keys, key)
 	m.spinners = append(m.spinners, newSuccessSpinner(m.out, title))
+}
+
+// UpdateKeyed replaces the title of the spinner under the given key, e.g.
+// with progress counts.
+func (m *MultiSpinner) UpdateKeyed(key, title string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if sp := m.find(key); sp != nil {
+		sp.UpdateText(title)
+	}
+}
+
+// find returns the spinner under key, or nil. Callers hold m.mu.
+func (m *MultiSpinner) find(key string) *SuccessSpinner {
+	for i, k := range m.keys {
+		if k == key {
+			return m.spinners[i]
+		}
+	}
+	return nil
 }
 
 // Success marks an existing spinner in the multi-spinner as having succeeded.
 func (m *MultiSpinner) Success(title string) {
+	m.SuccessKeyed(title, title)
+}
+
+// SuccessKeyed marks the spinner under the given key as having succeeded,
+// updating its title when one is given.
+func (m *MultiSpinner) SuccessKeyed(key, title string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, sp := range m.spinners {
-		if sp.title != title {
-			continue
+	if sp := m.find(key); sp != nil {
+		if title != "" {
+			sp.UpdateText(title)
 		}
 		sp.setSuccess(true)
-		return
 	}
 }
 
 // Fail marks an existing spinner in the multi-spinner as having failed.
 func (m *MultiSpinner) Fail(title string) {
+	m.FailKeyed(title, title)
+}
+
+// FailKeyed marks the spinner under the given key as having failed, updating
+// its title when one is given.
+func (m *MultiSpinner) FailKeyed(key, title string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, sp := range m.spinners {
-		if sp.title != title {
-			continue
+	if sp := m.find(key); sp != nil {
+		if title != "" {
+			sp.UpdateText(title)
 		}
 		sp.setSuccess(false)
-		return
 	}
 }
 

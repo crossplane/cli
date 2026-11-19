@@ -92,7 +92,7 @@ Health: 1 resource not ready.
 `,
 		},
 		"Grouped": {
-			reason: "Each XR section carries its health under its header and its unhealthy resources, changed or not, and the Health: line follows the footer.",
+			reason: "Each XR section carries its health under its header and its unhealthy resources, changed or not, and the Health: line follows the footer. XNetwork/c has no health, so the Health: line counts only XNetwork/a, as plan output does.",
 			args: args{groups: []dt.XRDiffGroup{
 				group("a", failing, nil, modifiedDiffFor("Bucket", "b")),
 				group("c", nil, []dt.ResourceHealth{{ObjectReference: ref("RouteTable", "rt"), Health: notReady}}),
@@ -120,7 +120,7 @@ Unhealthy resources without changes:
 
 ================================================================================
 Total: 1 modified across 2 XRs (1 unchanged)
-Health: 1 of 2 XRs unhealthy before apply; 1 resource not ready.
+Health: 1 of 1 XR unhealthy before apply; 1 resource not ready.
 `,
 		},
 		"FullMessages": {
@@ -211,7 +211,7 @@ func TestRenderCompDiffHealth(t *testing.T) {
 		want   string
 	}{
 		"Unhealthy": {
-			reason: "An unhealthy XR's affected line carries its health, each XR's unhealthy resources without changes follow the impact analysis under its name, and the Health: line ends the run.",
+			reason: "An unhealthy XR's affected line carries its health, each XR's unhealthy resources without changes follow the impact analysis under its name, and the Health: line ends the run, counting only XBucket/a since XBucket/b has no health.",
 			args: args{impacts: []dt.XRImpact{
 				{
 					ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XBucket", Namespace: "ns", Name: "a"},
@@ -242,7 +242,7 @@ XR: XBucket/ns/a
   Unhealthy resources without changes:
     RouteTable/rt ⚠ not ready (Ready=False, Creating)
 
-Health: 1 of 2 XRs unhealthy before apply; 1 resource not ready.
+Health: 1 of 1 XR unhealthy before apply; 1 resource not ready.
 `,
 		},
 		"NestedListsItsOwn": {
@@ -280,6 +280,42 @@ XR: XBucket/c
     Subnet/sn ⚠ failing (Synced=False, ReconcileError): boom
 
 Health: 1 of 2 XRs unhealthy before apply; 1 resource failing (Synced=False).
+`,
+		},
+		"NestedEntryWithoutHealth": {
+			reason: "A nested XR whose own entry errored has no health, so it counts as a resource where its parent composes it, and the Health: line shows the failure the run exits 4 for, as plan output does.",
+			args: args{impacts: []dt.XRImpact{
+				{
+					ObjectReference: p,
+					Status:          dt.XRStatusUnchanged,
+					Health:          dt.CompositeHealth{XR: healthy, Composed: []dt.ResourceHealth{{ObjectReference: c, Health: failing}}},
+				},
+				{
+					ObjectReference: c,
+					Status:          dt.XRStatusError,
+					ComposedBy:      &p,
+				},
+			}},
+			want: `=== Composition Changes ===
+
+No changes detected in composition xbuckets.example.org
+
+=== Affected Composite Resources ===
+
+  ✓ XBucket/p (cluster-scoped)
+  ✗ XBucket/c (cluster-scoped)
+
+Summary: 2 resources unchanged
+
+=== Impact Analysis ===
+
+All composite resources are up-to-date. No downstream resource changes detected.
+
+XR: XBucket/p
+  Unhealthy resources without changes:
+    XBucket/c ⚠ failing (Synced=False, ReconcileError): boom
+
+Health: 1 resource failing (Synced=False).
 `,
 		},
 	}

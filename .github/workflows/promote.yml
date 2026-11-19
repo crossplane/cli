@@ -121,7 +121,7 @@ jobs:
 
       - name: Create Pull Request
         if: env.docs-changed == 'true'
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
         id: generate-token
         with:
           app-id: ${{ secrets.CLI_DOCS_BOT_APP_ID }}

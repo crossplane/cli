@@ -40,20 +40,23 @@ import (
 //go:embed help/update-cache.md
 var updateHelp string
 
-// updateCacheCmd updates the dependency cache by regenerating all schemas.
-type updateCacheCmd struct {
+// UpdateCacheCmd updates the dependency cache by regenerating all schemas.
+// It is exported so host CLIs embedding the dependency commands can wrap it,
+// e.g. to generate additional schemas after the update.
+type UpdateCacheCmd struct {
 	common.GitFlags
 
 	ProjectFile string `default:"${project_file}"   help:"Path to project definition file."            short:"f"`
 	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents." name:"cache-dir"`
 }
 
-func (c *updateCacheCmd) Help() string {
+// Help returns help for the update-cache command.
+func (c *UpdateCacheCmd) Help() string {
 	return updateHelp
 }
 
 // Run executes the update-cache command.
-func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
+func (c *UpdateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
 	projFilePath, err := filepath.Abs(c.ProjectFile)
@@ -85,19 +88,20 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 //go:embed help/clean-cache.md
 var cleanHelp string
 
-// cleanCacheCmd removes all generated schemas.
-type cleanCacheCmd struct {
+// CleanCacheCmd removes all generated schemas.
+type CleanCacheCmd struct {
 	ProjectFile  string `default:"${project_file}"                                                help:"Path to project definition file."            short:"f"`
 	CacheDir     string `env:"CROSSPLANE_XPKG_CACHE"                                              help:"Directory for cached xpkg package contents." name:"cache-dir"`
 	KeepPackages bool   `help:"Keep cached xpkg package contents; remove only generated schemas." name:"keep-packages"`
 }
 
-func (c *cleanCacheCmd) Help() string {
+// Help returns help for the clean-cache command.
+func (c *CleanCacheCmd) Help() string {
 	return cleanHelp
 }
 
 // Run executes the clean-cache command.
-func (c *cleanCacheCmd) Run(k *kong.Context, _ logging.Logger) error {
+func (c *CleanCacheCmd) Run(k *kong.Context, _ logging.Logger) error {
 	projFilePath, err := filepath.Abs(c.ProjectFile)
 	if err != nil {
 		return err

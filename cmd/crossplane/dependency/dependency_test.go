@@ -38,14 +38,14 @@ import (
 
 func TestAddGitAuth(t *testing.T) {
 	testDependencyGitAuth(t, func(serverURL, projectFile, cacheDir, token string) error {
-		c := &addCmd{Package: serverURL + "/repo.git", GitRef: "main", ProjectFile: projectFile, CacheDir: cacheDir, GitFlags: common.GitFlags{GitToken: token, GitUsername: "test-user"}}
+		c := &AddCmd{Package: serverURL + "/repo.git", GitRef: "main", ProjectFile: projectFile, CacheDir: cacheDir, GitFlags: common.GitFlags{GitToken: token, GitUsername: "test-user"}}
 		return c.Run(logging.NewNopLogger(), terminal.NewSpinnerPrinter(io.Discard, false), &config.Config{})
 	})
 }
 
 func TestUpdateCacheGitAuth(t *testing.T) {
 	testDependencyGitAuth(t, func(_, projectFile, cacheDir, token string) error {
-		c := &updateCacheCmd{ProjectFile: projectFile, CacheDir: cacheDir, GitFlags: common.GitFlags{GitToken: token, GitUsername: "test-user"}}
+		c := &UpdateCacheCmd{ProjectFile: projectFile, CacheDir: cacheDir, GitFlags: common.GitFlags{GitToken: token, GitUsername: "test-user"}}
 		return c.Run(logging.NewNopLogger(), terminal.NewSpinnerPrinter(io.Discard, false), &config.Config{})
 	})
 }

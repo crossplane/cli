@@ -22,12 +22,12 @@ The `-o` flag picks the output format:
   annotation, whatever its conditions), or `healthy`, with the `synced` and
   `ready` conditions it was read from. A claim's `health` is its backing
   composite resource's. A composite or plan has no `health` when there is no
-  live object, as for a create, or, for a composite, when it was not
+  live object, as for a create, or, for a composite, when it wasn't
   simulated (`error`, `skipped`, `deferred`). Each composite also lists under
-  `unhealthy` the composed resources that are not healthy and have no plan of
+  `unhealthy` the composed resources that aren't healthy and have no plan of
   their own, each once. That includes nested composites and what they compose;
   an entry a nested composite composes names it under `via`. `summary.health`
-  counts the composites that are not healthy (`unhealthyComposites`), and the
+  counts the composites that aren't healthy (`unhealthyComposites`), and the
   other resources that are `failing`, `notReady` or `paused`, each once.
 - `diff` prints a line diff of each changed resource's manifest. Every
   Secret value, and any value a provider marks sensitive, reads

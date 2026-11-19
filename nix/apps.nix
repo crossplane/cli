@@ -27,7 +27,7 @@ in
     program = pkgs.lib.getExe (
       pkgs.writeShellApplication {
         name = "crossplane-cli-test";
-        runtimeInputs = [ pkgs.unstable.go_1_26 ];
+        runtimeInputs = [ pkgs.unstable.go_1_27 ];
         inheritPath = false;
         text = ''
           export CGO_ENABLED=0
@@ -53,7 +53,7 @@ in
     program = pkgs.lib.getExe (
       pkgs.writeShellApplication {
         name = "crossplane-cli-integration-test";
-        runtimeInputs = [ pkgs.unstable.go_1_26 ];
+        runtimeInputs = [ pkgs.unstable.go_1_27 ];
         inheritPath = true;
         text = ''
           export CGO_ENABLED=0
@@ -97,7 +97,7 @@ in
         name = "crossplane-cli-lint";
         runtimeInputs = [
           pkgs.findutils
-          pkgs.unstable.go_1_26
+          pkgs.unstable.go_1_27
           pkgs.unstable.golangci-lint
           pkgs.statix
           pkgs.deadnix
@@ -140,7 +140,7 @@ in
         runtimeInputs = [
           pkgs.coreutils
           pkgs.gnused
-          pkgs.unstable.go_1_26
+          pkgs.unstable.go_1_27
 
           # Code generation
           pkgs.buf
@@ -170,7 +170,7 @@ in
       pkgs.writeShellApplication {
         name = "crossplane-cli-tidy";
         runtimeInputs = [
-          pkgs.unstable.go_1_26
+          pkgs.unstable.go_1_27
           pkgs.nix
           pkgs.git
           pkgs.gnused

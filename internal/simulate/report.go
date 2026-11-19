@@ -25,7 +25,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
@@ -261,37 +260,25 @@ func (a *assembler) addComposite(c CompositeResult, h dt.CompositeHealth) {
 // resource is listed under the most deeply nested composite entry that
 // composes it, once.
 func (a *assembler) unhealthy() {
-	planned := map[objectID]bool{}
+	planned := map[string]bool{}
 	for _, p := range a.plans {
-		planned[idOf(p.APIVersion, p.Kind, p.Namespace, p.Name)] = true
+		planned[health.Key(p.APIVersion, p.Kind, p.Namespace, p.Name)] = true
 	}
 
-	composes := make([]map[objectID]bool, len(a.composed))
-	entries := map[objectID][]int{}
+	entries := make([]health.Entry, len(a.composed))
 	for i, composed := range a.composed {
-		composes[i] = map[objectID]bool{}
+		c := a.composites[i]
+		entries[i] = health.Entry{Key: healthKey(c.Ref), HasHealth: c.Health != nil}
 		for _, r := range composed {
-			composes[i][idOf(r.APIVersion, r.Kind, r.Namespace, r.Name)] = true
-		}
-		if c := a.composites[i]; c.Health != nil {
-			id := idOf(c.Ref.APIVersion, c.Ref.Kind, c.Ref.Namespace, c.Ref.Name)
-			entries[id] = append(entries[id], i)
+			entries[i].Composes = append(entries[i].Composes, health.Key(r.APIVersion, r.Kind, r.Namespace, r.Name))
 		}
 	}
+	ownedElsewhere := health.OwnedElsewhere(entries)
 
 	for i, composed := range a.composed {
-		// What a nested composite entry lists, and the entry itself.
-		ownedElsewhere := map[objectID]bool{}
-		for id := range composes[i] {
-			for _, j := range entries[id] {
-				ownedElsewhere[id] = true
-				maps.Copy(ownedElsewhere, composes[j])
-			}
-		}
-
 		for _, r := range composed {
-			id := idOf(r.APIVersion, r.Kind, r.Namespace, r.Name)
-			if !r.Health.Unhealthy() || planned[id] || ownedElsewhere[id] {
+			id := health.Key(r.APIVersion, r.Kind, r.Namespace, r.Name)
+			if !r.Health.Unhealthy() || planned[id] || ownedElsewhere[i][id] {
 				continue
 			}
 			u := UnhealthyResource{Ref: resourceRef(r.ObjectReference), Health: r.Health}
@@ -302,16 +289,6 @@ func (a *assembler) unhealthy() {
 			a.composites[i].Unhealthy = append(a.composites[i].Unhealthy, u)
 		}
 	}
-}
-
-// objectID is an object's identity across API versions.
-type objectID struct {
-	gk              schema.GroupKind
-	namespace, name string
-}
-
-func idOf(apiVersion, kind, namespace, name string) objectID {
-	return objectID{gk: schema.FromAPIVersionAndKind(apiVersion, kind).GroupKind(), namespace: namespace, name: name}
 }
 
 // addDiffs adds a plan per diff, in the structured renderer's canonical order.

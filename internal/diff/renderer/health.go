@@ -31,8 +31,8 @@ func refName(ref corev1.ObjectReference) string {
 // unhealthyBlock returns the lines listing what a composite composes that is
 // not healthy and has no changes in diffs, or nil when there is nothing. A
 // resource a nested composite composes is nested under that composite, as in
-// plan output.
-func unhealthyBlock(h dt.CompositeHealth, diffs map[string]*dt.ResourceDiff, full bool) []string {
+// plan output. It skips the keys in skip, which another entry lists.
+func unhealthyBlock(h dt.CompositeHealth, diffs map[string]*dt.ResourceDiff, skip map[string]bool, full bool) []string {
 	listed := map[string]string{}
 
 	for _, d := range diffs {
@@ -45,7 +45,7 @@ func unhealthyBlock(h dt.CompositeHealth, diffs map[string]*dt.ResourceDiff, ful
 
 	for _, r := range h.Composed {
 		id := refKey(r.ObjectReference)
-		if !r.Health.Unhealthy() || listed[id] != "" {
+		if !r.Health.Unhealthy() || listed[id] != "" || skip[id] {
 			continue
 		}
 

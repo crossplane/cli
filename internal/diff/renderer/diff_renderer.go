@@ -303,7 +303,7 @@ func (r *DefaultDiffRenderer) renderFlat(diffs map[string]*dt.ResourceDiff, xrGr
 			described = refKey(g.XR)
 		}
 
-		block = joinLines(unhealthyBlock(g.Health, g.Diffs, full))
+		block = joinLines(unhealthyBlock(g.Health, g.Diffs, nil, full))
 		tallyComposite(&t, g.XR, g.Health, g.Diffs)
 	}
 
@@ -453,7 +453,7 @@ func (r *DefaultDiffRenderer) renderSection(g dt.XRDiffGroup) (diffCounts, error
 		return counts, err
 	}
 
-	block := joinLines(unhealthyBlock(g.Health, g.Diffs, r.diffOpts.FullMessages))
+	block := joinLines(unhealthyBlock(g.Health, g.Diffs, nil, r.diffOpts.FullMessages))
 
 	if counts.output == 0 {
 		if _, err := fmt.Fprintf(stdout, "No changes.\n\n"); err != nil {

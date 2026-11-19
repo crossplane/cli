@@ -166,6 +166,14 @@ func XRCompositionRevisionRef(obj map[string]any, apiVersion string) (string, er
 	return name, err
 }
 
+// XRCompositionRef reads the name in an XR/Claim's compositionRef, checking the paths XRUpdatePolicy
+// does. Empty when the ref is unset. A non-nil error means the field is present but malformed (not a
+// string).
+func XRCompositionRef(obj map[string]any, apiVersion string) (string, error) {
+	name, _, err := nestedCrossplaneString(obj, apiVersion, "compositionRef", "name")
+	return name, err
+}
+
 // labelSelectorFromUnstructuredMap converts an unstructured compositionRevisionSelector map (as
 // stored on an XR spec) into a typed metav1.LabelSelector via runtime conversion.
 func labelSelectorFromUnstructuredMap(m map[string]any) (*metav1.LabelSelector, error) {

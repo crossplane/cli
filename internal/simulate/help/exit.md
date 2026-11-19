@@ -14,7 +14,7 @@ the result:
   plan found that the cluster diff didn't.
 - 4: the simulation succeeded, found no changes, and a composite resource or
   a resource it composes was failing (Synced=False) before apply, including
-  one the change would delete. A resource that is only not ready, or is
+  one the change would delete. A resource that's only not ready, or is
   paused, doesn't set it.
 - 7: the simulation succeeded, found changes, and a resource was failing:
   3 and 4 combined.

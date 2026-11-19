@@ -108,18 +108,6 @@ type UnhealthyResource struct {
 	Health *health.Health    `json:"health"`
 }
 
-// HealthSummary counts what is not healthy before apply. Composites counts
-// the composite entries whose own health is not healthy; Failing, NotReady
-// and Paused count the other resources, a nested composite without health of
-// its own on an entry included. Each is counted once however many composites
-// or plans reach it.
-type HealthSummary struct {
-	Composites int `json:"unhealthyComposites"`
-	Failing    int `json:"failing"`
-	NotReady   int `json:"notReady"`
-	Paused     int `json:"paused"`
-}
-
 // Error is an error from a simulate run, optionally anchored to a resource.
 type Error struct {
 	Ref                *plan.ResourceRef   `json:"ref,omitempty"`
@@ -215,9 +203,9 @@ func (r Result) Deferred() int {
 // Health counts the unhealthy composites, and the other resources by health
 // state, from Composites and Plans. A resource counts once, under the state
 // its first live copy reports, matched across API versions.
-func (r Result) Health() HealthSummary {
+func (r Result) Health() plan.HealthSummary {
 	c := r.healthTally().Counts()
-	return HealthSummary{Composites: c.UnhealthyComposites, Failing: c.Failing, NotReady: c.NotReady, Paused: c.Paused}
+	return plan.HealthSummary{Composites: c.UnhealthyComposites, Failing: c.Failing, NotReady: c.NotReady, Paused: c.Paused}
 }
 
 // healthTally adds r's composites and resources to a health.Tally. A
@@ -276,8 +264,8 @@ func (r Result) MarshalJSON() ([]byte, error) {
 	type summary struct {
 		plan.Summary
 
-		Health   HealthSummary `json:"health"`
-		Deferred int           `json:"deferred"`
+		Health   plan.HealthSummary `json:"health"`
+		Deferred int                `json:"deferred"`
 	}
 	return json.Marshal(struct {
 		FormatVersion string               `json:"formatVersion"`

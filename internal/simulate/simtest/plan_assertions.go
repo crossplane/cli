@@ -116,7 +116,7 @@ func assertHealthSummary(t *testing.T, jsonOutput string, want expectedHealth) {
 
 	var out struct {
 		Summary struct {
-			Health simulate.HealthSummary `json:"health"`
+			Health plan.HealthSummary `json:"health"`
 		} `json:"summary"`
 	}
 	if err := json.Unmarshal([]byte(jsonOutput), &out); err != nil {

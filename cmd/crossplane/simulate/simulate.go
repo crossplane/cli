@@ -67,6 +67,7 @@ type Cmd struct {
 	CacheDir     string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                                                                                                                          help:"Directory for cached xpkg package contents (providers)."                  name:"cache-dir"                                predictor:"directory"`
 	Timeout      time.Duration `default:"2m"                                                                                                                                                                                                         help:"Max time to plan one managed resource."`
 	Output       string        `default:"plan"                                                                                                                                                                                                       enum:"plan,json,yaml"                                                           help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
+	FullMessages bool          `help:"Print health condition messages in full in plan output, rather than cut to one line."`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
@@ -92,7 +93,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		return errors.Errorf("no resources found in %q", c.Filename)
 	}
 
-	renderer, err := plan.NewRenderer(c.Output)
+	renderer, err := plan.NewRenderer(c.Output, c.FullMessages)
 	if err != nil {
 		return err
 	}

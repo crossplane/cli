@@ -645,7 +645,7 @@ func TestHealth(t *testing.T) {
 	type want struct {
 		plans      map[string]*health.Health // plan name -> health
 		composites []CompositeResult
-		summary    HealthSummary
+		summary    plan.HealthSummary
 	}
 	type args struct {
 		xr   *dt.XRReport
@@ -696,7 +696,7 @@ func TestHealth(t *testing.T) {
 					Ref: xrPlan, Status: CompositeChanged, Health: failing,
 					Unhealthy: []UnhealthyResource{{Ref: resourceRef(bucketV1), Health: failing}},
 				}},
-				summary: HealthSummary{Composites: 1, Failing: 1, NotReady: 1},
+				summary: plan.HealthSummary{Composites: 1, Failing: 1, NotReady: 1},
 			},
 		},
 		"PlannedAcrossVersions": {
@@ -710,7 +710,7 @@ func TestHealth(t *testing.T) {
 			want: want{
 				plans:      map[string]*health.Health{"b": failing},
 				composites: []CompositeResult{{Ref: xrPlan, Status: CompositeChanged, Health: healthy}},
-				summary:    HealthSummary{Failing: 1},
+				summary:    plan.HealthSummary{Failing: 1},
 			},
 		},
 		"NestedVia": {
@@ -728,7 +728,7 @@ func TestHealth(t *testing.T) {
 					{Ref: resourceRef(child), Health: notReady},
 					{Ref: cmPlan("deep"), Via: &childPlan, Health: failing},
 				}}},
-				summary: HealthSummary{Failing: 1, NotReady: 1},
+				summary: plan.HealthSummary{Failing: 1, NotReady: 1},
 			},
 		},
 		"NestedEntryListsItsOwn": {
@@ -749,7 +749,7 @@ func TestHealth(t *testing.T) {
 					{Ref: xrPlan, Composition: compRef("a"), Status: CompositeUnchanged, Health: healthy, Unhealthy: []UnhealthyResource{{Ref: cmPlan("cm"), Health: failing}}},
 					{Ref: childPlan, Composition: compRef("a"), ComposedBy: &xrPlan, Status: CompositeUnchanged, Health: notReady, Unhealthy: []UnhealthyResource{{Ref: cmPlan("deep"), Health: failing}}},
 				},
-				summary: HealthSummary{Composites: 1, Failing: 2},
+				summary: plan.HealthSummary{Composites: 1, Failing: 2},
 			},
 		},
 		"NestedEntryWithoutHealth": {
@@ -770,7 +770,7 @@ func TestHealth(t *testing.T) {
 					}},
 					{Ref: childPlan, Composition: compRef("a"), ComposedBy: &xrPlan, Status: CompositeError},
 				},
-				summary: HealthSummary{Failing: 1, NotReady: 1},
+				summary: plan.HealthSummary{Failing: 1, NotReady: 1},
 			},
 		},
 		"CompImpactsCountedOnce": {
@@ -785,7 +785,7 @@ func TestHealth(t *testing.T) {
 					{Ref: xrPlan, Composition: compRef("a"), Status: CompositeUnchanged, Health: failing, Unhealthy: []UnhealthyResource{{Ref: cmPlan("cm"), Health: notReady}}},
 					{Ref: xrPlan, Composition: compRef("b"), Status: CompositeUnchanged, Health: failing, Unhealthy: []UnhealthyResource{{Ref: cmPlan("cm"), Health: notReady}}},
 				},
-				summary: HealthSummary{Composites: 1, NotReady: 1},
+				summary: plan.HealthSummary{Composites: 1, NotReady: 1},
 			},
 		},
 	}

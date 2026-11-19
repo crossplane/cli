@@ -22,6 +22,8 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/crossplane/cli/v2/internal/health"
 )
 
 func testPlans() []*ResourcePlan {
@@ -105,7 +107,7 @@ Warning: 1 resource could not be planned.
 `
 
 	var buf bytes.Buffer
-	r, err := NewRenderer(FormatPlan)
+	r, err := NewRenderer(FormatPlan, false)
 	if err != nil {
 		t.Fatalf("NewRenderer(plan): unexpected error: %v", err)
 	}
@@ -159,7 +161,7 @@ Plan: 0 to add, 1 to change, 0 to destroy.
 `
 
 	var buf bytes.Buffer
-	r, err := NewRenderer(FormatPlan)
+	r, err := NewRenderer(FormatPlan, false)
 	if err != nil {
 		t.Fatalf("NewRenderer(plan): unexpected error: %v", err)
 	}
@@ -217,7 +219,7 @@ Applying this leaves the resource unsynced until it is replaced manually.
 `
 
 	var buf bytes.Buffer
-	r, _ := NewRenderer(FormatPlan)
+	r, _ := NewRenderer(FormatPlan, false)
 	if err := r.Render(&buf, plans); err != nil {
 		t.Fatalf("Render(plan): unexpected error: %v", err)
 	}
@@ -238,14 +240,14 @@ Applying this leaves the resource unsynced until it is replaced manually.
 }
 
 func TestNewRendererUnknownFormat(t *testing.T) {
-	if _, err := NewRenderer("diff"); err == nil {
+	if _, err := NewRenderer("diff", false); err == nil {
 		t.Errorf("NewRenderer(diff): want an error for an unsupported format")
 	}
 }
 
 func TestRenderJSON(t *testing.T) {
 	var buf bytes.Buffer
-	r, err := NewRenderer(FormatJSON)
+	r, err := NewRenderer(FormatJSON, false)
 	if err != nil {
 		t.Fatalf("NewRenderer(json): unexpected error: %v", err)
 	}
@@ -284,7 +286,7 @@ func TestSummarize(t *testing.T) {
 func TestRenderPlanEmptyReplacePath(t *testing.T) {
 	plans := []*ResourcePlan{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: ActionReplace, ReplacePaths: []string{"", "..", "spec.x"}}}
 	var buf bytes.Buffer
-	r, _ := NewRenderer(FormatPlan)
+	r, _ := NewRenderer(FormatPlan, false)
 	if err := r.Render(&buf, plans); err != nil {
 		t.Fatalf("Render(plan): unexpected error: %v", err)
 	}
@@ -292,7 +294,7 @@ func TestRenderPlanEmptyReplacePath(t *testing.T) {
 
 func TestRenderJSONOmitsProjectFields(t *testing.T) {
 	var buf bytes.Buffer
-	r, _ := NewRenderer(FormatJSON)
+	r, _ := NewRenderer(FormatJSON, false)
 	if err := r.Render(&buf, testPlans()); err != nil {
 		t.Fatalf("Render(json): unexpected error: %v", err)
 	}
@@ -300,5 +302,197 @@ func TestRenderJSONOmitsProjectFields(t *testing.T) {
 		if bytes.Contains(buf.Bytes(), []byte(k)) {
 			t.Errorf("Render(json): resource simulate output should omit %s", k)
 		}
+	}
+}
+
+func TestRenderPlanHealth(t *testing.T) {
+	failing := func(msg string) *health.Health {
+		return &health.Health{State: health.Failing, Synced: &health.Condition{Status: "False", Reason: "ReconcileError", Message: msg}}
+	}
+	vpcMsg := "The vpc ID 'vpc-048777c3b8a8ee173' does not exist\nstatus code: 400"
+	update := &ResourcePlan{
+		APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "Subnet", Name: "my-subnet", Action: ActionUpdate,
+		Changes: []FieldChange{{Path: "spec.forProvider.cidrBlock", Actual: &Value{Value: "10.0.1.0/24"}, Planned: &Value{Value: "10.0.2.0/24"}}},
+		Health:  failing(vpcMsg),
+	}
+	noop := func(name string, h *health.Health) *ResourcePlan {
+		return &ResourcePlan{APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "VPC", Name: name, Action: ActionNoOp, Health: h}
+	}
+
+	type args struct {
+		plans []*ResourcePlan
+		full  bool
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   string
+	}{
+		"Healthy": {
+			reason: "Healthy resources and creates print no health line and no Health: line.",
+			args: args{plans: []*ResourcePlan{
+				noop("my-vpc", &health.Health{State: health.Healthy}),
+				{APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "VPC", Name: "new-vpc", Action: ActionCreate},
+			}},
+			want: `[=] VPC.ec2.aws.upbound.io my-vpc (no-op)
+
+[+] VPC.ec2.aws.upbound.io new-vpc (create)
+
+Plan: 1 to add, 0 to change, 0 to destroy.
+`,
+		},
+		"Unhealthy": {
+			reason: "Each unhealthy resource, unchanged ones included, gets a ⚠ line with its message cut to one line, and the Health: line counts them.",
+			args: args{plans: []*ResourcePlan{
+				update,
+				noop("my-vpc", &health.Health{State: health.NotReady, Ready: &health.Condition{Status: "False", Reason: "Creating"}}),
+				noop("paused-vpc", &health.Health{State: health.Paused}),
+			}},
+			want: `[~] Subnet.ec2.aws.upbound.io my-subnet (update)
+    ⚠ failing (Synced=False, ReconcileError): The vpc ID 'vpc-048777c3b8a8ee173' does not exist status code: 400
+    spec:
+      forProvider:
+        ~ cidrBlock: "10.0.1.0/24" -> "10.0.2.0/24"
+
+[=] VPC.ec2.aws.upbound.io my-vpc (no-op)
+    ⚠ not ready (Ready=False, Creating)
+
+[=] VPC.ec2.aws.upbound.io paused-vpc (no-op)
+    ⚠ paused
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+Health: 1 resource failing (Synced=False), 1 not ready, 1 paused.
+`,
+		},
+		"FullMessages": {
+			reason: "With full messages, the message prints in full beneath the ⚠ line, wrapped and indented.",
+			args:   args{plans: []*ResourcePlan{update}, full: true},
+			want: `[~] Subnet.ec2.aws.upbound.io my-subnet (update)
+    ⚠ failing (Synced=False, ReconcileError)
+        The vpc ID 'vpc-048777c3b8a8ee173' does not exist
+        status code: 400
+    spec:
+      forProvider:
+        ~ cidrBlock: "10.0.1.0/24" -> "10.0.2.0/24"
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+Health: 1 resource failing (Synced=False).
+`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, _ := NewRenderer(FormatPlan, tc.args.full)
+			var buf bytes.Buffer
+			if err := r.Render(&buf, tc.args.plans); err != nil {
+				t.Fatalf("\n%s\nRender(plan): unexpected error: %v", tc.reason, err)
+			}
+			if diff := cmp.Diff(tc.want, buf.String()); diff != "" {
+				t.Errorf("\n%s\nRender(plan): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestRenderJSONHealth(t *testing.T) {
+	failing := &health.Health{State: health.Failing, Synced: &health.Condition{Status: "False", Reason: "ReconcileError", Message: "boom"}}
+
+	type want struct {
+		plans   string
+		summary string
+	}
+	type args struct {
+		plans []*ResourcePlan
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"NoLiveObject": {
+			reason: "A create writes no health, and every health count is zero.",
+			args:   args{plans: []*ResourcePlan{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: ActionCreate}}},
+			want: want{
+				plans:   `[{"apiVersion":"v1","kind":"ConfigMap","name":"cm","action":"create"}]`,
+				summary: `{"create":1,"update":0,"destroy":0,"replace":0,"noop":0,"approximate":0,"errored":0,"health":{"unhealthyComposites":0,"failing":0,"notReady":0,"paused":0}}`,
+			},
+		},
+		"Unhealthy": {
+			reason: "Each plan's health is written with the conditions it came from, and summary.health counts each resource once.",
+			args: args{plans: []*ResourcePlan{
+				{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: ActionNoOp, Health: failing},
+				{APIVersion: "v1", Kind: "ConfigMap", Name: "pm", Action: ActionNoOp, Health: &health.Health{State: health.Paused}},
+			}},
+			want: want{
+				plans: `[{"apiVersion":"v1","kind":"ConfigMap","name":"cm","action":"no-op","health":{"state":"failing","synced":{"status":"False","reason":"ReconcileError","message":"boom"}}},` +
+					`{"apiVersion":"v1","kind":"ConfigMap","name":"pm","action":"no-op","health":{"state":"paused"}}]`,
+				summary: `{"create":0,"update":0,"destroy":0,"replace":0,"noop":2,"approximate":0,"errored":0,"health":{"unhealthyComposites":0,"failing":1,"notReady":0,"paused":1}}`,
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, _ := NewRenderer(FormatJSON, false)
+			var buf bytes.Buffer
+			if err := r.Render(&buf, tc.args.plans); err != nil {
+				t.Fatalf("\n%s\nRender(json): unexpected error: %v", tc.reason, err)
+			}
+			var top map[string]json.RawMessage
+			if err := json.Unmarshal(buf.Bytes(), &top); err != nil {
+				t.Fatalf("\n%s\nRender(json): output is not valid JSON: %v", tc.reason, err)
+			}
+			compact := func(raw json.RawMessage) string {
+				var b bytes.Buffer
+				_ = json.Compact(&b, raw)
+				return b.String()
+			}
+			got := want{plans: compact(top["plans"]), summary: compact(top["summary"])}
+			if diff := cmp.Diff(tc.want, got, cmp.AllowUnexported(want{})); diff != "" {
+				t.Errorf("\n%s\nRender(json): -want, +got:\n%s", tc.reason, diff)
+			}
+
+			// What is written decodes back to what was rendered.
+			var back Result
+			if err := json.Unmarshal(buf.Bytes(), &back); err != nil {
+				t.Fatalf("\n%s\nRender(json): cannot decode: %v", tc.reason, err)
+			}
+			if diff := cmp.Diff(NewResult(tc.args.plans), back); diff != "" {
+				t.Errorf("\n%s\nRender(json) round trip: -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestFailing(t *testing.T) {
+	type args struct {
+		plans []*ResourcePlan
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   bool
+	}{
+		"NoHealth": {
+			reason: "Plans without health are not failing.",
+			args:   args{plans: []*ResourcePlan{{Action: ActionCreate}}},
+			want:   false,
+		},
+		"NotReadyAndPaused": {
+			reason: "Not ready and paused resources don't set the failing bit.",
+			args:   args{plans: []*ResourcePlan{{Health: &health.Health{State: health.NotReady}}, {Health: &health.Health{State: health.Paused}}}},
+			want:   false,
+		},
+		"FailingDelete": {
+			reason: "A failing resource sets the bit, even one the plan deletes.",
+			args:   args{plans: []*ResourcePlan{{Action: ActionDelete, Health: &health.Health{State: health.Failing}}}},
+			want:   true,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if diff := cmp.Diff(tc.want, Failing(tc.args.plans)); diff != "" {
+				t.Errorf("\n%s\nFailing(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
 	}
 }

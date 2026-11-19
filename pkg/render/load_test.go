@@ -398,7 +398,7 @@ func TestLoadCredentials(t *testing.T) {
 		"SecretWithInvalidBase64Data": {
 			file: "testdata/credentials-invalid-base64.yaml",
 			want: want{
-				err: "cannot parse YAML secret manifest: error unmarshaling JSON: while decoding JSON: illegal base64 data at input byte 3",
+				err: "cannot parse YAML secret manifest: error unmarshaling JSON: while decoding JSON: json: cannot unmarshal string into Go struct field .data.token of type []uint8: illegal base64 data at input byte 3",
 			},
 		},
 	}

@@ -27,7 +27,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
-	isimulate "github.com/crossplane/cli/v2/internal/simulate"
 )
 
 func TestExitStatus(t *testing.T) {
@@ -133,32 +132,51 @@ func TestHelp(t *testing.T) {
 	}
 }
 
-func TestWarnIgnoredFullMessages(t *testing.T) {
+func TestRendererAndReport(t *testing.T) {
+	// A failing resource whose message is too long for one line: plan output
+	// cuts off its tail unless --full-messages is set.
+	plans := []*plan.ResourcePlan{{
+		APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionNoOp,
+		Health: &health.Health{State: health.Failing, Synced: &health.Condition{Status: "False", Reason: "ReconcileError", Message: strings.Repeat("x ", 200) + "tail"}},
+	}}
+
 	type args struct {
 		args []string
+	}
+	type want struct {
+		stderr     string
+		fullOutput bool
+		code       int
 	}
 	cases := map[string]struct {
 		reason string
 		args   args
-		want   string
+		want   want
 	}{
+		"PlanCut": {
+			reason: "Plan output cuts the message to one line and exits 4 for the failing resource.",
+			args:   args{args: []string{"-f", "x.yaml"}},
+			want:   want{code: 4},
+		},
+		"PlanFullMessages": {
+			reason: "--full-messages reaches the plan renderer, which prints the message in full.",
+			args:   args{args: []string{"-f", "x.yaml", "--full-messages"}},
+			want:   want{fullOutput: true, code: 4},
+		},
 		"SetWithJSON": {
 			reason: "json always carries messages in full, so --full-messages is ignored with a warning.",
 			args:   args{args: []string{"-f", "x.yaml", "--full-messages", "-o", "json"}},
-			want:   "Warning: ignoring --full-messages; -o json always prints messages in full.\n",
+			want:   want{stderr: "Warning: ignoring --full-messages; -o json always prints messages in full.\n", fullOutput: true, code: 4},
 		},
 		"SetWithYAML": {
 			reason: "yaml always carries messages in full, so --full-messages is ignored with a warning.",
 			args:   args{args: []string{"-f", "x.yaml", "--full-messages", "-o", "yaml"}},
-			want:   "Warning: ignoring --full-messages; -o yaml always prints messages in full.\n",
-		},
-		"SetWithPlan": {
-			reason: "--full-messages applies to the default plan output, so there's no warning.",
-			args:   args{args: []string{"-f", "x.yaml", "--full-messages"}},
+			want:   want{stderr: "Warning: ignoring --full-messages; -o yaml always prints messages in full.\n", fullOutput: true, code: 4},
 		},
 		"UnsetWithJSON": {
 			reason: "--full-messages left at its default isn't warned about.",
 			args:   args{args: []string{"-f", "x.yaml", "-o", "json"}},
+			want:   want{fullOutput: true, code: 4},
 		},
 	}
 
@@ -167,7 +185,8 @@ func TestWarnIgnoredFullMessages(t *testing.T) {
 			var cli struct {
 				Simulate Cmd `cmd:""`
 			}
-			parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}))
+			var stdout, stderr bytes.Buffer
+			parser, err := kong.New(&cli, kong.Vars{"project_file": "crossplane-project.yaml"}, kong.Exit(func(int) {}), kong.Writers(&stdout, &stderr))
 			if err != nil {
 				t.Fatalf("kong.New(...): %v", err)
 			}
@@ -176,10 +195,20 @@ func TestWarnIgnoredFullMessages(t *testing.T) {
 				t.Fatalf("Parse(%v): %v", tc.args.args, err)
 			}
 
-			var stderr bytes.Buffer
-			isimulate.WarnIgnoredFullMessages(&stderr, isimulate.SetFlags(k), cli.Simulate.Output)
-			if diff := cmp.Diff(tc.want, stderr.String()); diff != "" {
-				t.Errorf("\n%s\nWarnIgnoredFullMessages(...): -want, +got:\n%s", tc.reason, diff)
+			r, err := cli.Simulate.renderer(k)
+			if err != nil {
+				t.Fatalf("\n%s\nrenderer(...): unexpected error: %v", tc.reason, err)
+			}
+			err = report(k, r, plans)
+			code := 0
+			if c, ok := exitcode.SilentExit(err); ok {
+				code = c
+			} else if err != nil {
+				code = 1
+			}
+			got := want{stderr: stderr.String(), fullOutput: strings.Contains(stdout.String(), "tail"), code: code}
+			if diff := cmp.Diff(tc.want, got, cmp.AllowUnexported(want{})); diff != "" {
+				t.Errorf("\n%s\nrenderer(...) and report(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

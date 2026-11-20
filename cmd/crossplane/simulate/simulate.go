@@ -67,6 +67,7 @@ type Cmd struct {
 	CacheDir     string        `env:"CROSSPLANE_XPKG_CACHE"                                                                                                                                                                                          help:"Directory for cached xpkg package contents (providers)."                  name:"cache-dir"                                predictor:"directory"`
 	Timeout      time.Duration `default:"2m"                                                                                                                                                                                                         help:"Max time to plan one managed resource."`
 	Output       string        `default:"plan"                                                                                                                                                                                                       enum:"plan,json,yaml"                                                           help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
+	FullMessages bool          `help:"Print health condition messages in full in plan output, rather than cut to one line."`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
@@ -92,7 +93,7 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		return errors.Errorf("no resources found in %q", c.Filename)
 	}
 
-	renderer, err := plan.NewRenderer(c.Output)
+	renderer, err := c.renderer(k)
 	if err != nil {
 		return err
 	}
@@ -152,24 +153,48 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 		plans = append(plans, planner.Plan(ctx, desired))
 	}
 
-	if err := renderer.Render(k.Stdout, plans); err != nil {
+	return report(k, renderer, plans)
+}
+
+// renderer builds the renderer for --output and --full-messages, and warns on
+// k.Stderr when --full-messages is set but has no effect.
+func (c *Cmd) renderer(k *kong.Context) (plan.Renderer, error) {
+	r, err := plan.NewRenderer(c.Output, c.FullMessages)
+	if err != nil {
+		return nil, err
+	}
+	isimulate.WarnIgnoredFullMessages(k.Stderr, isimulate.SetFlags(k), c.Output)
+	return r, nil
+}
+
+// report renders plans to k.Stdout and returns the run's exit status.
+func report(k *kong.Context, r plan.Renderer, plans []*plan.ResourcePlan) error {
+	if err := r.Render(k.Stdout, plans); err != nil {
 		return err
 	}
 	return exitStatus(plans)
 }
 
 // exitStatus ranks the plans' outcome: an error, which exits 1, when any
-// plan errored; otherwise a silent exitcode.ExitError that exits 3 when a plan
-// would change anything; otherwise nil.
+// plan errored; otherwise a silent exitcode.ExitError whose code adds 4 when
+// a resource was failing before apply to 3 when a plan would change
+// anything, so 3, 4 or 7; otherwise nil.
 func exitStatus(plans []*plan.ResourcePlan) error {
 	s := plan.Summarize(plans)
 	if s.Errored > 0 {
 		return errors.Errorf("cannot plan %d of %d resources; see their errors in the output", s.Errored, len(plans))
 	}
+	code := 0
 	if s.Changes() > 0 {
-		return exitcode.ExitError{Code: isimulate.ExitCodeChanges}
+		code |= isimulate.ExitCodeChanges
 	}
-	return nil
+	if plan.Failing(plans) {
+		code |= isimulate.ExitCodeFailing
+	}
+	if code == 0 {
+		return nil
+	}
+	return exitcode.ExitError{Code: code}
 }
 
 // setupKubeClient builds the client stack resource simulate plans with: the

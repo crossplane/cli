@@ -563,6 +563,88 @@ Summary: 2 modified`,
 			ExpectedError:    false,
 			ExpectedExitCode: dp.ExitCodeDiffDetected,
 		},
+		"UnhealthyXRWithChangesExits7": {
+			Reason: "A failing XR with changes prints its health and its not-ready composed resource's, then the Health: line, and exits 7: changes (3) and failing (4).",
+			SetupFiles: []string{
+				"../../../internal/testutils/integration/testdata/diff/resources/xrd.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/composition.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+				integration.Composes(
+					"../../../internal/testutils/integration/testdata/diff/resources/existing-xr-failing.yaml",
+					"../../../internal/testutils/integration/testdata/diff/resources/existing-downstream-resource-not-ready.yaml",
+				),
+			},
+			InputFiles: []string{"../../../internal/testutils/integration/testdata/diff/modified-xr.yaml"},
+			NoColor:    true,
+			ExpectedOutput: `XR: XNopResource/default/test-resource ⚠ failing (Synced=False, ReconcileError): cannot compose resources: the vpc does not exist
+
+~~~ XDownstreamResource/test-resource ⚠ not ready (Ready=False, Creating)
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: test-resource
+    name: test-resource
+    namespace: default
+  spec:
+    forProvider:
+-     configData: existing-value
++     configData: modified-value
+
+---
+~~~ XNopResource/test-resource ⚠ failing
+  apiVersion: ns.diff.example.org/v1alpha1
+  kind: XNopResource
+  metadata:
+    labels:
+      crossplane.io/composite: test-resource
+    name: test-resource
+    namespace: default
+  spec:
+-   coolField: existing-value
++   coolField: modified-value
+    crossplane:
+      compositionRef:
+        name: xnopresources.diff.example.org
+      compositionRevisionRef:
+        name: xnopresources.diff.example.org-b616215
+      compositionUpdatePolicy: Automatic
+
+---
+
+Summary: 2 modified
+
+Health: 1 of 1 XR unhealthy before apply; 1 resource not ready.`,
+			ExpectedExitCode: dp.ExitCodeDiffDetected | dp.ExitCodeFailing,
+		},
+		"UnhealthyXRWithoutChangesExits4": {
+			Reason:       "A failing XR without changes reports its health and its not-ready composed resource in -o json, and exits 4: failing, no changes.",
+			OutputFormat: "json",
+			SetupFiles: []string{
+				"../../../internal/testutils/integration/testdata/diff/resources/xrd.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/composition.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+				integration.Composes(
+					"../../../internal/testutils/integration/testdata/diff/resources/existing-xr-failing.yaml",
+					"../../../internal/testutils/integration/testdata/diff/resources/existing-downstream-resource-not-ready.yaml",
+				),
+			},
+			InputFiles: []string{"../../../internal/testutils/integration/testdata/diff/unmodified-xr.yaml"},
+			ExpectedStructured: simtest.Expect().
+				WithSummary(0, 0, 0).
+				WithHealthSummary(1, 0, 1, 0).
+				WithXRs(simtest.XR("XNopResource", "test-resource", "default").
+					Status("unchanged").
+					Health("failing").
+					Unhealthy("XDownstreamResource", "test-resource", "notReady")),
+			ExpectedExitCode: dp.ExitCodeFailing,
+		},
 		"IgnorePathsArgoCD": {
 			Reason: "Ignores ArgoCD annotations and labels when --ignore-paths is specified",
 			SetupFiles: []string{

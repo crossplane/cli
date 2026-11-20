@@ -1,0 +1,20 @@
+# existing-downstream-resource.yaml while its provider is still creating it: Ready=False, so it is
+# not ready.
+apiVersion: ns.nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  annotations:
+    crossplane.io/composition-resource-name: nop-resource
+  labels:
+    crossplane.io/composite: test-resource
+  name: test-resource
+  namespace: default
+spec:
+  forProvider:
+    configData: existing-value
+status:
+  conditions:
+    - type: Ready
+      status: "False"
+      reason: Creating
+      lastTransitionTime: "2024-01-01T00:00:00Z"

@@ -1,0 +1,19 @@
+# existing-xr-1.yaml as Crossplane reports it once its composed resources cannot sync: Synced=False,
+# so the XR is failing. Fixture setup writes the status through the status subresource.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: test-resource
+  namespace: default
+spec:
+  coolField: existing-value
+  crossplane:
+    compositionRef:
+      name: xnopresources.diff.example.org
+status:
+  conditions:
+    - type: Synced
+      status: "False"
+      reason: ReconcileError
+      message: "cannot compose resources: the vpc does not exist"
+      lastTransitionTime: "2024-01-01T00:00:00Z"

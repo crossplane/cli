@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -69,7 +70,7 @@ Plan: 0 to add, 1 to change, 1 to destroy.
 1 composite resource deferred (pinned to a composition revision).
 `
 	var buf bytes.Buffer
-	r2, _ := NewRenderer(plan.FormatPlan)
+	r2, _ := NewRenderer(plan.FormatPlan, false)
 	if err := r2.Render(&buf, r); err != nil {
 		t.Fatalf("Render(plan): unexpected error: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestRenderPlanCompositeDetail(t *testing.T) {
 Plan: 0 to add, 0 to change, 0 to destroy.
 `
 	var buf bytes.Buffer
-	r2, _ := NewRenderer(plan.FormatPlan)
+	r2, _ := NewRenderer(plan.FormatPlan, false)
 	if err := r2.Render(&buf, r); err != nil {
 		t.Fatalf("Render(plan): unexpected error: %v", err)
 	}
@@ -102,7 +103,7 @@ Plan: 0 to add, 0 to change, 0 to destroy.
 func TestRenderPlanPinnedHeader(t *testing.T) {
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
 	var buf bytes.Buffer
-	r, _ := NewRenderer(plan.FormatPlan)
+	r, _ := NewRenderer(plan.FormatPlan, false)
 	if err := r.Render(&buf, Result{Composites: []CompositeResult{{Ref: xr, Status: CompositeUnchanged, Pinned: true}}}); err != nil {
 		t.Fatalf("Render(plan): unexpected error: %v", err)
 	}
@@ -163,7 +164,7 @@ Plan: 0 to add, 2 to change, 0 to destroy.
 Note: Provider plan not run.
 `
 	var buf bytes.Buffer
-	pr, _ := NewRenderer(plan.FormatPlan)
+	pr, _ := NewRenderer(plan.FormatPlan, false)
 	if err := pr.Render(&buf, r); err != nil {
 		t.Fatalf("Render(plan): unexpected error: %v", err)
 	}
@@ -201,7 +202,7 @@ func TestRenderJSONProjectFields(t *testing.T) {
 		}},
 	}
 	var buf bytes.Buffer
-	r, _ := NewRenderer(plan.FormatJSON)
+	r, _ := NewRenderer(plan.FormatJSON, false)
 	if err := r.Render(&buf, in); err != nil {
 		t.Fatalf("Render(json): unexpected error: %v", err)
 	}
@@ -214,7 +215,8 @@ func TestRenderJSONProjectFields(t *testing.T) {
 	}
 
 	// The top-level keys keep summary, composites and compositions ahead of
-	// the plans, and summary carries the deferred count.
+	// the plans, and summary carries the deferred count. Summary is not a flat
+	// map of counts: the health counts nest under summary.health.
 	dec := json.NewDecoder(&buf)
 	var keys []string
 	if _, err := dec.Token(); err != nil {
@@ -231,12 +233,16 @@ func TestRenderJSONProjectFields(t *testing.T) {
 			t.Fatalf("Render(json): cannot read value of %q: %v", k, err)
 		}
 		if k == "summary" {
-			var sum map[string]int
-			if err := json.Unmarshal(v, &sum); err != nil {
-				t.Fatalf("Render(json): summary is not a map of counts: %v", err)
+			var sum struct {
+				Destroy  int            `json:"destroy"`
+				Deferred int            `json:"deferred"`
+				Health   map[string]int `json:"health"`
 			}
-			if sum["deferred"] != 1 || sum["destroy"] != 1 {
-				t.Errorf("Render(json): summary: want destroy 1 and deferred 1, got %v", sum)
+			if err := json.Unmarshal(v, &sum); err != nil {
+				t.Fatalf("Render(json): summary does not hold counts: %v", err)
+			}
+			if sum.Deferred != 1 || sum.Destroy != 1 || sum.Health == nil {
+				t.Errorf("Render(json): summary: want destroy 1, deferred 1 and health counts, got %+v", sum)
 			}
 		}
 	}
@@ -250,7 +256,7 @@ func TestRenderYAMLSummaryDeferred(t *testing.T) {
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
 	in := NewResult(nil, []CompositeResult{{Ref: xr, Status: CompositeDeferred}}, nil)
 	var buf bytes.Buffer
-	r, _ := NewRenderer(plan.FormatYAML)
+	r, _ := NewRenderer(plan.FormatYAML, false)
 	if err := r.Render(&buf, in); err != nil {
 		t.Fatalf("Render(yaml): unexpected error: %v", err)
 	}
@@ -299,6 +305,313 @@ func TestNewResult(t *testing.T) {
 			}
 			if got.FormatVersion != plan.ResultFormatVersion {
 				t.Errorf("\n%s\nNewResult(...).FormatVersion: want %q, got %q", tc.reason, plan.ResultFormatVersion, got.FormatVersion)
+			}
+		})
+	}
+}
+
+func TestRenderJSONHealth(t *testing.T) {
+	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
+	nested := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XSubnet", Name: "a"}
+	failing := &health.Health{State: health.Failing, Synced: &health.Condition{Status: "False", Reason: "ReconcileError", Message: "boom"}}
+
+	type want struct {
+		composites string
+		plans      string
+		summary    string
+	}
+	type args struct {
+		in Result
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"NoLiveObjects": {
+			reason: "Without live objects no health or unhealthy key is written, and every health count is zero.",
+			args: args{in: NewResult(
+				[]*plan.ResourcePlan{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionCreate, Composite: &xr}},
+				[]CompositeResult{{Ref: xr, Status: CompositeChanged}}, nil)},
+			want: want{
+				composites: `[{"ref":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"},"status":"changed"}]`,
+				plans:      `[{"apiVersion":"v1","kind":"ConfigMap","name":"cm","action":"create","composite":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"}}]`,
+				summary:    `{"create":1,"update":0,"destroy":0,"replace":0,"noop":0,"approximate":0,"errored":0,"health":{"unhealthyComposites":0,"failing":0,"notReady":0,"paused":0},"deferred":0}`,
+			},
+		},
+		"Unhealthy": {
+			reason: "Composite and plan health, and the unhealthy list with each entry's via, are written under their keys with the conditions they came from.",
+			args: args{in: NewResult(
+				[]*plan.ResourcePlan{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionNoOp, Composite: &xr, Health: &health.Health{State: health.Paused}}},
+				[]CompositeResult{{
+					Ref: xr, Status: CompositeUnchanged, Health: failing,
+					Unhealthy: []UnhealthyResource{
+						{Ref: plan.ResourceRef{APIVersion: "v1", Kind: "Secret", Name: "s"}, Health: &health.Health{State: health.NotReady, Ready: &health.Condition{Status: "False"}}},
+						{Ref: plan.ResourceRef{APIVersion: "v1", Kind: "Secret", Name: "t"}, Via: &nested, Health: &health.Health{State: health.Paused}},
+					},
+				}}, nil)},
+			want: want{
+				composites: `[{"ref":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"},"status":"unchanged",` +
+					`"health":{"state":"failing","synced":{"status":"False","reason":"ReconcileError","message":"boom"}},` +
+					`"unhealthy":[{"ref":{"apiVersion":"v1","kind":"Secret","name":"s"},"health":{"state":"notReady","ready":{"status":"False"}}},` +
+					`{"ref":{"apiVersion":"v1","kind":"Secret","name":"t"},"via":{"apiVersion":"example.org/v1","kind":"XSubnet","name":"a"},"health":{"state":"paused"}}]}]`,
+				plans:   `[{"apiVersion":"v1","kind":"ConfigMap","name":"cm","action":"no-op","composite":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"},"health":{"state":"paused"}}]`,
+				summary: `{"create":0,"update":0,"destroy":0,"replace":0,"noop":1,"approximate":0,"errored":0,"health":{"unhealthyComposites":1,"failing":0,"notReady":1,"paused":2},"deferred":0}`,
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			r, _ := NewRenderer(plan.FormatJSON, false)
+			if err := r.Render(&buf, tc.args.in); err != nil {
+				t.Fatalf("%s\nRender(json): unexpected error: %v", tc.reason, err)
+			}
+			var top map[string]json.RawMessage
+			if err := json.Unmarshal(buf.Bytes(), &top); err != nil {
+				t.Fatalf("%s\nRender(json): output is not valid JSON: %v", tc.reason, err)
+			}
+			compact := func(raw json.RawMessage) string {
+				var b bytes.Buffer
+				_ = json.Compact(&b, raw)
+				return b.String()
+			}
+			got := want{composites: compact(top["composites"]), plans: compact(top["plans"]), summary: compact(top["summary"])}
+			if diff := cmp.Diff(tc.want, got, cmp.AllowUnexported(want{})); diff != "" {
+				t.Errorf("%s\nRender(json): -want, +got:\n%s", tc.reason, diff)
+			}
+
+			// What is written decodes back to what was rendered.
+			var back Result
+			if err := json.Unmarshal(buf.Bytes(), &back); err != nil {
+				t.Fatalf("%s\nRender(json): cannot decode: %v", tc.reason, err)
+			}
+			if diff := cmp.Diff(tc.args.in, back); diff != "" {
+				t.Errorf("%s\nRender(json) round trip: -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestRenderPlanHealth(t *testing.T) {
+	xr := plan.ResourceRef{APIVersion: "aws.platform.upbound.io/v1alpha1", Kind: "Network", Namespace: "crossplane-system", Name: "net"}
+	other := plan.ResourceRef{APIVersion: "aws.platform.upbound.io/v1alpha1", Kind: "Network", Namespace: "crossplane-system", Name: "other"}
+	nested := plan.ResourceRef{APIVersion: "aws.platform.upbound.io/v1alpha1", Kind: "XSubnet", Namespace: "crossplane-system", Name: "net-sn"}
+	rt := plan.ResourceRef{APIVersion: "ec2.aws.m.upbound.io/v1beta1", Kind: "RouteTable", Namespace: "crossplane-system", Name: "net-rt"}
+	sn := plan.ResourceRef{APIVersion: "ec2.aws.m.upbound.io/v1beta1", Kind: "Subnet", Namespace: "crossplane-system", Name: "net-sn-a"}
+	failing := func(msg string) *health.Health {
+		return &health.Health{State: health.Failing, Synced: &health.Condition{Status: "False", Reason: "ReconcileError", Message: msg}}
+	}
+	notReady := &health.Health{State: health.NotReady, Ready: &health.Condition{Status: "False", Reason: "Creating", Message: "14/15 unready"}}
+	update := func(name string, h *health.Health) *plan.ResourcePlan {
+		return &plan.ResourcePlan{
+			APIVersion: "ec2.aws.m.upbound.io/v1beta1", Kind: "InternetGateway", Namespace: "crossplane-system", Name: name,
+			Action: plan.ActionUpdate, Composite: &xr, Health: h,
+			Changes: []plan.FieldChange{{Path: "spec.forProvider.region", Actual: &plan.Value{Value: "us-east-1"}, Planned: &plan.Value{Value: "us-west-2"}}},
+		}
+	}
+	vpcMsg := "The vpc ID 'vpc-048777c3b8a8ee173' does not exist\nstatus code: 400"
+
+	type args struct {
+		r    Result
+		full bool
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   string
+	}{
+		"BrokenXR": {
+			reason: "An unhealthy XR's header, a failing plan, and the composed resources that are unhealthy without changes are marked, nested under their nested XR, and summarized.",
+			args: args{r: NewResult(
+				[]*plan.ResourcePlan{
+					// The XR's own no-op plan is not printed; its header carries its health.
+					{APIVersion: xr.APIVersion, Kind: xr.Kind, Namespace: xr.Namespace, Name: xr.Name, Action: plan.ActionNoOp, Composite: &xr, Health: notReady},
+					update("net-igw", failing("cannot update: "+vpcMsg)),
+				},
+				[]CompositeResult{
+					{Ref: xr, Status: CompositeChanged, Health: notReady, Unhealthy: []UnhealthyResource{
+						{Ref: rt, Health: failing(vpcMsg)},
+						{Ref: nested, Health: notReady},
+						{Ref: sn, Via: &nested, Health: &health.Health{State: health.Paused}},
+					}},
+					{Ref: other, Status: CompositeUnchanged, Health: &health.Health{State: health.Healthy}},
+				}, nil)},
+			want: `XR: Network.aws.platform.upbound.io crossplane-system/net ⚠ not ready (Ready=False, Creating): 14/15 unready
+  [~] InternetGateway.ec2.aws.m.upbound.io crossplane-system/net-igw (update)
+      ⚠ failing (Synced=False, ReconcileError): cannot update: The vpc ID 'vpc-048777c3b8a8ee173' does not exist status code: 400
+      spec:
+        forProvider:
+          ~ region: "us-east-1" -> "us-west-2"
+
+  Unhealthy resources without changes:
+    RouteTable.ec2.aws.m.upbound.io crossplane-system/net-rt ⚠ failing (Synced=False, ReconcileError): The vpc ID 'vpc-048777c3b8a8ee173' does not exist status code: 400
+    XSubnet.aws.platform.upbound.io crossplane-system/net-sn ⚠ not ready (Ready=False, Creating): 14/15 unready
+      Subnet.ec2.aws.m.upbound.io crossplane-system/net-sn-a ⚠ paused
+
+XR: Network.aws.platform.upbound.io crossplane-system/other
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+Health: 1 of 2 XRs unhealthy before apply; 2 resources failing (Synced=False), 1 not ready, 1 paused.
+`,
+		},
+		"FullMessages": {
+			reason: "With full messages, each message prints in full beneath its line, wrapped and indented.",
+			args: args{full: true, r: NewResult(
+				[]*plan.ResourcePlan{update("net-igw", failing(vpcMsg))},
+				[]CompositeResult{{Ref: xr, Status: CompositeChanged, Health: failing("xr broken"), Unhealthy: []UnhealthyResource{{Ref: rt, Health: failing(vpcMsg)}}}},
+				nil)},
+			want: `XR: Network.aws.platform.upbound.io crossplane-system/net ⚠ failing (Synced=False, ReconcileError)
+    xr broken
+  [~] InternetGateway.ec2.aws.m.upbound.io crossplane-system/net-igw (update)
+      ⚠ failing (Synced=False, ReconcileError)
+          The vpc ID 'vpc-048777c3b8a8ee173' does not exist
+          status code: 400
+      spec:
+        forProvider:
+          ~ region: "us-east-1" -> "us-west-2"
+
+  Unhealthy resources without changes:
+    RouteTable.ec2.aws.m.upbound.io crossplane-system/net-rt ⚠ failing (Synced=False, ReconcileError)
+        The vpc ID 'vpc-048777c3b8a8ee173' does not exist
+        status code: 400
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+Health: 1 of 1 XR unhealthy before apply; 2 resources failing (Synced=False).
+`,
+		},
+		"NestedUnderPlannedXR": {
+			reason: "A resource whose nested XR has a plan of its own is nested under a line naming that XR.",
+			args: args{r: NewResult(
+				[]*plan.ResourcePlan{{APIVersion: nested.APIVersion, Kind: nested.Kind, Namespace: nested.Namespace, Name: nested.Name, Action: plan.ActionUpdate, Composite: &xr}},
+				[]CompositeResult{{Ref: xr, Status: CompositeChanged, Unhealthy: []UnhealthyResource{{Ref: sn, Via: &nested, Health: notReady}}}},
+				nil)},
+			want: `XR: Network.aws.platform.upbound.io crossplane-system/net
+  [~] XSubnet.aws.platform.upbound.io crossplane-system/net-sn (update)
+
+  Unhealthy resources without changes:
+    XSubnet.aws.platform.upbound.io crossplane-system/net-sn
+      Subnet.ec2.aws.m.upbound.io crossplane-system/net-sn-a ⚠ not ready (Ready=False, Creating): 14/15 unready
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+Health: 1 resource not ready.
+`,
+		},
+		"NestedEntryListsItsOwn": {
+			reason: "A nested XR with an entry and health of its own is marked on its own header and lists what it composes; it counts as an XR, not a resource.",
+			args: args{r: NewResult(nil,
+				[]CompositeResult{
+					{Ref: xr, Status: CompositeUnchanged, Health: &health.Health{State: health.Healthy}, Unhealthy: []UnhealthyResource{{Ref: rt, Health: failing("gone")}}},
+					{Ref: nested, ComposedBy: &xr, Status: CompositeUnchanged, Health: notReady, Unhealthy: []UnhealthyResource{{Ref: sn, Health: notReady}}},
+				}, nil)},
+			want: `XR: Network.aws.platform.upbound.io crossplane-system/net
+  Unhealthy resources without changes:
+    RouteTable.ec2.aws.m.upbound.io crossplane-system/net-rt ⚠ failing (Synced=False, ReconcileError): gone
+
+XR: XSubnet.aws.platform.upbound.io crossplane-system/net-sn ⚠ not ready (Ready=False, Creating): 14/15 unready
+    ↳ composed by Network.aws.platform.upbound.io crossplane-system/net
+  Unhealthy resources without changes:
+    Subnet.ec2.aws.m.upbound.io crossplane-system/net-sn-a ⚠ not ready (Ready=False, Creating): 14/15 unready
+
+Plan: 0 to add, 0 to change, 0 to destroy.
+Health: 1 of 2 XRs unhealthy before apply; 1 resource failing (Synced=False), 1 not ready.
+`,
+		},
+		"NestedEntryWithoutHealth": {
+			reason: "A nested XR whose entry has no health is listed under its parent and counts as a resource, not an XR.",
+			args: args{r: NewResult(nil,
+				[]CompositeResult{
+					{Ref: xr, Status: CompositeUnchanged, Health: notReady, Unhealthy: []UnhealthyResource{
+						{Ref: nested, Health: failing("broken")},
+						{Ref: sn, Via: &nested, Health: notReady},
+					}},
+					{Ref: nested, ComposedBy: &xr, Status: CompositeError},
+				}, nil)},
+			want: `XR: Network.aws.platform.upbound.io crossplane-system/net ⚠ not ready (Ready=False, Creating): 14/15 unready
+  Unhealthy resources without changes:
+    XSubnet.aws.platform.upbound.io crossplane-system/net-sn ⚠ failing (Synced=False, ReconcileError): broken
+      Subnet.ec2.aws.m.upbound.io crossplane-system/net-sn-a ⚠ not ready (Ready=False, Creating): 14/15 unready
+
+XR: XSubnet.aws.platform.upbound.io crossplane-system/net-sn
+    ↳ composed by Network.aws.platform.upbound.io crossplane-system/net
+
+Plan: 0 to add, 0 to change, 0 to destroy.
+Health: 1 of 1 XR unhealthy before apply; 1 resource failing (Synced=False), 1 not ready.
+`,
+		},
+		"UngroupedDelete": {
+			reason: "A failing resource the plan deletes is marked like any other.",
+			args: args{r: NewResult(
+				[]*plan.ResourcePlan{{APIVersion: rt.APIVersion, Kind: rt.Kind, Namespace: rt.Namespace, Name: rt.Name, Action: plan.ActionDelete, Health: failing("gone")}},
+				nil, nil)},
+			want: `[-] RouteTable.ec2.aws.m.upbound.io crossplane-system/net-rt (delete)
+    ⚠ failing (Synced=False, ReconcileError): gone
+
+Plan: 0 to add, 0 to change, 1 to destroy.
+Health: 1 resource failing (Synced=False).
+`,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, _ := NewRenderer(plan.FormatPlan, tc.args.full)
+			var buf bytes.Buffer
+			if err := r.Render(&buf, tc.args.r); err != nil {
+				t.Fatalf("\n%s\nRender(plan): unexpected error: %v", tc.reason, err)
+			}
+			if diff := cmp.Diff(tc.want, buf.String()); diff != "" {
+				t.Errorf("\n%s\nRender(plan): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestResultFailing(t *testing.T) {
+	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
+	failing := &health.Health{State: health.Failing}
+	notReady := &health.Health{State: health.NotReady}
+
+	type args struct {
+		r Result
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   bool
+	}{
+		"Healthy": {
+			reason: "A run with nothing failing sets no exit bit.",
+			args:   args{r: NewResult([]*plan.ResourcePlan{{Kind: "ConfigMap", Name: "cm", Action: plan.ActionUpdate}}, []CompositeResult{{Ref: xr}}, nil)},
+		},
+		"NotReadyAndPaused": {
+			reason: "Only failing counts: not ready and paused resources don't.",
+			args: args{r: NewResult(
+				[]*plan.ResourcePlan{{Kind: "ConfigMap", Name: "cm", Health: notReady}},
+				[]CompositeResult{{Ref: xr, Health: notReady, Unhealthy: []UnhealthyResource{{Ref: xr, Health: &health.Health{State: health.Paused}}}}}, nil)},
+		},
+		"FailingComposite": {
+			reason: "A failing composite counts.",
+			args:   args{r: NewResult(nil, []CompositeResult{{Ref: xr, Health: failing}}, nil)},
+			want:   true,
+		},
+		"FailingUnchanged": {
+			reason: "A failing resource without changes counts.",
+			args:   args{r: NewResult(nil, []CompositeResult{{Ref: xr, Unhealthy: []UnhealthyResource{{Ref: xr, Health: failing}}}}, nil)},
+			want:   true,
+		},
+		"FailingDelete": {
+			reason: "A failing resource the plan deletes counts.",
+			args:   args{r: NewResult([]*plan.ResourcePlan{{Kind: "ConfigMap", Name: "cm", Action: plan.ActionDelete, Health: failing}}, nil, nil)},
+			want:   true,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.args.r.Failing(); got != tc.want {
+				t.Errorf("\n%s\nFailing(): want %t, got %t", tc.reason, tc.want, got)
 			}
 		})
 	}

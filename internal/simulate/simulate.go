@@ -38,6 +38,7 @@ import (
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -80,8 +81,8 @@ func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, de
 }
 
 // Plan plans a single resource: fetch its live counterpart, then plan it
-// with PlanWithLive. Failures become per-resource errors so one resource
-// never fails the whole run.
+// with PlanWithLive, carrying the live counterpart's health. Failures become
+// per-resource errors so one resource never fails the whole run.
 func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) *plan.ResourcePlan {
 	if desired.GetName() == "" {
 		rp := plan.NewResourcePlan(desired)
@@ -95,7 +96,10 @@ func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) 
 		rp.Error = fmt.Sprintf("cannot fetch live resource: %s", err)
 		return rp
 	}
-	return p.PlanWithLive(ctx, desired, live)
+	rp := p.PlanWithLive(ctx, desired, live)
+	// Health before apply, read from the live resource; nil for a create.
+	rp.Health = health.Of(live)
+	return rp
 }
 
 // PlanWithLive plans a single resource against an already-fetched live

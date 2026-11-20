@@ -28,6 +28,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -86,6 +87,25 @@ type CompositeResult struct {
 	// ComposedBy references the parent composite of a nested XR; nil for a
 	// top-level XR.
 	ComposedBy *plan.ResourceRef `json:"composedBy,omitempty"`
+	// Health is the live composite's health before apply, which is distinct
+	// from Status, the simulated outcome; nil when the cluster has no such
+	// composite, or it was not simulated.
+	Health *health.Health `json:"health,omitempty"`
+	// Unhealthy lists the composed resources, nested composites and theirs
+	// included, that are live, not healthy, and have no plan in the run (so
+	// no health of their own to show). A nested composite with an entry and
+	// health of its own lists what it composes there instead, and its
+	// parent lists neither it nor that.
+	Unhealthy []UnhealthyResource `json:"unhealthy,omitempty"`
+}
+
+// UnhealthyResource is a composed resource that is not healthy before apply.
+type UnhealthyResource struct {
+	Ref plan.ResourceRef `json:"ref"`
+	// Via is the nested composite that directly composes the resource; nil
+	// when the listing composite does.
+	Via    *plan.ResourceRef `json:"via,omitempty"`
+	Health *health.Health    `json:"health"`
 }
 
 // Error is an error from a simulate run, optionally anchored to a resource.
@@ -180,15 +200,72 @@ func (r Result) Deferred() int {
 	return n
 }
 
+// Health counts the unhealthy composites, and the other resources by health
+// state, from Composites and Plans. A resource counts once, under the state
+// its first live copy reports, matched across API versions.
+func (r Result) Health() plan.HealthSummary {
+	c := r.healthTally().Counts()
+	return plan.HealthSummary{Composites: c.UnhealthyComposites, Failing: c.Failing, NotReady: c.NotReady, Paused: c.Paused}
+}
+
+// healthTally adds r's composites and resources to a health.Tally. A
+// composite with no health of its own here (one not simulated) isn't added as
+// a composite, so it counts as a resource where its parent lists it, if
+// anywhere.
+func (r Result) healthTally() *health.Tally {
+	t := &health.Tally{}
+	for _, c := range r.Composites {
+		if c.Health != nil {
+			t.Composite(healthKey(c.Ref), c.Health)
+		}
+	}
+	for _, p := range r.Plans {
+		t.Resource(healthKey(p.ResourceRef()), p.Health)
+	}
+	for _, c := range r.Composites {
+		for _, u := range c.Unhealthy {
+			t.Resource(healthKey(u.Ref), u.Health)
+		}
+	}
+	return t
+}
+
+// Failing reports whether a composite or any resource in r is failing, which
+// sets exit bit 4.
+func (r Result) Failing() bool {
+	failing := func(h *health.Health) bool { return h != nil && h.State == health.Failing }
+	for _, c := range r.Composites {
+		if failing(c.Health) || slices.ContainsFunc(c.Unhealthy, func(u UnhealthyResource) bool { return failing(u.Health) }) {
+			return true
+		}
+	}
+	return slices.ContainsFunc(r.Plans, func(p *plan.ResourcePlan) bool { return failing(p.Health) })
+}
+
+// HealthLine returns the Health: line summarizing r, or "" when nothing in
+// it is unhealthy. Its XRs are the composites with health of their own, each
+// once.
+func (r Result) HealthLine() string {
+	return health.SummaryLine(r.healthTally().Counts())
+}
+
+// healthKey identifies ref across API versions, as health.Key does.
+func healthKey(ref plan.ResourceRef) string {
+	return health.Key(ref.APIVersion, ref.Kind, ref.Namespace, ref.Name)
+}
+
 // MarshalJSON writes the result with summary, composites and compositions
-// ahead of the plans, which can be long, and with the deferred count inside
-// summary. YAML goes through it too. Decoding needs no counterpart: summary
-// decodes into Result.Summary, and Deferred is counted from Composites.
+// ahead of the plans, which can be long, and with the deferred and health
+// counts inside summary (the health ones under summary.health). YAML goes
+// through it too. Decoding needs no counterpart: summary decodes into
+// Result.Summary, Deferred is counted from Composites, and Health from
+// Composites and Plans.
 func (r Result) MarshalJSON() ([]byte, error) {
 	type summary struct {
 		plan.Summary
 
-		Deferred int `json:"deferred"`
+		Health   plan.HealthSummary `json:"health"`
+		Deferred int                `json:"deferred"`
 	}
 	return json.Marshal(struct {
 		FormatVersion string               `json:"formatVersion"`
@@ -203,7 +280,7 @@ func (r Result) MarshalJSON() ([]byte, error) {
 	}{
 		FormatVersion: r.FormatVersion,
 		Errored:       r.Errored,
-		Summary:       summary{Summary: r.Summary, Deferred: r.Deferred()},
+		Summary:       summary{Summary: r.Summary, Health: r.Health(), Deferred: r.Deferred()},
 		Composites:    r.Composites,
 		Compositions:  r.Compositions,
 		Plans:         r.Plans,
@@ -220,10 +297,13 @@ type Renderer interface {
 
 // NewRenderer returns the Renderer for the given output format: one of
 // plan.FormatPlan, plan.FormatJSON or plan.FormatYAML.
-func NewRenderer(format string) (Renderer, error) {
+// With fullMessages the plan format prints health condition messages in full,
+// wrapped, rather than cut to one line; the structured formats always carry
+// them in full.
+func NewRenderer(format string, fullMessages bool) (Renderer, error) {
 	switch format {
 	case plan.FormatPlan:
-		return planRenderer{}, nil
+		return planRenderer{fullMessages: fullMessages}, nil
 	case plan.FormatJSON:
 		return jsonRenderer{}, nil
 	case plan.FormatYAML:
@@ -262,21 +342,28 @@ func (yamlRenderer) Render(w io.Writer, r Result) error {
 // tree per resource, then a summary with warnings, then any Notes. When any
 // plan or composite names a composite, plans print grouped under an
 // "XR: Kind.group name" header. A Composition's revision impact prints as
-// one line under its plan. Run-level Errors and Warnings are not printed;
-// the command reports them on stderr.
-type planRenderer struct{}
+// one line under its plan. What is not healthy before apply is marked where
+// it is listed, and summarized after the "Plan:" line. Run-level Errors and
+// Warnings are not printed; the command reports them on stderr.
+type planRenderer struct {
+	// fullMessages prints health condition messages in full.
+	fullMessages bool
+}
 
 // Render writes the result to w in the human-readable plan format.
-func (planRenderer) Render(w io.Writer, r Result) error {
+func (pr planRenderer) Render(w io.Writer, r Result) error {
 	impacts := revisionImpactLines(r.Compositions)
 	if len(r.Composites) == 0 && !slices.ContainsFunc(r.Plans, func(p *plan.ResourcePlan) bool { return p.Composite != nil }) {
 		for _, p := range r.Plans {
-			plan.RenderPlan(w, p, impacts[p.ResourceRef()])
+			plan.RenderPlan(w, p, impacts[p.ResourceRef()], pr.fullMessages)
 		}
 	} else {
-		renderGrouped(w, r, impacts)
+		pr.renderGrouped(w, r, impacts)
 	}
 	plan.RenderSummaryLine(w, r.Summary)
+	if line := r.HealthLine(); line != "" {
+		_, _ = fmt.Fprintln(w, line)
+	}
 	if d := r.Deferred(); d > 0 {
 		_, _ = fmt.Fprintf(w, "%s deferred (pinned to a composition revision).\n", pluralize(d, "composite resource", "composite resources"))
 	}
@@ -318,7 +405,7 @@ func revisionImpactLines(comps []CompositionResult) map[plan.ResourceRef]string 
 // renderGrouped prints ungrouped plans first, then each composite (in
 // Composites order, then any only plans name) with its plans indented
 // beneath. A composite's own plan is omitted when it is a no-op.
-func renderGrouped(w io.Writer, r Result, impacts map[plan.ResourceRef]string) {
+func (pr planRenderer) renderGrouped(w io.Writer, r Result, impacts map[plan.ResourceRef]string) {
 	var refs []plan.ResourceRef
 	byRef := map[plan.ResourceRef][]*plan.ResourcePlan{}
 	status := map[plan.ResourceRef]CompositeResult{}
@@ -330,7 +417,7 @@ func renderGrouped(w io.Writer, r Result, impacts map[plan.ResourceRef]string) {
 	}
 	for _, p := range r.Plans {
 		if p.Composite == nil {
-			plan.RenderPlan(w, p, impacts[p.ResourceRef()])
+			plan.RenderPlan(w, p, impacts[p.ResourceRef()], pr.fullMessages)
 			continue
 		}
 		ref := *p.Composite
@@ -343,14 +430,23 @@ func renderGrouped(w io.Writer, r Result, impacts map[plan.ResourceRef]string) {
 	}
 
 	for _, ref := range refs {
-		renderComposite(w, status[ref], ref, byRef[ref])
+		pr.renderComposite(w, status[ref], ref, byRef[ref])
 	}
 }
 
 // renderComposite prints one composite's header, its deferral or skip note,
-// and its plans indented beneath.
-func renderComposite(w io.Writer, c CompositeResult, ref plan.ResourceRef, plans []*plan.ResourcePlan) {
-	_, _ = fmt.Fprintln(w, compositeHeader(c, ref))
+// and its plans indented beneath, then the resources it composes that are not
+// healthy and have no plan.
+func (pr planRenderer) renderComposite(w io.Writer, c CompositeResult, ref plan.ResourceRef, plans []*plan.ResourcePlan) {
+	h := compositeHeader(c, ref)
+	desc := health.Lines(c.Health, pr.fullMessages)
+	if len(desc) > 0 {
+		h += " " + desc[0]
+	}
+	_, _ = fmt.Fprintln(w, h)
+	for _, l := range desc[min(1, len(desc)):] {
+		_, _ = fmt.Fprintf(w, "    %s\n", l)
+	}
 	if c.ComposedBy != nil {
 		gvk := schema.FromAPIVersionAndKind(c.ComposedBy.APIVersion, c.ComposedBy.Kind)
 		name := c.ComposedBy.Name
@@ -378,7 +474,17 @@ func renderComposite(w io.Writer, c CompositeResult, ref plan.ResourceRef, plans
 		if p.Action == plan.ActionNoOp && p.Error == "" && p.ResourceRef() == ref {
 			continue
 		}
-		plan.RenderPlan(&block, p, "")
+		if p.ResourceRef() == ref {
+			// The header already describes the composite's health.
+			own := *p
+			own.Health = nil
+			p = &own
+		}
+		plan.RenderPlan(&block, p, "", pr.fullMessages)
+	}
+	if lines := unhealthyBlock(c.Unhealthy, plans, pr.fullMessages); len(lines) > 0 {
+		_, _ = fmt.Fprintln(&block, strings.Join(lines, "\n"))
+		_, _ = fmt.Fprintln(&block)
 	}
 	for line := range strings.Lines(block.String()) {
 		if line != "\n" {
@@ -391,14 +497,43 @@ func renderComposite(w io.Writer, c CompositeResult, ref plan.ResourceRef, plans
 	}
 }
 
-// compositeHeader returns e.g. "XR: XNetwork.example.org prod-network".
-func compositeHeader(c CompositeResult, ref plan.ResourceRef) string {
+// unhealthyBlock returns the lines listing a composite's resources that are
+// not healthy and have no plan, or nil when there are none. A resource a
+// nested composite composes is nested under that composite's line: its own,
+// or, when the composite has a plan in plans, one naming it.
+func unhealthyBlock(unhealthy []UnhealthyResource, plans []*plan.ResourcePlan, full bool) []string {
+	if len(unhealthy) == 0 {
+		return nil
+	}
+	listed := map[string]string{}
+	for _, p := range plans {
+		listed[healthKey(p.ResourceRef())] = displayName(p.ResourceRef())
+	}
+	items := make([]health.Item, 0, len(unhealthy))
+	for _, u := range unhealthy {
+		it := health.Item{ID: healthKey(u.Ref), Name: displayName(u.Ref), Health: u.Health}
+		if u.Via != nil {
+			it.Via, it.ViaName = healthKey(*u.Via), displayName(*u.Via)
+		}
+		items = append(items, it)
+	}
+	return health.Block(items, listed, full)
+}
+
+// displayName returns e.g. "XNetwork.example.org prod/network", as a plan's
+// header names its resource.
+func displayName(ref plan.ResourceRef) string {
 	gvk := schema.FromAPIVersionAndKind(ref.APIVersion, ref.Kind)
 	name := ref.Name
 	if ref.Namespace != "" {
 		name = ref.Namespace + "/" + name
 	}
-	h := fmt.Sprintf("XR: %s.%s %s", gvk.Kind, gvk.Group, name)
+	return gvk.Kind + "." + gvk.Group + " " + name
+}
+
+// compositeHeader returns e.g. "XR: XNetwork.example.org prod-network".
+func compositeHeader(c CompositeResult, ref plan.ResourceRef) string {
+	h := "XR: " + displayName(ref)
 	switch c.Status {
 	case CompositeDeferred:
 		h += " (deferred)"

@@ -485,7 +485,7 @@ func TestDefaultDiffRenderer_renderDiffList_SameKindNameDifferentNamespaces(t *t
 		opts := DefaultDiffOptions()
 		opts.Stdout, opts.Stderr = &stdout, &bytes.Buffer{}
 
-		if _, err := NewDiffRenderer(tu.TestLogger(t, false), opts).(*DefaultDiffRenderer).renderDiffList(diffs); err != nil {
+		if _, err := NewDiffRenderer(tu.TestLogger(t, false), opts).(*DefaultDiffRenderer).renderDiffList(diffs, ""); err != nil {
 			t.Fatalf("renderDiffList(): %v", err)
 		}
 

@@ -103,6 +103,61 @@ func AssertStructured(t *testing.T, jsonOutput string, e Expectation) {
 	for _, want := range expected.compositions {
 		assertComposition(t, res, want)
 	}
+
+	if want := expected.health; want != nil {
+		assertHealthSummary(t, jsonOutput, *want)
+	}
+}
+
+// assertHealthSummary checks summary.health, which simulate.Result computes on marshal and so does not
+// read back.
+func assertHealthSummary(t *testing.T, jsonOutput string, want expectedHealth) {
+	t.Helper()
+
+	var out struct {
+		Summary struct {
+			Health plan.HealthSummary `json:"health"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(jsonOutput), &out); err != nil {
+		t.Fatalf("failed to parse summary.health: %v", err)
+	}
+
+	got := out.Summary.Health
+	if g := (expectedHealth{composites: got.Composites, failing: got.Failing, notReady: got.NotReady, paused: got.Paused}); g != want {
+		t.Errorf("summary.health: expected %+v, got %+v", want, g)
+	}
+}
+
+// assertXRHealth checks an xrs[] entry's health state and its unhealthy[] entries.
+func assertXRHealth(t *testing.T, label string, got simulate.CompositeResult, want *XRExpectation) {
+	t.Helper()
+
+	if want.health != "" {
+		state := ""
+		if got.Health != nil {
+			state = string(got.Health.State)
+		}
+		if state != want.health {
+			t.Errorf("xr %s: health: expected %q, got %q", label, want.health, state)
+		}
+	}
+
+	if len(want.unhealthy) == 0 {
+		return
+	}
+
+	gotU := make([]unhealthyExpectation, 0, len(got.Unhealthy))
+	for _, u := range got.Unhealthy {
+		e := unhealthyExpectation{kind: u.Ref.Kind, name: u.Ref.Name}
+		if u.Health != nil {
+			e.state = string(u.Health.State)
+		}
+		gotU = append(gotU, e)
+	}
+	if !slices.Equal(gotU, want.unhealthy) {
+		t.Errorf("xr %s: unhealthy: expected %+v, got %+v", label, want.unhealthy, gotU)
+	}
 }
 
 func assertComposition(t *testing.T, res simulate.Result, want *CompositionExpectation) {
@@ -356,6 +411,8 @@ func assertXRExpectations(t *testing.T, res simulate.Result, expected []*XRExpec
 		if want.status != "" && !statusMatches(got.Status, want.status) {
 			t.Errorf("xr %s: status: expected %q, got %q", label, want.status, got.Status)
 		}
+
+		assertXRHealth(t, label, got, want)
 
 		changes := changePlans(res.Plans, groupedUnder(got.Ref))
 

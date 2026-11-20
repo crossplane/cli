@@ -50,6 +50,10 @@ type DiffOptions struct {
 	// Replaced, when set, reports whether a diff's resource would be replaced;
 	// its header and the summary say so. Nil reports none.
 	Replaced func(*t.ResourceDiff) bool
+
+	// FullMessages prints health condition messages in full, wrapped, rather
+	// than cut to one line.
+	FullMessages bool
 }
 
 // OutputFormat represents the desired output format for diffs.

@@ -86,13 +86,43 @@ Provider packages are cached in `--cache-dir`, which defaults to
 `$CROSSPLANE_XPKG_CACHE` or the same xpkg cache directory as
 `project simulate` and `render`.
 
+The `-o` flag picks the output format:
+
+- `plan`, the default, prints each resource's field-level plan, including
+  the resources it leaves unchanged. A resource whose live object isn't
+  healthy before apply gets a `⚠` line under its header: `failing` (its Synced
+  condition is False), `not ready` (its Ready condition is False) or `paused`
+  (it carries the `crossplane.io/paused: "true"` annotation, whatever its
+  conditions), with the condition's reason and message. A `Health:` line
+  after the `Plan:` line counts them, and is left out when every resource is
+  healthy. Messages are cut to one line; `--full-messages` prints them in
+  full, wrapped and indented.
+- `json` and `yaml` print the same plans as a structured result, for CI and
+  other tools, with messages always in full. Each plan with a live object
+  carries its `health`: `health.state` is `failing`, `notReady`, `paused` or
+  `healthy`, with the `synced` and `ready` conditions it was read from. A
+  plan has no `health` when there is no live object, as for a create.
+  `summary.health` counts the resources that are `failing`, `notReady` or
+  `paused`; `unhealthyComposites` is always 0, since this command takes no
+  composite resources.
+
 The command exits with one of these statuses, so a CI pipeline can gate on
 the result:
 
-- 0: the simulation found no changes.
+- 0: the simulation succeeded and found no changes.
 - 1: the simulation failed, including when any resource couldn't be planned
   (its error is in the output).
-- 3: the simulation found changes: a plan would create, update, destroy or
-  replace a resource.
-- 80: the flags were invalid, so nothing was simulated.
+- 3: the simulation succeeded and found changes: a plan would create,
+  update, destroy or replace a resource.
+- 4: the simulation succeeded, found no changes, and a resource was failing
+  (Synced=False) before apply. A resource that's only not ready, or is
+  paused, doesn't set it.
+- 7: the simulation succeeded, found changes, and a resource was failing:
+  3 and 4 combined.
+- 80: a flag was unknown or had an invalid value, so nothing was simulated.
 - 130: the simulation was interrupted.
+
+An error wins over what the simulation found: 130 over 1, and either of them
+over 3, 4 and 7. Without an error, the status adds 4 for a failing resource
+to 3 for changes, so 3 and 7 both mean changes, and 4 and 7 both mean a
+failing resource.

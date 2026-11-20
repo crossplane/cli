@@ -28,6 +28,8 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+
+	"github.com/crossplane/cli/v2/internal/health"
 )
 
 // The output formats simulate commands share. A unified diff format
@@ -87,7 +89,7 @@ func Summarize(plans []*ResourcePlan) Summary {
 // ResultFormatVersion versions the serialized result schema so automation
 // consuming it can detect incompatible changes. The schema is alpha; the
 // version moves to 1.0 when it stabilizes.
-const ResultFormatVersion = "0.1"
+const ResultFormatVersion = "0.2"
 
 // Result is the serialized form of a simulate run, for -o json|yaml. Errored
 // is the primary gate for wrapping automation: when true, at least one
@@ -97,6 +99,57 @@ type Result struct {
 	Errored       bool            `json:"errored"`
 	Summary       Summary         `json:"summary"`
 	Plans         []*ResourcePlan `json:"plans"`
+}
+
+// HealthSummary counts what is not healthy before apply. Composites counts
+// the composite entries whose own health is not healthy; Failing, NotReady
+// and Paused count the other resources, a nested composite without health of
+// its own on an entry included. Each is counted once however many composites
+// or plans reach it.
+type HealthSummary struct {
+	Composites int `json:"unhealthyComposites"`
+	Failing    int `json:"failing"`
+	NotReady   int `json:"notReady"`
+	Paused     int `json:"paused"`
+}
+
+// HealthCounts returns the health counts of plans: each resource once, under
+// the state its first plan reports, matched across API versions.
+func HealthCounts(plans []*ResourcePlan) health.Counts {
+	t := &health.Tally{}
+	for _, p := range plans {
+		t.Resource(health.Key(p.APIVersion, p.Kind, p.Namespace, p.Name), p.Health)
+	}
+	return t.Counts()
+}
+
+// Failing reports whether any plan's resource is failing, which sets exit
+// bit 4.
+func Failing(plans []*ResourcePlan) bool {
+	return slices.ContainsFunc(plans, func(p *ResourcePlan) bool { return p.Health != nil && p.Health.State == health.Failing })
+}
+
+// MarshalJSON writes the result with its plans' health counts under
+// summary.health. YAML goes through it too. Decoding needs no counterpart:
+// summary decodes into Summary, and the health counts come from Plans.
+func (r Result) MarshalJSON() ([]byte, error) {
+	type summary struct {
+		Summary
+
+		Health HealthSummary `json:"health"`
+	}
+	c := HealthCounts(r.Plans)
+	return json.Marshal(struct {
+		FormatVersion string          `json:"formatVersion"`
+		Errored       bool            `json:"errored"`
+		Summary       summary         `json:"summary"`
+		Plans         []*ResourcePlan `json:"plans"`
+	}{
+		FormatVersion: r.FormatVersion,
+		Errored:       r.Errored,
+		Summary:       summary{Summary: r.Summary, Health: HealthSummary{Failing: c.Failing, NotReady: c.NotReady, Paused: c.Paused}},
+		Plans:         r.Plans,
+	})
 }
 
 // NewResult assembles the serializable Result for the given plans.
@@ -115,11 +168,14 @@ type Renderer interface {
 	Render(w io.Writer, plans []*ResourcePlan) error
 }
 
-// NewRenderer returns the Renderer for the given output format.
-func NewRenderer(format string) (Renderer, error) {
+// NewRenderer returns the Renderer for the given output format. With
+// fullMessages the plan format prints health condition messages in full,
+// wrapped, rather than cut to one line; the structured formats always carry
+// them in full.
+func NewRenderer(format string, fullMessages bool) (Renderer, error) {
 	switch format {
 	case FormatPlan:
-		return planRenderer{}, nil
+		return planRenderer{fullMessages: fullMessages}, nil
 	case FormatJSON:
 		return jsonRenderer{}, nil
 	case FormatYAML:
@@ -155,25 +211,41 @@ func (yamlRenderer) Render(w io.Writer, plans []*ResourcePlan) error {
 }
 
 // planRenderer renders the human-readable plan format: a header and change
-// tree per resource, then a summary with warnings.
-type planRenderer struct{}
+// tree per resource, marked when its resource is not healthy before apply,
+// then a summary, a Health: line when anything is not healthy, and warnings.
+type planRenderer struct {
+	// fullMessages prints health condition messages in full.
+	fullMessages bool
+}
 
 // Render writes the plans to w in the human-readable plan format.
-func (planRenderer) Render(w io.Writer, plans []*ResourcePlan) error {
+func (pr planRenderer) Render(w io.Writer, plans []*ResourcePlan) error {
 	for _, p := range plans {
-		RenderPlan(w, p, "")
+		RenderPlan(w, p, "", pr.fullMessages)
 	}
 	s := Summarize(plans)
 	RenderSummaryLine(w, s)
+	if line := health.SummaryLine(HealthCounts(plans)); line != "" {
+		_, _ = fmt.Fprintln(w, line)
+	}
 	RenderSummaryWarnings(w, plans, s)
 	return nil
 }
 
-// RenderPlan prints one resource's header, note when not empty, and change
-// tree. A delete prints only its header and note, Terraform-style, though it
-// carries actual-only changes.
-func RenderPlan(w io.Writer, p *ResourcePlan, note string) {
+// RenderPlan prints one resource's header, its health when it is not
+// healthy, note when not empty, and change tree. A delete prints only its
+// header, health and note, Terraform-style, though it carries actual-only
+// changes. With fullMessages a health condition message prints in full,
+// wrapped, rather than cut to one line.
+func RenderPlan(w io.Writer, p *ResourcePlan, note string, fullMessages bool) {
 	_, _ = fmt.Fprintln(w, header(p))
+	for i, l := range health.Lines(p.Health, fullMessages) {
+		indent := "    "
+		if i > 0 {
+			indent += "    "
+		}
+		_, _ = fmt.Fprintln(w, indent+l)
+	}
 	if note != "" {
 		_, _ = fmt.Fprintf(w, "    %s\n", note)
 	}

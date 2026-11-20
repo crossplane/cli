@@ -36,11 +36,11 @@ func newDiscoveryServer(t *testing.T) *httptest.Server {
 
 	objs := map[string]any{
 		"/api": &metav1.APIVersions{
-			TypeMeta: metav1.TypeMeta{Kind: "APIVersions"},
+			Kind:     "APIVersions",
 			Versions: []string{"v1"},
 		},
 		"/api/v1": &metav1.APIResourceList{
-			TypeMeta:     metav1.TypeMeta{Kind: "APIResourceList", APIVersion: "v1"},
+			Kind: "APIResourceList", APIVersion: "v1",
 			GroupVersion: "v1",
 			APIResources: []metav1.APIResource{{
 				Name:         "pods",
@@ -51,7 +51,7 @@ func newDiscoveryServer(t *testing.T) *httptest.Server {
 				ShortNames:   []string{"po"},
 			}},
 		},
-		"/apis": &metav1.APIGroupList{TypeMeta: metav1.TypeMeta{Kind: "APIGroupList"}},
+		"/apis": &metav1.APIGroupList{Kind: "APIGroupList"},
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -31,11 +31,9 @@ import (
 
 // testCRD is a minimal CRD whose schema requires spec.replicas as an integer.
 var testCRD = &extv1.CustomResourceDefinition{
-	TypeMeta: metav1.TypeMeta{
-		APIVersion: "apiextensions.k8s.io/v1",
-		Kind:       "CustomResourceDefinition",
-	},
-	ObjectMeta: metav1.ObjectMeta{Name: "test"},
+	APIVersion: "apiextensions.k8s.io/v1",
+	Kind:       "CustomResourceDefinition",
+	Name:       "test",
 	Spec: extv1.CustomResourceDefinitionSpec{
 		Group: "test.org",
 		Names: extv1.CustomResourceDefinitionNames{
@@ -69,11 +67,9 @@ var testCRD = &extv1.CustomResourceDefinition{
 
 // testCRDWithCEL requires minReplicas <= replicas <= maxReplicas.
 var testCRDWithCEL = &extv1.CustomResourceDefinition{
-	TypeMeta: metav1.TypeMeta{
-		APIVersion: "apiextensions.k8s.io/v1",
-		Kind:       "CustomResourceDefinition",
-	},
-	ObjectMeta: metav1.ObjectMeta{Name: "test-cel"},
+	APIVersion: "apiextensions.k8s.io/v1",
+	Kind:       "CustomResourceDefinition",
+	Name:       "test-cel",
 	Spec: extv1.CustomResourceDefinitionSpec{
 		Group: "test.org",
 		Names: extv1.CustomResourceDefinitionNames{
@@ -110,11 +106,9 @@ var testCRDWithCEL = &extv1.CustomResourceDefinition{
 // only declares v1beta1. When used BEFORE testCRD in the crds slice,
 // applyDefaults matches it first and fails because v1alpha1 is missing.
 var testCRDNoMatchingVersion = &extv1.CustomResourceDefinition{
-	TypeMeta: metav1.TypeMeta{
-		APIVersion: "apiextensions.k8s.io/v1",
-		Kind:       "CustomResourceDefinition",
-	},
-	ObjectMeta: metav1.ObjectMeta{Name: "test-other-version"},
+	APIVersion: "apiextensions.k8s.io/v1",
+	Kind:       "CustomResourceDefinition",
+	Name:       "test-other-version",
 	Spec: extv1.CustomResourceDefinitionSpec{
 		Group: "test.org",
 		Names: extv1.CustomResourceDefinitionNames{

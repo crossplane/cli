@@ -62,7 +62,7 @@ func TestNewCachedFunctionProvider(t *testing.T) {
 func TestCachedFunctionProvider_GetFunctionsForComposition_LazyLoading(t *testing.T) {
 	functions := []pkgv1.Function{
 		{
-			ObjectMeta: metav1.ObjectMeta{Name: "function-test"},
+			Name: "function-test",
 			Spec: pkgv1.FunctionSpec{
 				PackageSpec: pkgv1.PackageSpec{
 					Package: "xpkg.io/crossplane/function-go-templating:v0.11.0",
@@ -79,7 +79,7 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_LazyLoading(t *testin
 	provider := NewCachedFunctionProvider(fnClient, logger)
 
 	comp := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-composition"},
+		Name: "test-composition",
 	}
 
 	fns, err := provider.GetFunctionsForComposition(t.Context(), comp)
@@ -101,7 +101,7 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_LazyLoading(t *testin
 func TestCachedFunctionProvider_GetFunctionsForComposition_CacheHit(t *testing.T) {
 	functions := []pkgv1.Function{
 		{
-			ObjectMeta: metav1.ObjectMeta{Name: "function-test"},
+			Name: "function-test",
 			Spec: pkgv1.FunctionSpec{
 				PackageSpec: pkgv1.PackageSpec{
 					Package: "xpkg.io/test/function:v1.0.0",
@@ -122,7 +122,7 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_CacheHit(t *testing.T
 	provider := NewCachedFunctionProvider(fnClient, logger)
 
 	comp := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-composition"},
+		Name: "test-composition",
 	}
 
 	// First call should fetch
@@ -164,7 +164,7 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_Error(t *testing.T) {
 	provider := NewCachedFunctionProvider(fnClient, logger)
 
 	comp := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-composition"},
+		Name: "test-composition",
 	}
 
 	_, err := provider.GetFunctionsForComposition(t.Context(), comp)
@@ -187,7 +187,7 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_MultipleCompositions(
 			if comp.Name == "composition-1" {
 				return []pkgv1.Function{
 					{
-						ObjectMeta: metav1.ObjectMeta{Name: "function-1"},
+						Name: "function-1",
 						Spec: pkgv1.FunctionSpec{
 							PackageSpec: pkgv1.PackageSpec{
 								Package: "xpkg.io/test/function-one:v1.0.0",
@@ -199,7 +199,7 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_MultipleCompositions(
 
 			return []pkgv1.Function{
 				{
-					ObjectMeta: metav1.ObjectMeta{Name: "function-2"},
+					Name: "function-2",
 					Spec: pkgv1.FunctionSpec{
 						PackageSpec: pkgv1.PackageSpec{
 							Package: "xpkg.io/test/function-two:v2.0.0",
@@ -214,10 +214,10 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_MultipleCompositions(
 	provider := NewCachedFunctionProvider(fnClient, logger)
 
 	comp1 := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{Name: "composition-1"},
+		Name: "composition-1",
 	}
 	comp2 := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{Name: "composition-2"},
+		Name: "composition-2",
 	}
 
 	// Fetch for composition 1
@@ -264,7 +264,7 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_SameNameDifferentPipe
 		WithGetFunctionsFromPipeline(func(_ context.Context, comp *apiextensionsv1.Composition) ([]pkgv1.Function, error) {
 			fns := make([]pkgv1.Function, 0, len(comp.Spec.Pipeline))
 			for _, step := range comp.Spec.Pipeline {
-				fns = append(fns, pkgv1.Function{ObjectMeta: metav1.ObjectMeta{Name: step.FunctionRef.Name}})
+				fns = append(fns, pkgv1.Function{Name: step.FunctionRef.Name})
 			}
 
 			return fns, nil
@@ -274,7 +274,7 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_SameNameDifferentPipe
 	provider := NewCachedFunctionProvider(fnClient, tu.TestLogger(t, false))
 
 	withPipeline := func(fnNames ...string) *apiextensionsv1.Composition {
-		comp := &apiextensionsv1.Composition{ObjectMeta: metav1.ObjectMeta{Name: "shared-name"}}
+		comp := &apiextensionsv1.Composition{Name: "shared-name"}
 		for _, n := range fnNames {
 			comp.Spec.Pipeline = append(comp.Spec.Pipeline, apiextensionsv1.PipelineStep{
 				Step:        n,
@@ -302,12 +302,12 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_SameNameDifferentPipe
 func TestImageConfigFunctionProvider(t *testing.T) {
 	fn := func(name, pkg string) pkgv1.Function {
 		return pkgv1.Function{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec:       pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: pkg}},
+			Name: name,
+			Spec: pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: pkg}},
 		}
 	}
 	mirror := pkgv1beta1.ImageConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "mirror"},
+		Name: "mirror",
 		Spec: pkgv1beta1.ImageConfigSpec{
 			MatchImages:  []pkgv1beta1.ImageMatch{{Prefix: "xpkg.crossplane.io/crossplane-contrib/"}},
 			RewriteImage: &pkgv1beta1.ImageRewrite{Prefix: "registry.example.com/mirror/"},
@@ -340,7 +340,7 @@ func TestImageConfigFunctionProvider(t *testing.T) {
 		"MissingRewritePrefix": {
 			reason: "A matching ImageConfig with an empty rewrite prefix should fail rather than pull the original image.",
 			ics: []pkgv1beta1.ImageConfig{{
-				ObjectMeta: metav1.ObjectMeta{Name: "broken"},
+				Name: "broken",
 				Spec: pkgv1beta1.ImageConfigSpec{
 					MatchImages:  []pkgv1beta1.ImageMatch{{Prefix: "xpkg.crossplane.io/"}},
 					RewriteImage: &pkgv1beta1.ImageRewrite{},
@@ -362,7 +362,7 @@ func TestImageConfigFunctionProvider(t *testing.T) {
 			logger := tu.TestLogger(t, false)
 			provider := NewImageConfigFunctionProvider(NewCachedFunctionProvider(fnClient, logger), tt.ics, logger)
 
-			fns, err := provider.GetFunctionsForComposition(t.Context(), &apiextensionsv1.Composition{ObjectMeta: metav1.ObjectMeta{Name: "test-composition"}})
+			fns, err := provider.GetFunctionsForComposition(t.Context(), &apiextensionsv1.Composition{Name: "test-composition"})
 			if gotErr := err != nil; gotErr != tt.wantErr {
 				t.Fatalf("\n%s\nGetFunctionsForComposition(): want error %t, got %v", tt.reason, tt.wantErr, err)
 			}
@@ -411,7 +411,7 @@ func TestUpsertEnvPair(t *testing.T) {
 // provider caches and returns the same Function values).
 func TestEnvInjectingFunctionProvider(t *testing.T) {
 	newInner := func(anns map[string]string) FunctionProvider {
-		fn := pkgv1.Function{ObjectMeta: metav1.ObjectMeta{Name: "function-go-templating"}}
+		fn := pkgv1.Function{Name: "function-go-templating"}
 		if anns != nil {
 			fn.Annotations = anns
 		}
@@ -424,7 +424,7 @@ func TestEnvInjectingFunctionProvider(t *testing.T) {
 		return NewCachedFunctionProvider(fnClient, tu.TestLogger(t, false))
 	}
 
-	comp := &apiextensionsv1.Composition{ObjectMeta: metav1.ObjectMeta{Name: "test-composition"}}
+	comp := &apiextensionsv1.Composition{Name: "test-composition"}
 	envs := map[string]string{EnvMaxRecvMessageSize: "16"}
 
 	t.Run("injects when annotation absent", func(t *testing.T) {
@@ -475,7 +475,7 @@ func TestEnvInjectingFunctionProvider(t *testing.T) {
 // starts. The composition is fetched once, and no caller's change reaches another's or the cache.
 // Run it with -race.
 func TestCachedFunctionProvider_ConcurrentUse(t *testing.T) {
-	functions := []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "function-test", Annotations: map[string]string{}}}}
+	functions := []pkgv1.Function{{Name: "function-test", Annotations: map[string]string{}}}
 
 	var fetches atomic.Int32
 
@@ -487,7 +487,7 @@ func TestCachedFunctionProvider_ConcurrentUse(t *testing.T) {
 		Build()
 
 	provider := NewCachedFunctionProvider(fnClient, tu.TestLogger(t, false))
-	comp := &apiextensionsv1.Composition{ObjectMeta: metav1.ObjectMeta{Name: "test-composition"}}
+	comp := &apiextensionsv1.Composition{Name: "test-composition"}
 
 	var wg sync.WaitGroup
 	for i := range 8 {

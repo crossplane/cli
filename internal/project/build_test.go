@@ -155,9 +155,7 @@ func TestBuilderBuild(t *testing.T) {
 			writeProject(t, projFS, tc.apis, tc.functions)
 
 			proj := &devv1alpha1.Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-project",
-				},
+				Name: "test-project",
 				Spec: devv1alpha1.ProjectSpec{
 					ProjectPackageMetadata: devv1alpha1.ProjectPackageMetadata{
 						Maintainer:  "Maintainer <m@example.com>",
@@ -250,9 +248,7 @@ func TestBuilderDependsOn(t *testing.T) {
 		},
 	}
 	proj := &devv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-project",
-		},
+		Name: "test-project",
 		Spec: devv1alpha1.ProjectSpec{
 			Repository:    "xpkg.crossplane.io/example/test",
 			Architectures: []string{"amd64", "arm64"},
@@ -309,8 +305,8 @@ func TestBuilderZeroConcurrency(t *testing.T) {
 		[]string{"fn-one"},
 	)
 	proj := &devv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
-		Spec:       devv1alpha1.ProjectSpec{Repository: "xpkg.crossplane.io/example/test"},
+		Name: "test-project",
+		Spec: devv1alpha1.ProjectSpec{Repository: "xpkg.crossplane.io/example/test"},
 	}
 	proj.Default()
 
@@ -413,8 +409,8 @@ func TestResolveFunctions(t *testing.T) {
 			}
 
 			proj := &devv1alpha1.Project{
-				ObjectMeta: metav1.ObjectMeta{Name: "p"},
-				Spec:       tc.spec,
+				Name: "p",
+				Spec: tc.spec,
 			}
 			proj.Spec.Repository = "xpkg.crossplane.io/example/test"
 			proj.Default()
@@ -445,7 +441,7 @@ func TestBuilderBuildExplicitFunctions(t *testing.T) {
 	)
 
 	proj := &devv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+		Name: "test-project",
 		Spec: devv1alpha1.ProjectSpec{
 			Repository: "xpkg.crossplane.io/example/test",
 			Functions: []devv1alpha1.Function{{
@@ -506,7 +502,7 @@ func TestBuilderBuildTarballFunction(t *testing.T) {
 	}
 
 	proj := &devv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+		Name: "test-project",
 		Spec: devv1alpha1.ProjectSpec{
 			Repository:    "xpkg.crossplane.io/example/test",
 			Architectures: []string{"amd64", "arm64"},

@@ -208,10 +208,8 @@ func (b *Builder) Build(ctx context.Context, project *devv1alpha1.Project, proje
 
 	// Scaffold a configuration based on the metadata in the project.
 	cfg := &xpmetav1.Configuration{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: xpmetav1.SchemeGroupVersion.String(),
-			Kind:       xpmetav1.ConfigurationKind,
-		},
+		APIVersion: xpmetav1.SchemeGroupVersion.String(),
+		Kind:       xpmetav1.ConfigurationKind,
 		ObjectMeta: cfgMetaFromProject(project, o.extraAnnotations),
 		Spec: xpmetav1.ConfigurationSpec{
 			MetaSpec: xpmetav1.MetaSpec{
@@ -455,10 +453,8 @@ func (b *Builder) buildFunctions(ctx context.Context, projectFS afero.Fs, projec
 func (b *Builder) buildFunction(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fn devv1alpha1.Function, basePath string, extraAnnotations map[string]string) ([]v1.Image, error) {
 	fnName := fn.Name()
 	meta := &xpmetav1.Function{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: xpmetav1.SchemeGroupVersion.String(),
-			Kind:       xpmetav1.FunctionKind,
-		},
+		APIVersion: xpmetav1.SchemeGroupVersion.String(),
+		Kind:       xpmetav1.FunctionKind,
 		ObjectMeta: fnMetaFromProject(project, fnName, extraAnnotations),
 		Spec: xpmetav1.FunctionSpec{
 			MetaSpec: xpmetav1.MetaSpec{

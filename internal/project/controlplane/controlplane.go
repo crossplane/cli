@@ -177,9 +177,7 @@ func (l *localDevControlPlane) Sideload(ctx context.Context, imgMap project.Imag
 
 	rewrite := path.Join(l.registryHostname, tag.RepositoryStr())
 	imgcfg := &pkgv1beta1.ImageConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "local-registry",
-		},
+		Name: "local-registry",
 		Spec: pkgv1beta1.ImageConfigSpec{
 			MatchImages: []pkgv1beta1.ImageMatch{{
 				Type:   pkgv1beta1.Prefix,
@@ -300,9 +298,7 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 
 	// Create the crossplane namespace.
 	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: crossplaneNamespace,
-		},
+		Name: crossplaneNamespace,
 	}
 	if err := cl.Create(ctx, ns); err != nil && !kerrors.IsAlreadyExists(err) {
 		return nil, errors.Wrap(err, "failed to create crossplane-system namespace")
@@ -462,10 +458,8 @@ func createNewKindCluster(provider *kind.Provider, clusterName, kubeconfigPath s
 
 func createKindClusterConfig() *v1alpha4.Cluster {
 	return &v1alpha4.Cluster{
-		TypeMeta: v1alpha4.TypeMeta{
-			APIVersion: "kind.x-k8s.io/v1alpha4",
-			Kind:       "Cluster",
-		},
+		APIVersion: "kind.x-k8s.io/v1alpha4",
+		Kind:       "Cluster",
 		Nodes: []v1alpha4.Node{{
 			Role: v1alpha4.ControlPlaneRole,
 		}},
@@ -609,10 +603,8 @@ func ensureLocalRegistryCertificate(ctx context.Context, cl client.Client, hostn
 	}
 
 	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "local-registry-cert",
-			Namespace: crossplaneNamespace,
-		},
+		Name:      "local-registry-cert",
+		Namespace: crossplaneNamespace,
 		BinaryData: map[string][]byte{
 			certs.SecretKeyCACert: s.Data[certs.SecretKeyCACert],
 		},
@@ -634,10 +626,8 @@ func configureContainerdLocalRegistry(ctx context.Context, cl client.Client, reg
 	cmd += fmt.Sprintf("&& echo '%s' > /containerd-certs/%s:5000/ca.crt", caCert, regName)
 	cmd += fmt.Sprintf("&& echo '%s' > /containerd-certs/%s:5000/hosts.toml", hostsToml, regName)
 	j := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "configure-kind-registry",
-			Namespace: "default",
-		},
+		Name:      "configure-kind-registry",
+		Namespace: "default",
 		Spec: batchv1.JobSpec{
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -653,10 +643,8 @@ func configureContainerdLocalRegistry(ctx context.Context, cl client.Client, reg
 					}},
 					Volumes: []corev1.Volume{{
 						Name: "containerd-certs",
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{
-								Path: "/etc/containerd/certs.d",
-							},
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/etc/containerd/certs.d",
 						},
 					}},
 				},

@@ -38,15 +38,15 @@ import (
 
 func testFn(name, pkg string) pkgv1.Function {
 	return pkgv1.Function{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: pkg}},
+		Name: name,
+		Spec: pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: pkg}},
 	}
 }
 
 func pipelineComp(name string, fnNames ...string) *apiextensionsv1.Composition {
 	comp := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       apiextensionsv1.CompositionSpec{Mode: apiextensionsv1.CompositionModePipeline},
+		Name: name,
+		Spec: apiextensionsv1.CompositionSpec{Mode: apiextensionsv1.CompositionModePipeline},
 	}
 	for i, fn := range fnNames {
 		comp.Spec.Pipeline = append(comp.Spec.Pipeline, apiextensionsv1.PipelineStep{
@@ -183,8 +183,8 @@ func TestProjectFunctionProvider_GetFunctionsForComposition(t *testing.T) {
 			reason:  "A non-pipeline composition is left to the wrapped provider to reject.",
 			project: []pkgv1.Function{testFn("function-a", "xpkg.io/project/function-a:local")},
 			comp: &apiextensionsv1.Composition{
-				ObjectMeta: metav1.ObjectMeta{Name: "comp"},
-				Spec:       apiextensionsv1.CompositionSpec{Mode: "Resources"},
+				Name: "comp",
+				Spec: apiextensionsv1.CompositionSpec{Mode: "Resources"},
 			},
 			want: want{errSub: "unsupported composition Mode"},
 		},

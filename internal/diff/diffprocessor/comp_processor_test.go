@@ -2178,10 +2178,10 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 
 		filtered := func(name, detail string) dt.XRImpact {
 			return dt.XRImpact{
-				ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: name, Namespace: "ns"},
-				Status:          dt.XRStatusFiltered,
-				FilterReason:    dt.FilterReasonManualPolicy,
-				FilterDetail:    detail,
+				APIVersion: "example.org/v1", Kind: "XR", Name: name, Namespace: "ns",
+				Status:       dt.XRStatusFiltered,
+				FilterReason: dt.FilterReasonManualPolicy,
+				FilterDetail: detail,
 			}
 		}
 

@@ -160,12 +160,12 @@ func renderImageTag(image string) string {
 		return ""
 	}
 
-	i := strings.LastIndex(image, ":")
-	if i < 0 {
+	_, after, ok := strings.CutLast(image, ":")
+	if !ok {
 		return ""
 	}
 
-	tag := image[i+1:]
+	tag := after
 
 	// A ":" that precedes a "/" is a registry port, not a tag separator.
 	if strings.Contains(tag, "/") {

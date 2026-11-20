@@ -137,8 +137,8 @@ func TestSimulateScope(t *testing.T) {
 
 func TestSimulateProcessorOptions(t *testing.T) {
 	c := &Runner{sel: CompositionFlags{IncludePinned: true, AnalyzeOn: "spec-change"}, Flags: &Flags{
-		MaxIterations: 7,
-		EngineFlags:   xprender.EngineFlags{CrossplaneVersion: "v2.3.4", CrossplaneDockerNetwork: "ci"},
+		MaxIterations:     7,
+		CrossplaneVersion: "v2.3.4", CrossplaneDockerNetwork: "ci",
 
 		MaxNestedDepth:     4,
 		IgnorePaths:        []string{"a.b"},
@@ -147,10 +147,10 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		DryRunOn:           "existing",
 	}}
 
-	creds := []corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "creds"}}}
+	creds := []corev1.Secret{{Name: "creds"}}
 	cfg := dp.ProcessorConfig{}
 	advisories := dp.NewAdvisoryCollector(nil)
-	for _, o := range c.processorOptions(advisories, logging.NewNopLogger(), creds, []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn"}}}, nil, nil) {
+	for _, o := range c.processorOptions(advisories, logging.NewNopLogger(), creds, []pkgv1.Function{{Name: "fn"}}, nil, nil) {
 		o(&cfg)
 	}
 	if cfg.Advisories != advisories {
@@ -240,14 +240,14 @@ func TestSimulateProcessorOptions(t *testing.T) {
 
 func TestFunctionProviderFactory(t *testing.T) {
 	ics := []pkgv1beta1.ImageConfig{{
-		ObjectMeta: metav1.ObjectMeta{Name: "mirror"},
+		Name: "mirror",
 		Spec: pkgv1beta1.ImageConfigSpec{
 			MatchImages:  []pkgv1beta1.ImageMatch{{Prefix: "xpkg.crossplane.io/"}},
 			RewriteImage: &pkgv1beta1.ImageRewrite{Prefix: "mirror.example.com/"},
 		},
 	}}
 	fn := func(name, pkg string) pkgv1.Function {
-		return pkgv1.Function{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: pkg}}}
+		return pkgv1.Function{Name: name, Spec: pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: pkg}}}
 	}
 	cluster := fn("fn-cluster", "xpkg.crossplane.io/org/fn-cluster:v1")
 	projFns := []pkgv1.Function{
@@ -257,7 +257,7 @@ func TestFunctionProviderFactory(t *testing.T) {
 	embedded := map[string]name.Digest{"fn-own": {}}
 
 	comp := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{Name: "comp"},
+		Name: "comp",
 		Spec: apiextensionsv1.CompositionSpec{
 			Mode: apiextensionsv1.CompositionModePipeline,
 			Pipeline: []apiextensionsv1.PipelineStep{
@@ -917,7 +917,7 @@ func TestProviderSource(t *testing.T) {
 }
 
 func TestSimulateProcessorOptionsDockerNetwork(t *testing.T) {
-	fns := []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn", Annotations: map[string]string{xprender.AnnotationKeyRuntimeDockerNetwork: "fn-net"}}}}
+	fns := []pkgv1.Function{{Name: "fn", Annotations: map[string]string{xprender.AnnotationKeyRuntimeDockerNetwork: "fn-net"}}}
 	cases := map[string]struct {
 		env  string
 		args []string

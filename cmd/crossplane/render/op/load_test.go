@@ -102,13 +102,9 @@ spec:
       name: test-function`
 
 	validOperation := &opsv1alpha1.Operation{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "ops.crossplane.io/v1alpha1",
-			Kind:       "Operation",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-operation",
-		},
+		APIVersion: "ops.crossplane.io/v1alpha1",
+		Kind:       "Operation",
+		Name:       "test-operation",
 		Spec: opsv1alpha1.OperationSpec{
 			Mode: opsv1alpha1.OperationModePipeline,
 			Pipeline: []opsv1alpha1.PipelineStep{

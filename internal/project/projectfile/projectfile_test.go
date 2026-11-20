@@ -315,13 +315,9 @@ func TestUpdate(t *testing.T) {
 	t.Parallel()
 
 	proj := &v1alpha1.Project{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "dev.crossplane.io/v1alpha1",
-			Kind:       "Project",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "my-project",
-		},
+		APIVersion: "dev.crossplane.io/v1alpha1",
+		Kind:       "Project",
+		Name:       "my-project",
 		Spec: v1alpha1.ProjectSpec{
 			Repository: "xpkg.crossplane.io/foo/bar",
 		},

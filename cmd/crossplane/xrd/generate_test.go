@@ -66,13 +66,9 @@ spec:
 			},
 			want: want{
 				xrd: &v2.CompositeResourceDefinition{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: "apiextensions.crossplane.io/v2",
-						Kind:       "CompositeResourceDefinition",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "xeks.aws.u5d.io",
-					},
+					APIVersion: "apiextensions.crossplane.io/v2",
+					Kind:       "CompositeResourceDefinition",
+					Name:       "xeks.aws.u5d.io",
 					Spec: v2.CompositeResourceDefinitionSpec{
 						Group: "aws.u5d.io",
 						Scope: v2.CompositeResourceScopeCluster,
@@ -135,13 +131,9 @@ spec:
 			},
 			want: want{
 				xrd: &v2.CompositeResourceDefinition{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: "apiextensions.crossplane.io/v2",
-						Kind:       "CompositeResourceDefinition",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "eks.aws.u5d.io",
-					},
+					APIVersion: "apiextensions.crossplane.io/v2",
+					Kind:       "CompositeResourceDefinition",
+					Name:       "eks.aws.u5d.io",
 					Spec: v2.CompositeResourceDefinitionSpec{
 						Group: "aws.u5d.io",
 						Scope: v2.CompositeResourceScopeNamespaced,
@@ -202,13 +194,9 @@ spec:
 			},
 			want: want{
 				xrd: &v2.CompositeResourceDefinition{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: "apiextensions.crossplane.io/v2",
-						Kind:       "CompositeResourceDefinition",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "postgreses.database.u5d.io",
-					},
+					APIVersion: "apiextensions.crossplane.io/v2",
+					Kind:       "CompositeResourceDefinition",
+					Name:       "postgreses.database.u5d.io",
 					Spec: v2.CompositeResourceDefinitionSpec{
 						Group: "database.u5d.io",
 						Scope: v2.CompositeResourceScopeCluster,
@@ -269,13 +257,9 @@ status:
 			},
 			want: want{
 				xrd: &v2.CompositeResourceDefinition{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: "apiextensions.crossplane.io/v2",
-						Kind:       "CompositeResourceDefinition",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "buckets.storage.u5d.io",
-					},
+					APIVersion: "apiextensions.crossplane.io/v2",
+					Kind:       "CompositeResourceDefinition",
+					Name:       "buckets.storage.u5d.io",
 					Spec: v2.CompositeResourceDefinitionSpec{
 						Group: "storage.u5d.io",
 						Scope: v2.CompositeResourceScopeCluster,
@@ -350,13 +334,9 @@ spec:
 			},
 			want: want{
 				xrd: &v2.CompositeResourceDefinition{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: "apiextensions.crossplane.io/v2",
-						Kind:       "CompositeResourceDefinition",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "xeks.aws.u5d.io",
-					},
+					APIVersion: "apiextensions.crossplane.io/v2",
+					Kind:       "CompositeResourceDefinition",
+					Name:       "xeks.aws.u5d.io",
 					Spec: v2.CompositeResourceDefinitionSpec{
 						Group: "aws.u5d.io",
 						Scope: v2.CompositeResourceScopeCluster,
@@ -566,13 +546,9 @@ spec:
 			},
 			want: want{
 				xrd: &v2.CompositeResourceDefinition{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: "apiextensions.crossplane.io/v2",
-						Kind:       "CompositeResourceDefinition",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "xeks.aws.u5d.io",
-					},
+					APIVersion: "apiextensions.crossplane.io/v2",
+					Kind:       "CompositeResourceDefinition",
+					Name:       "xeks.aws.u5d.io",
 					Spec: v2.CompositeResourceDefinitionSpec{
 						Group: "aws.u5d.io",
 						Scope: v2.CompositeResourceScopeNamespaced,
@@ -629,13 +605,9 @@ status:
 			},
 			want: want{
 				xrd: &v2.CompositeResourceDefinition{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: "apiextensions.crossplane.io/v2",
-						Kind:       "CompositeResourceDefinition",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "xeks.aws.u5d.io",
-					},
+					APIVersion: "apiextensions.crossplane.io/v2",
+					Kind:       "CompositeResourceDefinition",
+					Name:       "xeks.aws.u5d.io",
 					Spec: v2.CompositeResourceDefinitionSpec{
 						Group: "aws.u5d.io",
 						Scope: v2.CompositeResourceScopeNamespaced,
@@ -691,13 +663,9 @@ spec:
 			},
 			want: want{
 				xrd: &v2.CompositeResourceDefinition{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: "apiextensions.crossplane.io/v2",
-						Kind:       "CompositeResourceDefinition",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "postgreses.database.u5d.io",
-					},
+					APIVersion: "apiextensions.crossplane.io/v2",
+					Kind:       "CompositeResourceDefinition",
+					Name:       "postgreses.database.u5d.io",
 					Spec: v2.CompositeResourceDefinitionSpec{
 						Group: "database.u5d.io",
 						Scope: v2.CompositeResourceScopeNamespaced,
@@ -756,13 +724,9 @@ customTypes:
 			},
 			want: want{
 				xrd: &v2.CompositeResourceDefinition{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: "apiextensions.crossplane.io/v2",
-						Kind:       "CompositeResourceDefinition",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "xeks.aws.u5d.io",
-					},
+					APIVersion: "apiextensions.crossplane.io/v2",
+					Kind:       "CompositeResourceDefinition",
+					Name:       "xeks.aws.u5d.io",
 					Spec: v2.CompositeResourceDefinitionSpec{
 						Group: "aws.u5d.io",
 						Scope: v2.CompositeResourceScopeNamespaced,

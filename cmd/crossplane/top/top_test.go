@@ -45,12 +45,10 @@ func TestGetCrossplanePods(t *testing.T) {
 			reason: "Should return function pod",
 			metrics: []corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "function-12345abcd-xyzwv",
-						Namespace: "crossplane-system",
-						Labels: map[string]string{
-							v1.LabelFunction: "function-go-templating",
-						},
+					Name:      "function-12345abcd-xyzwv",
+					Namespace: "crossplane-system",
+					Labels: map[string]string{
+						v1.LabelFunction: "function-go-templating",
 					},
 				},
 			},
@@ -69,12 +67,10 @@ func TestGetCrossplanePods(t *testing.T) {
 			reason: "Should return crossplane pod",
 			metrics: []corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "crossplane-75575fcf5d-fzwgq",
-						Namespace: "crossplane-system",
-						Labels: map[string]string{
-							"app.kubernetes.io/part-of": "crossplane",
-						},
+					Name:      "crossplane-75575fcf5d-fzwgq",
+					Namespace: "crossplane-system",
+					Labels: map[string]string{
+						"app.kubernetes.io/part-of": "crossplane",
 					},
 				},
 			},
@@ -93,21 +89,17 @@ func TestGetCrossplanePods(t *testing.T) {
 			reason: "Should return multiple different pods types",
 			metrics: []corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "function-go-templating-213wer",
-						Namespace: "crossplane-system",
-						Labels: map[string]string{
-							v1.LabelFunction: "function-go-templating",
-						},
+					Name:      "function-go-templating-213wer",
+					Namespace: "crossplane-system",
+					Labels: map[string]string{
+						v1.LabelFunction: "function-go-templating",
 					},
 				},
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "provider-azure-storage",
-						Namespace: "crossplane-system",
-						Labels: map[string]string{
-							v1.LabelProvider: "provider-azure-storage",
-						},
+					Name:      "provider-azure-storage",
+					Namespace: "crossplane-system",
+					Labels: map[string]string{
+						v1.LabelProvider: "provider-azure-storage",
 					},
 				},
 			},
@@ -130,12 +122,10 @@ func TestGetCrossplanePods(t *testing.T) {
 			reason: "Should return new pod type 'extension'",
 			metrics: []corev1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "extension-some-feature-12345",
-						Namespace: "crossplane-system",
-						Labels: map[string]string{
-							"pkg.crossplane.io/extension": "new-crossplane-extension",
-						},
+					Name:      "extension-some-feature-12345",
+					Namespace: "crossplane-system",
+					Labels: map[string]string{
+						"pkg.crossplane.io/extension": "new-crossplane-extension",
 					},
 				},
 			},

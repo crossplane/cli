@@ -118,12 +118,12 @@ func TestResolveConfigurationFunctions(t *testing.T) {
 			},
 			want: []pkgv1.Function{
 				{
-					ObjectMeta: metav1.ObjectMeta{Name: "function-a"},
-					Spec:       pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: "ghcr.io/example/function-a:v1.0.0"}},
+					Name: "function-a",
+					Spec: pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: "ghcr.io/example/function-a:v1.0.0"}},
 				},
 				{
-					ObjectMeta: metav1.ObjectMeta{Name: "function-b"},
-					Spec:       pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: "ghcr.io/example/function-b:v0.5.0"}},
+					Name: "function-b",
+					Spec: pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: "ghcr.io/example/function-b:v0.5.0"}},
 				},
 			},
 		},
@@ -136,12 +136,12 @@ func TestResolveConfigurationFunctions(t *testing.T) {
 			},
 			want: []pkgv1.Function{
 				{
-					ObjectMeta: metav1.ObjectMeta{Name: "function-a"},
-					Spec:       pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: "ghcr.io/example/function-a:v1.0.0"}},
+					Name: "function-a",
+					Spec: pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: "ghcr.io/example/function-a:v1.0.0"}},
 				},
 				{
-					ObjectMeta: metav1.ObjectMeta{Name: "function-b"},
-					Spec:       pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: "ghcr.io/example/function-b:v0.5.0"}},
+					Name: "function-b",
+					Spec: pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: "ghcr.io/example/function-b:v0.5.0"}},
 				},
 			},
 		},

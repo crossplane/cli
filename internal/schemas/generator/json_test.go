@@ -111,16 +111,14 @@ func TestRewriteComponentRefs(t *testing.T) {
 	cRef := func(n string) spec.Ref { return spec.MustCreateRef("#/components/schemas/" + n) }
 
 	s := &spec.Schema{
-		SchemaProps: spec.SchemaProps{
-			Properties: map[string]spec.Schema{
-				"a": {SchemaProps: spec.SchemaProps{Ref: cRef("A")}},
-			},
-			Items: &spec.SchemaOrArray{
-				Schema: &spec.Schema{SchemaProps: spec.SchemaProps{Ref: cRef("B")}},
-			},
-			AllOf: []spec.Schema{{SchemaProps: spec.SchemaProps{Ref: cRef("C")}}},
-			Not:   &spec.Schema{SchemaProps: spec.SchemaProps{Ref: cRef("D")}},
+		Properties: map[string]spec.Schema{
+			"a": {SchemaProps: spec.SchemaProps{Ref: cRef("A")}},
 		},
+		Items: &spec.SchemaOrArray{
+			Schema: &spec.Schema{Ref: cRef("B")},
+		},
+		AllOf: []spec.Schema{{Ref: cRef("C")}},
+		Not:   &spec.Schema{Ref: cRef("D")},
 	}
 	rewriteComponentRefs(s)
 
@@ -141,7 +139,7 @@ func TestRewriteComponentRefs(t *testing.T) {
 
 func TestCRDsToJSONSchemasRewritesRefs(t *testing.T) {
 	crd := &extv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "widgets.example.org"},
+		Name: "widgets.example.org",
 		Spec: extv1.CustomResourceDefinitionSpec{
 			Group: "example.org",
 			Names: extv1.CustomResourceDefinitionNames{

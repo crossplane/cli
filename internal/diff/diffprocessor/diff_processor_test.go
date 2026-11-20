@@ -409,9 +409,7 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 				// Create mock functions that render will call successfully
 				functions := []pkgv1.Function{
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-test",
-						},
+						Name: "function-test",
 					},
 				}
 
@@ -524,9 +522,7 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 							CompositeResource: in.CompositeResource,
 							ComposedResources: []cpd.Unstructured{
 								{
-									Unstructured: un.Unstructured{
-										Object: composedResource.Object,
-									},
+									Object: composedResource.Object,
 								},
 							},
 						}, nil
@@ -594,9 +590,7 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 				// Create mock functions that render will call successfully
 				functions := []pkgv1.Function{
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-test",
-						},
+						Name: "function-test",
 					},
 				}
 
@@ -660,9 +654,7 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 						CompositeResource: in.CompositeResource,
 						ComposedResources: []cpd.Unstructured{
 							{
-								Unstructured: un.Unstructured{
-									Object: composedResource.Object,
-								},
+								Object: composedResource.Object,
 							},
 						},
 					}, nil
@@ -744,7 +736,7 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 		WithPipelineStep("step1", "function-test", nil).
 		Build()
 
-	functions := []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "function-test"}}}
+	functions := []pkgv1.Function{{Name: "function-test"}}
 
 	xrd := tu.NewXRD(testXRDName, testGroup, testKind).
 		WithPlural(testPlural).
@@ -1411,7 +1403,7 @@ func TestDiffFetchesOnlyTheInputsCRD(t *testing.T) {
 				Composition:  tu.NewMockCompositionClient().WithSuccessfulCompositionMatch(composition).Build(),
 				Credential:   &tu.MockCredentialClient{},
 				Definition:   defClient,
-				Function:     tu.NewMockFunctionClient().WithSuccessfulFunctionsFetch([]pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "function-test"}}}).Build(),
+				Function:     tu.NewMockFunctionClient().WithSuccessfulFunctionsFetch([]pkgv1.Function{{Name: "function-test"}}).Build(),
 				ResourceTree: tu.NewMockResourceTreeClient().WithEmptyResourceTree().Build(),
 			}
 
@@ -1522,9 +1514,7 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 	// Create a composition with pipeline mode
 	pipelineMode := apiextensionsv1.CompositionModePipeline
 	composition := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-composition",
-		},
+		Name: "test-composition",
 		Spec: apiextensionsv1.CompositionSpec{
 			Mode: pipelineMode,
 		},
@@ -1533,9 +1523,7 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 	// Create test functions
 	functions := []pkgv1.Function{
 		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-function",
-			},
+			Name: "test-function",
 		},
 	}
 
@@ -1578,13 +1566,13 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 					return render.CompositionOutputs{
 						CompositeResource: in.CompositeResource,
 						ComposedResources: []cpd.Unstructured{
-							{Unstructured: un.Unstructured{Object: map[string]any{
+							{Object: map[string]any{
 								"apiVersion": "example.org/v1",
 								"kind":       "ComposedResource",
 								"metadata": map[string]any{
 									"name": "composed1",
 								},
-							}}},
+							}},
 						},
 					}, nil
 				}
@@ -1636,13 +1624,13 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 					return render.CompositionOutputs{
 						CompositeResource: in.CompositeResource,
 						ComposedResources: []cpd.Unstructured{
-							{Unstructured: un.Unstructured{Object: map[string]any{
+							{Object: map[string]any{
 								"apiVersion": "example.org/v1",
 								"kind":       "ComposedResource",
 								"metadata": map[string]any{
 									"name": "composed1",
 								},
-							}}},
+							}},
 						},
 						RequiredResources: reqs,
 					}, nil
@@ -1727,13 +1715,13 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 					return render.CompositionOutputs{
 						CompositeResource: in.CompositeResource,
 						ComposedResources: []cpd.Unstructured{
-							{Unstructured: un.Unstructured{Object: map[string]any{
+							{Object: map[string]any{
 								"apiVersion": "example.org/v1",
 								"kind":       "ComposedResource",
 								"metadata": map[string]any{
 									"name": "composed1",
 								},
-							}}},
+							}},
 						},
 						RequiredResources: requirements,
 					}, nil
@@ -1806,13 +1794,13 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 					return render.CompositionOutputs{
 						CompositeResource: in.CompositeResource,
 						ComposedResources: []cpd.Unstructured{
-							{Unstructured: un.Unstructured{Object: map[string]any{
+							{Object: map[string]any{
 								"apiVersion": "example.org/v1",
 								"kind":       "ComposedResource",
 								"metadata": map[string]any{
 									"name": "composed1",
 								},
-							}}},
+							}},
 						},
 					}, nil
 				}
@@ -1958,7 +1946,7 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 			functions:   functions,
 			resourceID:  "XR/test-xr",
 			observedResources: []cpd.Unstructured{
-				{Unstructured: un.Unstructured{Object: map[string]any{
+				{Object: map[string]any{
 					"apiVersion": "s3.aws.crossplane.io/v1",
 					"kind":       "Bucket",
 					"metadata": map[string]any{
@@ -1967,8 +1955,8 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 							"crossplane.io/composition-resource-name": "bucket",
 						},
 					},
-				}}},
-				{Unstructured: un.Unstructured{Object: map[string]any{
+				}},
+				{Object: map[string]any{
 					"apiVersion": "iam.aws.crossplane.io/v1",
 					"kind":       "User",
 					"metadata": map[string]any{
@@ -1977,7 +1965,7 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 							"crossplane.io/composition-resource-name": "user",
 						},
 					},
-				}}},
+				}},
 			},
 			setupResourceClient: func() *tu.MockResourceClient {
 				return tu.NewMockResourceClient().Build()
@@ -2002,13 +1990,13 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 					return render.CompositionOutputs{
 						CompositeResource: in.CompositeResource,
 						ComposedResources: []cpd.Unstructured{
-							{Unstructured: un.Unstructured{Object: map[string]any{
+							{Object: map[string]any{
 								"apiVersion": "example.org/v1",
 								"kind":       "ComposedResource",
 								"metadata": map[string]any{
 									"name": "composed1",
 								},
-							}}},
+							}},
 						},
 					}, nil
 				}
@@ -2094,11 +2082,11 @@ func TestDefaultDiffProcessor_RenderToStableState_SynthesizeReady(t *testing.T) 
 	// Create a composition with pipeline mode
 	pipelineMode := apiextensionsv1.CompositionModePipeline
 	composition := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-composition"},
-		Spec:       apiextensionsv1.CompositionSpec{Mode: pipelineMode},
+		Name: "test-composition",
+		Spec: apiextensionsv1.CompositionSpec{Mode: pipelineMode},
 	}
 
-	functions := []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "test-function"}}}
+	functions := []pkgv1.Function{{Name: "test-function"}}
 
 	// Fixtures for an XR that already exists: its stage0 is observed in the cluster, and stage1
 	// renders only once observed stage0 is Ready, the way function-sequencer or a template's own
@@ -2158,11 +2146,11 @@ func TestDefaultDiffProcessor_RenderToStableState_SynthesizeReady(t *testing.T) 
 					return render.CompositionOutputs{
 						CompositeResource: in.CompositeResource,
 						ComposedResources: []cpd.Unstructured{{
-							Unstructured: un.Unstructured{Object: map[string]any{
+							Object: map[string]any{
 								"apiVersion": "example.org/v1",
 								"kind":       "ComposedResource",
 								"metadata":   map[string]any{"name": "composed1"},
-							}},
+							},
 						}},
 					}, nil
 				}
@@ -2192,30 +2180,30 @@ func TestDefaultDiffProcessor_RenderToStableState_SynthesizeReady(t *testing.T) 
 					// Stage 3: resource1,2 ready -> produce resource1 + resource2 + resource3
 					// Stage 4: All ready, stable
 					resources := []cpd.Unstructured{{
-						Unstructured: un.Unstructured{Object: map[string]any{
+						Object: map[string]any{
 							"apiVersion": "example.org/v1",
 							"kind":       "Stage1Resource",
 							"metadata":   map[string]any{"name": "resource1"},
-						}},
+						},
 					}}
 
 					if readyCount >= 1 {
 						resources = append(resources, cpd.Unstructured{
-							Unstructured: un.Unstructured{Object: map[string]any{
+							Object: map[string]any{
 								"apiVersion": "example.org/v1",
 								"kind":       "Stage2Resource",
 								"metadata":   map[string]any{"name": "resource2"},
-							}},
+							},
 						})
 					}
 
 					if readyCount >= 2 {
 						resources = append(resources, cpd.Unstructured{
-							Unstructured: un.Unstructured{Object: map[string]any{
+							Object: map[string]any{
 								"apiVersion": "example.org/v1",
 								"kind":       "Stage3Resource",
 								"metadata":   map[string]any{"name": "resource3"},
-							}},
+							},
 						})
 					}
 
@@ -2268,7 +2256,7 @@ func TestDefaultDiffProcessor_RenderToStableState_SynthesizeReady(t *testing.T) 
 					return render.CompositionOutputs{
 						CompositeResource: in.CompositeResource,
 						ComposedResources: []cpd.Unstructured{{
-							Unstructured: un.Unstructured{Object: map[string]any{
+							Object: map[string]any{
 								"apiVersion": "example.org/v1",
 								"kind":       "InfiniteResource",
 								"metadata": map[string]any{
@@ -2277,7 +2265,7 @@ func TestDefaultDiffProcessor_RenderToStableState_SynthesizeReady(t *testing.T) 
 										"crossplane.io/composition-resource-name": fmt.Sprintf("res%d", resourceNum),
 									},
 								},
-							}},
+							},
 						}},
 					}, nil
 				}
@@ -2621,7 +2609,7 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 	// XR and can have its XRD defaults applied.
 	cycleClients := func() (xp.Clients, k8.Clients) {
 		functions := []pkgv1.Function{
-			{ObjectMeta: metav1.ObjectMeta{Name: "function-go-templating"}},
+			{Name: "function-go-templating"},
 		}
 
 		xpClients := xp.Clients{
@@ -2713,9 +2701,7 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 				// Create functions that the composition references
 				functions := []pkgv1.Function{
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-go-templating",
-						},
+						Name: "function-go-templating",
 						Spec: pkgv1.FunctionSpec{
 							PackageSpec: pkgv1.PackageSpec{
 								Package: "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0",
@@ -2854,9 +2840,7 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 				// Create functions that the composition references
 				functions := []pkgv1.Function{
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-go-templating",
-						},
+						Name: "function-go-templating",
 						Spec: pkgv1.FunctionSpec{
 							PackageSpec: pkgv1.PackageSpec{
 								Package: "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0",
@@ -2959,9 +2943,7 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 				// Create functions
 				functions := []pkgv1.Function{
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-go-templating",
-						},
+						Name: "function-go-templating",
 						Spec: pkgv1.FunctionSpec{
 							PackageSpec: pkgv1.PackageSpec{
 								Package: "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0",
@@ -3139,9 +3121,7 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 	// Create test functions
 	functions := []pkgv1.Function{
 		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "function-test",
-			},
+			Name: "function-test",
 		},
 	}
 
@@ -3589,7 +3569,7 @@ func TestDefaultDiffProcessor_DiffSingleResource_RevisionRef(t *testing.T) {
 		WithPipelineStep("step1", "function-test", nil).
 		Build()
 
-	functions := []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "function-test"}}}
+	functions := []pkgv1.Function{{Name: "function-test"}}
 
 	staleRef := map[string]any{"name": "test-composition-0ld0001"}
 
@@ -4027,8 +4007,8 @@ func TestDefaultDiffProcessor_RenderToStableState_SchemaPlumbing(t *testing.T) {
 
 	xr := tu.NewResource("example.org/v1", "XLegacy", "test-xr").BuildUComposite()
 	composition := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-composition"},
-		Spec:       apiextensionsv1.CompositionSpec{Mode: apiextensionsv1.CompositionModePipeline},
+		Name: "test-composition",
+		Spec: apiextensionsv1.CompositionSpec{Mode: apiextensionsv1.CompositionModePipeline},
 	}
 
 	// resolveSchemaAndXRDForRender derives the schema from the XRD's

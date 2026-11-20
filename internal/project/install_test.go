@@ -52,15 +52,11 @@ func TestApplyResources(t *testing.T) {
 
 	configMapJSON := func(name string) []byte {
 		cm := &corev1.ConfigMap{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: "v1",
-				Kind:       "ConfigMap",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: "default",
-			},
-			Data: map[string]string{"key": "value"},
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+			Name:       name,
+			Namespace:  "default",
+			Data:       map[string]string{"key": "value"},
 		}
 		bs, err := json.Marshal(cm)
 		if err != nil {

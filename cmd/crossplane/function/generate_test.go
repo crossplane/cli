@@ -618,10 +618,8 @@ func TestAddCompositionStep(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			comp := &apiextv1.Composition{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "apiextensions.crossplane.io/v1",
-					Kind:       "Composition",
-				},
+				APIVersion: "apiextensions.crossplane.io/v1",
+				Kind:       "Composition",
 				Spec: apiextv1.CompositionSpec{
 					Pipeline: tc.start,
 				},
@@ -652,11 +650,9 @@ func TestAddStepToComposition(t *testing.T) {
 	}{
 		"PrependsAndPersists": {
 			comp: &apiextv1.Composition{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "apiextensions.crossplane.io/v1",
-					Kind:       "Composition",
-				},
-				ObjectMeta: metav1.ObjectMeta{Name: "test-comp"},
+				APIVersion: "apiextensions.crossplane.io/v1",
+				Kind:       "Composition",
+				Name:       "test-comp",
 				Spec: apiextv1.CompositionSpec{
 					CompositeTypeRef: apiextv1.TypeReference{
 						APIVersion: "example.org/v1",

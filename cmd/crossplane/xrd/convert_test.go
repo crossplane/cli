@@ -246,7 +246,7 @@ func newKongContext(t *testing.T) *kong.Context {
 // satisfy xcrd.ForCompositeResource / xcrd.ForCompositeResourceClaim.
 func minimalXRD(scope apiextensionsv1.CompositeResourceScope, claimNames *extv1.CustomResourceDefinitionNames) *apiextensionsv1.CompositeResourceDefinition {
 	return &apiextensionsv1.CompositeResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "xtestapps.example.org"},
+		Name: "xtestapps.example.org",
 		Spec: apiextensionsv1.CompositeResourceDefinitionSpec{
 			Group: "example.org",
 			Names: extv1.CustomResourceDefinitionNames{

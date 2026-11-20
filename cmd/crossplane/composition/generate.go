@@ -183,13 +183,9 @@ func (c *generateCmd) newComposition() (*apiextv1.Composition, string, error) {
 	}
 
 	comp := &apiextv1.Composition{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apiextv1.CompositionGroupVersionKind.GroupVersion().String(),
-			Kind:       apiextv1.CompositionGroupVersionKind.Kind,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
+		APIVersion: apiextv1.CompositionGroupVersionKind.GroupVersion().String(),
+		Kind:       apiextv1.CompositionGroupVersionKind.Kind,
+		Name:       name,
 		Spec: apiextv1.CompositionSpec{
 			CompositeTypeRef: apiextv1.TypeReference{
 				APIVersion: fmt.Sprintf("%s/%s", group, version),

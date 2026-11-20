@@ -93,7 +93,7 @@ func TestOverrideFunctionAnnotations(t *testing.T) {
 }
 
 func functionWithAnnotations(annotations map[string]string) pkgv1.Function {
-	return pkgv1.Function{ObjectMeta: metav1.ObjectMeta{Annotations: annotations}}
+	return pkgv1.Function{Annotations: annotations}
 }
 
 func TestFunctionAddressesStop(t *testing.T) {
@@ -101,7 +101,7 @@ func TestFunctionAddressesStop(t *testing.T) {
 	errB := errors.New("boom b")
 
 	stopReturns := func(name string, err error) startedRuntime {
-		return startedRuntime{name: name, RuntimeContext: RuntimeContext{Target: name + ":9443", Stop: func(context.Context) error { return err }}}
+		return startedRuntime{name: name, Target: name + ":9443", Stop: func(context.Context) error { return err }}
 	}
 
 	type args struct {
@@ -215,10 +215,10 @@ func TestStopFunctionRuntimes(t *testing.T) {
 			var fa *FunctionAddresses
 			if !tc.args.noRuntimes {
 				fa = &FunctionAddresses{runtimes: []startedRuntime{
-					{name: "fn", RuntimeContext: RuntimeContext{Target: "fn:9443", Stop: func(ctx context.Context) error {
+					{name: "fn", Target: "fn:9443", Stop: func(ctx context.Context) error {
 						got.ctxErr = ctx.Err()
 						return tc.args.stopErr
-					}}},
+					}},
 				}}
 			}
 
@@ -286,7 +286,7 @@ func TestStartFunctionRuntimes(t *testing.T) {
 		}
 	}
 	fn := func(name string) pkgv1.Function {
-		return pkgv1.Function{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		return pkgv1.Function{Name: name}
 	}
 
 	type args struct {

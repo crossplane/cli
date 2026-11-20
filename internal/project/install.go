@@ -46,13 +46,9 @@ import (
 func InstallConfiguration(ctx context.Context, cl client.Client, cfgName string, tag name.Tag, logger logging.Logger) error {
 	pkgSource := tag.String()
 	cfg := &xpkgv1.Configuration{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: xpkgv1.SchemeGroupVersion.String(),
-			Kind:       xpkgv1.ConfigurationKind,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: cfgName,
-		},
+		APIVersion: xpkgv1.SchemeGroupVersion.String(),
+		Kind:       xpkgv1.ConfigurationKind,
+		Name:       cfgName,
 		Spec: xpkgv1.ConfigurationSpec{
 			PackageSpec: xpkgv1.PackageSpec{
 				Package: pkgSource,

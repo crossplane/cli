@@ -31,21 +31,19 @@ func TestRenderPlanGrouped(t *testing.T) {
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
 	pinned := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "staging-network"}
 	r := Result{
-		Result: plan.Result{
-			Summary: plan.Summary{Update: 1, Destroy: 1, NoOp: 1},
-			Plans: []*plan.ResourcePlan{
-				// The XR's own no-op plan is not printed.
-				{APIVersion: xr.APIVersion, Kind: xr.Kind, Name: xr.Name, Action: plan.ActionNoOp, Composite: &xr},
-				{
-					APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "SecurityGroupRule", Name: "prod-network-ssh",
-					Action: plan.ActionUpdate, Composite: &xr,
-					Changes: []plan.FieldChange{{Path: "spec.forProvider.fromPort", Actual: &plan.Value{Value: 22}, Planned: &plan.Value{Value: 2222}}},
-				},
-				{
-					APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "Route", Name: "prod-network-default",
-					Action: plan.ActionDelete, Composite: &xr,
-					Changes: plan.FieldChanges(map[string]any{"spec": map[string]any{"region": "us-west-1"}}, nil),
-				},
+		Summary: plan.Summary{Update: 1, Destroy: 1, NoOp: 1},
+		Plans: []*plan.ResourcePlan{
+			// The XR's own no-op plan is not printed.
+			{APIVersion: xr.APIVersion, Kind: xr.Kind, Name: xr.Name, Action: plan.ActionNoOp, Composite: &xr},
+			{
+				APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "SecurityGroupRule", Name: "prod-network-ssh",
+				Action: plan.ActionUpdate, Composite: &xr,
+				Changes: []plan.FieldChange{{Path: "spec.forProvider.fromPort", Actual: &plan.Value{Value: 22}, Planned: &plan.Value{Value: 2222}}},
+			},
+			{
+				APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "Route", Name: "prod-network-default",
+				Action: plan.ActionDelete, Composite: &xr,
+				Changes: plan.FieldChanges(map[string]any{"spec": map[string]any{"region": "us-west-1"}}, nil),
 			},
 		},
 		Composites: []CompositeResult{
@@ -117,20 +115,18 @@ func TestRenderPlanCompositions(t *testing.T) {
 	unknown := plan.ResourceRef{APIVersion: comp.APIVersion, Kind: comp.Kind, Name: "unknown"}
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
 	r := Result{
-		Result: plan.Result{
-			Summary: plan.Summary{Update: 2, NoOp: 2},
-			Plans: []*plan.ResourcePlan{
-				{
-					APIVersion: comp.APIVersion, Kind: comp.Kind, Name: comp.Name, Action: plan.ActionUpdate,
-					Changes: []plan.FieldChange{{Path: "spec.mode", Actual: &plan.Value{Value: "Resources"}, Planned: &plan.Value{Value: "Pipeline"}}},
-				},
-				{APIVersion: same.APIVersion, Kind: same.Kind, Name: same.Name, Action: plan.ActionNoOp},
-				{APIVersion: unknown.APIVersion, Kind: unknown.Kind, Name: unknown.Name, Action: plan.ActionNoOp},
-				{
-					APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "VPC", Name: "prod-network",
-					Action: plan.ActionUpdate, Composite: &xr,
-					Changes: []plan.FieldChange{{Path: "spec.forProvider.region", Actual: &plan.Value{Value: "us-west-1"}, Planned: &plan.Value{Value: "us-east-1"}}},
-				},
+		Summary: plan.Summary{Update: 2, NoOp: 2},
+		Plans: []*plan.ResourcePlan{
+			{
+				APIVersion: comp.APIVersion, Kind: comp.Kind, Name: comp.Name, Action: plan.ActionUpdate,
+				Changes: []plan.FieldChange{{Path: "spec.mode", Actual: &plan.Value{Value: "Resources"}, Planned: &plan.Value{Value: "Pipeline"}}},
+			},
+			{APIVersion: same.APIVersion, Kind: same.Kind, Name: same.Name, Action: plan.ActionNoOp},
+			{APIVersion: unknown.APIVersion, Kind: unknown.Kind, Name: unknown.Name, Action: plan.ActionNoOp},
+			{
+				APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "VPC", Name: "prod-network",
+				Action: plan.ActionUpdate, Composite: &xr,
+				Changes: []plan.FieldChange{{Path: "spec.forProvider.region", Actual: &plan.Value{Value: "us-west-1"}, Planned: &plan.Value{Value: "us-east-1"}}},
 			},
 		},
 		Composites: []CompositeResult{{Ref: xr, Status: CompositeChanged}},
@@ -189,16 +185,17 @@ func TestRenderJSONProjectFields(t *testing.T) {
 		}},
 		Warnings: []Warning{{Message: "heads up", Context: map[string]string{"k": "v"}}},
 		Notes:    []string{"a note"},
-	}
-	in.Result = plan.Result{
-		FormatVersion: plan.ResultFormatVersion,
-		Errored:       true,
-		Summary:       plan.Summary{Destroy: 1},
-		Plans: []*plan.ResourcePlan{{
-			APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionDelete, Composite: &xr,
-			Changes: []plan.FieldChange{{Path: "data.k", Actual: &plan.Value{Value: "v"}}},
-			DryRun:  &plan.Verification{SkipReason: "forbidden", Detail: "no create permission"},
-		}},
+
+		Result: plan.Result{
+			FormatVersion: plan.ResultFormatVersion,
+			Errored:       true,
+			Summary:       plan.Summary{Destroy: 1},
+			Plans: []*plan.ResourcePlan{{
+				APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionDelete, Composite: &xr,
+				Changes: []plan.FieldChange{{Path: "data.k", Actual: &plan.Value{Value: "v"}}},
+				DryRun:  &plan.Verification{SkipReason: "forbidden", Detail: "no create permission"},
+			}},
+		},
 	}
 	var buf bytes.Buffer
 	r, _ := NewRenderer(plan.FormatJSON)

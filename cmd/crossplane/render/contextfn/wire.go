@@ -37,12 +37,10 @@ const (
 // known by name.
 func (h *Handle) Function() pkgv1.Function {
 	return pkgv1.Function{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: FunctionName,
-			Annotations: map[string]string{
-				annotationKeyRuntime:                  annotationValueRuntimeDevelopment,
-				annotationKeyRuntimeDevelopmentTarget: h.target,
-			},
+		Name: FunctionName,
+		Annotations: map[string]string{
+			annotationKeyRuntime:                  annotationValueRuntimeDevelopment,
+			annotationKeyRuntimeDevelopmentTarget: h.target,
 		},
 	}
 }

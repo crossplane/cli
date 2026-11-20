@@ -120,18 +120,18 @@ func (c *installCmd) Run(k *kong.Context, logger logging.Logger) error {
 	switch c.Kind {
 	case "provider":
 		pkg = &v1.Provider{
-			ObjectMeta: metav1.ObjectMeta{Name: pkgName},
-			Spec:       v1.ProviderSpec{PackageSpec: spec},
+			Name: pkgName,
+			Spec: v1.ProviderSpec{PackageSpec: spec},
 		}
 	case "configuration":
 		pkg = &v1.Configuration{
-			ObjectMeta: metav1.ObjectMeta{Name: pkgName},
-			Spec:       v1.ConfigurationSpec{PackageSpec: spec},
+			Name: pkgName,
+			Spec: v1.ConfigurationSpec{PackageSpec: spec},
 		}
 	case "function":
 		pkg = &v1.Function{
-			ObjectMeta: metav1.ObjectMeta{Name: pkgName},
-			Spec:       v1.FunctionSpec{PackageSpec: spec},
+			Name: pkgName,
+			Spec: v1.FunctionSpec{PackageSpec: spec},
 		}
 	default:
 		// The enum struct tag on the Kind field should make this impossible.

@@ -58,8 +58,7 @@ func TestLoadCompositeResource(t *testing.T) {
 			file: "testdata/xr.yaml",
 			want: want{
 				xr: &composite.Unstructured{
-					Unstructured: unstructured.Unstructured{
-						Object: MustLoadJSON(`{
+					Object: MustLoadJSON(`{
 							"apiVersion": "nop.example.org/v1alpha1",
 							"kind": "XNopResource",
 							"metadata": {
@@ -69,7 +68,6 @@ func TestLoadCompositeResource(t *testing.T) {
 								"coolField": "I'm cool!"
 							}
 						}`),
-					},
 				},
 			},
 		},
@@ -112,11 +110,9 @@ func TestLoadXRD(t *testing.T) {
 			file: "testdata/xrd.yaml",
 			want: want{
 				xrd: &apiextensionsv1.CompositeResourceDefinition{
-					TypeMeta: metav1.TypeMeta{
-						Kind:       apiextensionsv1.CompositeResourceDefinitionKind,
-						APIVersion: apiextensionsv1.SchemeGroupVersion.String(),
-					},
-					ObjectMeta: metav1.ObjectMeta{Name: "xnopresources.nop.example.org"},
+					Kind:       apiextensionsv1.CompositeResourceDefinitionKind,
+					APIVersion: apiextensionsv1.SchemeGroupVersion.String(),
+					Name:       "xnopresources.nop.example.org",
 					Spec: apiextensionsv1.CompositeResourceDefinitionSpec{
 						Group: "nop.example.org",
 						Names: v1.CustomResourceDefinitionNames{
@@ -179,11 +175,9 @@ func TestLoadComposition(t *testing.T) {
 			file: "testdata/composition.yaml",
 			want: want{
 				comp: &apiextensionsv1.Composition{
-					TypeMeta: metav1.TypeMeta{
-						Kind:       apiextensionsv1.CompositionKind,
-						APIVersion: apiextensionsv1.SchemeGroupVersion.String(),
-					},
-					ObjectMeta: metav1.ObjectMeta{Name: "xnopresources.nop.example.org"},
+					Kind:       apiextensionsv1.CompositionKind,
+					APIVersion: apiextensionsv1.SchemeGroupVersion.String(),
+					Name:       "xnopresources.nop.example.org",
 					Spec: apiextensionsv1.CompositionSpec{
 						CompositeTypeRef: apiextensionsv1.TypeReference{
 							APIVersion: "nop.example.org/v1alpha1",
@@ -244,16 +238,12 @@ func TestLoadFunctions(t *testing.T) {
 			want: want{
 				fns: []pkgv1.Function{
 					{
-						TypeMeta: metav1.TypeMeta{
-							Kind:       pkgv1.FunctionKind,
-							APIVersion: pkgv1.SchemeGroupVersion.String(),
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-auto-ready",
-							Annotations: map[string]string{
-								AnnotationKeyRuntime:              string(AnnotationValueRuntimeDocker),
-								AnnotationKeyRuntimeDockerCleanup: string(AnnotationValueRuntimeDockerCleanupOrphan),
-							},
+						Kind:       pkgv1.FunctionKind,
+						APIVersion: pkgv1.SchemeGroupVersion.String(),
+						Name:       "function-auto-ready",
+						Annotations: map[string]string{
+							AnnotationKeyRuntime:              string(AnnotationValueRuntimeDocker),
+							AnnotationKeyRuntimeDockerCleanup: string(AnnotationValueRuntimeDockerCleanupOrphan),
 						},
 						Spec: pkgv1.FunctionSpec{
 							PackageSpec: pkgv1.PackageSpec{
@@ -262,16 +252,12 @@ func TestLoadFunctions(t *testing.T) {
 						},
 					},
 					{
-						TypeMeta: metav1.TypeMeta{
-							Kind:       pkgv1.FunctionKind,
-							APIVersion: pkgv1.SchemeGroupVersion.String(),
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-dummy",
-							Annotations: map[string]string{
-								AnnotationKeyRuntime:                  string(AnnotationValueRuntimeDevelopment),
-								AnnotationKeyRuntimeDevelopmentTarget: "localhost:9444",
-							},
+						Kind:       pkgv1.FunctionKind,
+						APIVersion: pkgv1.SchemeGroupVersion.String(),
+						Name:       "function-dummy",
+						Annotations: map[string]string{
+							AnnotationKeyRuntime:                  string(AnnotationValueRuntimeDevelopment),
+							AnnotationKeyRuntimeDevelopmentTarget: "localhost:9444",
 						},
 						Spec: pkgv1.FunctionSpec{
 							PackageSpec: pkgv1.PackageSpec{
@@ -280,17 +266,13 @@ func TestLoadFunctions(t *testing.T) {
 						},
 					},
 					{
-						TypeMeta: metav1.TypeMeta{
-							Kind:       pkgv1.FunctionKind,
-							APIVersion: pkgv1.SchemeGroupVersion.String(),
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-auto-ready",
-							Annotations: map[string]string{
-								AnnotationKeyRuntime:               string(AnnotationValueRuntimeDocker),
-								AnnotationKeyRuntimeDockerCleanup:  string(AnnotationValueRuntimeDockerCleanupOrphan),
-								AnnotationKeyRuntimeNamedContainer: "function-auto-ready",
-							},
+						Kind:       pkgv1.FunctionKind,
+						APIVersion: pkgv1.SchemeGroupVersion.String(),
+						Name:       "function-auto-ready",
+						Annotations: map[string]string{
+							AnnotationKeyRuntime:               string(AnnotationValueRuntimeDocker),
+							AnnotationKeyRuntimeDockerCleanup:  string(AnnotationValueRuntimeDockerCleanupOrphan),
+							AnnotationKeyRuntimeNamedContainer: "function-auto-ready",
 						},
 						Spec: pkgv1.FunctionSpec{
 							PackageSpec: pkgv1.PackageSpec{
@@ -347,13 +329,13 @@ func TestLoadCredentials(t *testing.T) {
 			want: want{
 				secrets: []corev1.Secret{
 					{
-						TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-						ObjectMeta: metav1.ObjectMeta{Name: "creds-a"},
-						Data:       map[string][]byte{"token": []byte("secret")},
+						APIVersion: "v1", Kind: "Secret",
+						Name: "creds-a",
+						Data: map[string][]byte{"token": []byte("secret")},
 					},
 					{
-						TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-						ObjectMeta: metav1.ObjectMeta{Name: "creds-b"},
+						APIVersion: "v1", Kind: "Secret",
+						Name:       "creds-b",
 						StringData: map[string]string{"password": "hunter2"},
 					},
 				},
@@ -439,7 +421,7 @@ func TestLoadObservedResources(t *testing.T) {
 			want: want{
 				ors: []composed.Unstructured{
 					{
-						Unstructured: unstructured.Unstructured{Object: MustLoadJSON(`{
+						Object: MustLoadJSON(`{
 							"apiVersion": "example.org/v1alpha1",
 							"kind": "ComposedResource",
 							"metadata": {
@@ -451,10 +433,10 @@ func TestLoadObservedResources(t *testing.T) {
 							"spec": {
 								"coolField": "I'm cool!"
 							}
-						}`)},
+						}`),
 					},
 					{
-						Unstructured: unstructured.Unstructured{Object: MustLoadJSON(`{
+						Object: MustLoadJSON(`{
 							"apiVersion": "example.org/v1alpha1",
 							"kind": "ComposedResource",
 							"metadata": {
@@ -466,7 +448,7 @@ func TestLoadObservedResources(t *testing.T) {
 							"spec": {
 								"coolerField": "I'm cooler!"
 							}
-						}`)},
+						}`),
 					},
 				},
 			},

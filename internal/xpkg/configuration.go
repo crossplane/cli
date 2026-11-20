@@ -78,9 +78,7 @@ func ResolveConfigurationFunctions(ctx context.Context, cfg *pkgmetav1.Configura
 		}
 
 		fns = append(fns, pkgv1.Function{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: path.Base(resolved.Context().RepositoryStr()),
-			},
+			Name: path.Base(resolved.Context().RepositoryStr()),
 			Spec: pkgv1.FunctionSpec{
 				PackageSpec: pkgv1.PackageSpec{
 					Package: resolved.Name(),

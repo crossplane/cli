@@ -555,9 +555,7 @@ func TestDefaultCompositionClient_FindMatchingComposition(t *testing.T) {
 			},
 			want: want{
 				composition: &apiextensionsv1.Composition{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "matching-comp",
-					},
+					Name: "matching-comp",
 					Spec: apiextensionsv1.CompositionSpec{
 						CompositeTypeRef: apiextensionsv1.TypeReference{
 							APIVersion: "example.org/v2",
@@ -725,9 +723,7 @@ func TestDefaultCompositionClient_FindMatchingComposition(t *testing.T) {
 			},
 			want: want{
 				composition: &apiextensionsv1.Composition{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "matching-comp",
-					},
+					Name: "matching-comp",
 					Spec: apiextensionsv1.CompositionSpec{
 						CompositeTypeRef: apiextensionsv1.TypeReference{
 							APIVersion: "example.org/v2",
@@ -1308,11 +1304,9 @@ func TestDefaultCompositionClient_ResolveCompositionFromRevisions(t *testing.T) 
 
 	// Create test revisions
 	rev1 := &apiextensionsv1.CompositionRevision{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-comp-rev1",
-			Labels: map[string]string{
-				LabelCompositionName: "test-comp",
-			},
+		Name: "test-comp-rev1",
+		Labels: map[string]string{
+			LabelCompositionName: "test-comp",
 		},
 		Spec: apiextensionsv1.CompositionRevisionSpec{
 			Revision: 1,
@@ -1324,11 +1318,9 @@ func TestDefaultCompositionClient_ResolveCompositionFromRevisions(t *testing.T) 
 	}
 
 	rev2 := &apiextensionsv1.CompositionRevision{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-comp-rev2",
-			Labels: map[string]string{
-				LabelCompositionName: "test-comp",
-			},
+		Name: "test-comp-rev2",
+		Labels: map[string]string{
+			LabelCompositionName: "test-comp",
 		},
 		Spec: apiextensionsv1.CompositionRevisionSpec{
 			Revision: 2,
@@ -1578,11 +1570,9 @@ func TestDefaultCompositionClient_ResolveCompositionFromRevisions(t *testing.T) 
 				WithGetResource(func(_ context.Context, _ schema.GroupVersionKind, _, name string) (*un.Unstructured, error) {
 					if name == "other-comp-rev1" {
 						wrongRev := &apiextensionsv1.CompositionRevision{
-							ObjectMeta: metav1.ObjectMeta{
-								Name: "other-comp-rev1",
-								Labels: map[string]string{
-									LabelCompositionName: "other-comp",
-								},
+							Name: "other-comp-rev1",
+							Labels: map[string]string{
+								LabelCompositionName: "other-comp",
 							},
 							Spec: apiextensionsv1.CompositionRevisionSpec{
 								Revision: 1,

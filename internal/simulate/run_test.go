@@ -1080,9 +1080,6 @@ func TestSimulateWithProgress(t *testing.T) {
 	if !ran {
 		t.Fatal("simulateWithProgress did not run the wrapped function")
 	}
-	if progressFn := progress; progressFn == nil {
-		t.Fatal("progress sink lost")
-	}
 	out := buf.String()
 	if !strings.Contains(out, simulatingMsg+"...") {
 		t.Errorf("expected a started line for %q, got:\n%s", simulatingMsg, out)

@@ -4195,3 +4195,56 @@ func TestCleanupDetached(t *testing.T) {
 		})
 	}
 }
+
+// TestDefaultDiffProcessor_PerformDiff_ReportsProgress pins the
+// (done, total, detail) sequence PerformDiff reports while walking its
+// inputs: zero-based position before each resource is rendered and diffed,
+// the full count, and the resource's diff key. The resources fail at
+// composition resolution, which is after the report — progress must cover
+// failing composites too, or the line would stall exactly when the user
+// most wants to know what is being processed.
+func TestDefaultDiffProcessor_PerformDiff_ReportsProgress(t *testing.T) {
+	resource1 := tu.NewResource("example.org/v1", "XR1", "my-xr-1").Build()
+	resource2 := tu.NewResource("example.org/v1", "XR1", "my-xr-2").Build()
+	testXRD := tu.NewXRD(testXRDName, testGroup, testKind).WithVersion("v1", true, true).BuildAsUnstructured()
+	testCRD := makeTestCRD(testCRDName, testKind, testGroup, testAPIVersion)
+
+	k8sClients := k8.Clients{
+		Apply:    tu.NewMockApplyClient().Build(),
+		Resource: tu.NewMockResourceClient().WithResourceNotFound().Build(),
+		Schema:   tu.NewMockSchemaClient().WithSuccessfulCRDByNameFetch(testCRDName, testCRD).Build(),
+		Type:     tu.NewMockTypeConverter().Build(),
+	}
+	xpClients := xp.Clients{
+		Composition:  tu.NewMockCompositionClient().WithNoMatchingComposition().Build(),
+		Credential:   &tu.MockCredentialClient{},
+		Definition:   tu.NewMockDefinitionClient().WithXRDForXR(testXRD).Build(),
+		Function:     tu.NewMockFunctionClient().Build(),
+		ResourceTree: tu.NewMockResourceTreeClient().Build(),
+	}
+
+	type report struct {
+		done, total int
+		detail      string
+	}
+	var got []report
+	progress := NewProgress()
+	progress.SetReporter(func(done, total int, detail string) {
+		got = append(got, report{done: done, total: total, detail: detail})
+	})
+
+	processor := NewDiffProcessor(k8sClients, xpClients, append(testProcessorOptions(t), WithProgress(progress))...)
+	compositionProvider := func(ctx context.Context, res *un.Unstructured) (types.ResolvedComposition, error) {
+		return xpClients.Composition.FindMatchingComposition(ctx, res)
+	}
+	//nolint:errcheck // Every resource fails composition resolution by design.
+	processor.PerformDiff(t.Context(), []*un.Unstructured{resource1, resource2}, compositionProvider)
+
+	want := []report{
+		{done: 0, total: 2, detail: "example.org/v1/XR1//my-xr-1"},
+		{done: 1, total: 2, detail: "example.org/v1/XR1//my-xr-2"},
+	}
+	if diff := gcmp.Diff(want, got, gcmp.AllowUnexported(report{})); diff != "" {
+		t.Errorf("PerformDiff(): progress reports -want, +got:\n%s", diff)
+	}
+}

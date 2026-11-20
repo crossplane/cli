@@ -258,16 +258,16 @@ func WithIncludeManual(includeManual bool) ProcessorOption {
 }
 
 // WithAdvisories sets the collector advisories are raised on and drained from for structured output.
+func WithAdvisories(advisories *AdvisoryCollector) ProcessorOption {
+	return func(config *ProcessorConfig) {
+		config.Advisories = advisories
+	}
+}
+
 // WithProgress sets the sink coarse processing progress is reported to.
 func WithProgress(progress *Progress) ProcessorOption {
 	return func(config *ProcessorConfig) {
 		config.Progress = progress
-	}
-}
-
-func WithAdvisories(advisories *AdvisoryCollector) ProcessorOption {
-	return func(config *ProcessorConfig) {
-		config.Advisories = advisories
 	}
 }
 

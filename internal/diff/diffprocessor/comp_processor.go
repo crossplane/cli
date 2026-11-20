@@ -804,7 +804,9 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 
 	for i, xr := range xrs {
 		resourceID := dt.MakeDiffKeyFromResource(xr)
-		p.config.Progress.Report(i, len(xrs), resourceID)
+		// The composition prefix tells apart composites of the same name when
+		// several compositions are simulated in one run.
+		p.config.Progress.Report(i, len(xrs), cliComp.GetName()+": "+resourceID)
 
 		if pin, ok := pinned[resourceID]; ok && pin.err != nil {
 			results[resourceID] = &XRDiffResult{

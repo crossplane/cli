@@ -280,11 +280,6 @@ type processor interface {
 	dp.Cleaner
 }
 
-// simulate initializes the clients and processor and runs diff. A run that
-// finds changes and fails nothing returns a silent ExitError that
-// exits 3; one that fails only schema validation returns one that exits 2.
-// ctx must not be cancelled by its owner until simulate returns, so a
-// cancellation reads as an interrupt.
 // simulatingMsg is the progress line shown while composites render and their
 // managed resources are planned against the diff servers - the long stretch
 // between the last setup step and the plan output.
@@ -311,6 +306,11 @@ func simulateWithProgress(sp terminal.SpinnerPrinter, progress *dp.Progress, fn 
 	})
 }
 
+// simulate initializes the clients and processor and runs diff. A run that
+// finds changes and fails nothing returns a silent ExitError that
+// exits 3; one that fails only schema validation returns one that exits 2.
+// ctx must not be cancelled by its owner until simulate returns, so a
+// cancellation reads as an interrupt.
 func (c *Runner) simulate(ctx context.Context, logger logging.Logger, initClients func(context.Context, logging.Logger) error, proc processor, diff func(context.Context) (bool, error)) (err error) {
 	// An interrupted run reports the interruption, not the cancelled calls it
 	// caused. main exits 130 for it.

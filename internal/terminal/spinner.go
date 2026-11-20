@@ -142,13 +142,13 @@ func (p *defaultSpinnerPrinter) asyncPretty(fn func(ch async.EventChannel) error
 	for update := range updateChan {
 		switch update.Status {
 		case async.EventStatusStarted:
-			multi.AddKeyed(update.Key(), update.Text)
+			multi.Add(update.Key(), update.Text)
 		case async.EventStatusUpdated:
-			multi.UpdateKeyed(update.Key(), update.Text)
+			multi.UpdateText(update.Key(), update.Text)
 		case async.EventStatusSuccess:
-			multi.SuccessKeyed(update.Key(), update.Text)
+			multi.Success(update.Key(), update.Text)
 		case async.EventStatusFailure:
-			multi.FailKeyed(update.Key(), update.Text)
+			multi.Fail(update.Key(), update.Text)
 		}
 	}
 	err := <-doneChan
@@ -252,14 +252,9 @@ func (m *MultiSpinner) View() tea.View {
 	return tea.NewView(strings.Join(views, "\n") + "\n")
 }
 
-// Add adds a spinner to the multi-spinner.
-func (m *MultiSpinner) Add(title string) {
-	m.AddKeyed(title, title)
-}
-
-// AddKeyed adds a new spinner under the given key, which identifies it even
+// Add adds a new spinner under the given key, which identifies it even
 // when later updates change its title.
-func (m *MultiSpinner) AddKeyed(key, title string) {
+func (m *MultiSpinner) Add(key, title string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -271,9 +266,9 @@ func (m *MultiSpinner) AddKeyed(key, title string) {
 	m.spinners = append(m.spinners, newSuccessSpinner(m.out, title))
 }
 
-// UpdateKeyed replaces the title of the spinner under the given key, e.g.
-// with progress counts.
-func (m *MultiSpinner) UpdateKeyed(key, title string) {
+// UpdateText replaces the title of the spinner under the given key, e.g.
+// with progress counts. (Update is taken by the tea.Model interface.)
+func (m *MultiSpinner) UpdateText(key, title string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -292,14 +287,9 @@ func (m *MultiSpinner) find(key string) *SuccessSpinner {
 	return nil
 }
 
-// Success marks an existing spinner in the multi-spinner as having succeeded.
-func (m *MultiSpinner) Success(title string) {
-	m.SuccessKeyed(title, title)
-}
-
-// SuccessKeyed marks the spinner under the given key as having succeeded,
+// Success marks the spinner under the given key as having succeeded,
 // updating its title when one is given.
-func (m *MultiSpinner) SuccessKeyed(key, title string) {
+func (m *MultiSpinner) Success(key, title string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -311,14 +301,9 @@ func (m *MultiSpinner) SuccessKeyed(key, title string) {
 	}
 }
 
-// Fail marks an existing spinner in the multi-spinner as having failed.
-func (m *MultiSpinner) Fail(title string) {
-	m.FailKeyed(title, title)
-}
-
-// FailKeyed marks the spinner under the given key as having failed, updating
+// Fail marks the spinner under the given key as having failed, updating
 // its title when one is given.
-func (m *MultiSpinner) FailKeyed(key, title string) {
+func (m *MultiSpinner) Fail(key, title string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

@@ -104,7 +104,7 @@ flag before the command line is parsed, so a subcommand cannot reuse the name.
   (searched recursively for `.yaml` and `.yml` files), stdin (the path `-`)
   and multi-document YAML, and keeps the filename, line numbers and
   comments that findings and suppressions need. (proposed)
-- The shared `cmd/crossplane/common/load` loader decodes straight to
+- The shared loader, now `pkg/load`, decodes straight to
   unstructured objects and discards those positions, so it is left unchanged.
 - Objects that are not `CompositeResourceDefinition`s are skipped.
 - Both `apiextensions.crossplane.io/v1` and `v2` XRDs are in scope.
@@ -150,19 +150,45 @@ flag before the command line is parsed, so a subcommand cannot reuse the name.
   URL then. A custom rule has one only if its config sets `docsURL`.
   Otherwise the field is left empty.
 - Text output groups findings by file and XRD.
-- json and yaml output emit `{summary: {errors, warnings}, findings: [...]}`.
-  They follow the `Renderer`/`RendererFor(format)` pattern that `resource
-  validate` uses in `pkg/validate/output`.
+- json and yaml output emit `{summary: {errors, warnings}, findings: [...]}`:
+  the same result, serialized, as simulate does for `-o json|yaml`.
+- Rendering follows the pattern `resource validate` uses in
+  `pkg/validate/output`: a `Format` type, a `Renderer` interface and
+  `RendererFor(format)`. That package's `Renderer` is typed to a
+  `ValidationResult`, so lint has its own renderers for its own result type
+  rather than sharing that interface. (proposed)
+- Findings are always written to stdout before the command returns, so the
+  exit status below never replaces the report.
 
 **Exit codes**
-- The command exits non-zero when any of these is true:
-  - there is at least one `error` finding
-  - warnings exceed `--max-warnings`
-  - the config is invalid
-  - an input cannot be read
-  - the inputs hold no XRDs, so a wrong path does not pass silently
-  - a rule fails to evaluate (see [Runtime errors](#custom-rules-in-cel))
-- Otherwise it exits zero.
+
+Lint uses the exit machinery that landed with simulate. A command returns an
+`exitcode.ExitError` from [`internal/exitcode`][exitcode], and `main`
+exits with its `Code`. An `ExitError` with no `Err` is a result rather than
+an error: `main` prints nothing for it and exits with the code, which
+`exitcode.SilentExit` (and `pkg/cli.SilentExit` for hosts that embed the
+commands) recognizes. Simulate defines its codes in
+`internal/simulate/exit.go`; lint defines its own next to its command, in
+the same style. (proposed)
+
+The codes separate "lint could not run" from "lint ran and found problems",
+and follow simulate's numbering where the meanings match:
+
+| Code | Meaning | How it is returned |
+|---|---|---|
+| 0 | No `error` findings, and warnings within `--max-warnings`. | `nil` |
+| 1 | Lint could not do its job: the config is invalid, an input or `--old` source cannot be read, the inputs hold no XRDs (so a wrong path does not pass silently), or a rule failed to evaluate (`lint/rule-error`, see [Runtime errors](#custom-rules-in-cel)). | an error, printed to stderr |
+| 2 | An input XRD is invalid or not structural (`lint/invalid-xrd`). Like simulate's 2, this means the input failed schema validation. | silent `ExitError` |
+| 3 | Lint ran and found problems: at least one `error` finding, or more warnings than `--max-warnings`. | silent `ExitError` |
+
+- When several apply, the lowest non-zero code wins, as in simulate: a
+  failure to run (1) outranks an invalid XRD (2), which outranks findings (3).
+- Codes 2 and 3 are silent because their findings are already in the
+  report, so a `-o json` consumer gets clean stdout and a status to branch
+  on.
+- Flag errors exit with kong's usage status, `exitcode.ExitCodeUsage` (80),
+  and an interrupted run exits 130, both handled by `main` as for every
+  other command.
 
 ### Configuration
 
@@ -174,10 +200,16 @@ defaults apply. The file holds only overrides and custom rules:
 apiVersion: lint.crossplane.io/v1alpha1
 kind: LintConfig
 rules:
-  xrd/no-bools: error
-  xrd/require-description: error
-  xrd/string-max-length: {severity: warn, options: {max: 1024}}
-  xrd/status-no-value-validation: off
+  xrd/no-bools:
+    severity: error
+  xrd/require-description:
+    severity: error
+  xrd/string-max-length:
+    severity: warn
+    options:
+      max: 1024
+  xrd/status-no-value-validation:
+    severity: off
 customRules:
   local/no-unbounded-strings:
     severity: warn
@@ -187,10 +219,17 @@ customRules:
 ```
 
 **Rule values**
-- A rule value is either a bare severity, or an object with `severity` and
-  `options` keys: `{severity: warn, options: {max: 1024}}`.
-- ESLint's array form, a list of severity then options, is not accepted. A
-  rule value that is a YAML sequence is a config error.
+- A rule value always has one form: an object with a required `severity`
+  key and, for a rule that takes options, an `options` key.
+- There is no bare-severity shorthand such as `xrd/no-bools: error`, and no
+  ESLint array form. A rule value that is a scalar or a sequence is a config
+  error.
+- One form means that adding options to a rule, or to a team's entry for
+  it, never changes the shape of an existing entry, so configs need no
+  migration.
+- Block and flow style are the same YAML, so
+  `xrd/string-max-length: {severity: warn, options: {max: 1024}}` is
+  equivalent to the block form above.
 - Options are validated against a schema that the rule declares.
 
 **Strict parsing**
@@ -198,9 +237,10 @@ customRules:
   loader, with `KnownFields(true)`, so an unknown key is an error. (proposed)
 - `yaml.v3` also rejects a duplicate key within `rules` or `customRules`, so
   the same rule cannot be configured twice in one file. A test covers this.
-- A rule object is checked by hand, because `KnownFields` does not reach a
-  custom unmarshaller: a key other than `severity` or `options`, a repeated
-  key, or a missing `severity` is an error.
+- Because a rule value is always an object, it decodes into a plain struct
+  with no custom unmarshaller, so `KnownFields` covers its keys too: a key
+  other than `severity` or `options` is an error.
+- A missing `severity` is checked after decoding, and is an error.
 - A rule with no value, such as `xrd/no-bools:` with nothing after it, is an
   error rather than a silent `off`.
 
@@ -498,7 +538,8 @@ both the old and the new XRD. Its variables:
   missing key or by exceeding the cost limit. A built-in rule can fail too,
   for example if a crdify comparator returns an error.
 - Lint then reports an `error` finding with rule ID `lint/rule-error` that
-  names the failing rule, and the whole run fails with a non-zero exit.
+  names the failing rule, and the whole run fails with exit code 1, the
+  code for "lint could not do its job".
 - This holds whatever the failing rule's own severity: a `warn` rule that
   cannot be evaluated fails the run just as an `error` rule does. A rule
   that did not run gives no answer, and lint does not pass on a missing
@@ -808,3 +849,4 @@ add a dependency to serve a minority of rules.
 [crdify]: https://github.com/kubernetes-sigs/crdify
 [crdify-validations]: https://github.com/kubernetes-sigs/crdify/tree/main/pkg/validations
 [k8s-cel-lib]: https://pkg.go.dev/k8s.io/apiserver/pkg/cel/library
+[exitcode]: https://github.com/crossplane/cli/blob/main/internal/exitcode/exit.go

@@ -28,6 +28,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -86,6 +87,37 @@ type CompositeResult struct {
 	// ComposedBy references the parent composite of a nested XR; nil for a
 	// top-level XR.
 	ComposedBy *plan.ResourceRef `json:"composedBy,omitempty"`
+	// Health is the live composite's health before apply, which is distinct
+	// from Status, the simulated outcome; nil when the cluster has no such
+	// composite, or it was not simulated.
+	Health *health.Health `json:"health,omitempty"`
+	// Unhealthy lists the composed resources, nested composites and theirs
+	// included, that are live, not healthy, and have no plan in the run (so
+	// no health of their own to show). A nested composite with an entry and
+	// health of its own lists what it composes there instead, and its
+	// parent lists neither it nor that.
+	Unhealthy []UnhealthyResource `json:"unhealthy,omitempty"`
+}
+
+// UnhealthyResource is a composed resource that is not healthy before apply.
+type UnhealthyResource struct {
+	Ref plan.ResourceRef `json:"ref"`
+	// Via is the nested composite that directly composes the resource; nil
+	// when the listing composite does.
+	Via    *plan.ResourceRef `json:"via,omitempty"`
+	Health *health.Health    `json:"health"`
+}
+
+// HealthSummary counts what is not healthy before apply. Composites counts
+// the composite entries whose own health is not healthy; Failing, NotReady
+// and Paused count the other resources, a nested composite without health of
+// its own on an entry included. Each is counted once however many composites
+// or plans reach it.
+type HealthSummary struct {
+	Composites int `json:"unhealthyComposites"`
+	Failing    int `json:"failing"`
+	NotReady   int `json:"notReady"`
+	Paused     int `json:"paused"`
 }
 
 // Error is an error from a simulate run, optionally anchored to a resource.
@@ -180,15 +212,82 @@ func (r Result) Deferred() int {
 	return n
 }
 
+// Health counts the unhealthy composites, and the other resources by health
+// state, from Composites and Plans. A resource counts once, under the state
+// its first live copy reports, matched across API versions.
+func (r Result) Health() HealthSummary {
+	var s HealthSummary
+	composites := map[schema.GroupKind]map[[2]string]bool{}
+	isComposite := func(ref plan.ResourceRef) bool {
+		return composites[groupKind(ref)][[2]string{ref.Namespace, ref.Name}]
+	}
+	for _, c := range r.Composites {
+		gk, id := groupKind(c.Ref), [2]string{c.Ref.Namespace, c.Ref.Name}
+		// A composite with no health of its own here (one not simulated) is
+		// counted as a resource where its parent lists it, if anywhere.
+		if c.Health == nil || composites[gk][id] {
+			continue
+		}
+		if composites[gk] == nil {
+			composites[gk] = map[[2]string]bool{}
+		}
+		composites[gk][id] = true
+		if c.Health.Unhealthy() {
+			s.Composites++
+		}
+	}
+
+	seen := map[schema.GroupKind]map[[2]string]bool{}
+	count := func(ref plan.ResourceRef, h *health.Health) {
+		if h == nil || isComposite(ref) {
+			return
+		}
+		gk, id := groupKind(ref), [2]string{ref.Namespace, ref.Name}
+		if seen[gk][id] {
+			return
+		}
+		if seen[gk] == nil {
+			seen[gk] = map[[2]string]bool{}
+		}
+		seen[gk][id] = true
+		switch h.State {
+		case health.Failing:
+			s.Failing++
+		case health.NotReady:
+			s.NotReady++
+		case health.Paused:
+			s.Paused++
+		case health.Healthy:
+		}
+	}
+	for _, p := range r.Plans {
+		count(p.ResourceRef(), p.Health)
+	}
+	for _, c := range r.Composites {
+		for _, u := range c.Unhealthy {
+			count(u.Ref, u.Health)
+		}
+	}
+	return s
+}
+
+// groupKind is ref's version-independent type.
+func groupKind(ref plan.ResourceRef) schema.GroupKind {
+	return schema.FromAPIVersionAndKind(ref.APIVersion, ref.Kind).GroupKind()
+}
+
 // MarshalJSON writes the result with summary, composites and compositions
-// ahead of the plans, which can be long, and with the deferred count inside
-// summary. YAML goes through it too. Decoding needs no counterpart: summary
-// decodes into Result.Summary, and Deferred is counted from Composites.
+// ahead of the plans, which can be long, and with the deferred and health
+// counts inside summary (the health ones under summary.health). YAML goes
+// through it too. Decoding needs no counterpart: summary decodes into
+// Result.Summary, Deferred is counted from Composites, and Health from
+// Composites and Plans.
 func (r Result) MarshalJSON() ([]byte, error) {
 	type summary struct {
 		plan.Summary
 
-		Deferred int `json:"deferred"`
+		Health   HealthSummary `json:"health"`
+		Deferred int           `json:"deferred"`
 	}
 	return json.Marshal(struct {
 		FormatVersion string               `json:"formatVersion"`
@@ -203,7 +302,7 @@ func (r Result) MarshalJSON() ([]byte, error) {
 	}{
 		FormatVersion: r.FormatVersion,
 		Errored:       r.Errored,
-		Summary:       summary{Summary: r.Summary, Deferred: r.Deferred()},
+		Summary:       summary{Summary: r.Summary, Health: r.Health(), Deferred: r.Deferred()},
 		Composites:    r.Composites,
 		Compositions:  r.Compositions,
 		Plans:         r.Plans,

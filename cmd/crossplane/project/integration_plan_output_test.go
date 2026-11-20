@@ -32,6 +32,7 @@ import (
 
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/exitcode"
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
@@ -73,6 +74,8 @@ func TestSimulatePlanOutput(t *testing.T) {
 	another := xnop
 	another.Name = "another-resource"
 	comp := plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "xnopresources.diff.example.org"}
+	// healthy is a live composite's health with no failing condition.
+	healthy := &health.Health{State: health.Healthy}
 
 	xrArgs := []string{"-f", "../../../internal/testutils/integration/testdata/diff/modified-xr.yaml"}
 	compArgs := []string{"-f", "../../../internal/testutils/integration/testdata/comp/updated-composition.yaml", "--namespace=default"}
@@ -140,7 +143,7 @@ Note: Provider plan not run: no provider diff server planned these resources.
 			args:   append([]string{"-o", "json"}, xrArgs...),
 			wantResult: &planShape{
 				Summary:    plan.Summary{Update: 2},
-				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged}},
+				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Health: healthy}},
 				Plans: []planEntry{
 					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
 					{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
@@ -184,7 +187,7 @@ Note: Provider plan not run: no provider diff server planned these resources.
 			args:     append([]string{"-o", "json"}, compArgs...),
 			wantResult: &planShape{
 				Summary:    plan.Summary{Update: 3, NoOp: 2},
-				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
+				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp, Health: healthy}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp, Health: healthy}},
 				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
 					RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},
@@ -203,7 +206,7 @@ Note: Provider plan not run: no provider diff server planned these resources.
 			args:   []string{"-o", "json", "-n", "default", "--name=another-resource", "--name=test-resource"},
 			wantResult: &planShape{
 				Summary:    plan.Summary{Update: 3, NoOp: 2},
-				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
+				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp, Health: healthy}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp, Health: healthy}},
 				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
 					RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},
@@ -222,7 +225,7 @@ Note: Provider plan not run: no provider diff server planned these resources.
 			args:   []string{"-o", "json", "--name=default/test-resource"},
 			wantResult: &planShape{
 				Summary:    plan.Summary{Update: 2, NoOp: 1},
-				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
+				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp, Health: healthy}},
 				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
 					RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1},

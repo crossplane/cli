@@ -100,12 +100,40 @@ The lint config flag is `--lint-config` because the root CLI already owns
 flag before the command line is parsed, so a subcommand cannot reuse the name.
 
 **Loading inputs**
-- Lint has its own small `yaml.v3` loader. It handles files, directories
-  (searched recursively for `.yaml` and `.yml` files), stdin (the path `-`)
-  and multi-document YAML, and keeps the filename, line numbers and
-  comments that findings and suppressions need. (proposed)
-- The shared loader, now `pkg/load`, decodes straight to
-  unstructured objects and discards those positions, so it is left unchanged.
+
+Lint loads its inputs through the CLI's shared loader, `pkg/load`, extended
+with a document-level function. (proposed)
+- Today `pkg/load` decodes each document straight into an unstructured
+  object. That loses what findings and suppressions need: which file a
+  document came from, its line numbers, and its comments.
+- A new function sits alongside `Load()`, for example
+  `NewDocumentLoader(input)`, which returns `[]Document`:
+
+  ```go
+  // Document is one YAML document as it appears in its source.
+  type Document struct {
+      Source    string // file path, or "-" for stdin
+      StartLine int    // 1-based line in Source where the document starts
+      Raw       []byte // the document's bytes, comments included
+  }
+  ```
+
+- It reuses the existing source handling unchanged: comma-separated lists,
+  stdin (the path `-`), single files, and directories searched recursively
+  for `.yaml` and `.yml` files. Multi-document YAML is split as today.
+- `Load()` and every existing caller (`resource validate`, the simulate
+  commands, `xpkg get-crds`) stay unchanged. The existing loaders may be
+  rebuilt on the new function internally, so there is one path for reading
+  sources.
+- Lint parses each document's `Raw` with `yaml.v3` and adds `StartLine` to
+  the node positions, which gives each finding its file, line and column, and
+  gives suppression its comments. `yaml.v3` types stay out of `pkg/load`'s
+  public API.
+- Getting `StartLine` exactly right is the focus of `pkg/load`'s new tests:
+  documents after `---` separators, separators with trailing comments,
+  leading comments before the first document, and empty documents.
+- The change to `pkg/load` is small and independent of lint, so it may land
+  as a preceding PR of its own.
 - Objects that are not `CompositeResourceDefinition`s are skipped.
 - Both `apiextensions.crossplane.io/v1` and `v2` XRDs are in scope.
   (proposed)
@@ -123,7 +151,9 @@ flag before the command line is parsed, so a subcommand cannot reuse the name.
   - `xpkg://<ref>`: the XRDs in a Configuration package in a registry, fetched
     the way the CLI already fetches packages
 - crdify's own loaders return CRDs, and its `kube://` loads one CRD by name,
-  so lint has its own loaders for these schemes. It keeps crdify's syntax,
+  so lint has its own loaders for the `git://`, `kube://` and `xpkg://`
+  schemes. These stay lint-specific; plain paths and `file://` go through
+  `pkg/load` like the inputs. It keeps crdify's syntax,
   so `git://main?path=apis/` and `kube://xnetworks.example.org` mean the same
   thing in both tools.
 - Line numbers are only needed for the new XRDs, which findings point at, so
@@ -233,8 +263,8 @@ customRules:
 - Options are validated against a schema that the rule declares.
 
 **Strict parsing**
-- The lint config is decoded with `yaml.v3`, the same library as the input
-  loader, with `KnownFields(true)`, so an unknown key is an error. (proposed)
+- The lint config is decoded with `yaml.v3`, the same library lint parses
+  its input documents with, with `KnownFields(true)`, so an unknown key is an error. (proposed)
 - `yaml.v3` also rejects a duplicate key within `rules` or `customRules`, so
   the same rule cannot be configured twice in one file. A test covers this.
 - Because a rule value is always an object, it decodes into a plain struct
@@ -303,6 +333,16 @@ Crossplane, not merely whether the API is weaker.
   - Every incompatible pair is reported, whether or not `--old` is given and
     whether or not the XRD configures a conversion webhook. The rule has no
     options of its own; comparator options come from the `xrd-diff/` rules.
+  - Findings take this rule's severity, not the severities of the
+    `xrd-diff/` rules, and every comparator runs whatever those rules are
+    set to. Turning off `xrd-diff/` rules for `--old` comparisons does not
+    silence differences between served versions. (proposed)
+  - Differences only in `description` are ignored. A description has no
+    effect on whether two versions are compatible, so descriptions are
+    cleared from both schemas before comparing; neither the description
+    comparator nor the unhandled-change check sees them. A test pairs two
+    served versions that differ only in descriptions and expects no
+    findings. (proposed)
 
 **On by default, as `warn`.** One design preference is common enough to
 surface by default without failing the run:
@@ -337,7 +377,11 @@ write them as CEL rules.
 Breaking-change checks are not a separate mode. They are a category of rules,
 `xrd-diff/`, that runs only when `--old` supplies the previous version of
 each XRD. Old and new XRDs are paired by `metadata.name`. A new XRD with no
-old counterpart has no diff rules applied. An old
+old counterpart has no diff rules applied. An XRD present only in the `--old`
+input is ignored and produces no finding: `--old` sources such as
+`kube://` or `xpkg://` often hold more XRDs than the files being linted, and
+deleting or renaming a whole XRD is outside what this command checks.
+(proposed) An old
 `apiextensions.crossplane.io/v1` XRD may be paired with a new `v2` XRD, so a
 migration between the two can be checked. (proposed)
 
@@ -531,7 +575,14 @@ both the old and the new XRD. Its variables:
   to its nearest surviving ancestor when the property was removed.
 - The schema root has the path `""` and is one of the paired paths, so
   XRD-level comparisons can use `filter: "path == ''"` together with
-  `oldXrd` and `newXrd`. Such a rule fires at most once per version pair.
+  `oldXrd` and `newXrd`. Such a rule is evaluated once per version pair.
+- Findings are deduplicated before they are reported: findings with the same
+  rule, file, attachment node and message are reported once, listing every
+  version they came from. A root-level finding attaches to the document
+  root, which is the same for every version pair, so an XRD-level `diff`
+  rule reports a change once per XRD, not once per version. Property
+  findings in different versions attach to different nodes and stay
+  separate. (proposed)
 
 **Runtime errors** (proposed)
 - `filter` or `expr` can fail while it is being evaluated, for example on a
@@ -695,7 +746,9 @@ claimNames:                        claimNames:
 ```
 
 Because the schema root is one of the paired paths, `path == ''` makes the
-rule run once per version pair rather than once per property.
+rule run once per version pair rather than once per property. Its findings
+all attach to the document root, so deduplication reports a changed claim
+name once, however many versions the XRD serves.
 
 **g. A field's description must not be removed** (`diff`)
 
@@ -766,8 +819,8 @@ for one that passed.
 - Most rules are a few lines on top of the walker.
 
 **Positions**
-- Lint's own loader parses inputs into `yaml.v3` nodes alongside the
-  decoded object.
+- Lint parses each `pkg/load` document's `Raw` into `yaml.v3` nodes
+  alongside the decoded object, offset by the document's `StartLine`.
 - The walker follows the YAML nodes as it walks the schema, so each property
   carries its line and column, and the nodes above it.
 - Those nodes also carry the comments used for suppression. (proposed)
@@ -832,6 +885,16 @@ its unhandled-change check catches the changes a fixed list misses. Building
 on it means less code to maintain and one set of answers across CRDs and
 XRDs. crdify is pre-1.0, so lint pins its version, and its comparator names
 and options become lint's rule names and options.
+
+### A Separate Loader for Lint
+
+An earlier draft gave lint its own `yaml.v3` loader and left `pkg/load`
+untouched, because the shared loader discards file names, positions and
+comments. That would duplicate source handling the CLI already has: comma
+lists, stdin, files and recursive directories. Rejected to avoid the
+duplication. A document-level function alongside `Load()` gives lint what
+it needs, changes no existing caller, and keeps `yaml.v3` types out of
+`pkg/load`'s public API.
 
 ### Rego Instead of CEL
 

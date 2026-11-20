@@ -25,6 +25,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/health"
 )
 
 const (
@@ -65,6 +66,7 @@ func NewDefaultCompDiffRenderer(logger logging.Logger, diffRenderer DiffRenderer
 // to r.opts.Stdout. Top-level errors are not printed; see CompDiffRenderer.
 func (r *DefaultCompDiffRenderer) RenderCompDiff(output *dt.CompDiffOutput) error {
 	stdout := r.opts.Stdout
+	ownedElsewhere := unhealthyOwnedElsewhere(output.Compositions)
 
 	for i, comp := range output.Compositions {
 		if i > 0 {
@@ -73,8 +75,23 @@ func (r *DefaultCompDiffRenderer) RenderCompDiff(output *dt.CompDiffOutput) erro
 			}
 		}
 
-		if err := r.renderComposition(&comp); err != nil {
+		if err := r.renderComposition(&comp, ownedElsewhere); err != nil {
 			return err
+		}
+	}
+
+	// What is not healthy before apply is summarized once for the run, as in plan output.
+	var t health.Tally
+
+	for _, comp := range output.Compositions {
+		for _, impact := range comp.ImpactAnalysis {
+			tallyComposite(&t, impact.ObjectReference, impact.Health, impact.Diffs)
+		}
+	}
+
+	if line := health.SummaryLine(t.Counts()); line != "" {
+		if _, err := fmt.Fprintf(stdout, "\n%s\n", line); err != nil {
+			return errors.Wrap(err, "cannot write health summary")
 		}
 	}
 
@@ -87,7 +104,7 @@ func (r *DefaultCompDiffRenderer) RenderCompDiff(output *dt.CompDiffOutput) erro
 // followed — only if it processed successfully — by the sections describing its effect on composites.
 // A composition that failed to process has no such sections to show; renderCompositionChanges
 // reported the error in their place.
-func (r *DefaultCompDiffRenderer) renderComposition(comp *dt.CompositionDiff) error {
+func (r *DefaultCompDiffRenderer) renderComposition(comp *dt.CompositionDiff, ownedElsewhere map[string]map[string]bool) error {
 	switch {
 	case r.opts.MinimizeComposition:
 		if err := r.renderMinimizedCompositionChanges(comp); err != nil {
@@ -100,7 +117,7 @@ func (r *DefaultCompDiffRenderer) renderComposition(comp *dt.CompositionDiff) er
 	}
 
 	if comp.Error == nil {
-		return r.renderCompositionImpact(comp)
+		return r.renderCompositionImpact(comp, ownedElsewhere)
 	}
 
 	return nil
@@ -109,7 +126,7 @@ func (r *DefaultCompDiffRenderer) renderComposition(comp *dt.CompositionDiff) er
 // renderCompositionImpact renders the sections describing how a composition affects its composites:
 // either the note standing in for them when their evaluation was skipped, or the affected-XR list and
 // the downstream impact analysis.
-func (r *DefaultCompDiffRenderer) renderCompositionImpact(comp *dt.CompositionDiff) error {
+func (r *DefaultCompDiffRenderer) renderCompositionImpact(comp *dt.CompositionDiff, ownedElsewhere map[string]map[string]bool) error {
 	if comp.ImpactAnalysisSkipped {
 		return r.renderSkippedComposition(comp)
 	}
@@ -126,7 +143,7 @@ func (r *DefaultCompDiffRenderer) renderCompositionImpact(comp *dt.CompositionDi
 	}
 
 	// Render impact analysis (downstream diffs)
-	return r.renderImpactAnalysis(comp)
+	return r.renderImpactAnalysis(comp, ownedElsewhere)
 }
 
 // renderSkippedComposition stands in for the affected-XR and impact-analysis sections when a
@@ -403,7 +420,7 @@ func (r *DefaultCompDiffRenderer) renderAffectedResourcesList(comp *dt.Compositi
 }
 
 // renderImpactAnalysis renders the impact analysis section with downstream diffs.
-func (r *DefaultCompDiffRenderer) renderImpactAnalysis(comp *dt.CompositionDiff) error {
+func (r *DefaultCompDiffRenderer) renderImpactAnalysis(comp *dt.CompositionDiff, ownedElsewhere map[string]map[string]bool) error {
 	stdout := r.opts.Stdout
 
 	if _, err := fmt.Fprintf(stdout, headerImpactAnalysis+"\n\n"); err != nil {
@@ -438,7 +455,70 @@ func (r *DefaultCompDiffRenderer) renderImpactAnalysis(comp *dt.CompositionDiff)
 		}
 	}
 
-	return nil
+	return r.renderUnhealthyBlocks(comp, ownedElsewhere, len(allDiffs) > 0)
+}
+
+// renderUnhealthyBlocks writes, for each composite the composition affects,
+// the resources it composes that are not healthy and have no changes, under a
+// line naming the composite. afterDiffs separates the first from the diffs
+// above it.
+func (r *DefaultCompDiffRenderer) renderUnhealthyBlocks(comp *dt.CompositionDiff, ownedElsewhere map[string]map[string]bool, afterDiffs bool) error {
+	var sb strings.Builder
+
+	for _, impact := range listedImpacts(comp) {
+		block := unhealthyBlock(impact.Health, impact.Diffs, ownedElsewhere[refKey(impact.ObjectReference)], r.opts.FullMessages)
+		if len(block) == 0 {
+			continue
+		}
+
+		if afterDiffs || sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+
+		sb.WriteString("XR: " + impactTitle(impact) + "\n")
+
+		for _, l := range block {
+			sb.WriteString("  " + l + "\n")
+		}
+	}
+
+	return write(r.opts.Stdout, sb.String())
+}
+
+// unhealthyOwnedElsewhere returns, by the key of each composite the run lists,
+// the keys its unhealthy block skips: a nested XR the run lists with health
+// of its own, in any composition, lists what it composes, so its parent lists
+// neither, as in plan output.
+func unhealthyOwnedElsewhere(comps []dt.CompositionDiff) map[string]map[string]bool {
+	var entries []health.Entry
+
+	for i := range comps {
+		for _, impact := range listedImpacts(&comps[i]) {
+			e := health.Entry{Key: refKey(impact.ObjectReference), HasHealth: impact.Health.XR != nil}
+			for _, c := range impact.Health.Composed {
+				e.Composes = append(e.Composes, refKey(c.ObjectReference))
+			}
+
+			entries = append(entries, e)
+		}
+	}
+
+	out := map[string]map[string]bool{}
+	for i, skip := range health.OwnedElsewhere(entries) {
+		out[entries[i].Key] = skip
+	}
+
+	return out
+}
+
+// impactTitle names an affected composite, e.g. "XNetwork/prod/net", as the
+// xr diff names its sections.
+func impactTitle(impact dt.XRImpact) string {
+	if impact.Namespace != "" {
+		return impact.Kind + "/" + impact.Namespace + "/" + impact.Name
+	}
+
+	return impact.Kind + "/" + impact.Name
 }
 
 // totalFiltered sums the per-reason filter counters. Kept in one place so adding a reason cannot
@@ -568,12 +648,26 @@ func (r *DefaultCompDiffRenderer) buildXRStatusList(impacts []dt.XRImpact) strin
 			suffix = filteredSuffix(impact)
 		}
 
-		fmt.Fprintf(&sb, "%s  %s %s/%s (%s)%s%s\n",
+		// What is not healthy before apply follows, uncoloured: its marker is
+		// not the status indicator.
+		desc := healthDescription(impact.Health.XR, r.opts.FullMessages)
+		if len(desc) > 0 {
+			desc[0] = " " + desc[0]
+		} else {
+			desc = []string{""}
+		}
+
+		fmt.Fprintf(&sb, "%s  %s %s/%s (%s)%s%s%s\n",
 			color,
 			indicator,
 			impact.Kind, impact.Name, scope,
 			suffix,
-			colorReset)
+			colorReset,
+			desc[0])
+
+		for _, l := range desc[1:] {
+			fmt.Fprintf(&sb, "    %s\n", l)
+		}
 
 		// Include error details for XRStatusError impacts so users can diagnose issues.
 		if impact.Status == dt.XRStatusError && impact.Error != nil {

@@ -27,11 +27,13 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/exitcode"
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
@@ -73,6 +75,20 @@ func TestSimulatePlanOutput(t *testing.T) {
 	another := xnop
 	another.Name = "another-resource"
 	comp := plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "xnopresources.diff.example.org"}
+	// healthy is a live composite's health with no failing condition.
+	healthy := &health.Health{State: health.Healthy}
+
+	// unhealthyCase is compCase with test-resource failing (Synced=False) and
+	// its composed resource not ready (Ready=False), and the composed resource
+	// of another-resource paused.
+	unhealthyCase := compCase
+	unhealthyCase.CrossplaneManagedResources = []integration.HierarchicalOwnershipRelation{
+		integration.Composes("../../../internal/testutils/integration/testdata/comp/resources/existing-xr-1-failing.yaml", "../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-1-not-ready.yaml"),
+		integration.Composes("../../../internal/testutils/integration/testdata/comp/resources/existing-xr-2.yaml", "../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-2.yaml"),
+	}
+	unhealthyCase.FieldManagerApplies = []integration.FieldManagerApply{
+		{File: "../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-2-paused-annotation.yaml", FieldManager: "kubectl"},
+	}
 
 	xrArgs := []string{"-f", "../../../internal/testutils/integration/testdata/diff/modified-xr.yaml"}
 	compArgs := []string{"-f", "../../../internal/testutils/integration/testdata/comp/updated-composition.yaml", "--namespace=default"}
@@ -86,6 +102,11 @@ func TestSimulatePlanOutput(t *testing.T) {
 		// tt, when set, runs `xr simulate` with args against its cluster
 		// instead of compCase's.
 		tt *integration.Setup
+		// cluster, when set, replaces compCase's cluster for a project or
+		// composition run.
+		cluster *integration.Setup
+		// wantExitCode is the exit code; zero means dp.ExitCodeDiffDetected.
+		wantExitCode int
 		// wantText is the -o plan output; empty for a json case.
 		wantText string
 		// wantResult is the -o json output, reduced by summarize.
@@ -140,7 +161,7 @@ Note: Provider plan not run: no provider diff server planned these resources.
 			args:   append([]string{"-o", "json"}, xrArgs...),
 			wantResult: &planShape{
 				Summary:    plan.Summary{Update: 2},
-				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged}},
+				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Health: healthy}},
 				Plans: []planEntry{
 					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
 					{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource"},
@@ -184,7 +205,7 @@ Note: Provider plan not run: no provider diff server planned these resources.
 			args:     append([]string{"-o", "json"}, compArgs...),
 			wantResult: &planShape{
 				Summary:    plan.Summary{Update: 3, NoOp: 2},
-				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
+				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp, Health: healthy}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp, Health: healthy}},
 				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
 					RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},
@@ -198,12 +219,73 @@ Note: Provider plan not run: no provider diff server planned these resources.
 				},
 			},
 		},
+		"UnhealthyPlanText": {
+			reason:       "-o plan marks the failing XR's header and its not-ready and paused composed resources' plan entries, prints the Health: line after Plan:, and exits 7: changes (3) and failing (4).",
+			cluster:      &unhealthyCase,
+			wantExitCode: dp.ExitCodeDiffDetected | dp.ExitCodeFailing,
+			wantText: `[~] Composition.apiextensions.crossplane.io xnopresources.diff.example.org (update)
+    Applying this creates a new CompositionRevision, which 2 composites would adopt.
+    spec:
+      pipeline[0]:
+        input:
+          inline:
+            ~ template: "apiVersion: ns.nop.example.org/v1alpha1\nkind: XDownstreamResource\nmetadata:\n  name: {{ .observed.composite.resource.metadata.name }}\n  namespace: {{ .observed.composite.resource.metadata.namespace }}\n  annotations:\n    gotemplating.fn.crossplane.io/composition-resource-name: nop-resource\nspec:\n  forProvider:\n    configData: {{ .observed.composite.resource.spec.coolField }}\n    resourceTier: basic\n" -> "apiVersion: ns.nop.example.org/v1alpha1\nkind: XDownstreamResource\nmetadata:\n  name: {{ .observed.composite.resource.metadata.name }}\n  namespace: {{ .observed.composite.resource.metadata.namespace }}\n  annotations:\n    gotemplating.fn.crossplane.io/composition-resource-name: nop-resource\nspec:\n  forProvider:\n    configData: updated-{{ .observed.composite.resource.spec.coolField }}\n    resourceTier: premium\n"
+
+XR: XNopResource.ns.diff.example.org default/another-resource
+  [~] XDownstreamResource.ns.nop.example.org default/another-resource (update)
+      ⚠ paused
+      spec:
+        forProvider:
+          ~ configData: "another-existing-value" -> "updated-another-existing-value"
+          ~ resourceTier: "basic" -> "premium"
+
+XR: XNopResource.ns.diff.example.org default/test-resource ⚠ failing (Synced=False, ReconcileError): cannot compose resources: the vpc does not exist
+  [~] XDownstreamResource.ns.nop.example.org default/test-resource (update)
+      ⚠ not ready (Ready=False, Creating)
+      spec:
+        forProvider:
+          ~ configData: "existing-value" -> "updated-existing-value"
+          ~ resourceTier: "basic" -> "premium"
+
+Plan: 0 to add, 3 to change, 0 to destroy.
+Health: 1 of 2 XRs unhealthy before apply; 1 resource not ready, 1 paused.
+
+Note: Provider plan not run: no provider diff server planned these resources.
+`,
+		},
+		"UnhealthyPlanJSON": {
+			reason:       "-o json carries the failing XR's health and each unhealthy plan entry's, and exits 7.",
+			cluster:      &unhealthyCase,
+			args:         []string{"-o", "json"},
+			wantExitCode: dp.ExitCodeDiffDetected | dp.ExitCodeFailing,
+			wantResult: &planShape{
+				Summary: plan.Summary{Update: 3, NoOp: 2},
+				Composites: []simulate.CompositeResult{
+					{Ref: another, Status: simulate.CompositeChanged, Composition: &comp, Health: healthy},
+					{Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp, Health: &health.Health{
+						State:  health.Failing,
+						Synced: &health.Condition{Status: corev1.ConditionFalse, Reason: "ReconcileError", Message: "cannot compose resources: the vpc does not exist"},
+					}},
+				},
+				Compositions: []simulate.CompositionResult{{
+					Ref:            comp,
+					RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},
+				}},
+				Plans: []planEntry{
+					{Kind: "Composition", Name: comp.Name, Action: plan.ActionUpdate},
+					{Kind: "XDownstreamResource", Name: "another-resource", Action: plan.ActionUpdate, Composite: "another-resource", Health: health.Paused},
+					{Kind: "XNopResource", Name: "another-resource", Action: plan.ActionNoOp, Composite: "another-resource"},
+					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionUpdate, Composite: "test-resource", Health: health.NotReady},
+					{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionNoOp, Composite: "test-resource", Health: health.Failing},
+				},
+			},
+		},
 		"NameRepeatedScopesToEach": {
 			reason: "repeated --name with --namespace scopes the run to each named composite, as the unscoped run covers both.",
 			args:   []string{"-o", "json", "-n", "default", "--name=another-resource", "--name=test-resource"},
 			wantResult: &planShape{
 				Summary:    plan.Summary{Update: 3, NoOp: 2},
-				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
+				Composites: []simulate.CompositeResult{{Ref: another, Status: simulate.CompositeChanged, Composition: &comp, Health: healthy}, {Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp, Health: healthy}},
 				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
 					RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 2},
@@ -222,7 +304,7 @@ Note: Provider plan not run: no provider diff server planned these resources.
 			args:   []string{"-o", "json", "--name=default/test-resource"},
 			wantResult: &planShape{
 				Summary:    plan.Summary{Update: 2, NoOp: 1},
-				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
+				Composites: []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp, Health: healthy}},
 				Compositions: []simulate.CompositionResult{{
 					Ref:            comp,
 					RevisionImpact: &simulate.RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1},
@@ -248,6 +330,9 @@ Note: Provider plan not run: no provider diff server planned these resources.
 			if tc.tt != nil {
 				setup = *tc.tt
 			}
+			if tc.cluster != nil {
+				setup = *tc.cluster
+			}
 			cfg := integration.Start(t, setup).Config
 
 			var stdout, stderr bytes.Buffer
@@ -262,8 +347,12 @@ Note: Provider plan not run: no provider diff server planned these resources.
 			if err != nil {
 				t.Fatalf("\n%s\nsimulate: unexpected error: %v\nstderr:\n%s", tc.reason, err, stderr.String())
 			}
-			if code != dp.ExitCodeDiffDetected {
-				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, dp.ExitCodeDiffDetected, code)
+			wantCode := dp.ExitCodeDiffDetected
+			if tc.wantExitCode != 0 {
+				wantCode = tc.wantExitCode
+			}
+			if code != wantCode {
+				t.Errorf("\n%s\nsimulate: want exit code %d, got %d", tc.reason, wantCode, code)
 			}
 
 			if tc.wantResult == nil {
@@ -302,6 +391,8 @@ type planEntry struct {
 	Kind, Name string
 	Action     plan.Action
 	Composite  string
+	// Health is the live object's state when it is not healthy, else empty.
+	Health health.State
 }
 
 func summarize(r simulate.Result) planShape {
@@ -310,6 +401,9 @@ func summarize(r simulate.Result) planShape {
 		e := planEntry{Kind: p.Kind, Name: p.Name, Action: p.Action}
 		if p.Composite != nil {
 			e.Composite = p.Composite.Name
+		}
+		if p.Health.Unhealthy() {
+			e.Health = p.Health.State
 		}
 		s.Plans = append(s.Plans, e)
 	}

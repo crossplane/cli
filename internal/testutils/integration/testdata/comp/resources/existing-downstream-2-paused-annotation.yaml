@@ -1,0 +1,9 @@
+# Pauses existing-downstream-2.yaml's resource. Applied under a non-Crossplane field manager, as a
+# user or tool would, so Crossplane's dry-run apply does not remove the annotation.
+apiVersion: ns.nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  name: another-resource
+  namespace: default
+  annotations:
+    crossplane.io/paused: "true"

@@ -52,6 +52,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 	difftypes "github.com/crossplane/cli/v2/internal/diff/types"
 	"github.com/crossplane/cli/v2/internal/exitcode"
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
@@ -310,6 +311,14 @@ func TestSimulateDiffOptions(t *testing.T) {
 			want: func(o *renderer.DiffOptions) {
 				o.UseColors = false
 				o.Compact = true
+			},
+		},
+		"FullMessagesCarryThrough": {
+			reason: "--full-messages should reach the renderer.",
+			cmd:    Flags{NoColor: true, FullMessages: true},
+			want: func(o *renderer.DiffOptions) {
+				o.UseColors = false
+				o.FullMessages = true
 			},
 		},
 		"HooksColorizeAsTerminal": {
@@ -574,6 +583,19 @@ func TestSimulateRun(t *testing.T) {
 		}}}
 	}
 
+	// failing is a report of one Composition whose affected composite, in
+	// status, is failing before apply.
+	failing := func(status dt.XRStatus) *dt.CompDiffOutput {
+		return &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
+			Name: "comp",
+			ImpactAnalysis: []dt.XRImpact{{
+				ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XDB", Name: "db"},
+				Status:          status,
+				Health:          dt.CompositeHealth{XR: &health.Health{State: health.Failing, Synced: &health.Condition{Status: corev1.ConditionFalse}}},
+			}},
+		}}}
+	}
+
 	type args struct {
 		cmd         Runner
 		initClients func(context.Context, logging.Logger) error
@@ -607,6 +629,34 @@ func TestSimulateRun(t *testing.T) {
 				return changed(), nil
 			}}},
 			want: want{code: dp.ExitCodeDiffDetected, diffed: true},
+		},
+		"Failing": {
+			reason: "A run without changes whose composite is failing should exit 4, silently.",
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return failing(dt.XRStatusUnchanged), nil
+			}}},
+			want: want{code: ExitCodeFailing, diffed: true},
+		},
+		"ChangesAndFailing": {
+			reason: "A run with changes whose composite is failing should exit 7, silently.",
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return failing(dt.XRStatusChanged), nil
+			}}},
+			want: want{code: ExitCodeChanges | ExitCodeFailing, diffed: true},
+		},
+		"FailingDiffOutput": {
+			reason: "The failing bit should not depend on the output format.",
+			args: args{cmd: Runner{Flags: &Flags{Output: "diff"}}, initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return failing(dt.XRStatusUnchanged), nil
+			}}},
+			want: want{code: ExitCodeFailing, diffed: true},
+		},
+		"ErrorOutranksFailing": {
+			reason: "A tool error should exit 1 even when a composite is failing.",
+			args: args{initClients: noInit, proc: &fakeCompProc{diffFn: func(context.Context) (*dt.CompDiffOutput, error) {
+				return failing(dt.XRStatusChanged), errBoom
+			}}},
+			want: want{code: dp.ExitCodeToolError, err: errBoom, diffed: true},
 		},
 		"ErrorWithChanges": {
 			reason: "A tool error should exit 1, not 3, even when there are changes.",
@@ -745,6 +795,7 @@ func TestWarnIgnoredFlags(t *testing.T) {
 	cases := map[string]struct {
 		reason   string
 		args     []string
+		output   string
 		skipPlan bool
 		project  bool
 		warn     string
@@ -783,6 +834,28 @@ func TestWarnIgnoredFlags(t *testing.T) {
 			skipPlan: true,
 			warn:     "ignoring --session-id",
 		},
+		"FullMessagesPlan": {
+			reason: "--full-messages applies to plan output.",
+			args:   []string{"--full-messages"},
+			output: "plan",
+		},
+		"FullMessagesDiff": {
+			reason: "--full-messages applies to diff output.",
+			args:   []string{"--full-messages"},
+			output: "diff",
+		},
+		"FullMessagesJSON": {
+			reason: "json always carries messages in full, so --full-messages is ignored with a warning.",
+			args:   []string{"--full-messages"},
+			output: "json",
+			warn:   "ignoring --full-messages; -o json",
+		},
+		"FullMessagesYAML": {
+			reason: "yaml always carries messages in full, so --full-messages is ignored with a warning.",
+			args:   []string{"--full-messages"},
+			output: "yaml",
+			warn:   "ignoring --full-messages; -o yaml",
+		},
 		"DefaultsAreNotSet": {
 			reason:   "Flags left at their defaults, or set from the environment, are not warned about.",
 			skipPlan: true,
@@ -809,7 +882,7 @@ func TestWarnIgnoredFlags(t *testing.T) {
 			}
 
 			var stderr bytes.Buffer
-			warnIgnoredFlags(&stderr, setFlags(k), tc.skipPlan, tc.project)
+			warnIgnoredFlags(&stderr, setFlags(k), tc.output, tc.skipPlan, tc.project)
 			if tc.warn == "" && stderr.Len() > 0 || !strings.Contains(stderr.String(), tc.warn) {
 				t.Errorf("\n%s\nwarnIgnoredFlags(...): want warning containing %q, got %q", tc.reason, tc.warn, stderr.String())
 			}

@@ -167,7 +167,7 @@ func (i RevisionImpact) Determined() bool {
 }
 
 // HasChanges returns true if this composition diff has any changes, which is what drives
-// ExitCodeDiffDetected.
+// ExitCodeDiffDetected's bit.
 //
 // Deliberately excluded: RevisionImpact. A composition whose only difference is in masked fields
 // creates a CompositionRevision but has nothing to show and nothing rendering differently, and a
@@ -249,4 +249,7 @@ type XRImpact struct {
 	// OutputError the command lists in its top-level errors.
 	Error *OutputError
 	Diffs map[string]*ResourceDiff // downstream diffs (nil if unchanged/error)
+	// Health is the live health of the composite and of what it composed, set for a changed or
+	// unchanged composite and zero for an errored or filtered one.
+	Health CompositeHealth
 }

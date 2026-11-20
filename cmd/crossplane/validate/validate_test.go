@@ -30,13 +30,9 @@ import (
 )
 
 var testCRD = &extv1.CustomResourceDefinition{
-	TypeMeta: metav1.TypeMeta{
-		APIVersion: "apiextensions.k8s.io/v1",
-		Kind:       "CustomResourceDefinition",
-	},
-	ObjectMeta: metav1.ObjectMeta{
-		Name: "test",
-	},
+	APIVersion: "apiextensions.k8s.io/v1",
+	Kind:       "CustomResourceDefinition",
+	Name:       "test",
 	Spec: extv1.CustomResourceDefinitionSpec{
 		Group: "test.org",
 		Names: extv1.CustomResourceDefinitionNames{
@@ -202,16 +198,14 @@ func TestConvertToCRDs(t *testing.T) {
 			want: want{
 				crd: []*extv1.CustomResourceDefinition{
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test",
-							OwnerReferences: []metav1.OwnerReference{
-								{
-									APIVersion:         "apiextensions.crossplane.io/v1",
-									Kind:               "CompositeResourceDefinition",
-									Name:               "test",
-									Controller:         new(true),
-									BlockOwnerDeletion: new(true),
-								},
+						Name: "test",
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								APIVersion:         "apiextensions.crossplane.io/v1",
+								Kind:               "CompositeResourceDefinition",
+								Name:               "test",
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						},
 						Spec: extv1.CustomResourceDefinitionSpec{
@@ -510,16 +504,14 @@ func TestConvertToCRDs(t *testing.T) {
 			want: want{
 				crd: []*extv1.CustomResourceDefinition{
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test",
-							OwnerReferences: []metav1.OwnerReference{
-								{
-									APIVersion:         "apiextensions.crossplane.io/v1",
-									Kind:               "CompositeResourceDefinition",
-									Name:               "test",
-									Controller:         new(true),
-									BlockOwnerDeletion: new(true),
-								},
+						Name: "test",
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								APIVersion:         "apiextensions.crossplane.io/v1",
+								Kind:               "CompositeResourceDefinition",
+								Name:               "test",
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						},
 						Spec: extv1.CustomResourceDefinitionSpec{
@@ -755,16 +747,14 @@ func TestConvertToCRDs(t *testing.T) {
 						},
 					},
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "testclaims.test.org",
-							OwnerReferences: []metav1.OwnerReference{
-								{
-									APIVersion:         "apiextensions.crossplane.io/v1",
-									Kind:               "CompositeResourceDefinition",
-									Name:               "test",
-									Controller:         new(true),
-									BlockOwnerDeletion: new(true),
-								},
+						Name: "testclaims.test.org",
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								APIVersion:         "apiextensions.crossplane.io/v1",
+								Kind:               "CompositeResourceDefinition",
+								Name:               "test",
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						},
 						Spec: extv1.CustomResourceDefinitionSpec{

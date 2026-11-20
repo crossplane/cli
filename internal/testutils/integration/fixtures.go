@@ -378,15 +378,15 @@ func envtestCRDs(crdDirs, setupFiles []string) ([]*extv1.CustomResourceDefinitio
 func addUserWithRules(ctx context.Context, env *envtest.Environment, c client.Client, admin *rest.Config, rules []rbacv1.PolicyRule) (*rest.Config, error) {
 	const name = "least-privilege"
 
-	role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: name}, Rules: rules}
+	role := &rbacv1.ClusterRole{Name: name, Rules: rules}
 	if err := c.Create(ctx, role); err != nil {
 		return nil, fmt.Errorf("cannot create ClusterRole %s: %w", name, err)
 	}
 
 	binding := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: name},
-		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: name}},
+		Name:     name,
+		RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: name},
+		Subjects: []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: name}},
 	}
 	if err := c.Create(ctx, binding); err != nil {
 		return nil, fmt.Errorf("cannot create ClusterRoleBinding %s: %w", name, err)

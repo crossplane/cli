@@ -71,8 +71,8 @@ func TestXRPlanner(t *testing.T) {
 	rm.Add(vpcGVK, meta.RESTScopeRoot)
 
 	pc := &funcPlanClient{
-		fakePlanClient: fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}},
-		fail:           map[string]bool{"bad-a": true, "bad-b": true},
+		rsp:  &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE},
+		fail: map[string]bool{"bad-a": true, "bad-b": true},
 	}
 	planner := NewPlanner(fake.NewClientBuilder().WithScheme(s).Build(), rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second)
 
@@ -236,7 +236,7 @@ func TestXRPlannerRepeatedKey(t *testing.T) {
 	rm := meta.NewDefaultRESTMapper([]schema.GroupVersion{vpcGVK.GroupVersion()})
 	rm.Add(vpcGVK, meta.RESTScopeRoot)
 	newPlanner := func(fail bool) (*XRPlanner, *countPlanClient) {
-		pc := &countPlanClient{funcPlanClient: funcPlanClient{fakePlanClient: fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}}}
+		pc := &countPlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_CREATE}}
 		x := NewXRPlanner(NewPlanner(fake.NewClientBuilder().WithScheme(s).Build(), rm, noCRDs(t), "default", &fakeRouter{client: pc}, time.Second), nil, nil)
 		if fail {
 			pc.fail = map[string]bool{"shared": true}

@@ -33,7 +33,6 @@ import (
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -181,7 +180,7 @@ func TestInstallIntegration(t *testing.T) {
 			reason: "Without a name the package is named for its repository, as a DNS label.",
 			args:   []string{"function", "xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform:v0.8.0"},
 			want: want{
-				obj: &v1.Function{ObjectMeta: metav1.ObjectMeta{Name: "crossplane-contrib-function-patch-and-transform"}},
+				obj: &v1.Function{Name: "crossplane-contrib-function-patch-and-transform"},
 				spec: v1.PackageSpec{
 					Package:                  "xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform:v0.8.0",
 					RevisionActivationPolicy: &auto,
@@ -193,7 +192,7 @@ func TestInstallIntegration(t *testing.T) {
 		},
 		"AlreadyExists": {
 			reason:   "Installing a package under a name that is taken fails.",
-			existing: &v1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "provider-taken"}, Spec: v1.ProviderSpec{PackageSpec: v1.PackageSpec{Package: "xpkg.crossplane.io/crossplane-contrib/provider-nop:v0.4.0"}}},
+			existing: &v1.Provider{Name: "provider-taken", Spec: v1.ProviderSpec{PackageSpec: v1.PackageSpec{Package: "xpkg.crossplane.io/crossplane-contrib/provider-nop:v0.4.0"}}},
 			args:     []string{"provider", "xpkg.crossplane.io/crossplane-contrib/provider-nop:v0.4.0", "provider-taken"},
 			want: want{err: errors.Wrap(kerrors.NewAlreadyExists(schema.GroupResource{Group: "pkg.crossplane.io", Resource: "providers"}, "provider-taken"),
 				"cannot create package")},
@@ -328,7 +327,7 @@ func TestInstallMissingCRDIntegration(t *testing.T) {
 	cluster := startInstallCluster(t)
 
 	// Start always serves Crossplane's CRDs, so remove the one this case needs gone.
-	crd := &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "providers.pkg.crossplane.io"}}
+	crd := &extv1.CustomResourceDefinition{Name: "providers.pkg.crossplane.io"}
 	if err := cluster.Client.Delete(cluster.Context, crd); err != nil {
 		t.Fatalf("cannot delete the Provider CRD: %v", err)
 	}

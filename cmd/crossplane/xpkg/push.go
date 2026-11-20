@@ -186,14 +186,12 @@ func pushSingle(ctx context.Context, adds *[]mutate.IndexAddendum, i int, pi pac
 	}
 
 	(*adds)[i] = mutate.IndexAddendum{
-		Add: img,
-		Descriptor: v1.Descriptor{
-			MediaType: mt,
-			Platform: &v1.Platform{
-				Architecture: conf.Architecture,
-				OS:           conf.OS,
-				OSVersion:    conf.OSVersion,
-			},
+		Add:       img,
+		MediaType: mt,
+		Platform: &v1.Platform{
+			Architecture: conf.Architecture,
+			OS:           conf.OS,
+			OSVersion:    conf.OSVersion,
 		},
 	}
 	if err := remote.Write(ref, img, append(options, remote.WithContext(ctx))...); err != nil {

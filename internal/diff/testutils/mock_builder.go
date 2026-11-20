@@ -1510,13 +1510,9 @@ type CRDBuilder struct {
 func NewCRD(name, group, kind string) *CRDBuilder {
 	return &CRDBuilder{
 		crd: &extv1.CustomResourceDefinition{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "CustomResourceDefinition",
-				APIVersion: "apiextensions.k8s.io/v1",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name: name,
-			},
+			Kind:       "CustomResourceDefinition",
+			APIVersion: "apiextensions.k8s.io/v1",
+			Name:       name,
 			Spec: extv1.CustomResourceDefinitionSpec{
 				Group: group,
 				Names: extv1.CustomResourceDefinitionNames{
@@ -1668,13 +1664,9 @@ type XRDBuilder struct {
 func NewXRD(name, group, kind string) *XRDBuilder {
 	return &XRDBuilder{
 		xrd: &xpextv1.CompositeResourceDefinition{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "CompositeResourceDefinition",
-				APIVersion: "apiextensions.crossplane.io/v1",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name: name,
-			},
+			Kind:       "CompositeResourceDefinition",
+			APIVersion: "apiextensions.crossplane.io/v1",
+			Name:       name,
 			Spec: xpextv1.CompositeResourceDefinitionSpec{
 				Group: group,
 				Names: extv1.CustomResourceDefinitionNames{
@@ -1781,14 +1773,10 @@ type CompositionBuilder struct {
 func NewComposition(name string) *CompositionBuilder {
 	return &CompositionBuilder{
 		composition: &xpextv1.Composition{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: "apiextensions.crossplane.io/v1",
-				Kind:       "Composition",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name: name,
-			},
-			Spec: xpextv1.CompositionSpec{},
+			APIVersion: "apiextensions.crossplane.io/v1",
+			Kind:       "Composition",
+			Name:       name,
+			Spec:       xpextv1.CompositionSpec{},
 		},
 	}
 }

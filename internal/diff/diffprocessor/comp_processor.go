@@ -526,13 +526,11 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// list them or only count them is the renderer's decision (see CompositionDiff.Scoped).
 	for _, d := range droppedXRs {
 		result.ImpactAnalysis = append(result.ImpactAnalysis, dt.XRImpact{
-			ComposedBy: parentCompositeRef(d.xr, nil),
-			ObjectReference: corev1.ObjectReference{
-				APIVersion: d.xr.GetAPIVersion(),
-				Kind:       d.xr.GetKind(),
-				Name:       d.xr.GetName(),
-				Namespace:  d.xr.GetNamespace(),
-			},
+			ComposedBy:   parentCompositeRef(d.xr, nil),
+			APIVersion:   d.xr.GetAPIVersion(),
+			Kind:         d.xr.GetKind(),
+			Name:         d.xr.GetName(),
+			Namespace:    d.xr.GetNamespace(),
 			Status:       dt.XRStatusFiltered,
 			FilterReason: d.reason,
 			FilterDetail: d.detail,

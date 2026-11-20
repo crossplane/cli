@@ -180,22 +180,14 @@ func TestDefaultFunctionClient_GetFunctionsFromPipeline(t *testing.T) {
 			want: want{
 				functions: []pkgv1.Function{
 					{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: "pkg.crossplane.io/v1",
-							Kind:       "Function",
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-a",
-						},
+						APIVersion: "pkg.crossplane.io/v1",
+						Kind:       "Function",
+						Name:       "function-a",
 					},
 					{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: "pkg.crossplane.io/v1",
-							Kind:       "Function",
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-b",
-						},
+						APIVersion: "pkg.crossplane.io/v1",
+						Kind:       "Function",
+						Name:       "function-b",
 					},
 				},
 			},
@@ -229,22 +221,14 @@ func TestDefaultFunctionClient_GetFunctionsFromPipeline(t *testing.T) {
 			want: want{
 				functions: []pkgv1.Function{
 					{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: "pkg.crossplane.io/v1",
-							Kind:       "Function",
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-a",
-						},
+						APIVersion: "pkg.crossplane.io/v1",
+						Kind:       "Function",
+						Name:       "function-a",
 					},
 					{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: "pkg.crossplane.io/v1",
-							Kind:       "Function",
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "function-a",
-						},
+						APIVersion: "pkg.crossplane.io/v1",
+						Kind:       "Function",
+						Name:       "function-a",
 					},
 				},
 			},

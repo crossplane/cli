@@ -26,7 +26,6 @@ import (
 	"github.com/invopop/jsonschema"
 	"github.com/spf13/afero"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 )
@@ -34,13 +33,9 @@ import (
 const schemaTypeObject = "object"
 
 var testCRD = &extv1.CustomResourceDefinition{
-	TypeMeta: metav1.TypeMeta{
-		APIVersion: "apiextensions.k8s.io/v1",
-		Kind:       "CustomResourceDefinition",
-	},
-	ObjectMeta: metav1.ObjectMeta{
-		Name: "tests.example.org",
-	},
+	APIVersion: "apiextensions.k8s.io/v1",
+	Kind:       "CustomResourceDefinition",
+	Name:       "tests.example.org",
 	Spec: extv1.CustomResourceDefinitionSpec{
 		Group: "example.org",
 		Names: extv1.CustomResourceDefinitionNames{
@@ -119,7 +114,7 @@ func TestWriteCRDs(t *testing.T) {
 				crds: []*extv1.CustomResourceDefinition{
 					testCRD,
 					{
-						ObjectMeta: metav1.ObjectMeta{Name: "foos.example.org"},
+						Name: "foos.example.org",
 						Spec: extv1.CustomResourceDefinitionSpec{
 							Group: "example.org",
 							Names: extv1.CustomResourceDefinitionNames{Kind: "Foo"},
@@ -230,7 +225,7 @@ func TestWriteJSONSchemas(t *testing.T) {
 			args: args{
 				crds: []*extv1.CustomResourceDefinition{
 					{
-						ObjectMeta: metav1.ObjectMeta{Name: "nils.example.org"},
+						Name: "nils.example.org",
 						Spec: extv1.CustomResourceDefinitionSpec{
 							Group: "example.org",
 							Names: extv1.CustomResourceDefinitionNames{Kind: "Nil"},

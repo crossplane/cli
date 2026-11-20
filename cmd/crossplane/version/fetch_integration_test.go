@@ -47,7 +47,7 @@ func deployment(name string, labels map[string]string, image string) *appsv1.Dep
 	sel := map[string]string{"pod": name}
 
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "crossplane-system", Labels: labels},
+		Name: name, Namespace: "crossplane-system", Labels: labels,
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{MatchLabels: sel},
 			Template: corev1.PodTemplateSpec{
@@ -124,7 +124,7 @@ func TestFetchCrossplaneVersionIntegration(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cluster := integration.Start(t, integration.Setup{})
 
-			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "crossplane-system"}}
+			ns := &corev1.Namespace{Name: "crossplane-system"}
 			if err := cluster.Client.Create(cluster.Context, ns); err != nil {
 				t.Fatalf("cannot create namespace: %v", err)
 			}

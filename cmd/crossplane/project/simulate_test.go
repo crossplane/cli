@@ -33,7 +33,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/config"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/simulate"
-	"github.com/crossplane/cli/v2/pkg/render"
 )
 
 // parseSimulate parses args as `simulate` flags, running kong's validation.

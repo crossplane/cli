@@ -24,7 +24,6 @@ import (
 	"testing"
 
 	gcmp "github.com/google/go-cmp/cmp"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 

@@ -31,7 +31,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/sergi/go-diff/diffmatchpatch"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"

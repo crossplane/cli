@@ -186,16 +186,14 @@ func TestRenderJSONProjectFields(t *testing.T) {
 		Warnings: []Warning{{Message: "heads up", Context: map[string]string{"k": "v"}}},
 		Notes:    []string{"a note"},
 
-		Result: plan.Result{
-			FormatVersion: plan.ResultFormatVersion,
-			Errored:       true,
-			Summary:       plan.Summary{Destroy: 1},
-			Plans: []*plan.ResourcePlan{{
-				APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionDelete, Composite: &xr,
-				Changes: []plan.FieldChange{{Path: "data.k", Actual: &plan.Value{Value: "v"}}},
-				DryRun:  &plan.Verification{SkipReason: "forbidden", Detail: "no create permission"},
-			}},
-		},
+		FormatVersion: plan.ResultFormatVersion,
+		Errored:       true,
+		Summary:       plan.Summary{Destroy: 1},
+		Plans: []*plan.ResourcePlan{{
+			APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionDelete, Composite: &xr,
+			Changes: []plan.FieldChange{{Path: "data.k", Actual: &plan.Value{Value: "v"}}},
+			DryRun:  &plan.Verification{SkipReason: "forbidden", Detail: "no create permission"},
+		}},
 	}
 	var buf bytes.Buffer
 	r, _ := NewRenderer(plan.FormatJSON)

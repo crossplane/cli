@@ -17,8 +17,6 @@ limitations under the License.
 package contextfn
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	gcmp "github.com/google/go-cmp/cmp"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"

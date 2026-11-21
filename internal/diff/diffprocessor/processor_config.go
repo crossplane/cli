@@ -114,6 +114,10 @@ type ProcessorConfig struct {
 	// IncludeManual determines whether to include XRs with Manual update policy in composition diffs
 	IncludeManual bool
 
+	// Progress receives coarse processing progress; see Progress. Nil drops
+	// reports.
+	Progress *Progress
+
 	// Advisories is the channel user-facing advisories are raised on, and drained from into the report.
 	// Pass the same collector to every processor of one run (the CLI passes one set of options to
 	// both), so the composition processor's report includes what its XR processor raised. Unset, each
@@ -257,6 +261,13 @@ func WithIncludeManual(includeManual bool) ProcessorOption {
 func WithAdvisories(advisories *AdvisoryCollector) ProcessorOption {
 	return func(config *ProcessorConfig) {
 		config.Advisories = advisories
+	}
+}
+
+// WithProgress sets the sink coarse processing progress is reported to.
+func WithProgress(progress *Progress) ProcessorOption {
+	return func(config *ProcessorConfig) {
+		config.Progress = progress
 	}
 }
 

@@ -43,6 +43,7 @@ import (
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/diff/client"
 	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
@@ -215,9 +216,13 @@ func changedFunctions(ctx context.Context, rc k8client.ResourceClient, digests m
 // diffCompositions returns the diff simulate runs for Compositions: their
 // impact on the composite resources in scope, rendered to k's writers.
 // Errors are wrapped with msg.
-func (c *Runner) diffCompositions(k *kong.Context, logger logging.Logger, proc dp.CompDiffProcessor, comps []*un.Unstructured, msg string) func(context.Context) (bool, error) {
+func (c *Runner) diffCompositions(k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, progress *dp.Progress, proc dp.CompDiffProcessor, comps []*un.Unstructured, msg string) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
-		output, err := proc.DiffComposition(ctx, comps, c.sel.ns, c.sel.refs)
+		var output *dt.CompDiffOutput
+		var err error
+		simulateWithProgress(sp, progress, func() {
+			output, err = proc.DiffComposition(ctx, comps, c.sel.ns, c.sel.refs)
+		})
 
 		// Render the report even when there are errors (e.g. every
 		// composition failed), so structured output stays valid. A render
@@ -235,12 +240,16 @@ func (c *Runner) diffCompositions(k *kong.Context, logger logging.Logger, proc d
 // crossplane-diff's xr command. A claim is simulated as its XR, but the
 // report names the input, so its result is listed under the claim's name
 // (crossplane/cli#367).
-func (c *Runner) diffComposites(k *kong.Context, logger logging.Logger, proc dp.DiffProcessor, xp *xpclient.Clients, ns string, xrs []*un.Unstructured) func(context.Context) (bool, error) {
+func (c *Runner) diffComposites(k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, progress *dp.Progress, proc dp.DiffProcessor, xp *xpclient.Clients, ns string, xrs []*un.Unstructured) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
 		if err := checkComposites(ctx, xp.Definition, ns, xrs); err != nil {
 			return false, err
 		}
-		report, err := proc.PerformDiff(ctx, xrs, xp.Composition.FindMatchingComposition)
+		var report *dt.XRReport
+		var err error
+		simulateWithProgress(sp, progress, func() {
+			report, err = proc.PerformDiff(ctx, xrs, xp.Composition.FindMatchingComposition)
+		})
 
 		// Render the report even when there are errors, so successful XRs
 		// are shown and structured output stays valid. The renderer
@@ -269,6 +278,32 @@ func setFlags(k *kong.Context) map[string]bool {
 type processor interface {
 	Initialize(ctx context.Context) error
 	dp.Cleaner
+}
+
+// simulatingMsg is the progress line shown while composites render and their
+// managed resources are planned against the diff servers - the long stretch
+// between the last setup step and the plan output.
+const simulatingMsg = "Simulating changes"
+
+// simulateWithProgress runs fn inside a spinner session showing a
+// "Simulating changes" line, updated with which composite of how many is
+// being processed. The processing outcome is reported by the caller's own
+// error handling; the spinner line itself always resolves, so the step style
+// matches the setup steps above it.
+func simulateWithProgress(sp terminal.SpinnerPrinter, progress *dp.Progress, fn func()) {
+	// The wrapped function carries its error out via the closure.
+	_ = sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
+		ch.SendNamedEvent(simulatingMsg, simulatingMsg, async.EventStatusStarted)
+		progress.SetReporter(func(done, total int, detail string) {
+			ch.SendNamedEvent(simulatingMsg, fmt.Sprintf("%s (%d/%d composites: %s)", simulatingMsg, done+1, total, detail), async.EventStatusUpdated)
+		})
+		defer progress.SetReporter(nil)
+
+		fn()
+
+		ch.SendNamedEvent(simulatingMsg, simulatingMsg, async.EventStatusSuccess)
+		return nil
+	})
 }
 
 // simulate initializes the clients and processor and runs diff. A run that
@@ -630,7 +665,8 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 	advisories := dp.NewAdvisoryCollector(k.Stderr)
 	defer advisories.Summarize()
 
-	opts := append(c.processorOptions(advisories, logger, creds, fns, digests, pkgs.ICs), dp.WithChangedFunctions(changed...), dp.WithXRTimeout(c.Timeout))
+	progress := dp.NewProgress()
+	opts := append(c.processorOptions(advisories, logger, creds, fns, digests, pkgs.ICs), dp.WithChangedFunctions(changed...), dp.WithXRTimeout(c.Timeout), dp.WithProgress(progress))
 
 	// xrPlanner and servers are for rendering the plans; they stay nil with
 	// --skip-plan, and servers also when hooks.Router supplies the router.
@@ -647,10 +683,10 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 	}
 	xrProc := dp.NewDiffProcessor(clients.K8sClients, clients.XpClients, opts...)
 	if in.Composites != nil {
-		return c.simulate(sigCtx, logger, clients.Initialize, xrProc, c.diffComposites(k, logger, xrProc, &clients.XpClients, ns, in.Composites))
+		return c.simulate(sigCtx, logger, clients.Initialize, xrProc, c.diffComposites(k, logger, sp, progress, xrProc, &clients.XpClients, ns, in.Composites))
 	}
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
-	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, proc, comps, msg))
+	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, sp, progress, proc, comps, msg))
 }
 
 // build builds in's project, or for file inputs (Compositions or composite

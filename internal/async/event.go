@@ -22,6 +22,11 @@ package async
 // is used to pass information back to callers that are interested in the
 // operation's progress.
 type Event struct {
+	// Name identifies the operation when its Text changes over time (e.g. a
+	// progress line). Consumers key the operation's output line by Name when
+	// set, by Text otherwise.
+	Name string
+
 	// Text is a description of the event. Events with the same text represent
 	// updates to the status of a single sub-operation.
 	Text string
@@ -40,6 +45,9 @@ const (
 	EventStatusSuccess EventStatus = "success"
 	// EventStatusFailure indicates that an operation has failed.
 	EventStatusFailure EventStatus = "failure"
+	// EventStatusUpdated indicates that a started operation has new status
+	// text; it updates the operation's line in place.
+	EventStatusUpdated EventStatus = "updated"
 )
 
 // EventChannel is a channel for sending events. We define our own type for it
@@ -57,4 +65,26 @@ func (ch EventChannel) SendEvent(text string, status EventStatus) {
 		Text:   text,
 		Status: status,
 	}
+}
+
+// SendNamedEvent sends an event for the named operation, whose text may
+// change over time. It is a no-op if the channel is nil.
+func (ch EventChannel) SendNamedEvent(name, text string, status EventStatus) {
+	if ch == nil {
+		return
+	}
+	ch <- Event{
+		Name:   name,
+		Text:   text,
+		Status: status,
+	}
+}
+
+// Key identifies the operation an event belongs to: its Name when set, its
+// Text otherwise.
+func (e Event) Key() string {
+	if e.Name != "" {
+		return e.Name
+	}
+	return e.Text
 }

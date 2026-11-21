@@ -19,28 +19,25 @@ package ops
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 
+	"github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/pkg/resource"
 )
 
 func buildResource(apiVersion, kind, namespace, name string, labels map[string]string) *resource.Resource {
-	u := unstructured.Unstructured{}
-	u.SetAPIVersion(apiVersion)
-	u.SetKind(kind)
-	u.SetNamespace(namespace)
-	u.SetName(name)
-	u.SetLabels(labels)
+	u := testutils.NewResource(apiVersion, kind, name).InNamespace(namespace).WithLabels(labels).Build()
 
-	return &resource.Resource{Unstructured: u}
+	return &resource.Resource{Unstructured: *u}
 }
 
 func buildWatchOp(name string, watch opsv1alpha1.WatchSpec) *opsv1alpha1.WatchOperation {
@@ -63,12 +60,13 @@ func triggeredByResource(apiVersion, kind, namespace, name string) operationOpt 
 	}
 }
 
-func ownedBy(kind, name string) operationOpt {
+func ownedBy(kind, name, uid string) operationOpt {
 	return func(op *opsv1alpha1.Operation) {
 		op.SetOwnerReferences([]metav1.OwnerReference{{
 			APIVersion: opsv1alpha1.SchemeGroupVersion.String(),
 			Kind:       kind,
 			Name:       name,
+			UID:        types.UID(uid),
 			Controller: new(true),
 		}})
 		if kind == opsv1alpha1.WatchOperationKind {
@@ -95,6 +93,21 @@ func buildOperation(name string, opts ...operationOpt) *opsv1alpha1.Operation {
 	}
 
 	return op
+}
+
+// withUID returns the object with the given UID set, to pin that owner
+// references must match their owner by UID, not only by name.
+func withUID(o client.Object, uid string) client.Object {
+	o.SetUID(types.UID(uid))
+
+	return o
+}
+
+// createdAt sets the Operation's creation timestamp.
+func createdAt(ts metav1.Time) operationOpt {
+	return func(op *opsv1alpha1.Operation) {
+		op.SetCreationTimestamp(ts)
+	}
 }
 
 // kindNames flattens a tree of Resource into "Kind/name relation=<relation>"
@@ -159,10 +172,10 @@ func TestEnrich(t *testing.T) {
 					buildWatchOp("watch-things", opsv1alpha1.WatchSpec{APIVersion: "example.org/v1", Kind: "Thing"}),
 					buildWatchOp("watch-others", opsv1alpha1.WatchSpec{APIVersion: "example.org/v1", Kind: "Other"}),
 					buildOperation("watch-things-123",
-						ownedBy(opsv1alpha1.WatchOperationKind, "watch-things"),
+						ownedBy(opsv1alpha1.WatchOperationKind, "watch-things", ""),
 						triggeredByResource("example.org/v1", "Thing", "default", "my-thing")),
 					buildOperation("watch-things-456",
-						ownedBy(opsv1alpha1.WatchOperationKind, "watch-things"),
+						ownedBy(opsv1alpha1.WatchOperationKind, "watch-things", ""),
 						triggeredByResource("example.org/v1", "Thing", "default", "another-thing")),
 				},
 				root: buildResource("example.org/v1", "Thing", "default", "my-thing", nil),
@@ -196,7 +209,7 @@ func TestEnrich(t *testing.T) {
 				objects: []client.Object{
 					&opsv1alpha1.CronOperation{ObjectMeta: metav1.ObjectMeta{Name: "nightly"}},
 					buildOperation("nightly-123",
-						ownedBy(opsv1alpha1.CronOperationKind, "nightly"),
+						ownedBy(opsv1alpha1.CronOperationKind, "nightly", ""),
 						appliedResource("example.org/v1", "Thing", "default", "my-thing")),
 					buildOperation("standalone",
 						appliedResource("example.org/v1", "Thing", "default", "my-thing")),
@@ -219,7 +232,7 @@ func TestEnrich(t *testing.T) {
 				objects: []client.Object{
 					buildWatchOp("watch-things", opsv1alpha1.WatchSpec{APIVersion: "example.org/v1", Kind: "Thing"}),
 					buildOperation("watch-things-123",
-						ownedBy(opsv1alpha1.WatchOperationKind, "watch-things"),
+						ownedBy(opsv1alpha1.WatchOperationKind, "watch-things", ""),
 						triggeredByResource("example.org/v1", "Thing", "default", "my-thing"),
 						appliedResource("example.org/v1", "Thing", "default", "my-thing")),
 				},
@@ -238,7 +251,7 @@ func TestEnrich(t *testing.T) {
 				objects: []client.Object{
 					buildWatchOp("watch-walls", opsv1alpha1.WatchSpec{APIVersion: "example.org/v1", Kind: "Thing", MatchLabels: map[string]string{"type": "wall"}}),
 					buildOperation("watch-walls-123",
-						ownedBy(opsv1alpha1.WatchOperationKind, "watch-walls"),
+						ownedBy(opsv1alpha1.WatchOperationKind, "watch-walls", ""),
 						triggeredByResource("example.org/v1", "Thing", "default", "wall"),
 						appliedResource("example.org/v1", "Thing", "default", "radiator")),
 				},
@@ -260,6 +273,68 @@ func TestEnrich(t *testing.T) {
 				"  Thing/radiator",
 				"    WatchOperation/watch-walls relation=applied",
 				"      Operation/watch-walls-123",
+			},
+		},
+		"TriggeredRequiresCurrentWatchOperationOwner": {
+			reason: "Should not attach an Operation whose controller owner UID is not the current WatchOperation's, e.g. one surviving a deleted and recreated WatchOperation of the same name.",
+			args: args{
+				mode: ModeTriggered,
+				objects: []client.Object{
+					withUID(buildWatchOp("watch-things", opsv1alpha1.WatchSpec{APIVersion: "example.org/v1", Kind: "Thing"}), "uid-new"),
+					buildOperation("watch-things-123",
+						ownedBy(opsv1alpha1.WatchOperationKind, "watch-things", "uid-old"),
+						triggeredByResource("example.org/v1", "Thing", "default", "my-thing")),
+				},
+				root: buildResource("example.org/v1", "Thing", "default", "my-thing", nil),
+			},
+			want: []string{
+				"Thing/my-thing",
+				"  WatchOperation/watch-things relation=watching",
+			},
+		},
+		"TriggeredIgnoresOperationsOlderThanTheResource": {
+			reason: "Should not attach an Operation created before the resource: it was triggered by a deleted predecessor of the same name.",
+			args: args{
+				mode: ModeTriggered,
+				objects: []client.Object{
+					buildWatchOp("watch-things", opsv1alpha1.WatchSpec{APIVersion: "example.org/v1", Kind: "Thing"}),
+					buildOperation("watch-things-old",
+						ownedBy(opsv1alpha1.WatchOperationKind, "watch-things", ""),
+						triggeredByResource("example.org/v1", "Thing", "default", "my-thing"),
+						createdAt(metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))),
+					buildOperation("watch-things-new",
+						ownedBy(opsv1alpha1.WatchOperationKind, "watch-things", ""),
+						triggeredByResource("example.org/v1", "Thing", "default", "my-thing"),
+						createdAt(metav1.NewTime(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)))),
+				},
+				root: func() *resource.Resource {
+					r := buildResource("example.org/v1", "Thing", "default", "my-thing", nil)
+					r.Unstructured.SetCreationTimestamp(metav1.NewTime(time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)))
+
+					return r
+				}(),
+			},
+			want: []string{
+				"Thing/my-thing",
+				"  WatchOperation/watch-things relation=watching",
+				"    Operation/watch-things-new relation=triggered",
+			},
+		},
+		"AllDoesNotGroupUnderRecreatedCreator": {
+			reason: "Should not group an applied Operation under a creator of the same name but another UID; the Operation belongs to the deleted creator.",
+			args: args{
+				mode: ModeAll,
+				objects: []client.Object{
+					withUID(&opsv1alpha1.CronOperation{ObjectMeta: metav1.ObjectMeta{Name: "nightly"}}, "uid-new"),
+					buildOperation("nightly-123",
+						ownedBy(opsv1alpha1.CronOperationKind, "nightly", "uid-old"),
+						appliedResource("example.org/v1", "Thing", "default", "my-thing")),
+				},
+				root: buildResource("example.org/v1", "Thing", "default", "my-thing", nil),
+			},
+			want: []string{
+				"Thing/my-thing",
+				"  Operation/nightly-123 relation=applied",
 			},
 		},
 	}

@@ -20,6 +20,9 @@ package resource
 
 import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 
@@ -43,6 +46,26 @@ type Resource struct {
 type ResourceList struct {
 	Items []*Resource `json:"items"`
 	Error error       `json:"error,omitempty"`
+}
+
+// FromObject returns a Resource wrapping the given typed object, converted
+// to unstructured form under the given GVK, with the given relation. A failed
+// conversion is carried on the Resource's Error, so it still renders as a
+// node in the tree.
+func FromObject(o client.Object, gvk schema.GroupVersionKind, relation string) *Resource {
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(o)
+	if err != nil {
+		u := unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		u.SetName(o.GetName())
+
+		return &Resource{Unstructured: u, Error: err, Relation: relation}
+	}
+
+	u := unstructured.Unstructured{Object: obj}
+	u.SetGroupVersionKind(gvk)
+
+	return &Resource{Unstructured: u, Relation: relation}
 }
 
 // GetCondition of this resource.

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 
@@ -78,6 +79,49 @@ func TestPrintDotGraphPrint(t *testing.T) {
 	n3--n5;
 	n5--n6;
 	n5--n7;
+	
+}
+`,
+				err: nil,
+			},
+		},
+		"OperationLifecycleCondition": {
+			reason: "Should fill the Ready column from the condition representing an operation's lifecycle, like the default printer, not the Ready condition operations never have.",
+			args: args{
+				resource: &resource.Resource{
+					Unstructured: unstructured.Unstructured{Object: map[string]any{
+						"apiVersion": "ops.crossplane.io/v1alpha1",
+						"kind":       "WatchOperation",
+						"metadata":   map[string]any{"name": "watch-things"},
+						"status": map[string]any{
+							"conditions": []any{
+								map[string]any{"type": "Watching", "status": "True"},
+								map[string]any{"type": "Synced", "status": "True"},
+							},
+						},
+					}},
+					Relation: "watching",
+					Children: []*resource.Resource{{
+						Unstructured: unstructured.Unstructured{Object: map[string]any{
+							"apiVersion": "ops.crossplane.io/v1alpha1",
+							"kind":       "Operation",
+							"metadata":   map[string]any{"name": "watch-things-123"},
+							"status": map[string]any{
+								"conditions": []any{
+									map[string]any{"type": "Succeeded", "status": "True"},
+								},
+							},
+						}},
+						Relation: "triggered",
+					}},
+				},
+			},
+			want: want{
+				dotString: `graph  {
+	
+	n1[label="Name: WatchOperation/watch-things\nApiVersion: ops.crossplane.io/v1alpha1\nReady: True\nSynced: True\nRelation: watching\n",penwidth="2"];
+	n2[label="Name: Operation/watch-things-123\nApiVersion: ops.crossplane.io/v1alpha1\nReady: True\nSynced: \nRelation: triggered\n",penwidth="2"];
+	n1--n2;
 	
 }
 `,

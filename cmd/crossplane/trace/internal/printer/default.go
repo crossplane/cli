@@ -32,7 +32,6 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 
 	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
-	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
 	"github.com/crossplane/cli/v2/pkg/resource"
@@ -286,19 +285,7 @@ func (p *DefaultPrinter) printResourceTree(tw *tabwriter.Writer, root *resource.
 // getResourceStatus returns a string that represents an entire row of status
 // information for the resource.
 func getResourceStatus(r *resource.Resource, name string, wide bool) fmt.Stringer {
-	// Operations don't have a Ready condition, show the condition
-	// representing their lifecycle in the READY column instead.
-	readyType := xpv2.TypeReady
-	switch r.Unstructured.GroupVersionKind().GroupKind() {
-	case opsv1alpha1.OperationGroupVersionKind.GroupKind():
-		readyType = opsv1alpha1.TypeSucceeded
-	case opsv1alpha1.WatchOperationGroupVersionKind.GroupKind():
-		readyType = opsv1alpha1.TypeWatching
-	case opsv1alpha1.CronOperationGroupVersionKind.GroupKind():
-		readyType = opsv1alpha1.TypeScheduling
-	}
-
-	readyCond := r.GetCondition(readyType)
+	readyCond := r.GetCondition(readyConditionType(r))
 	syncedCond := r.GetCondition(xpv2.TypeSynced)
 
 	var status, m string

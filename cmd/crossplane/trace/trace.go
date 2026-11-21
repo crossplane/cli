@@ -298,7 +298,8 @@ func (c *Cmd) getResourceTrees(ctx context.Context, resourceList *resource.Resou
 
 	// Attach related operations, if requested. Operations target Crossplane
 	// resources, not packages, so there's nothing to attach on package trees.
-	if !xpkg.IsPackageType(mapping.GroupVersionKind.GroupKind()) {
+	// An empty list has nothing to attach to either.
+	if len(resourceList.Items) > 0 && !xpkg.IsPackageType(mapping.GroupVersionKind.GroupKind()) {
 		if err := c.enrichOperations(ctx, client, resourceList.Items...); err != nil {
 			return errors.Wrap(err, errGetOperations)
 		}

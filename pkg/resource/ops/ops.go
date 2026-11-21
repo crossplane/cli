@@ -216,7 +216,7 @@ func (a *attacher) branchFor(o client.Object, gvk schema.GroupVersionKind, relat
 		return b
 	}
 
-	b := asResource(o, gvk, relation)
+	b := resource.FromObject(o, gvk, relation)
 	a.branches[key] = b
 	a.related = append(a.related, b)
 
@@ -236,11 +236,11 @@ func (a *attacher) attachWatching(r *resource.Resource, s *snapshot) {
 
 		for j := range s.ops {
 			op := &s.ops[j]
-			if op.GetLabels()[opsv1alpha1.LabelWatchOperationName] != wo.GetName() || !triggeredBy(op, &r.Unstructured) {
+			if !controlledBy(op, opsv1alpha1.WatchOperationKind, wo) || !triggeredBy(op, &r.Unstructured) {
 				continue
 			}
 
-			b.Children = append(b.Children, asResource(op, opsv1alpha1.OperationGroupVersionKind, RelationTriggered))
+			b.Children = append(b.Children, resource.FromObject(op, opsv1alpha1.OperationGroupVersionKind, RelationTriggered))
 			a.attached[op.GetName()] = true
 		}
 	}
@@ -257,7 +257,7 @@ func (a *attacher) attachApplied(r *resource.Resource, s *snapshot) {
 		}
 
 		a.attached[op.GetName()] = true
-		child := asResource(op, opsv1alpha1.OperationGroupVersionKind, RelationApplied)
+		child := resource.FromObject(op, opsv1alpha1.OperationGroupVersionKind, RelationApplied)
 
 		if b := a.creatorBranch(op, s); b != nil {
 			appendChild(b, child)
@@ -276,13 +276,16 @@ func (a *attacher) creatorBranch(op *opsv1alpha1.Operation, s *snapshot) *resour
 		return nil
 	}
 
+	// The UID must match too: an Operation whose creator was deleted and
+	// recreated under the same name belongs to the deleted creator, not the
+	// current one.
 	switch owner.Kind {
 	case opsv1alpha1.WatchOperationKind:
-		if wo := s.watchOp(owner.Name); wo != nil {
+		if wo := s.watchOp(owner.Name); wo != nil && wo.GetUID() == owner.UID {
 			return a.branchFor(wo, opsv1alpha1.WatchOperationGroupVersionKind, RelationApplied)
 		}
 	case opsv1alpha1.CronOperationKind:
-		if co, ok := s.cronOps[owner.Name]; ok {
+		if co, ok := s.cronOps[owner.Name]; ok && co.GetUID() == owner.UID {
 			return a.branchFor(&co, opsv1alpha1.CronOperationGroupVersionKind, RelationApplied)
 		}
 	}
@@ -321,9 +324,28 @@ func watchMatches(w opsv1alpha1.WatchSpec, u *unstructured.Unstructured) bool {
 	return true
 }
 
+// controlledBy returns true if the object's controller owner reference is
+// the given ops.crossplane.io owner. The UID must match too: an object whose
+// owner was deleted and recreated under the same name belongs to the deleted
+// owner, not the current one.
+func controlledBy(o client.Object, kind string, owner client.Object) bool {
+	ref := metav1.GetControllerOf(o)
+
+	return ref != nil && ref.APIVersion == opsv1alpha1.SchemeGroupVersion.String() &&
+		ref.Kind == kind && ref.Name == owner.GetName() && ref.UID == owner.GetUID()
+}
+
 // triggeredBy returns true if the Operation is annotated as having been
 // created in response to a change to the given resource.
 func triggeredBy(op *opsv1alpha1.Operation, u *unstructured.Unstructured) bool {
+	// A watch-triggered Operation is created after the resource it watches,
+	// so an Operation older than the resource was triggered by a deleted
+	// predecessor of the same name.
+	opCreated, resCreated := op.GetCreationTimestamp(), u.GetCreationTimestamp()
+	if opCreated.Before(&resCreated) {
+		return false
+	}
+
 	a := op.GetAnnotations()
 
 	return a[opsv1alpha1.AnnotationWatchedResourceAPIVersion] == u.GetAPIVersion() &&
@@ -343,22 +365,6 @@ func applied(op *opsv1alpha1.Operation, u *unstructured.Unstructured) bool {
 	}
 
 	return false
-}
-
-func asResource(o client.Object, gvk schema.GroupVersionKind, relation string) *resource.Resource {
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(o)
-	if err != nil {
-		u := unstructured.Unstructured{}
-		u.SetGroupVersionKind(gvk)
-		u.SetName(o.GetName())
-
-		return &resource.Resource{Unstructured: u, Error: err, Relation: relation}
-	}
-
-	u := unstructured.Unstructured{Object: obj}
-	u.SetGroupVersionKind(gvk)
-
-	return &resource.Resource{Unstructured: u, Relation: relation}
 }
 
 func sortByCreation(rs []*resource.Resource) {

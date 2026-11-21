@@ -229,7 +229,10 @@ func (c *Cmd) renderCurrentTree(ctx context.Context, logger logging.Logger, kCli
 
 	if !xpkg.IsPackageType(mapping.GroupVersionKind.GroupKind()) {
 		if err := c.enrichOperations(ctx, kClient, tree); err != nil {
-			return "", errors.Wrap(err, errGetOperations)
+			// The tree was already fetched and can still render without
+			// operations; keep the watch alive and try again on the next
+			// refresh instead of ending it.
+			logger.Debug(errGetOperations, "error", err)
 		}
 	}
 

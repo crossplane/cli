@@ -200,7 +200,7 @@ func printGraphQueue(g *dot.Graph, queue []*queueItem) {
 				namespace:  item.resource.Unstructured.GetNamespace(),
 				apiVersion: item.resource.Unstructured.GetObjectKind().GroupVersionKind().GroupVersion().String(),
 				name:       fmt.Sprintf("%s/%s", item.resource.Unstructured.GetKind(), item.resource.Unstructured.GetName()),
-				ready:      string(item.resource.GetCondition(xpv2.TypeReady).Status),
+				ready:      string(item.resource.GetCondition(readyConditionType(item.resource)).Status),
 				synced:     string(item.resource.GetCondition(xpv2.TypeSynced).Status),
 				relation:   item.resource.Relation,
 			}

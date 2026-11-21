@@ -206,7 +206,7 @@ func (g *gitSource) Version(ctx context.Context) (string, error) {
 	return g.commitSHA, nil
 }
 
-func (g *gitSource) Resources(_ context.Context) (afero.Fs, error) {
+func (g *gitSource) Resources(ctx context.Context) (afero.Fs, error) {
 	if g.fs != nil {
 		return g.fs, nil
 	}
@@ -217,6 +217,12 @@ func (g *gitSource) Resources(_ context.Context) (afero.Fs, error) {
 	var lastErr error
 
 	for attempt := 1; attempt <= maxCloneAttempts; attempt++ {
+		// When fetching several dependencies, another one failing cancels
+		// the group's context; don't keep retrying a doomed fetch.
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Wrap(err, "clone cancelled")
+		}
+
 		memFS = memfs.New()
 
 		headRef, err := g.cloner.CloneRepository(
@@ -432,15 +438,40 @@ func NewHTTPSource(dep v1alpha1.Dependency) Source {
 	}
 }
 
-// k8sOpenAPISource is a source that generates OpenAPI schemas for Kubernetes
-// built-in APIs by downloading the swagger spec.
-// NewK8sSource returns a source for Kubernetes built-in APIs. The OpenAPI
-// specs are taken from a sparse checkout of kubernetes/kubernetes at the
-// requested version, which carries the complete spec set: every API group
-// and version, not just a fixed list. The checkout is shallow and limited to
-// api/openapi-spec.
+// k8sOpenAPISource is a source for the OpenAPI specs of Kubernetes built-in
+// APIs. The specs are taken from a shallow checkout of kubernetes/kubernetes
+// at the requested version, limited to api/openapi-spec, which carries the
+// complete spec set: every API group and version, not just a fixed list. The
+// checkout is an implementation detail of Resources: the source keeps its
+// k8s:// identity and its configured version, so schema lock entries don't
+// change and comparing against the lock needs no network access.
+type k8sOpenAPISource struct {
+	k8sRef *v1alpha1.K8sDependency
+	git    Source
+}
+
+func (k *k8sOpenAPISource) ID() string {
+	return fmt.Sprintf("k8s://%s", k.k8sRef.Version)
+}
+
+func (k *k8sOpenAPISource) Version(_ context.Context) (string, error) {
+	return k.k8sRef.Version, nil
+}
+
+func (k *k8sOpenAPISource) Resources(ctx context.Context) (afero.Fs, error) {
+	return k.git.Resources(ctx)
+}
+
+func (k *k8sOpenAPISource) Type() SourceType {
+	return SourceTypeOpenAPI
+}
+
+// NewK8sSource returns a source for Kubernetes built-in APIs.
 func NewK8sSource(dep v1alpha1.Dependency) Source {
-	return NewGitSource(k8sAsGitDependency(dep), &git.DefaultCloner{}, &git.HTTPSAuthProvider{})
+	return &k8sOpenAPISource{
+		k8sRef: dep.K8s,
+		git:    NewGitSource(k8sAsGitDependency(dep), &git.DefaultCloner{}, &git.HTTPSAuthProvider{}),
+	}
 }
 
 // k8sAsGitDependency converts a k8s dependency to the git dependency its

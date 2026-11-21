@@ -12,5 +12,5 @@
 # hand.)
 {
   # Root module: github.com/crossplane/cli/v2
-  root = "sha256-1GHHmVjxdK+SfeIip3e+CxQPgQjUyN4qhddmFv6aHZQ=";
+  root = "sha256-LGo6Ztg2ZlJsWJ+C0I0CO7uQr6F8734lir7QgLq9a/0=";
 }

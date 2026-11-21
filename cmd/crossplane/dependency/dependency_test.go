@@ -32,21 +32,20 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
-	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
 func TestAddGitAuth(t *testing.T) {
 	testDependencyGitAuth(t, func(serverURL, projectFile, cacheDir, token string) error {
-		c := &addCmd{Package: serverURL + "/repo.git", GitRef: "main", ProjectFile: projectFile, CacheDir: cacheDir, GitFlags: common.GitFlags{GitToken: token, GitUsername: "test-user"}}
+		c := &AddCmd{Package: serverURL + "/repo.git", GitRef: "main", ProjectFile: projectFile, CacheDir: cacheDir, GitToken: token, GitUsername: "test-user"}
 		return c.Run(logging.NewNopLogger(), terminal.NewSpinnerPrinter(io.Discard, false), &config.Config{})
 	})
 }
 
 func TestUpdateCacheGitAuth(t *testing.T) {
 	testDependencyGitAuth(t, func(_, projectFile, cacheDir, token string) error {
-		c := &updateCacheCmd{ProjectFile: projectFile, CacheDir: cacheDir, GitFlags: common.GitFlags{GitToken: token, GitUsername: "test-user"}}
+		c := &UpdateCacheCmd{ProjectFile: projectFile, CacheDir: cacheDir, GitToken: token, GitUsername: "test-user"}
 		return c.Run(logging.NewNopLogger(), terminal.NewSpinnerPrinter(io.Discard, false), &config.Config{})
 	})
 }
@@ -127,7 +126,7 @@ func TestBuildDependencyLocal(t *testing.T) {
 
 	for name, tc := range tcs {
 		t.Run(name, func(t *testing.T) {
-			c := &addCmd{Package: tc.pkg, APIOnly: tc.apiOnly}
+			c := &AddCmd{Package: tc.pkg, APIOnly: tc.apiOnly}
 			dep, err := c.buildDependency(projDir)
 			if tc.wantErr {
 				if err == nil {
@@ -150,7 +149,7 @@ func TestBuildDependencyLocal(t *testing.T) {
 
 func TestBuildDependencyLocalPrefixesAreNotXpkgRefs(t *testing.T) {
 	// Anything that doesn't start with ./, ../ or file:// is still an xpkg.
-	c := &addCmd{Package: "xpkg.crossplane.io/crossplane-contrib/provider-aws-eks:v1.0.0"}
+	c := &AddCmd{Package: "xpkg.crossplane.io/crossplane-contrib/provider-aws-eks:v1.0.0"}
 	dep, err := c.buildDependency(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

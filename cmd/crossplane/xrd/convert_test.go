@@ -27,7 +27,6 @@ import (
 	"github.com/invopop/jsonschema"
 	"github.com/spf13/afero"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
@@ -246,7 +245,7 @@ func newKongContext(t *testing.T) *kong.Context {
 // satisfy xcrd.ForCompositeResource / xcrd.ForCompositeResourceClaim.
 func minimalXRD(scope apiextensionsv1.CompositeResourceScope, claimNames *extv1.CustomResourceDefinitionNames) *apiextensionsv1.CompositeResourceDefinition {
 	return &apiextensionsv1.CompositeResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "xtestapps.example.org"},
+		Name: "xtestapps.example.org",
 		Spec: apiextensionsv1.CompositeResourceDefinitionSpec{
 			Group: "example.org",
 			Names: extv1.CustomResourceDefinitionNames{

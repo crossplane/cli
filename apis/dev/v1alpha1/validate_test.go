@@ -35,9 +35,7 @@ func TestValidate(t *testing.T) {
 	}{
 		"MinimalValid": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 				},
@@ -45,9 +43,7 @@ func TestValidate(t *testing.T) {
 		},
 		"MaximalValid": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					ProjectPackageMetadata: ProjectPackageMetadata{
@@ -93,9 +89,7 @@ func TestValidate(t *testing.T) {
 		},
 		"MissingRepository": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{},
 			},
 			expectedErrors: []string{
@@ -104,9 +98,7 @@ func TestValidate(t *testing.T) {
 		},
 		"AbsolutePaths": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Paths: &ProjectPaths{
@@ -128,9 +120,7 @@ func TestValidate(t *testing.T) {
 		},
 		"EmptyArchitectures": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository:    "xpkg.upbound.io/acmeco/my-project",
 					Architectures: []string{},
@@ -142,9 +132,7 @@ func TestValidate(t *testing.T) {
 		},
 		"ValidSchemaLanguages": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Schemas: &ProjectSchemas{
@@ -155,9 +143,7 @@ func TestValidate(t *testing.T) {
 		},
 		"EmptySchemaLanguages": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Schemas: &ProjectSchemas{
@@ -171,9 +157,7 @@ func TestValidate(t *testing.T) {
 		},
 		"UnsupportedSchemaLanguage": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Schemas: &ProjectSchemas{
@@ -187,9 +171,7 @@ func TestValidate(t *testing.T) {
 		},
 		"ValidAPIDependency": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -315,9 +297,7 @@ func TestValidate(t *testing.T) {
 		},
 		"InvalidAPIDependencyNoType": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -335,9 +315,7 @@ func TestValidate(t *testing.T) {
 		},
 		"InvalidAPIDependencyNoSource": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -353,9 +331,7 @@ func TestValidate(t *testing.T) {
 		},
 		"InvalidAPIDependencyMultipleSources": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -377,9 +353,7 @@ func TestValidate(t *testing.T) {
 		},
 		"InvalidAPIDependencyGitEmptyRepository": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -398,9 +372,7 @@ func TestValidate(t *testing.T) {
 		},
 		"InvalidAPIDependencyHTTPEmptyURL": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -419,9 +391,7 @@ func TestValidate(t *testing.T) {
 		},
 		"InvalidAPIDependencyK8sEmptyVersion": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -440,9 +410,7 @@ func TestValidate(t *testing.T) {
 		},
 		"ValidDirectoryFunction": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Functions: []Function{{
@@ -454,9 +422,7 @@ func TestValidate(t *testing.T) {
 		},
 		"ValidTarballFunction": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Functions: []Function{{
@@ -468,7 +434,7 @@ func TestValidate(t *testing.T) {
 		},
 		"FunctionMissingSource": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Functions: []Function{{
@@ -482,7 +448,7 @@ func TestValidate(t *testing.T) {
 		},
 		"FunctionUnknownSource": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Functions: []Function{{
@@ -497,7 +463,7 @@ func TestValidate(t *testing.T) {
 		},
 		"FunctionDirectorySourceMissingDirectory": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Functions: []Function{{
@@ -512,7 +478,7 @@ func TestValidate(t *testing.T) {
 		},
 		"FunctionTarballSourceMissingTarball": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Functions: []Function{{
@@ -527,7 +493,7 @@ func TestValidate(t *testing.T) {
 		},
 		"FunctionMultipleSources": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Functions: []Function{{
@@ -543,7 +509,7 @@ func TestValidate(t *testing.T) {
 		},
 		"FunctionDirectoryEmptyName": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Functions: []Function{{
@@ -558,7 +524,7 @@ func TestValidate(t *testing.T) {
 		},
 		"FunctionTarballEmptyPathPrefix": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Functions: []Function{{
@@ -573,7 +539,7 @@ func TestValidate(t *testing.T) {
 		},
 		"FunctionTarballAbsolutePathPrefix": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Functions: []Function{{
@@ -588,7 +554,7 @@ func TestValidate(t *testing.T) {
 		},
 		"FunctionDuplicateName": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Functions: []Function{
@@ -632,9 +598,7 @@ func TestDefault(t *testing.T) {
 	}{
 		"FullySpecified": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					ProjectPackageMetadata: ProjectPackageMetadata{
@@ -667,9 +631,7 @@ func TestDefault(t *testing.T) {
 				},
 			},
 			want: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					ProjectPackageMetadata: ProjectPackageMetadata{
@@ -705,17 +667,13 @@ func TestDefault(t *testing.T) {
 		},
 		"MinimalValid": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 				},
 			},
 			want: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Paths: &ProjectPaths{

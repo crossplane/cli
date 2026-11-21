@@ -24,7 +24,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/afero"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	apiextv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
@@ -618,10 +617,8 @@ func TestAddCompositionStep(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			comp := &apiextv1.Composition{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "apiextensions.crossplane.io/v1",
-					Kind:       "Composition",
-				},
+				APIVersion: "apiextensions.crossplane.io/v1",
+				Kind:       "Composition",
 				Spec: apiextv1.CompositionSpec{
 					Pipeline: tc.start,
 				},
@@ -652,11 +649,9 @@ func TestAddStepToComposition(t *testing.T) {
 	}{
 		"PrependsAndPersists": {
 			comp: &apiextv1.Composition{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "apiextensions.crossplane.io/v1",
-					Kind:       "Composition",
-				},
-				ObjectMeta: metav1.ObjectMeta{Name: "test-comp"},
+				APIVersion: "apiextensions.crossplane.io/v1",
+				Kind:       "Composition",
+				Name:       "test-comp",
 				Spec: apiextv1.CompositionSpec{
 					CompositeTypeRef: apiextv1.TypeReference{
 						APIVersion: "example.org/v1",

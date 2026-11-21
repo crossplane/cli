@@ -23,6 +23,9 @@ import (
 
 	"github.com/pkg/errors"
 
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
+	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
+
 	"github.com/crossplane/cli/v2/pkg/resource"
 )
 
@@ -70,4 +73,20 @@ func New(typeStr string) (Printer, error) {
 	}
 
 	return p, nil
+}
+
+// readyConditionType returns the condition type shown in the READY column
+// for the given resource. Operations don't have a Ready condition; the
+// condition representing their lifecycle is shown instead.
+func readyConditionType(r *resource.Resource) xpv2.ConditionType {
+	switch r.Unstructured.GroupVersionKind().GroupKind() {
+	case opsv1alpha1.OperationGroupVersionKind.GroupKind():
+		return opsv1alpha1.TypeSucceeded
+	case opsv1alpha1.WatchOperationGroupVersionKind.GroupKind():
+		return opsv1alpha1.TypeWatching
+	case opsv1alpha1.CronOperationGroupVersionKind.GroupKind():
+		return opsv1alpha1.TypeScheduling
+	}
+
+	return xpv2.TypeReady
 }

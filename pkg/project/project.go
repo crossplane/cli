@@ -211,6 +211,95 @@ func Build(ctx context.Context, cfg *config.Config, proj *devv1alpha1.Project, p
 // unconditionally.
 func noopCleanup() {}
 
+// UpdateSchemasOptions configures UpdateSchemas.
+type UpdateSchemasOptions struct {
+	// CacheDir is the xpkg dependency cache directory. Defaults to the
+	// standard per-user crossplane cache location.
+	CacheDir string
+	// GitUsername and GitToken authenticate git-based dependencies over
+	// HTTPS.
+	GitUsername string
+	GitToken    string
+	// GitProxy tunnels git operations via an HTTP CONNECT proxy.
+	GitProxy string
+	// GitInsecureHostKey disables SSH host key verification for git-based
+	// dependencies over SSH.
+	GitInsecureHostKey bool
+	// Refresh re-resolves dependency versions and refetches packages even
+	// when they are cached.
+	Refresh bool
+	// EventChannel receives progress events, if set.
+	EventChannel EventChannel
+}
+
+// UpdateSchemas resolves the project's dependencies and generates language
+// schemas for them and for the project's own APIs into the project's schemas
+// directory - the same work `crossplane dependency update-cache` does. Hosts
+// use it e.g. to regenerate a project's models without a build.
+func UpdateSchemas(ctx context.Context, cfg *config.Config, proj *devv1alpha1.Project, projFS afero.Fs, o UpdateSchemasOptions) error {
+	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(o.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
+	if err != nil {
+		return errors.Wrap(err, "cannot create xpkg client")
+	}
+
+	generators := generator.Filter(
+		generator.AllLanguages(
+			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
+			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+		),
+		proj.Spec.Schemas.GetLanguages(),
+	)
+
+	opts := []dependency.ManagerOption{
+		dependency.WithProjectFile(FileName),
+		dependency.WithSchemaGenerators(generators),
+		dependency.WithXpkgClient(client),
+	}
+	if o.GitToken != "" {
+		opts = append(opts, dependency.WithGitAuthProvider(&git.HTTPSAuthProvider{
+			Username: o.GitUsername,
+			Password: o.GitToken,
+		}))
+	}
+	if o.GitProxy != "" {
+		opts = append(opts, dependency.WithGitProxyURL(o.GitProxy))
+	}
+	if o.GitInsecureHostKey {
+		opts = append(opts, dependency.WithGitInsecureHostKey(true))
+	}
+	m := dependency.NewManager(proj, projFS, opts...)
+
+	if o.Refresh {
+		err = m.RefreshAll(ctx, o.EventChannel)
+	} else {
+		err = m.AddAll(ctx, o.EventChannel)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Also generate schemas for the project's own APIs, so the models are
+	// complete without a build (e.g. for language tooling in functions and
+	// tests that import them).
+	apisExist, err := afero.DirExists(projFS, proj.Spec.Paths.APIs)
+	if err != nil || !apisExist {
+		return err
+	}
+
+	o.EventChannel.SendEvent("Generating project API schemas", async.EventStatusStarted)
+	schemasFS := afero.NewBasePathFs(projFS, proj.Spec.Paths.Schemas)
+	schemaRunner := runner.NewRealSchemaRunner(runner.WithImageConfig(proj.Spec.ImageConfigs))
+	schemaMgr := manager.New(schemasFS, generators, schemaRunner)
+	apisFS := afero.NewBasePathFs(projFS, proj.Spec.Paths.APIs)
+	if _, err := schemaMgr.Generate(ctx, manager.NewFSSource(proj.Spec.Paths.APIs, apisFS)); err != nil {
+		o.EventChannel.SendEvent("Generating project API schemas", async.EventStatusFailure)
+		return errors.Wrap(err, "failed to generate project API schemas")
+	}
+	o.EventChannel.SendEvent("Generating project API schemas", async.EventStatusSuccess)
+
+	return nil
+}
+
 // SchemaSource is a source of resources (CRDs/XRDs) for which language
 // schemas can be generated.
 type SchemaSource = manager.Source

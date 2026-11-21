@@ -2178,10 +2178,10 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 
 		filtered := func(name, detail string) dt.XRImpact {
 			return dt.XRImpact{
-				ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: name, Namespace: "ns"},
-				Status:          dt.XRStatusFiltered,
-				FilterReason:    dt.FilterReasonManualPolicy,
-				FilterDetail:    detail,
+				APIVersion: "example.org/v1", Kind: "XR", Name: name, Namespace: "ns",
+				Status:       dt.XRStatusFiltered,
+				FilterReason: dt.FilterReasonManualPolicy,
+				FilterDetail: detail,
 			}
 		}
 
@@ -3014,5 +3014,48 @@ func TestDefaultCompDiffProcessor_DiffComposition_RenderOverlaps(t *testing.T) {
 				t.Errorf("%s\nDetermineExitCode(...) = %d, want %d", tc.reason, code, ExitCodeToolError)
 			}
 		})
+	}
+}
+
+// TestDefaultCompDiffProcessor_collectXRDiffs_ReportsProgress pins the
+// (done, total, detail) sequence collectXRDiffs reports while walking the
+// composites of one composition: zero-based position before each diff, the
+// full count, and the composite's diff key prefixed with the composition
+// being processed.
+func TestDefaultCompDiffProcessor_collectXRDiffs_ReportsProgress(t *testing.T) {
+	a := tu.NewResource("example.org/v1", "XResource", "a").Build()
+	b := tu.NewResource("example.org/v1", "XResource", "b").Build()
+
+	type report struct {
+		done, total int
+		detail      string
+	}
+	var got []report
+	progress := NewProgress()
+	progress.SetReporter(func(done, total int, detail string) {
+		got = append(got, report{done: done, total: total, detail: detail})
+	})
+
+	processor := &DefaultCompDiffProcessor{
+		xrProc: &tu.MockDiffProcessor{
+			DiffSingleResourceFn: func(_ context.Context, xr *un.Unstructured, _ types.CompositionProvider) (map[string]*dt.ResourceDiff, map[string]*dt.ResourceDiff, error) {
+				return map[string]*dt.ResourceDiff{xr.GetName(): {ResourceName: xr.GetName(), DiffType: dt.DiffTypeAdded}}, nil, nil
+			},
+		},
+		config: ProcessorConfig{
+			Logger:   tu.TestLogger(t, false),
+			Progress: progress,
+		},
+	}
+
+	comp := tu.NewComposition("my-comp").WithCompositeTypeRef("example.org/v1", "XResource").WithPipelineMode().Build()
+	processor.collectXRDiffs(t.Context(), []*un.Unstructured{a, b}, comp, "", nil, nil, nil)
+
+	want := []report{
+		{done: 0, total: 2, detail: "my-comp: example.org/v1/XResource//a"},
+		{done: 1, total: 2, detail: "my-comp: example.org/v1/XResource//b"},
+	}
+	if diff := gcmp.Diff(want, got, gcmp.AllowUnexported(report{})); diff != "" {
+		t.Errorf("collectXRDiffs(): progress reports -want, +got:\n%s", diff)
 	}
 }

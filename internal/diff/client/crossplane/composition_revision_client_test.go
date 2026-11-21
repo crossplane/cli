@@ -64,11 +64,9 @@ func TestDefaultCompositionRevisionClient_GetCompositionRevision(t *testing.T) {
 
 	// Create a test composition revision
 	testRev := &apiextensionsv1.CompositionRevision{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-comp-abc123",
-			Labels: map[string]string{
-				LabelCompositionName: "test-comp",
-			},
+		Name: "test-comp-abc123",
+		Labels: map[string]string{
+			LabelCompositionName: "test-comp",
 		},
 		Spec: apiextensionsv1.CompositionRevisionSpec{
 			Revision: 1,
@@ -178,11 +176,9 @@ func TestDefaultCompositionRevisionClient_GetLatestRevisionForComposition(t *tes
 
 	// Create test revisions
 	rev1 := &apiextensionsv1.CompositionRevision{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-comp-rev1",
-			Labels: map[string]string{
-				LabelCompositionName: "test-comp",
-			},
+		Name: "test-comp-rev1",
+		Labels: map[string]string{
+			LabelCompositionName: "test-comp",
 		},
 		Spec: apiextensionsv1.CompositionRevisionSpec{
 			Revision: 1,
@@ -194,11 +190,9 @@ func TestDefaultCompositionRevisionClient_GetLatestRevisionForComposition(t *tes
 	}
 
 	rev2 := &apiextensionsv1.CompositionRevision{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-comp-rev2",
-			Labels: map[string]string{
-				LabelCompositionName: "test-comp",
-			},
+		Name: "test-comp-rev2",
+		Labels: map[string]string{
+			LabelCompositionName: "test-comp",
 		},
 		Spec: apiextensionsv1.CompositionRevisionSpec{
 			Revision: 2,
@@ -210,11 +204,9 @@ func TestDefaultCompositionRevisionClient_GetLatestRevisionForComposition(t *tes
 	}
 
 	rev3 := &apiextensionsv1.CompositionRevision{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-comp-rev3",
-			Labels: map[string]string{
-				LabelCompositionName: "test-comp",
-			},
+		Name: "test-comp-rev3",
+		Labels: map[string]string{
+			LabelCompositionName: "test-comp",
 		},
 		Spec: apiextensionsv1.CompositionRevisionSpec{
 			Revision: 3,
@@ -227,11 +219,9 @@ func TestDefaultCompositionRevisionClient_GetLatestRevisionForComposition(t *tes
 
 	// Create duplicate revision numbers (error case)
 	duplicateRev1 := &apiextensionsv1.CompositionRevision{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "dup-comp-rev1",
-			Labels: map[string]string{
-				LabelCompositionName: "dup-comp",
-			},
+		Name: "dup-comp-rev1",
+		Labels: map[string]string{
+			LabelCompositionName: "dup-comp",
 		},
 		Spec: apiextensionsv1.CompositionRevisionSpec{
 			Revision: 5,
@@ -243,11 +233,9 @@ func TestDefaultCompositionRevisionClient_GetLatestRevisionForComposition(t *tes
 	}
 
 	duplicateRev2 := &apiextensionsv1.CompositionRevision{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "dup-comp-rev2",
-			Labels: map[string]string{
-				LabelCompositionName: "dup-comp",
-			},
+		Name: "dup-comp-rev2",
+		Labels: map[string]string{
+			LabelCompositionName: "dup-comp",
 		},
 		Spec: apiextensionsv1.CompositionRevisionSpec{
 			Revision: 5, // Same revision number as duplicateRev1
@@ -421,7 +409,7 @@ func TestDefaultCompositionRevisionClient_GetLatestRevisionForComposition_Select
 		maps.Copy(lbls, extraLabels)
 
 		return &apiextensionsv1.CompositionRevision{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: lbls},
+			Name: name, Labels: lbls,
 			Spec: apiextensionsv1.CompositionRevisionSpec{
 				Revision:         revision,
 				CompositeTypeRef: apiextensionsv1.TypeReference{APIVersion: "example.org/v1", Kind: "XR1"},
@@ -555,11 +543,9 @@ func TestDefaultCompositionRevisionClient_GetCompositionFromRevision(t *testing.
 		"ValidRevision": {
 			reason: "Should extract composition from revision",
 			revision: &apiextensionsv1.CompositionRevision{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-comp-abc123",
-					Labels: map[string]string{
-						LabelCompositionName: "test-comp",
-					},
+				Name: "test-comp-abc123",
+				Labels: map[string]string{
+					LabelCompositionName: "test-comp",
 				},
 				Spec: apiextensionsv1.CompositionRevisionSpec{
 					Revision: 1,
@@ -578,9 +564,7 @@ func TestDefaultCompositionRevisionClient_GetCompositionFromRevision(t *testing.
 				},
 			},
 			expectComp: &apiextensionsv1.Composition{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-comp",
-				},
+				Name: "test-comp",
 				Spec: apiextensionsv1.CompositionSpec{
 					CompositeTypeRef: apiextensionsv1.TypeReference{
 						APIVersion: "example.org/v1",
@@ -607,9 +591,7 @@ func TestDefaultCompositionRevisionClient_GetCompositionFromRevision(t *testing.
 		"NoLabelUsesRevisionName": {
 			reason: "Should use revision name when label is missing",
 			revision: &apiextensionsv1.CompositionRevision{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-comp-abc123",
-				},
+				Name: "test-comp-abc123",
 				Spec: apiextensionsv1.CompositionRevisionSpec{
 					Revision: 1,
 					CompositeTypeRef: apiextensionsv1.TypeReference{
@@ -679,8 +661,8 @@ func TestDefaultCompositionRevisionClient_ConcurrentUse(t *testing.T) {
 		WithGetResourcesByLabel(func(_ context.Context, _ schema.GroupVersionKind, _ string, sel metav1.LabelSelector) ([]*un.Unstructured, error) {
 			comp := sel.MatchLabels[LabelCompositionName]
 			rev := &apiextensionsv1.CompositionRevision{
-				ObjectMeta: metav1.ObjectMeta{Name: comp + "-rev1", Labels: map[string]string{LabelCompositionName: comp}},
-				Spec:       apiextensionsv1.CompositionRevisionSpec{Revision: 1},
+				Name: comp + "-rev1", Labels: map[string]string{LabelCompositionName: comp},
+				Spec: apiextensionsv1.CompositionRevisionSpec{Revision: 1},
 			}
 
 			obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(rev)

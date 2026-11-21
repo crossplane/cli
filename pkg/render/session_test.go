@@ -481,7 +481,7 @@ func TestSessionSweepsOnlyItsOwnNetworks(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cli := &fakeDocker{}
 			s := NewSession(tc.flags, logging.NewNopLogger(), WithDockerClient(cli))
-			cli.networks = []network.Summary{{Network: network.Network{ID: "stray", Labels: managedLabels(s.ID())}}}
+			cli.networks = []network.Summary{{ID: "stray", Labels: managedLabels(s.ID())}}
 
 			if _, err := s.Start(t.Context(), nil); err != nil {
 				t.Fatalf("\n%s\nStart(...): unexpected error: %v", tc.reason, err)
@@ -518,7 +518,7 @@ func TestSessionWithDockerClient(t *testing.T) {
 	cli := &fakeDocker{
 		host:       "tcp://remote:2376",
 		containers: []container.Summary{{ID: "dead-fn", State: container.StateRunning, Labels: managedLabels(deadID)}},
-		networks:   []network.Summary{{Network: network.Network{ID: "dead-net", Labels: managedLabels(deadID)}}},
+		networks:   []network.Summary{{ID: "dead-net", Labels: managedLabels(deadID)}},
 	}
 	s := NewSession(EngineFlags{CrossplaneImage: "render-image"}, logging.NewNopLogger(),
 		WithDockerClient(cli),
@@ -635,7 +635,7 @@ func (f *fakeDocker) NetworkList(_ context.Context, o client.NetworkListOptions)
 func (f *fakeDocker) NetworkCreate(_ context.Context, name string, o client.NetworkCreateOptions) (client.NetworkCreateResult, error) {
 	f.mu.Lock()
 	f.network = name
-	f.networks = append(f.networks, network.Summary{Network: network.Network{ID: "net-id", Name: name, Labels: o.Labels}})
+	f.networks = append(f.networks, network.Summary{ID: "net-id", Name: name, Labels: o.Labels})
 	f.mu.Unlock()
 	return client.NetworkCreateResult{ID: "net-id"}, nil
 }

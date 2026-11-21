@@ -320,7 +320,7 @@ func ctr(id string, state container.ContainerState, labels map[string]string, ne
 }
 
 func net(name string, labels map[string]string) network.Summary {
-	return network.Summary{Network: network.Network{ID: name, Name: name, Labels: labels}}
+	return network.Summary{ID: name, Name: name, Labels: labels}
 }
 
 // hostContainers is a Docker host shared by three dead runs, a live run, this

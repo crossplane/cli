@@ -31,7 +31,6 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
@@ -75,7 +74,7 @@ spec:
 	sp := terminal.NewSpinnerPrinter(io.Discard, false)
 	cfg := &config.Config{}
 
-	c := &BuildCmd{ProjectFile: projectFile, CacheDir: filepath.Join(dir, "cache"), GitFlags: common.GitFlags{GitToken: token, GitUsername: "test-user"}, MaxConcurrency: 1}
+	c := &BuildCmd{ProjectFile: projectFile, CacheDir: filepath.Join(dir, "cache"), GitToken: token, GitUsername: "test-user", MaxConcurrency: 1}
 	if err := c.AfterApply(); err != nil {
 		t.Fatal(err)
 	}

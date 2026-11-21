@@ -27,7 +27,6 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/daemon"
 	"github.com/moby/moby/client"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
@@ -54,9 +53,7 @@ func LoadFunctionDependencies(resolver Resolver, proj *devv1alpha1.Project) ([]p
 	fns := make([]pkgv1.Function, 0, len(refs))
 	for _, resolved := range refs {
 		f := pkgv1.Function{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: xpkg.ToDNSLabel(resolved.Context().RepositoryStr()),
-			},
+			Name: xpkg.ToDNSLabel(resolved.Context().RepositoryStr()),
 			Spec: pkgv1.FunctionSpec{
 				PackageSpec: pkgv1.PackageSpec{
 					Package: resolved.Name(),
@@ -138,9 +135,7 @@ func EmbeddedFunctionsToDaemon(ctx context.Context, imageMap ImageTagMap) ([]pkg
 		}
 
 		fns = append(fns, pkgv1.Function{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: xpkg.ToDNSLabel(tag.Context().RepositoryStr()),
-			},
+			Name: xpkg.ToDNSLabel(tag.Context().RepositoryStr()),
 			Spec: pkgv1.FunctionSpec{
 				PackageSpec: pkgv1.PackageSpec{
 					Package: tag.Name(),

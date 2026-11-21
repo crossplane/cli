@@ -31,7 +31,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/sergi/go-diff/diffmatchpatch"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
@@ -53,6 +52,7 @@ import (
 	difftypes "github.com/crossplane/cli/v2/internal/diff/types"
 	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/plan"
+	"github.com/crossplane/cli/v2/internal/terminal"
 	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
 
@@ -137,8 +137,8 @@ func TestSimulateScope(t *testing.T) {
 
 func TestSimulateProcessorOptions(t *testing.T) {
 	c := &Runner{sel: CompositionFlags{IncludePinned: true, AnalyzeOn: "spec-change"}, Flags: &Flags{
-		MaxIterations: 7,
-		EngineFlags:   xprender.EngineFlags{CrossplaneVersion: "v2.3.4", CrossplaneDockerNetwork: "ci"},
+		MaxIterations:     7,
+		CrossplaneVersion: "v2.3.4", CrossplaneDockerNetwork: "ci",
 
 		MaxNestedDepth:     4,
 		IgnorePaths:        []string{"a.b"},
@@ -147,10 +147,10 @@ func TestSimulateProcessorOptions(t *testing.T) {
 		DryRunOn:           "existing",
 	}}
 
-	creds := []corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "creds"}}}
+	creds := []corev1.Secret{{Name: "creds"}}
 	cfg := dp.ProcessorConfig{}
 	advisories := dp.NewAdvisoryCollector(nil)
-	for _, o := range c.processorOptions(advisories, logging.NewNopLogger(), creds, []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn"}}}, nil, nil) {
+	for _, o := range c.processorOptions(advisories, logging.NewNopLogger(), creds, []pkgv1.Function{{Name: "fn"}}, nil, nil) {
 		o(&cfg)
 	}
 	if cfg.Advisories != advisories {
@@ -240,14 +240,14 @@ func TestSimulateProcessorOptions(t *testing.T) {
 
 func TestFunctionProviderFactory(t *testing.T) {
 	ics := []pkgv1beta1.ImageConfig{{
-		ObjectMeta: metav1.ObjectMeta{Name: "mirror"},
+		Name: "mirror",
 		Spec: pkgv1beta1.ImageConfigSpec{
 			MatchImages:  []pkgv1beta1.ImageMatch{{Prefix: "xpkg.crossplane.io/"}},
 			RewriteImage: &pkgv1beta1.ImageRewrite{Prefix: "mirror.example.com/"},
 		},
 	}}
 	fn := func(name, pkg string) pkgv1.Function {
-		return pkgv1.Function{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: pkg}}}
+		return pkgv1.Function{Name: name, Spec: pkgv1.FunctionSpec{PackageSpec: pkgv1.PackageSpec{Package: pkg}}}
 	}
 	cluster := fn("fn-cluster", "xpkg.crossplane.io/org/fn-cluster:v1")
 	projFns := []pkgv1.Function{
@@ -257,7 +257,7 @@ func TestFunctionProviderFactory(t *testing.T) {
 	embedded := map[string]name.Digest{"fn-own": {}}
 
 	comp := &apiextensionsv1.Composition{
-		ObjectMeta: metav1.ObjectMeta{Name: "comp"},
+		Name: "comp",
 		Spec: apiextensionsv1.CompositionSpec{
 			Mode: apiextensionsv1.CompositionModePipeline,
 			Pipeline: []apiextensionsv1.PipelineStep{
@@ -709,7 +709,7 @@ func TestSimulateRun(t *testing.T) {
 			if tc.args.files {
 				msg = "cannot simulate Compositions"
 			}
-			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), tc.args.proc, []*un.Unstructured{{}}, msg)
+			diff := tc.args.cmd.diffCompositions(k, logging.NewNopLogger(), terminal.NewNopSpinnerPrinter(), dp.NewProgress(), tc.args.proc, []*un.Unstructured{{}}, msg)
 			err := tc.args.cmd.simulate(ctx, logging.NewNopLogger(), tc.args.initClients, tc.args.proc, diff)
 
 			if diff := cmp.Diff(tc.want.code, exitCode(err)); diff != "" {
@@ -917,7 +917,7 @@ func TestProviderSource(t *testing.T) {
 }
 
 func TestSimulateProcessorOptionsDockerNetwork(t *testing.T) {
-	fns := []pkgv1.Function{{ObjectMeta: metav1.ObjectMeta{Name: "fn", Annotations: map[string]string{xprender.AnnotationKeyRuntimeDockerNetwork: "fn-net"}}}}
+	fns := []pkgv1.Function{{Name: "fn", Annotations: map[string]string{xprender.AnnotationKeyRuntimeDockerNetwork: "fn-net"}}}
 	cases := map[string]struct {
 		env  string
 		args []string
@@ -1047,7 +1047,7 @@ func TestDiffComposites(t *testing.T) {
 			k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: &bytes.Buffer{}}}
 			xp := &xpclient.Clients{Definition: defs, Composition: &testutils.MockCompositionClient{}}
 
-			_, err := c.diffComposites(k, logging.NewNopLogger(), proc, xp, "", tc.xrs)(context.Background())
+			_, err := c.diffComposites(k, logging.NewNopLogger(), terminal.NewNopSpinnerPrinter(), dp.NewProgress(), proc, xp, "", tc.xrs)(context.Background())
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("\n%s\ndiffComposites(...): want error containing %q, got %v", tc.reason, tc.wantErr, err)
 			}
@@ -1058,5 +1058,32 @@ func TestDiffComposites(t *testing.T) {
 				t.Errorf("\n%s\ndiffComposites(...): want output containing %q, got:\n%s", tc.reason, tc.wantOut, stdout.String())
 			}
 		})
+	}
+}
+
+func TestSimulateWithProgress(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	sp := terminal.NewSpinnerPrinter(&buf, false)
+	progress := dp.NewProgress()
+
+	ran := false
+	simulateWithProgress(sp, progress, func() {
+		ran = true
+		// Reports flow to the reporter the session installed; plain output
+		// drops the updates but must not break the session.
+		progress.Report(0, 14, "example.org/v1, Kind=XNetwork/prod")
+	})
+
+	if !ran {
+		t.Fatal("simulateWithProgress did not run the wrapped function")
+	}
+	out := buf.String()
+	if !strings.Contains(out, simulatingMsg+"...") {
+		t.Errorf("expected a started line for %q, got:\n%s", simulatingMsg, out)
+	}
+	if !strings.Contains(out, "✓ "+simulatingMsg) {
+		t.Errorf("expected a success line for %q, got:\n%s", simulatingMsg, out)
 	}
 }

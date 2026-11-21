@@ -37,8 +37,8 @@ func TestNew(t *testing.T) {
 		"InvalidTLS": {
 			reason: "A config with unusable TLS data should fail client creation.",
 			config: &rest.Config{
-				Host:            "https://example.com",
-				TLSClientConfig: rest.TLSClientConfig{CAData: []byte("not a cert"), CertData: []byte("x")},
+				Host:   "https://example.com",
+				CAData: []byte("not a cert"), CertData: []byte("x"),
 			},
 			err: true,
 		},

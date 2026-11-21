@@ -1,0 +1,3 @@
+rules:
+  xrd/no-bools:
+    severity: warn

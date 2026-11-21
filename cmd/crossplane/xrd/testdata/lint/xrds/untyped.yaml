@@ -1,0 +1,24 @@
+# Not structural: spec.acl has no type.
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xfirewalls.example.org
+spec:
+  group: example.org
+  names:
+    kind: XFirewall
+    plural: xfirewalls
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              acl: {}
+              open:
+                type: boolean

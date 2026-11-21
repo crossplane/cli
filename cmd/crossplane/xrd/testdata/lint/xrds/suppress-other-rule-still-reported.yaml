@@ -1,0 +1,25 @@
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xqueues.example.org
+spec:
+  group: example.org
+  names:
+    kind: XQueue
+    plural: xqueues
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              # crossplane-lint-disable-next-line xrd/no-bools
+              zones:
+                type: array
+                items:
+                  type: boolean

@@ -1,0 +1,6 @@
+apiVersion: lint.crossplane.io/v1alpha1
+kind: LintConfig
+# The only config fixture in flow style. It proves flow style is accepted
+# and means the same as the block style every other fixture uses.
+rules:
+  xrd/lists-need-list-type: {severity: warn}

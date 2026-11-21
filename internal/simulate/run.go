@@ -43,11 +43,11 @@ import (
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/diff/client"
 	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	k8client "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
-	"github.com/crossplane/cli/v2/internal/async"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
 	"github.com/crossplane/cli/v2/internal/diff/ref"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
@@ -291,7 +291,7 @@ const simulatingMsg = "Simulating changes"
 // error handling; the spinner line itself always resolves, so the step style
 // matches the setup steps above it.
 func simulateWithProgress(sp terminal.SpinnerPrinter, progress *dp.Progress, fn func()) {
-	//nolint:errcheck // The wrapped function carries its error out via the closure.
+	// The wrapped function carries its error out via the closure.
 	_ = sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
 		ch.SendNamedEvent(simulatingMsg, simulatingMsg, async.EventStatusStarted)
 		progress.SetReporter(func(done, total int, detail string) {

@@ -47,13 +47,13 @@ import (
 
 	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	dp "github.com/crossplane/cli/v2/internal/diff/diffprocessor"
-	"github.com/crossplane/cli/v2/internal/terminal"
 	"github.com/crossplane/cli/v2/internal/diff/renderer"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 	difftypes "github.com/crossplane/cli/v2/internal/diff/types"
 	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/plan"
+	"github.com/crossplane/cli/v2/internal/terminal"
 	xprender "github.com/crossplane/cli/v2/pkg/render"
 )
 

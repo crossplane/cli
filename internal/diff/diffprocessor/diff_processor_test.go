@@ -4237,8 +4237,8 @@ func TestDefaultDiffProcessor_PerformDiff_ReportsProgress(t *testing.T) {
 	compositionProvider := func(ctx context.Context, res *un.Unstructured) (types.ResolvedComposition, error) {
 		return xpClients.Composition.FindMatchingComposition(ctx, res)
 	}
-	//nolint:errcheck // Every resource fails composition resolution by design.
-	processor.PerformDiff(t.Context(), []*un.Unstructured{resource1, resource2}, compositionProvider)
+	// Every resource fails composition resolution by design.
+	_, _ = processor.PerformDiff(t.Context(), []*un.Unstructured{resource1, resource2}, compositionProvider)
 
 	want := []report{
 		{done: 0, total: 2, detail: "example.org/v1/XR1//my-xr-1"},

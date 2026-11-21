@@ -41,10 +41,10 @@ func buildResource(apiVersion, kind, namespace, name string, labels map[string]s
 }
 
 func buildWatchOp(name string, watch opsv1alpha1.WatchSpec) *opsv1alpha1.WatchOperation {
-	return &opsv1alpha1.WatchOperation{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       opsv1alpha1.WatchOperationSpec{Watch: watch},
-	}
+	wo := &opsv1alpha1.WatchOperation{Spec: opsv1alpha1.WatchOperationSpec{Watch: watch}}
+	wo.SetName(name)
+
+	return wo
 }
 
 type operationOpt func(*opsv1alpha1.Operation)
@@ -87,12 +87,22 @@ func appliedResource(apiVersion, kind, namespace, name string) operationOpt {
 }
 
 func buildOperation(name string, opts ...operationOpt) *opsv1alpha1.Operation {
-	op := &opsv1alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	op := &opsv1alpha1.Operation{}
+	op.SetName(name)
+
 	for _, o := range opts {
 		o(op)
 	}
 
 	return op
+}
+
+// buildCronOp returns a CronOperation with the given name.
+func buildCronOp(name string) *opsv1alpha1.CronOperation {
+	co := &opsv1alpha1.CronOperation{}
+	co.SetName(name)
+
+	return co
 }
 
 // withUID returns the object with the given UID set, to pin that owner
@@ -207,7 +217,7 @@ func TestEnrich(t *testing.T) {
 			args: args{
 				mode: ModeAll,
 				objects: []client.Object{
-					&opsv1alpha1.CronOperation{ObjectMeta: metav1.ObjectMeta{Name: "nightly"}},
+					buildCronOp("nightly"),
 					buildOperation("nightly-123",
 						ownedBy(opsv1alpha1.CronOperationKind, "nightly", ""),
 						appliedResource("example.org/v1", "Thing", "default", "my-thing")),
@@ -325,7 +335,7 @@ func TestEnrich(t *testing.T) {
 			args: args{
 				mode: ModeAll,
 				objects: []client.Object{
-					withUID(&opsv1alpha1.CronOperation{ObjectMeta: metav1.ObjectMeta{Name: "nightly"}}, "uid-new"),
+					withUID(buildCronOp("nightly"), "uid-new"),
 					buildOperation("nightly-123",
 						ownedBy(opsv1alpha1.CronOperationKind, "nightly", "uid-old"),
 						appliedResource("example.org/v1", "Thing", "default", "my-thing")),

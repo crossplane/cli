@@ -57,8 +57,15 @@ const (
 	//
 	// TODO(adamwg): We should build an image with python3 and python3-venv
 	// pre-installed so we don't have to install them for every build.
+	// The build is reproducible so that rebuilding an unchanged function
+	// yields the identical layer: SOURCE_DATE_EPOCH (1980-01-01, the oldest
+	// time a zip can represent) pins the timestamps hatchling stamps into the
+	// wheel and so the installed files, and the bytecode is compiled with
+	// hash-based invalidation, whose .pyc content doesn't embed source
+	// mtimes the way the default timestamp mode does.
 	pythonBuildScript = `set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+export SOURCE_DATE_EPOCH=315532800
 apt-get update
 apt-get install -y --no-install-recommends python3 python3-venv
 python3 -m venv /build
@@ -73,8 +80,11 @@ for arch in $ARCHS ; do
     --platform=manylinux_2_39_$arch \
     --platform=manylinux_1_2_$arch \
     --only-binary=:all: \
+    --no-compile \
     --target=/fn_$arch/lib/python$PY_VERSION/site-packages \
     /whl/*.whl
+  /fn_$arch/bin/python -m compileall -q --invalidation-mode checked-hash \
+    /fn_$arch/lib/python$PY_VERSION/site-packages
 done
 `
 )
@@ -242,9 +252,15 @@ func (b *pythonBuilder) buildVenv(ctx context.Context, c BuildContext) (map[stri
 	ret := make(map[string][]byte)
 	for _, arch := range c.Architectures {
 		pyArch, _ := pythonArchitecture(arch) // Ignore the error since we already did this once.
-		ret[arch], err = docker.TarFromContainer(ctx, cid, fmt.Sprintf("/fn_%s", pyArch))
+		raw, err := docker.TarFromContainer(ctx, cid, fmt.Sprintf("/fn_%s", pyArch))
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to retrieve built function for architecture %s", arch)
+		}
+		// The container tar carries the build's wall-clock times; normalized,
+		// the layer digest depends only on the venv's contents.
+		ret[arch], err = filesystem.NormalizeTar(raw)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to normalize built function for architecture %s", arch)
 		}
 	}
 

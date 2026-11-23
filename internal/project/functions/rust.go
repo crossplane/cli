@@ -294,9 +294,15 @@ func (b *rustBuilder) buildBinaries(ctx context.Context, buildImage string, c Bu
 		// Copying a single file out of a container yields a tar holding just
 		// that file, under its base name. Appended to the runtime image as a
 		// layer, that puts the binary at rustBinaryPath.
-		ret[arch], err = docker.TarFromContainer(ctx, cid, path.Join(rustBuildOutput, arch, path.Base(rustBinaryPath)))
+		raw, err := docker.TarFromContainer(ctx, cid, path.Join(rustBuildOutput, arch, path.Base(rustBinaryPath)))
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to retrieve built function for architecture %s", arch)
+		}
+		// The container tar carries the build's wall-clock times; normalized,
+		// the layer digest depends only on the binary's contents.
+		ret[arch], err = filesystem.NormalizeTar(raw)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to normalize built function for architecture %s", arch)
 		}
 	}
 

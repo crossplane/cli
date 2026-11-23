@@ -17,8 +17,11 @@ limitations under the License.
 package manager
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-git/go-billy/v5"
@@ -763,5 +766,108 @@ func TestLocalSource(t *testing.T) {
 				t.Errorf("Version: %v", err)
 			}
 		})
+	}
+}
+
+// TestK8sSource pins the k8s source's contract: the git checkout backing
+// Resources is an implementation detail, so the source's identity and
+// version — what the schema lock records and what lock comparison reads —
+// stay those of the k8s dependency and need no network access.
+func TestK8sSource(t *testing.T) {
+	t.Parallel()
+
+	dep := v1alpha1.Dependency{
+		Type: v1alpha1.DependencyTypeK8s,
+		K8s:  &v1alpha1.K8sDependency{Version: "1.34.0"},
+	}
+
+	t.Run("LockIdentityWithoutNetwork", func(t *testing.T) {
+		t.Parallel()
+
+		// The cloner must stay untouched: Version runs before the lock
+		// comparison, so a clone here would fetch kubernetes/kubernetes
+		// even when the recorded revision already matches.
+		cloner := &mockCloner{}
+		src := &k8sOpenAPISource{
+			k8sRef: dep.K8s,
+			git:    NewGitSource(k8sAsGitDependency(dep), cloner, &mockAuthProvider{}),
+		}
+
+		if got, want := src.ID(), "k8s://1.34.0"; got != want {
+			t.Errorf("ID() = %q, want %q", got, want)
+		}
+		version, err := src.Version(t.Context())
+		if err != nil {
+			t.Fatalf("Version() failed: %v", err)
+		}
+		if got, want := version, "1.34.0"; got != want {
+			t.Errorf("Version() = %q, want %q", got, want)
+		}
+		if got := src.Type(); got != SourceTypeOpenAPI {
+			t.Errorf("Type() = %q, want %q", got, SourceTypeOpenAPI)
+		}
+		if cloner.cloneCalls != 0 {
+			t.Errorf("ID/Version/Type cloned %d times, want no clones", cloner.cloneCalls)
+		}
+	})
+
+	t.Run("ResourcesDelegateToGit", func(t *testing.T) {
+		t.Parallel()
+
+		cloner := &mockCloner{ref: plumbing.NewHashReference("refs/tags/v1.34.0", plumbing.NewHash("abc123def456789012345678901234567890abcd"))}
+		src := &k8sOpenAPISource{
+			k8sRef: dep.K8s,
+			git:    NewGitSource(k8sAsGitDependency(dep), cloner, &mockAuthProvider{}),
+		}
+
+		fs, err := src.Resources(t.Context())
+		if err != nil {
+			t.Fatalf("Resources() failed: %v", err)
+		}
+		if fs == nil {
+			t.Fatal("Resources() returned no filesystem")
+		}
+		if cloner.cloneCalls != 1 {
+			t.Errorf("Resources() cloned %d times, want 1", cloner.cloneCalls)
+		}
+	})
+
+	t.Run("GitDependencyShape", func(t *testing.T) {
+		t.Parallel()
+
+		gitDep := k8sAsGitDependency(dep)
+		if got, want := gitDep.Git.Repository, "https://github.com/kubernetes/kubernetes"; got != want {
+			t.Errorf("Repository = %q, want %q", got, want)
+		}
+		if got, want := gitDep.Git.Ref, "v1.34.0"; got != want {
+			t.Errorf("Ref = %q, want %q (the configured version always gains a v prefix)", got, want)
+		}
+		if got, want := gitDep.Git.Path, "api/openapi-spec"; got != want {
+			t.Errorf("Path = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestGitSourceResourcesCancelled verifies a cancelled context stops the
+// clone retry loop: when fetching several dependencies, another one failing
+// cancels the group's context, and a doomed fetch must not keep retrying.
+func TestGitSourceResourcesCancelled(t *testing.T) {
+	t.Parallel()
+
+	cloner := &mockCloner{cloneErr: errors.New("network down")}
+	src := NewGitSource(v1alpha1.Dependency{
+		Type: v1alpha1.DependencyTypeCRD,
+		Git:  &v1alpha1.GitDependency{Repository: "https://example.org/repo", Ref: "main"},
+	}, cloner, &mockAuthProvider{})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := src.Resources(ctx)
+	if err == nil || !strings.Contains(err.Error(), "clone cancelled") {
+		t.Fatalf("Resources() with cancelled context: want clone cancelled error, got %v", err)
+	}
+	if cloner.cloneCalls != 0 {
+		t.Errorf("Resources() cloned %d times after cancellation, want none", cloner.cloneCalls)
 	}
 }

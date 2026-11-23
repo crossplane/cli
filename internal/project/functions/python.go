@@ -309,7 +309,7 @@ func newPythonBuilder(imageConfigs []pkgv1beta1.ImageConfig) *pythonBuilder {
 	return &pythonBuilder{
 		buildImage:   images.Image(images.Python, images.ImageBuild),
 		runtimeImage: images.Image(images.Python, images.ImageRuntime),
-		transport:    http.DefaultTransport,
+		transport:    registryTransport,
 		configStore:  clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

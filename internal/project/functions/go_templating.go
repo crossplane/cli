@@ -153,7 +153,7 @@ func (b *goTemplatingBuilder) Build(ctx context.Context, c BuildContext) ([]v1.I
 
 func newGoTemplatingBuilder(imageConfigs []pkgv1beta1.ImageConfig) *goTemplatingBuilder {
 	return &goTemplatingBuilder{
-		transport:   http.DefaultTransport,
+		transport:   registryTransport,
 		baseImage:   images.Image(images.GoTemplating, images.ImageBase),
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}

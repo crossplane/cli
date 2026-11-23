@@ -226,7 +226,7 @@ func setImageEnvvars(image v1.Image, envVars map[string]string) (v1.Image, error
 func newKCLBuilder(imageConfigs []v1beta1.ImageConfig) *kclBuilder {
 	return &kclBuilder{
 		baseImage:   images.Image(images.KCL, images.ImageBase),
-		transport:   http.DefaultTransport,
+		transport:   registryTransport,
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

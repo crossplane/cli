@@ -133,7 +133,7 @@ func (b *goBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, erro
 func newGoBuilder(imageConfigs []pkgv1beta1.ImageConfig) *goBuilder {
 	return &goBuilder{
 		baseImage:   images.Image(images.Go, images.ImageBase),
-		transport:   http.DefaultTransport,
+		transport:   registryTransport,
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

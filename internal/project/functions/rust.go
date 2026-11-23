@@ -372,7 +372,7 @@ func newRustBuilder(imageConfigs []pkgv1beta1.ImageConfig) *rustBuilder {
 	return &rustBuilder{
 		buildImage:   images.Image(images.Rust, images.ImageBuild),
 		runtimeImage: images.Image(images.Rust, images.ImageRuntime),
-		transport:    http.DefaultTransport,
+		transport:    registryTransport,
 		configStore:  clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

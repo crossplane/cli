@@ -225,6 +225,9 @@ func CleanupDetached(ctx context.Context, c Cleaner, logger logging.Logger) {
 func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.Unstructured, compositionProvider types.CompositionProvider) (*dt.XRReport, error) {
 	p.config.Logger.Debug("Processing resources with composition provider", "count", len(resources))
 
+	// The resources are the user's input, dry-run applied as whoever applies them; see withApplier.
+	ctx = withUserSupplied(ctx)
+
 	if len(resources) == 0 {
 		// Nothing was processed, so there is no report to render.
 		p.config.Logger.Debug("No resources to process")
@@ -439,6 +442,9 @@ func (p *DefaultDiffProcessor) diffSingleResourceInternal(ctx context.Context, r
 	}
 
 	p.warnIfDeleting(composite.Cluster, parentXR, resourceID)
+
+	// Who applies the XR or claim, for its own dry run; composed resources, nested XRs included, carry none.
+	ctx = p.withApplier(ctx, composite.Cluster, parentXR, resourceID)
 
 	// Get the composition using the provided function. It is resolved from the defaulted effective XR,
 	// so that it sees the revision a composite is pinned to and the update policy an XRD defaults.

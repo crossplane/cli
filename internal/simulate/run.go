@@ -56,6 +56,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/kube"
+	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -388,6 +389,7 @@ func (c *Runner) processorOptions(advisories *dp.AdvisoryCollector, logger loggi
 		dp.WithEventualState(c.EventualState),
 		dp.WithAnalyzeOn(dp.AnalyzeOn(c.sel.AnalyzeOn)),
 		dp.WithDryRunOn(dp.DryRunOn(c.DryRunOn)),
+		dp.WithApplier(plan.ApplierFlags{FieldManager: c.FieldManager, ServerSide: c.ServerSide}),
 		dp.WithIgnorePaths(c.IgnorePaths),
 		dp.WithIncludeManual(c.sel.IncludePinned),
 		dp.WithMaxRenderIterations(c.MaxIterations),

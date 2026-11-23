@@ -17,6 +17,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/compare"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	dtypes "github.com/crossplane/cli/v2/internal/diff/types"
+	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/pkg/render"
 	"github.com/crossplane/cli/v2/pkg/resource"
 )
@@ -134,6 +135,12 @@ func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un
 		// are owned by this manager but not present in the apply request).
 		fieldOwner := k8.GetComposedFieldOwner(current)
 
+		// A user-supplied XR or claim is applied by whoever applies its manifest, not by Crossplane, so
+		// it is dry-run applied as that applier: the apiserver then removes the fields it would.
+		if composite == nil {
+			fieldOwner = c.userApplierFieldOwner(ctx, fieldOwner, resourceID)
+		}
+
 		applyDesired := sanitizeForDryRun(desired)
 
 		// Perform a dry-run apply to get the result after we'd apply
@@ -177,6 +184,31 @@ func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un
 	}
 
 	return diff, nil
+}
+
+// userApplierFieldOwner returns the field manager to dry-run apply a user-supplied XR or claim as,
+// from the applier withApplier put on ctx: its manager under server-side apply, otherwise fallback,
+// today's owner. Without an applier on ctx (a nested XR) it is fallback.
+func (c *DefaultDiffCalculator) userApplierFieldOwner(ctx context.Context, fallback, resourceID string) string {
+	a, ok := applierFrom(ctx)
+	if !ok {
+		return fallback
+	}
+
+	c.logger.Debug("Resolved applier", "resource", resourceID, "mode", a.Mode, "fieldManager", a.FieldManager, "candidates", a.Candidates, "clientSide", a.ClientSide)
+
+	switch a.Mode {
+	case plan.ApplyServerSide:
+		return a.FieldManager
+	case plan.ApplyClientSide:
+		// TODO(jcogilvie): model client-side apply: a dry-run three-way JSON merge patch from the
+		// last-applied-configuration annotation, as kubectl sends. Until then it is today's dry-run apply.
+		return fallback
+	case plan.ApplyUndetermined:
+		// withApplier warned, if the object records any applier.
+	}
+
+	return fallback
 }
 
 // CalculateNonRemovalDiffs computes diffs for modified/added resources and returns

@@ -16,6 +16,7 @@ import (
 	k8 "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	"github.com/crossplane/cli/v2/internal/diff/compare"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/plan"
 )
 
 const (
@@ -136,6 +137,11 @@ type ProcessorConfig struct {
 	// DryRunOn selects which resources are verified against the apiserver. Zero value means
 	// DryRunOnAll, matching the CLI default.
 	DryRunOn DryRunOn
+
+	// Applier is who applies the user-supplied composite resources and claims, as the user said with
+	// --field-manager and --server-side. Its zero value infers it from each one's live managedFields;
+	// see plan.ResolveApplier. It never changes how composed resources are diffed.
+	Applier plan.ApplierFlags
 
 	// EventualState enables iterative simulation to show eventual state after all reconciliation
 	// cycles complete. Useful with function-sequencer which hides later stage resources.
@@ -300,6 +306,14 @@ func WithDryRunOn(dryRunOn DryRunOn) ProcessorOption {
 		if dryRunOn != "" {
 			config.DryRunOn = dryRunOn
 		}
+	}
+}
+
+// WithApplier sets who applies the user-supplied composite resources and claims (see
+// ProcessorConfig.Applier).
+func WithApplier(applier plan.ApplierFlags) ProcessorOption {
+	return func(config *ProcessorConfig) {
+		config.Applier = applier
 	}
 }
 

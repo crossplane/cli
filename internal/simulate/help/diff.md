@@ -12,6 +12,19 @@ These flags tune the diff:
   also dry-run creates added resources, so their diffs include server-side
   defaulting and admission. `all` needs the `create` verb and falls back per
   resource without it.
+- `--field-manager` and `--server-side` say how the input composite resources
+  and claims are applied, as `kubectl apply`'s flags of the same names do, so
+  the diff shows the fields that applying them would remove. Unset, they're
+  inferred from each one's `managedFields`: the applier is its only field
+  manager with an `Apply` entry, other than Crossplane's, or client-side apply
+  if it has only a `kubectl.kubernetes.io/last-applied-configuration`
+  annotation. With more than one candidate, the command warns that dropped
+  fields may not be shown removed. `--server-side` alone picks the only
+  server-side applier; `--server-side --field-manager M` server-side applies
+  as M; `--server-side=false` is client-side apply; `--field-manager M` alone
+  is server-side apply as M if M has an `Apply` entry, otherwise client-side.
+  They only affect the composite resources and claims `xr simulate` takes as
+  input, never composed resources.
 - `--eventual-state` shows the state after all reconciliation cycles complete.
 - `--max-recv-message-size` raises the function gRPC message limit, in MB.
 - `--no-color` and `--compact` change how `-o diff` prints.

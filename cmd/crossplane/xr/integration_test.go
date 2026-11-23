@@ -1966,9 +1966,9 @@ Summary: 2 modified, 2 removed`,
 			ExpectedError:      false,
 			ExpectedExitCode:   dp.ExitCodeSuccess,
 		},
-		// An XR a non-Crossplane manager (Argo CD here) server-side applied. Its manifest drops a field
-		// it set, so applying the manifest under that manager removes the field, and the plan must say
-		// so. Fails until the dry-run apply models the removal.
+		// An XR a non-Crossplane manager (Argo CD here) server-side applied, then Crossplane reconciled.
+		// Its manifest drops a field that manager set, so applying the manifest under that manager
+		// removes the field, and the plan must say so. Crossplane's own manager is no candidate applier.
 		"FieldDroppedFromUserAppliedXRIsReportedRemoved": {
 			Reason:       "A field the applying manager owns and the manifest omits is shown removed",
 			OutputFormat: "json",
@@ -1980,6 +1980,7 @@ Summary: 2 modified, 2 removed`,
 			},
 			FieldManagerApplies: []integration.FieldManagerApply{
 				{File: "testdata/diff/resources/existing-xr-user-applied-with-team.yaml", FieldManager: "argocd-controller"},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
 			},
 			ExpectedStructured: simtest.Expect().
 				WithSummary(0, 1, 0).

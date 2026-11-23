@@ -1,0 +1,11 @@
+# The XR as a non-Crossplane manager last applied it: targeting by selector.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XOneOfResource
+metadata:
+  name: test-one-of
+  namespace: default
+spec:
+  target:
+    selector:
+      matchLabels:
+        app: example

@@ -1966,6 +1966,51 @@ Summary: 2 modified, 2 removed`,
 			ExpectedError:      false,
 			ExpectedExitCode:   dp.ExitCodeSuccess,
 		},
+		// An XR a non-Crossplane manager (Argo CD here) server-side applied. Its manifest drops a field
+		// it set, so applying the manifest under that manager removes the field, and the plan must say
+		// so. Fails until the dry-run apply models the removal.
+		"FieldDroppedFromUserAppliedXRIsReportedRemoved": {
+			Reason:       "A field the applying manager owns and the manifest omits is shown removed",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-user-applied-with-team.yaml", FieldManager: "argocd-controller"},
+			},
+			ExpectedStructured: simtest.Expect().
+				WithSummary(0, 1, 0).
+				WithModifiedResource("XTestDefaultResource", "test-resource-user-applied", "default").
+				WithFieldChange("spec.tags.team", "platform", nil),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// The one-of case: the XRD's CEL rule allows name or selector, not both. Switching the XR from
+		// selector to name is valid only if selector is removed; without modelling the removal the
+		// dry-run sees both and fails "Only one of". Fails until the dry-run apply models the removal.
+		"OneOfFieldSwitchOnUserAppliedXRRemovesOldField": {
+			Reason:       "Switching a CEL one-of field from selector to name shows selector removed and name added, with no error",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-one-of-name.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-one-of.yaml",
+				"testdata/diff/resources/composition-one-of.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-one-of-selector.yaml", FieldManager: "argocd-controller"},
+			},
+			ExpectedStructured: simtest.Expect().
+				WithSummary(0, 1, 0).
+				WithModifiedResource("XOneOfResource", "test-one-of", "default").
+				WithFieldChange("spec.target.selector.matchLabels.app", "example", nil).
+				WithFieldChange("spec.target.name", nil, "example"),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
+		},
 		// With no apiserver result for an addition, its defaults have to be predicted locally. These
 		// pin that keeping local defaults out of dry-run payloads did not also take them out of the
 		// additions that are never sent: an XRD default on the XR, and a CRD default on a composed

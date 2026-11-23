@@ -1,0 +1,8 @@
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XTestDefaultResource
+metadata:
+  name: test-resource-user-applied
+  namespace: default
+spec:
+  size: "large"
+  # spec.tags.team, which the existing XR's applier set, is dropped here.

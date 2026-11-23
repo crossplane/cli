@@ -18,16 +18,15 @@ limitations under the License.
 // packages the CLI uses by default: function base images, the images schema
 // generation and the dev control plane run, and default package dependencies.
 //
-// The defaults live in the embedded images.yaml, which doubles as a
-// machine-readable inventory of what to copy into a mirror for air-gapped
-// use. A host CLI embedding the crossplane commands as a library can replace
-// defaults with Override and OverrideTool, e.g. to pin its own base images;
-// overrides must be installed at startup, before any command runs.
+// The defaults live in the embedded images.yaml. A host CLI embedding the
+// crossplane commands as a library can replace the whole catalog with
+// Override, which must be called at startup, before any image is read.
 package images
 
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"sigs.k8s.io/yaml"
 
@@ -35,7 +34,7 @@ import (
 )
 
 //go:embed images.yaml
-var imagesYAML []byte
+var embeddedYAML []byte
 
 // Language is a supported project language.
 type Language string
@@ -87,40 +86,52 @@ type catalog struct {
 	Tools     map[Tool]string                   `json:"tools"`
 }
 
-// defaults is the catalog parsed from the embedded images.yaml with any
-// Override applied. Overrides are installed once at host-CLI startup, so a
-// plain mutex is plenty.
+// The catalog yaml is read exactly once, on first use; Override replaces it
+// before that. Catalog reads after the parse are lock-free.
 //
 //nolint:gochecknoglobals // The catalog is process-wide by design, like the defaults it replaces.
 var (
-	mu       sync.Mutex
-	defaults *catalog
+	catalogYAML atomic.Pointer[[]byte]
+	loadOnce    sync.Once
+	loaded      *catalog
 )
 
+// Override replaces the entire catalog with the given yaml, in the same
+// schema as this package's images.yaml. For host CLIs embedding the
+// crossplane commands as a library; it must be called at startup, before any
+// image is read, and panics when called later — by then defaults may already
+// have been handed out, so a late override is a bug at the call site.
+func Override(imagesYAML []byte) {
+	if loaded != nil {
+		panic("images.Override must be called before any image is read from the catalog")
+	}
+	y := imagesYAML
+	catalogYAML.Store(&y)
+}
+
 func load() *catalog {
-	// Callers hold mu.
-	if defaults != nil {
-		return defaults
-	}
+	loadOnce.Do(func() {
+		y := embeddedYAML
+		if o := catalogYAML.Load(); o != nil {
+			y = *o
+		}
 
-	c := &catalog{}
-	if err := yaml.Unmarshal(imagesYAML, c); err != nil {
-		// The yaml is embedded; failing to parse it is a programming error
-		// no caller can handle.
-		panic(fmt.Sprintf("embedded images.yaml is invalid: %v", err))
-	}
-	defaults = c
+		c := &catalog{}
+		if err := yaml.Unmarshal(y, c); err != nil {
+			// The embedded yaml parsing is covered by tests, and a host CLI
+			// supplying broken yaml has no caller that could handle it.
+			panic(fmt.Sprintf("images catalog yaml is invalid: %v", err))
+		}
+		loaded = c
+	})
 
-	return c
+	return loaded
 }
 
 // Image returns the image used for the given language and role. It panics if
 // the pair isn't in the catalog: the set of keys is fixed at compile time,
 // so a miss is a programming error, mirroring the constants this replaces.
 func Image(l Language, t ImageType) string {
-	mu.Lock()
-	defer mu.Unlock()
-
 	img, ok := load().Languages[l][t]
 	if !ok {
 		panic(fmt.Sprintf("no %s image for language %s in the image catalog", t, l))
@@ -132,9 +143,6 @@ func Image(l Language, t ImageType) string {
 // ToolImage returns the image or package used for the given tool. It panics
 // if the tool isn't in the catalog, mirroring the constants this replaces.
 func ToolImage(t Tool) string {
-	mu.Lock()
-	defer mu.Unlock()
-
 	img, ok := load().Tools[t]
 	if !ok {
 		panic(fmt.Sprintf("no image for tool %s in the image catalog", t))
@@ -143,36 +151,9 @@ func ToolImage(t Tool) string {
 	return img
 }
 
-// Override replaces the image used for the given language and role. For host
-// CLIs embedding the crossplane commands as a library; install overrides at
-// startup, before any command runs.
-func Override(l Language, t ImageType, ref string) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	c := load()
-	if c.Languages[l] == nil {
-		c.Languages[l] = map[ImageType]string{}
-	}
-	c.Languages[l][t] = ref
-}
-
-// OverrideTool replaces the image or package used for the given tool. For
-// host CLIs embedding the crossplane commands as a library; install
-// overrides at startup, before any command runs.
-func OverrideTool(t Tool, ref string) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	load().Tools[t] = ref
-}
-
 // All returns every image in the catalog, keyed "<language>.<type>" and
-// "tools.<tool>" — the inventory a mirror for air-gapped use needs to copy.
+// "tools.<tool>".
 func All() map[string]string {
-	mu.Lock()
-	defer mu.Unlock()
-
 	c := load()
 	out := make(map[string]string, len(c.Tools)+len(c.Languages)*2)
 	for l, types := range c.Languages {

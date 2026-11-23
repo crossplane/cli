@@ -129,13 +129,16 @@ func (c *generateCmd) resolveAutoReady(ctx context.Context) error {
 		pkg = rewritten
 	}
 
-	ref, err := name.ParseReference(pkg, name.WithDefaultRegistry(""))
+	// The package has no tag - its version is a constraint on the dependency
+	// - so it parses as a repository, strictly: the registry must be
+	// explicit for the name derivation below to drop it.
+	repo, err := name.NewRepository(pkg, name.StrictValidation)
 	if err != nil {
 		return errors.Wrapf(err, "invalid function-auto-ready package %q", pkg)
 	}
 
 	c.autoReadyPackage = pkg
-	c.autoReadyName = xpkg.ToDNSLabel(ref.Context().RepositoryStr())
+	c.autoReadyName = xpkg.ToDNSLabel(repo.RepositoryStr())
 
 	return nil
 }

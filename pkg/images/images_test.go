@@ -18,6 +18,7 @@ package images
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -63,26 +64,51 @@ func TestCatalogComplete(t *testing.T) {
 	}
 }
 
-// TestOverride verifies a host CLI can replace defaults wholesale - another
-// registry, repository and tag - which image config prefix rewriting can't
-// express.
-func TestOverride(t *testing.T) {
-	orig := Image(KCL, ImageBase)
-	t.Cleanup(func() { Override(KCL, ImageBase, orig) })
+// resetCatalog returns the package to its unread state, so a test can
+// exercise the Override-before-first-read contract in a process where other
+// tests already read the catalog.
+func resetCatalog() {
+	catalogYAML.Store(nil)
+	loadOnce = sync.Once{}
+	loaded = nil
+}
 
-	Override(KCL, ImageBase, "xpkg.example.org/mirror/function-kcl-base:v9.9.9-custom")
+// TestOverride verifies a host CLI can replace the whole catalog - other
+// registries, repositories and tags - and that a late Override, after
+// defaults may already have been handed out, panics instead of taking
+// partial effect.
+func TestOverride(t *testing.T) {
+	resetCatalog()
+	t.Cleanup(resetCatalog)
+
+	Override([]byte(`
+languages:
+  kcl:
+    baseImage: "xpkg.example.org/mirror/function-kcl-base:v9.9.9-custom"
+tools:
+  functionAutoReady: "xpkg.example.org/mirror/function-auto-ready"
+`))
 	if got, want := Image(KCL, ImageBase), "xpkg.example.org/mirror/function-kcl-base:v9.9.9-custom"; got != want {
 		t.Errorf("Image() after Override() = %q, want %q", got, want)
 	}
-
-	origTool := ToolImage(ToolFunctionAutoReady)
-	t.Cleanup(func() { OverrideTool(ToolFunctionAutoReady, origTool) })
-
-	OverrideTool(ToolFunctionAutoReady, "xpkg.example.org/mirror/function-auto-ready")
 	if got, want := ToolImage(ToolFunctionAutoReady), "xpkg.example.org/mirror/function-auto-ready"; got != want {
-		t.Errorf("ToolImage() after OverrideTool() = %q, want %q", got, want)
+		t.Errorf("ToolImage() after Override() = %q, want %q", got, want)
 	}
-	if !strings.HasPrefix(origTool, "xpkg.crossplane.io/") {
-		t.Errorf("default function-auto-ready package %q does not live on xpkg.crossplane.io", origTool)
+
+	defer func() {
+		if recover() == nil {
+			t.Error("Override() after the catalog was read must panic")
+		}
+	}()
+	Override([]byte("languages: {}"))
+}
+
+// TestDefaultCatalog pins where the defaults live.
+func TestDefaultCatalog(t *testing.T) {
+	resetCatalog()
+	t.Cleanup(resetCatalog)
+
+	if pkg := ToolImage(ToolFunctionAutoReady); !strings.HasPrefix(pkg, "xpkg.crossplane.io/") {
+		t.Errorf("default function-auto-ready package %q does not live on xpkg.crossplane.io", pkg)
 	}
 }

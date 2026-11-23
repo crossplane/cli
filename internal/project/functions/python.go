@@ -50,10 +50,14 @@ const (
 	pythonVersion = "3.13"
 
 	// pythonBuildScript is the shell pipeline that runs in the build
-	// container.
+	// container. The default debian build image installs python and hatch
+	// first; a prepared build image (e.g. a host CLI's own, with python3,
+	// python3-venv and /build/bin/hatch baked in) skips straight to the
+	// build.
 	//
 	// TODO(adamwg): We should build an image with python3 and python3-venv
 	// pre-installed so we don't have to install them for every build.
+	//
 	// The build is reproducible so that rebuilding an unchanged function
 	// yields the identical layer: SOURCE_DATE_EPOCH (1980-01-01, the oldest
 	// time a zip can represent) pins the timestamps hatchling stamps into the
@@ -63,10 +67,14 @@ const (
 	pythonBuildScript = `set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export SOURCE_DATE_EPOCH=315532800
-apt-get update
-apt-get install -y --no-install-recommends python3 python3-venv
-python3 -m venv /build
-/build/bin/pip install --quiet hatch
+if ! python3 -m venv -h >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y --no-install-recommends python3 python3-venv
+fi
+if [ ! -x /build/bin/hatch ]; then
+  python3 -m venv /build
+  /build/bin/pip install --quiet hatch
+fi
 /build/bin/hatch build -t wheel /whl
 for arch in $ARCHS ; do
   python3 -m venv /fn_$arch

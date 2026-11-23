@@ -29,7 +29,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/afero"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -1026,11 +1025,9 @@ func TestManager_AddDependency_Local(t *testing.T) {
 	}
 
 	proj := &v1alpha1.Project{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "dev.crossplane.io/v1alpha1",
-			Kind:       "Project",
-		},
-		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+		APIVersion: "dev.crossplane.io/v1alpha1",
+		Kind:       "Project",
+		Name:       "test-project",
 		Spec: v1alpha1.ProjectSpec{
 			Repository: "xpkg.crossplane.io/test/test",
 			Paths:      &v1alpha1.ProjectPaths{Schemas: "schemas"},

@@ -189,9 +189,7 @@ func TestValidate(t *testing.T) {
 		},
 		"ValidAPIDependencyLocal": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -205,9 +203,7 @@ func TestValidate(t *testing.T) {
 		},
 		"ValidAPIDependencyLocalDotSlash": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -221,9 +217,7 @@ func TestValidate(t *testing.T) {
 		},
 		"InvalidAPIDependencyLocalEmptyPath": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -240,9 +234,7 @@ func TestValidate(t *testing.T) {
 		},
 		"InvalidAPIDependencyLocalAbsolutePath": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -259,9 +251,7 @@ func TestValidate(t *testing.T) {
 		},
 		"InvalidAPIDependencyLocalEscapesProject": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{
@@ -278,9 +268,7 @@ func TestValidate(t *testing.T) {
 		},
 		"InvalidAPIDependencyLocalEscapesProjectNested": {
 			input: &Project{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-project",
-				},
+				Name: "my-project",
 				Spec: ProjectSpec{
 					Repository: "xpkg.upbound.io/acmeco/my-project",
 					Dependencies: []Dependency{

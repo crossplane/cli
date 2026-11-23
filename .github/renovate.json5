@@ -126,6 +126,27 @@
       enabled: true,
     },
     {
+      // New Python build image tags are only pushed when we change its
+      // Dockerfile, and Debian base image updates for that Dockerfile are
+      // what trigger a rebuild. Don't hold either back for the docker
+      // schedule above.
+      description: 'Update the Python build image and its base image promptly',
+      matchDatasources: [
+        'docker',
+      ],
+      matchDepNames: [
+        'ghcr.io/crossplane/cli-python-build',
+        'docker.io/library/debian',
+      ],
+      matchFileNames: [
+        'pkg/images/images.yaml',
+        'hack/python-build-image.dockerfile',
+      ],
+      schedule: [
+        'at any time',
+      ],
+    },
+    {
       description: 'Ignore k8s.io/client-go older versions, they switched to semantic version and old tags are still available in the repo',
       matchDatasources: [
         'go',

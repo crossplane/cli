@@ -18,6 +18,7 @@ package diffprocessor
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -27,6 +28,9 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
+
+// warningContextResource is the context key of an advisory that names the resource it is about.
+const warningContextResource = "resource"
 
 // userSuppliedKey marks a context whose top-level composite resources and claims the user supplied
 // as input, so they are dry-run applied as whoever applies them. PerformDiff sets it; the composite
@@ -69,8 +73,8 @@ func (p *DefaultDiffProcessor) withApplier(ctx context.Context, live *un.Unstruc
 			Message: "Cannot tell which field manager applies this resource, so fields its manifest drops may not be shown as removed; " +
 				"name the applier with --field-manager, and --server-side or --server-side=false",
 			Context: map[string]string{
-				"resource":   resourceID,
-				"candidates": candidateAppliers(a),
+				warningContextResource: resourceID,
+				"candidates":           candidateAppliers(a),
 			},
 		})
 	}
@@ -82,7 +86,7 @@ func (p *DefaultDiffProcessor) withApplier(ctx context.Context, live *un.Unstruc
 func candidateAppliers(a plan.Applier) string {
 	c := a.Candidates
 	if a.ClientSide {
-		c = append(c[:len(c):len(c)], "client-side apply ("+plan.LastAppliedConfigAnnotation+")")
+		c = append(slices.Clip(c), "client-side apply ("+plan.LastAppliedConfigAnnotation+")")
 	}
 
 	return strings.Join(c, ", ")

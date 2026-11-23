@@ -642,8 +642,8 @@ func (p *DefaultDiffProcessor) warnIfDeleting(existingXRFromCluster *un.Unstruct
 	p.config.Advisories.Raise(dt.OutputWarning{
 		Message: "The resource being diffed is being deleted in the cluster; the diff compares against a resource that is going away",
 		Context: map[string]string{
-			"resource":          resourceID,
-			"deletionTimestamp": deletedAt.UTC().Format(time.RFC3339),
+			warningContextResource: resourceID,
+			"deletionTimestamp":    deletedAt.UTC().Format(time.RFC3339),
 		},
 	})
 }

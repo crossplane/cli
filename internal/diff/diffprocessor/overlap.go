@@ -148,9 +148,9 @@ func checkInputs(advisories dt.Advisories, resources []*un.Unstructured) []input
 			advisories.Raise(dt.OutputWarning{
 				Message: "Ignoring a duplicate input: it is identical to an earlier one",
 				Context: map[string]string{
-					"resource":    fmt.Sprintf("%s/%s", res.GetKind(), res.GetName()),
-					"input":       strconv.Itoa(i + 1),
-					"duplicateOf": strconv.Itoa(j + 1),
+					warningContextResource: fmt.Sprintf("%s/%s", res.GetKind(), res.GetName()),
+					"input":                strconv.Itoa(i + 1),
+					"duplicateOf":          strconv.Itoa(j + 1),
 				},
 			})
 

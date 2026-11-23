@@ -22,7 +22,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/utils/ptr"
 )
 
 func TestResolveApplier(t *testing.T) {
@@ -106,32 +105,32 @@ func TestResolveApplier(t *testing.T) {
 		},
 		"ServerSideOneServerSideApplier": {
 			reason: "--server-side alone takes the only server-side candidate, ignoring a client-side one.",
-			args:   args{live: live(true, apply("argocd-controller")), flags: ApplierFlags{ServerSide: ptr.To(true)}},
+			args:   args{live: live(true, apply("argocd-controller")), flags: ApplierFlags{ServerSide: new(true)}},
 			want:   Applier{Mode: ApplyServerSide, FieldManager: "argocd-controller", Candidates: []string{"argocd-controller"}, ClientSide: true},
 		},
 		"ServerSideTwoServerSideAppliers": {
 			reason: "--server-side alone with two server-side candidates leaves the applier undetermined.",
-			args:   args{live: live(false, apply("argocd-controller"), apply("platform-operator")), flags: ApplierFlags{ServerSide: ptr.To(true)}},
+			args:   args{live: live(false, apply("argocd-controller"), apply("platform-operator")), flags: ApplierFlags{ServerSide: new(true)}},
 			want:   Applier{Mode: ApplyUndetermined, Candidates: []string{"argocd-controller", "platform-operator"}},
 		},
 		"ServerSideOnlyClientSideApplier": {
 			reason: "--server-side alone with no server-side candidate leaves the applier undetermined.",
-			args:   args{live: live(true, update("kubectl-client-side-apply")), flags: ApplierFlags{ServerSide: ptr.To(true)}},
+			args:   args{live: live(true, update("kubectl-client-side-apply")), flags: ApplierFlags{ServerSide: new(true)}},
 			want:   Applier{Mode: ApplyUndetermined, ClientSide: true},
 		},
 		"ServerSideWithFieldManager": {
 			reason: "--server-side --field-manager M is server-side apply as M, even when M has applied nothing yet.",
-			args:   args{live: live(true, apply("argocd-controller")), flags: ApplierFlags{FieldManager: "flux", ServerSide: ptr.To(true)}},
+			args:   args{live: live(true, apply("argocd-controller")), flags: ApplierFlags{FieldManager: "flux", ServerSide: new(true)}},
 			want:   Applier{Mode: ApplyServerSide, FieldManager: "flux", Candidates: []string{"argocd-controller"}, ClientSide: true},
 		},
 		"NotServerSide": {
 			reason: "--server-side=false is client-side apply.",
-			args:   args{live: live(false, apply("argocd-controller")), flags: ApplierFlags{ServerSide: ptr.To(false)}},
+			args:   args{live: live(false, apply("argocd-controller")), flags: ApplierFlags{ServerSide: new(false)}},
 			want:   Applier{Mode: ApplyClientSide, Candidates: []string{"argocd-controller"}},
 		},
 		"NotServerSideWithFieldManager": {
 			reason: "--server-side=false is client-side apply even with --field-manager naming a server-side applier.",
-			args:   args{live: live(false, apply("argocd-controller")), flags: ApplierFlags{FieldManager: "argocd-controller", ServerSide: ptr.To(false)}},
+			args:   args{live: live(false, apply("argocd-controller")), flags: ApplierFlags{FieldManager: "argocd-controller", ServerSide: new(false)}},
 			want:   Applier{Mode: ApplyClientSide, Candidates: []string{"argocd-controller"}},
 		},
 		"FieldManagerThatApplies": {

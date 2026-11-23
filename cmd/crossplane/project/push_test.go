@@ -17,6 +17,8 @@ limitations under the License.
 package project
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -58,9 +60,11 @@ func TestPushStalledRegistry(t *testing.T) {
 
 	type args struct {
 		responseHeaderTimeout time.Duration
+		timeout               time.Duration // Run's ctx deadline; 0 means none.
 	}
 	type want struct {
 		errContains string
+		errIs       error
 		within      time.Duration
 	}
 	cases := map[string]struct {
@@ -77,6 +81,11 @@ func TestPushStalledRegistry(t *testing.T) {
 				// timeout; allow for its backoff anyway.
 				within: 10 * time.Second,
 			},
+		},
+		"ContextDeadline": {
+			reason: "A deadline on Run's context should end a stalled push before the transport's header timeout.",
+			args:   args{responseHeaderTimeout: time.Hour, timeout: 200 * time.Millisecond},
+			want:   want{errIs: context.DeadlineExceeded, within: 2 * time.Second},
 		},
 	}
 
@@ -104,12 +113,22 @@ func TestPushStalledRegistry(t *testing.T) {
 				t.Fatalf("AfterApply(): %v", err)
 			}
 
+			ctx := t.Context()
+			if tc.args.timeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tc.args.timeout)
+				defer cancel()
+			}
+
 			start := time.Now()
-			err := c.Run(logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
+			err := c.Run(ctx, logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
 			elapsed := time.Since(start)
 
 			if err == nil || !strings.Contains(err.Error(), tc.want.errContains) {
 				t.Errorf("\n%s\nRun(...): want error containing %q, got %v", tc.reason, tc.want.errContains, err)
+			}
+			if tc.want.errIs != nil && !errors.Is(err, tc.want.errIs) {
+				t.Errorf("\n%s\nRun(...): want errors.Is(err, %v), got %v", tc.reason, tc.want.errIs, err)
 			}
 			if elapsed > tc.want.within {
 				t.Errorf("\n%s\nRun(...): took %s, want within %s", tc.reason, elapsed, tc.want.within)

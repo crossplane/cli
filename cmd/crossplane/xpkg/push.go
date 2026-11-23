@@ -94,7 +94,7 @@ func (c *pushCmd) AfterApply() error {
 }
 
 // Run runs the push cmd.
-func (c *pushCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
+func (c *pushCmd) Run(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter) error {
 	anns, err := parseAnnotations(c.OCIAnnotation)
 	if err != nil {
 		return errors.Wrap(err, errParseAnnotations)
@@ -148,7 +148,7 @@ func (c *pushCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
 		remote.WithTransport(t),
 	}
 
-	return pushImages(logger, sp, images, c.Package, anns, options...)
+	return pushImages(ctx, logger, sp, images, c.Package, anns, options...)
 }
 
 // packageImage describes a package image that will be pushed.
@@ -216,7 +216,7 @@ func pushSingle(ctx context.Context, adds *[]mutate.IndexAddendum, i int, pi pac
 var defaultPushTransport http.RoundTripper = clixpkg.NewRegistryTransport(clixpkg.RegistryResponseHeaderTimeout, clixpkg.RegistrySendPingTimeout) //nolint:gochecknoglobals // One connection pool shared by every push, like http.DefaultTransport.
 
 // pushImages pushes package images to the given URL using the provided options.
-func pushImages(logger logging.Logger, sp terminal.SpinnerPrinter, images []packageImage, url string, annotations map[string]string, options ...remote.Option) error {
+func pushImages(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter, images []packageImage, url string, annotations map[string]string, options ...remote.Option) error {
 	if len(options) == 0 {
 		options = []remote.Option{
 			remote.WithAuthFromKeychain(authn.DefaultKeychain),
@@ -241,7 +241,7 @@ func pushImages(logger logging.Logger, sp terminal.SpinnerPrinter, images []pack
 		img = annotateImage(img, annotations)
 
 		push := func() error {
-			if err := remote.Write(tag, img, options...); err != nil {
+			if err := remote.Write(tag, img, append(options, remote.WithContext(ctx))...); err != nil {
 				return errors.Wrapf(err, errFmtPushPackage, pi.Path)
 			}
 
@@ -261,10 +261,10 @@ func pushImages(logger logging.Logger, sp terminal.SpinnerPrinter, images []pack
 	// typically used to create a multi-platform image.
 	adds := make([]mutate.IndexAddendum, len(images))
 
-	g, ctx := errgroup.WithContext(context.Background())
+	g, gctx := errgroup.WithContext(ctx)
 	for i, pi := range images {
 		g.Go(func() error {
-			return pushSingle(ctx, &adds, i, pi, tag, annotations, logger, options...)
+			return pushSingle(gctx, &adds, i, pi, tag, annotations, logger, options...)
 		})
 	}
 
@@ -278,7 +278,7 @@ func pushImages(logger logging.Logger, sp terminal.SpinnerPrinter, images []pack
 
 	pushIndex := func() error {
 		idx := annotateIndex(mutate.AppendManifests(empty.Index, adds...), annotations)
-		if err := remote.WriteIndex(tag, idx, options...); err != nil {
+		if err := remote.WriteIndex(tag, idx, append(options, remote.WithContext(ctx))...); err != nil {
 			return errors.Wrapf(err, errFmtWriteIndex, len(adds))
 		}
 

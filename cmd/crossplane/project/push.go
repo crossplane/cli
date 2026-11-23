@@ -110,9 +110,7 @@ func (c *PushCmd) AfterApply() error {
 }
 
 // Run executes the push command.
-func (c *PushCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
-	ctx := context.Background()
-
+func (c *PushCmd) Run(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter) error {
 	if c.Repository != "" {
 		ref, err := name.NewRepository(c.Repository)
 		if err != nil {

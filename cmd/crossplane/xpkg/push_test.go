@@ -17,6 +17,8 @@ limitations under the License.
 package xpkg
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -57,10 +59,13 @@ func TestPushStalledRegistry(t *testing.T) {
 	t.Parallel()
 
 	type args struct {
-		packages int
+		packages              int
+		responseHeaderTimeout time.Duration
+		timeout               time.Duration // Run's ctx deadline; 0 means none.
 	}
 	type want struct {
 		errContains string
+		errIs       error
 		within      time.Duration
 	}
 	cases := map[string]struct {
@@ -70,7 +75,7 @@ func TestPushStalledRegistry(t *testing.T) {
 	}{
 		"SinglePackageResponseHeaderTimeout": {
 			reason: "Pushing one package to a registry that never sends response headers should fail once the transport's header timeout expires.",
-			args:   args{packages: 1},
+			args:   args{packages: 1, responseHeaderTimeout: 100 * time.Millisecond},
 			want: want{
 				errContains: "timeout awaiting response headers",
 				// httptest serves HTTP/1.1, where ggcr does not retry the
@@ -80,11 +85,21 @@ func TestPushStalledRegistry(t *testing.T) {
 		},
 		"MultiPackageResponseHeaderTimeout": {
 			reason: "Pushing several packages to a registry that never sends response headers should fail once the transport's header timeout expires.",
-			args:   args{packages: 2},
+			args:   args{packages: 2, responseHeaderTimeout: 100 * time.Millisecond},
 			want: want{
 				errContains: "timeout awaiting response headers",
 				within:      10 * time.Second,
 			},
+		},
+		"SinglePackageContextDeadline": {
+			reason: "A deadline on Run's context should end a stalled single-package push before the transport's header timeout.",
+			args:   args{packages: 1, responseHeaderTimeout: time.Hour, timeout: 200 * time.Millisecond},
+			want:   want{errIs: context.DeadlineExceeded, within: 2 * time.Second},
+		},
+		"MultiPackageContextDeadline": {
+			reason: "A deadline on Run's context should end a stalled multi-package push before the transport's header timeout.",
+			args:   args{packages: 2, responseHeaderTimeout: time.Hour, timeout: 200 * time.Millisecond},
+			want:   want{errIs: context.DeadlineExceeded, within: 2 * time.Second},
 		},
 	}
 
@@ -101,15 +116,25 @@ func TestPushStalledRegistry(t *testing.T) {
 				Package:               stalledRegistry(t) + "/pkg:v1",
 				PackageFiles:          files,
 				fs:                    afero.NewOsFs(),
-				responseHeaderTimeout: 100 * time.Millisecond,
+				responseHeaderTimeout: tc.args.responseHeaderTimeout,
+			}
+
+			ctx := t.Context()
+			if tc.args.timeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tc.args.timeout)
+				defer cancel()
 			}
 
 			start := time.Now()
-			err := c.Run(logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
+			err := c.Run(ctx, logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
 			elapsed := time.Since(start)
 
 			if err == nil || !strings.Contains(err.Error(), tc.want.errContains) {
 				t.Errorf("\n%s\nRun(...): want error containing %q, got %v", tc.reason, tc.want.errContains, err)
+			}
+			if tc.want.errIs != nil && !errors.Is(err, tc.want.errIs) {
+				t.Errorf("\n%s\nRun(...): want errors.Is(err, %v), got %v", tc.reason, tc.want.errIs, err)
 			}
 			if elapsed > tc.want.within {
 				t.Errorf("\n%s\nRun(...): took %s, want within %s", tc.reason, elapsed, tc.want.within)

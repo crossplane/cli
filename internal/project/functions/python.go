@@ -50,13 +50,9 @@ const (
 	pythonVersion = "3.13"
 
 	// pythonBuildScript is the shell pipeline that runs in the build
-	// container. The default debian build image installs python and hatch
-	// first; a prepared build image (e.g. a host CLI's own, with python3,
-	// python3-venv and /build/bin/hatch baked in) skips straight to the
-	// build.
-	//
-	// TODO(adamwg): We should build an image with python3 and python3-venv
-	// pre-installed so we don't have to install them for every build.
+	// container. The default build image has the python toolchain baked in, so
+	// the build starts right away. An overridden build image without them
+	// (e.g. plain debian) installs them first.
 	//
 	// The build is reproducible so that rebuilding an unchanged function
 	// yields the identical layer: SOURCE_DATE_EPOCH (1980-01-01, the oldest

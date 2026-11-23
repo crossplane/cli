@@ -32,6 +32,7 @@ import (
 
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/async"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
 // Pusher is able to push a set of packages built from a project to a registry.
@@ -202,7 +203,7 @@ func (p *realPusher) pushImage(ctx context.Context, ref name.Reference, img v1.I
 // NewPusher returns a new project Pusher.
 func NewPusher(opts ...PusherOption) Pusher {
 	p := &realPusher{
-		transport:      http.DefaultTransport,
+		transport:      clixpkg.NewRegistryTransport(clixpkg.RegistryResponseHeaderTimeout, clixpkg.RegistrySendPingTimeout),
 		maxConcurrency: 8,
 		keychain:       authn.DefaultKeychain,
 	}

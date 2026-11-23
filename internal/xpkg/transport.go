@@ -45,7 +45,9 @@ const (
 // still unbounded; only HTTP/2 gets the ping check. If a registry that only
 // speaks HTTP/1.1 shows the problem, wrap DialContext's conn with an idle read
 // deadline (reset on every Read), since lazy layer reads (function builds) have
-// no ctx to bound them.
+// no ctx to bound them. A stalled HTTP/1.1 upload body (push) is bounded only
+// by the push's ctx, because ResponseHeaderTimeout starts after the body is
+// written.
 func NewRegistryTransport(responseHeaderTimeout, sendPingTimeout time.Duration) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // http.DefaultTransport is always *http.Transport.
 	t.ResponseHeaderTimeout = responseHeaderTimeout

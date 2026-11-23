@@ -7,7 +7,7 @@ languages:
     baseImage: "xpkg.crossplane.io/crossplane-contrib/function-kcl:v0.12.3"
     schemaImage: "docker.io/kcllang/kcl:v0.11.2"
   python:
-    buildImage: "docker.io/library/debian:13-slim"
+    buildImage: "xpkg.crossplane.io/crossplane/cli-python-build:20261123.210850"
     runtimeImage: "gcr.io/distroless/python3-debian13:nonroot"
     schemaImage: "docker.io/koxudaxi/datamodel-code-generator:0.59.0"
   rust:

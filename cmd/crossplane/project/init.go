@@ -36,19 +36,21 @@ import (
 //go:embed help/init.md
 var initHelp string
 
-// initCmd initializes a new project.
-type initCmd struct {
+// InitCmd initializes a new project.
+type InitCmd struct {
 	Name       string `arg:""                                                                                 help:"The name of the new project."`
 	Directory  string `help:"Directory to initialize. Defaults to project name"                               short:"d"                                         type:"path"`
 	Registry   string `default:"example.com/my-org"                                                           help:"Override the registry in the project file." optional:"" short:"r"`
 	Repository string `help:"Override the repository name in the project file. Defaults to the project name." optional:""`
 }
 
-func (c *initCmd) Help() string {
+// Help returns help for the init command.
+func (c *InitCmd) Help() string {
 	return initHelp
 }
 
-func (c *initCmd) Run(sp terminal.SpinnerPrinter) error {
+// Run executes the init command.
+func (c *InitCmd) Run(sp terminal.SpinnerPrinter) error {
 	// Validate the project name is a valid DNS-1035 label.
 	if errs := validation.IsDNS1035Label(c.Name); len(errs) > 0 {
 		return errors.Errorf("'%s' is not a valid project name. DNS-1035 constraints: %s", c.Name, strings.Join(errs, "; "))
@@ -112,7 +114,7 @@ spec:
 	})
 }
 
-func (c *initCmd) checkTargetDirectory() error {
+func (c *InitCmd) checkTargetDirectory() error {
 	f, err := os.Stat(c.Directory)
 	switch {
 	case os.IsNotExist(err):

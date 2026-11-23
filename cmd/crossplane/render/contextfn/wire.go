@@ -17,8 +17,6 @@ limitations under the License.
 package contextfn
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
@@ -37,12 +35,10 @@ const (
 // known by name.
 func (h *Handle) Function() pkgv1.Function {
 	return pkgv1.Function{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: FunctionName,
-			Annotations: map[string]string{
-				annotationKeyRuntime:                  annotationValueRuntimeDevelopment,
-				annotationKeyRuntimeDevelopmentTarget: h.target,
-			},
+		Name: FunctionName,
+		Annotations: map[string]string{
+			annotationKeyRuntime:                  annotationValueRuntimeDevelopment,
+			annotationKeyRuntimeDevelopmentTarget: h.target,
 		},
 	}
 }

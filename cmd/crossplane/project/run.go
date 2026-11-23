@@ -60,8 +60,8 @@ import (
 //go:embed help/run.md
 var runHelp string
 
-// runCmd builds a project and runs it in a local dev control plane.
-type runCmd struct {
+// RunCmd builds a project and runs it in a local dev control plane.
+type RunCmd struct {
 	ProjectFile    string `default:"${project_file}"       help:"Path to project definition."                 short:"f"`
 	Repository     string `help:"Override the repository." optional:""`
 	MaxConcurrency uint   `default:"8"                     help:"Max concurrent builds."`
@@ -83,12 +83,13 @@ type runCmd struct {
 	extraResources []runtime.RawExtension
 }
 
-func (c *runCmd) Help() string {
+// Help returns help for the run command.
+func (c *RunCmd) Help() string {
 	return runHelp
 }
 
 // AfterApply parses flags and reads the project file.
-func (c *runCmd) AfterApply() error {
+func (c *RunCmd) AfterApply() error {
 	projFilePath, err := filepath.Abs(c.ProjectFile)
 	if err != nil {
 		return err
@@ -134,7 +135,7 @@ func (c *runCmd) AfterApply() error {
 }
 
 // Run executes the run command.
-func (c *runCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocyclo // Main command orchestration.
+func (c *RunCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error { //nolint:gocyclo // Main command orchestration.
 	ctx := context.Background()
 
 	if c.Repository != "" {

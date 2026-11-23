@@ -220,9 +220,9 @@ func TestReplaceConditionTimestamps(t *testing.T) {
 			reason: "A typed (non-unstructured) object should be converted without error.",
 			args: args{
 				o: &corev1.ConfigMap{
-					TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
-					ObjectMeta: metav1.ObjectMeta{Name: "test"},
-					Data:       map[string]string{"key": "value"},
+					APIVersion: "v1", Kind: "ConfigMap",
+					Name: "test",
+					Data: map[string]string{"key": "value"},
 				},
 			},
 			want: want{

@@ -46,9 +46,9 @@ var (
 	simulateExamples string
 )
 
-// simulateCmd previews how a project's compositions would change the
+// SimulateCmd previews how a project's compositions would change the
 // composite resources in a cluster.
-type simulateCmd struct {
+type SimulateCmd struct {
 	simulate.Flags            `embed:""`
 	simulate.CompositionFlags `embed:""`
 
@@ -56,13 +56,14 @@ type simulateCmd struct {
 	ProjectFile    string `default:"${project_file}" help:"Path to project definition."     short:"f"`
 }
 
-func (c *simulateCmd) Help() string {
+// Help returns help for the simulate command.
+func (c *SimulateCmd) Help() string {
 	return simulateHelp + simulate.Help(true) + simulateExamples
 }
 
 // Run previews the project's compositions against the cluster, with its
 // functions built locally.
-func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config) error {
+func (c *SimulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config) error {
 	return simulate.NewRunner(&c.Flags).Run(sigCtx, k, logger, sp, &simulate.Inputs{Build: func(ctx context.Context) (*simulate.Built, error) {
 		return c.buildProject(ctx, logger, sp, cliCfg)
 	}, Selection: &c.CompositionFlags})
@@ -71,7 +72,7 @@ func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger loggin
 // buildProject returns the project's compositions, its locally built
 // functions, and the packages its provider dependencies resolve through.
 // --image-configs, when set, replaces the project's ImageConfigs for both.
-func (c *simulateCmd) buildProject(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config) (*simulate.Built, error) {
+func (c *SimulateCmd) buildProject(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config) (*simulate.Built, error) {
 	projFilePath, err := filepath.Abs(c.ProjectFile)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot get absolute path of project file")

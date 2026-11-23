@@ -44,33 +44,33 @@ func rustTestSchema(t spec.Schema, description string) spec.Schema {
 }
 
 func rustTestScalar(typ, format string) spec.Schema {
-	return spec.Schema{SchemaProps: spec.SchemaProps{Type: spec.StringOrArray{typ}, Format: format}}
+	return spec.Schema{Type: spec.StringOrArray{typ}, Format: format}
 }
 
 func rustTestObject(props map[string]spec.Schema) spec.Schema {
-	return spec.Schema{SchemaProps: spec.SchemaProps{Type: spec.StringOrArray{"object"}, Properties: props}}
+	return spec.Schema{Type: spec.StringOrArray{"object"}, Properties: props}
 }
 
 func rustTestArray(items spec.Schema) spec.Schema {
-	return spec.Schema{SchemaProps: spec.SchemaProps{
+	return spec.Schema{
 		Type:  spec.StringOrArray{"array"},
 		Items: &spec.SchemaOrArray{Schema: &items},
-	}}
+	}
 }
 
 func rustTestMap(values spec.Schema) spec.Schema {
-	return spec.Schema{SchemaProps: spec.SchemaProps{
+	return spec.Schema{
 		Type:                 spec.StringOrArray{"object"},
 		AdditionalProperties: &spec.SchemaOrBool{Allows: true, Schema: &values},
-	}}
+	}
 }
 
 // rustTestRef builds the allOf-wrapped reference CRD and Kubernetes documents
 // use, which is also the shape a plain $ref has to survive.
 func rustTestRef(schema string) spec.Schema {
-	return spec.Schema{SchemaProps: spec.SchemaProps{
-		AllOf: []spec.Schema{{SchemaProps: spec.SchemaProps{Ref: spec.MustCreateRef("#/components/schemas/" + schema)}}},
-	}}
+	return spec.Schema{
+		AllOf: []spec.Schema{{Ref: spec.MustCreateRef("#/components/schemas/" + schema)}},
+	}
 }
 
 func rustTestEnum(values ...string) spec.Schema {
@@ -89,7 +89,7 @@ func rustTestDefault(s spec.Schema, def string) spec.Schema {
 // rustTestAnyOf builds an inline choice of scalars, which is what a CRD's
 // x-kubernetes-int-or-string is once converted to OpenAPI.
 func rustTestAnyOf(variants ...spec.Schema) spec.Schema {
-	return spec.Schema{SchemaProps: spec.SchemaProps{AnyOf: variants}}
+	return spec.Schema{AnyOf: variants}
 }
 
 // rustTestEmit renders the file of the named schema, as the generator would

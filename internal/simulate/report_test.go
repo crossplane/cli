@@ -104,8 +104,8 @@ func TestFromCompReport(t *testing.T) {
 	compNoOp := &plan.ResourcePlan{APIVersion: compPlan.APIVersion, Kind: compPlan.Kind, Name: compPlan.Name, Action: plan.ActionNoOp}
 	filtered := func(name string, reason dt.FilterReason, detail string) dt.XRImpact {
 		return dt.XRImpact{
-			ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XNetwork", Name: name},
-			Status:          dt.XRStatusFiltered, FilterReason: reason, FilterDetail: detail,
+			APIVersion: "example.org/v1", Kind: "XNetwork", Name: name,
+			Status: dt.XRStatusFiltered, FilterReason: reason, FilterDetail: detail,
 		}
 	}
 	named := func(name string) plan.ResourceRef {

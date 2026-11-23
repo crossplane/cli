@@ -8,6 +8,10 @@ import (
 const (
 	// LabelComposite identifies the root composite resource that owns a composed resource.
 	LabelComposite = "crossplane.io/composite"
+
+	// ctxNamespace is the advisory context key naming a resource's
+	// namespace.
+	ctxNamespace = "namespace"
 	// LabelClaimName identifies the claim that triggered creation of the composite.
 	LabelClaimName = "crossplane.io/claim-name"
 	// LabelClaimNamespace identifies the namespace of the claim.

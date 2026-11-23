@@ -34,9 +34,9 @@ import (
 
 // Cmd contains commands for dependency management.
 type Cmd struct {
-	Add         addCmd         `cmd:"" help:"Add a dependency to the current project."                        novale:"Google.WordList[\"k8s\"],Google.Units,gitlab.Units"`
-	UpdateCache updateCacheCmd `cmd:"" help:"Update the dependency cache for the current project or package."`
-	CleanCache  cleanCacheCmd  `cmd:"" help:"Clean the dependency cache."`
+	Add         AddCmd         `cmd:"" help:"Add a dependency to the current project."                        novale:"Google.WordList[\"k8s\"],Google.Units,gitlab.Units"`
+	UpdateCache UpdateCacheCmd `cmd:"" help:"Update the dependency cache for the current project or package."`
+	CleanCache  CleanCacheCmd  `cmd:"" help:"Clean the dependency cache."`
 }
 
 // loadProject finds and loads the project or package metadata file at path,

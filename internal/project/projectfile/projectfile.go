@@ -29,9 +29,9 @@ import (
 
 const (
 	// APIVersion is the supported API version for project files.
-	APIVersion = "dev.crossplane.io/v1alpha1"
+	APIVersion = v1alpha1.APIVersion
 	// Kind is the supported Kind for project files.
-	Kind = "Project"
+	Kind = v1alpha1.Kind
 )
 
 // IsProjectFile reads the TypeMeta from the given YAML file and returns true
@@ -112,5 +112,28 @@ func Update(projFS afero.Fs, projFile string, fn func(*v1alpha1.Project)) error 
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal project")
 	}
+	bs = stripNullCreationTimestamp(bs)
 	return afero.WriteFile(projFS, projFile, bs, 0o644)
+}
+
+// stripNullCreationTimestamp removes the explicit null creationTimestamp the
+// zero ObjectMeta marshals with, so it doesn't accumulate in project files.
+func stripNullCreationTimestamp(bs []byte) []byte {
+	var doc map[string]any
+	if err := yaml.Unmarshal(bs, &doc); err != nil {
+		return bs
+	}
+	md, ok := doc["metadata"].(map[string]any)
+	if !ok {
+		return bs
+	}
+	if ts, exists := md["creationTimestamp"]; !exists || ts != nil {
+		return bs
+	}
+	delete(md, "creationTimestamp")
+	clean, err := yaml.Marshal(doc)
+	if err != nil {
+		return bs
+	}
+	return clean
 }

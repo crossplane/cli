@@ -17,6 +17,7 @@ limitations under the License.
 package xpkg
 
 import (
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/spf13/afero"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,6 +35,7 @@ type options struct {
 	cacheFs      afero.Fs
 	cacheDir     string
 	imageConfigs []pkgv1beta1.ImageConfig
+	keychain     authn.Keychain
 }
 
 // ClientOption configures a new client.
@@ -52,6 +54,14 @@ func WithCacheDir(fs afero.Fs, path string) ClientOption {
 func WithImageConfigs(ics []pkgv1beta1.ImageConfig) ClientOption {
 	return func(o *options) {
 		o.imageConfigs = ics
+	}
+}
+
+// WithAuthKeychain sets the authn.Keychain used to authenticate registry
+// requests when fetching packages. Defaults to authn.DefaultKeychain.
+func WithAuthKeychain(k authn.Keychain) ClientOption {
+	return func(o *options) {
+		o.keychain = k
 	}
 }
 
@@ -79,8 +89,13 @@ func NewClient(opts ...ClientOption) (Client, error) {
 		cache = xpkg.NewFsPackageCache(o.cacheDir, o.cacheFs)
 	}
 
+	fetcherOpts := []RemoteFetcherOption{}
+	if o.keychain != nil {
+		fetcherOpts = append(fetcherOpts, WithKeychain(o.keychain))
+	}
+
 	return WrapClient(xpkg.NewCachedClient(
-		NewRemoteFetcher(),
+		NewRemoteFetcher(fetcherOpts...),
 		parser.New(metaScheme, objScheme),
 		cache,
 		NewStaticImageConfigStore(o.imageConfigs),

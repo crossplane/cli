@@ -47,7 +47,7 @@ func Predictors() map[string]complete.Predictor {
 // last completed argument.
 func kubernetesResourcePredictor() complete.PredictFunc {
 	return func(a complete.Args) []string {
-		_, kubeconfig, _, err := kubernetesClient(parseConfigOverride(a), parseImpersonation(a))
+		_, kubeconfig, _, err := kubernetesClient(parseContext(a), parseImpersonation(a))
 		if err != nil {
 			return nil
 		}
@@ -102,7 +102,7 @@ func kubernetesResourcePredictor() complete.PredictFunc {
 // last completed argument.
 func kubernetesResourceNamePredictor() complete.PredictFunc {
 	return func(a complete.Args) []string {
-		client, kubeconfig, clientconfig, err := kubernetesClient(parseConfigOverride(a), parseImpersonation(a))
+		client, kubeconfig, clientconfig, err := kubernetesClient(parseContext(a), parseImpersonation(a))
 		if err != nil {
 			return nil
 		}
@@ -180,12 +180,13 @@ func contextPredictor() complete.PredictFunc {
 	}
 }
 
-// namespacePredictor returns a predictor that suggests Kubernetes namespaces from the current context.
+// namespacePredictor returns a predictor that suggests Kubernetes namespaces from the current context
+// or the context specified in the command line arguments.
 // It uses the Kubernetes client to retrieve the available namespaces and filters them based on the
 // last completed argument.
 func namespacePredictor() complete.PredictFunc {
 	return func(a complete.Args) []string {
-		client, err := kubernetesClientset(parseImpersonation(a))
+		client, err := kubernetesClientset(parseContext(a), parseImpersonation(a))
 		if err != nil {
 			return nil
 		}
@@ -207,61 +208,56 @@ func namespacePredictor() complete.PredictFunc {
 	}
 }
 
-// kubernetesClientset returns a Kubernetes clientset using the default
-// kubeconfig and the given impersonation flags.
-func kubernetesClientset(imp kube.ImpersonationFlags) (*kubernetes.Clientset, error) {
-	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(),
-		&clientcmd.ConfigOverrides{},
-	)
-
-	kubeConfig, err := clientConfig.ClientConfig()
+// kubernetesClientset returns a Kubernetes clientset for the given context
+// (the current one if empty) and impersonation flags.
+func kubernetesClientset(kubeContext string, imp kube.ImpersonationFlags) (*kubernetes.Clientset, error) {
+	cfg, _, err := kube.RESTConfig(kubeContext, imp)
 	if err != nil {
 		return nil, err
 	}
 
-	imp.Apply(kubeConfig)
-
-	return kubernetes.NewForConfig(kubeConfig)
+	return kubernetes.NewForConfig(cfg)
 }
 
-// kubernetesClient returns a Kubernetes client and a rest.Config using the
-// provided config overrides and impersonation flags.
-func kubernetesClient(configOverrides *clientcmd.ConfigOverrides, imp kube.ImpersonationFlags) (controllerClient.Client, *rest.Config, clientcmd.ClientConfig, error) {
-	clientconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(),
-		configOverrides,
-	)
-
-	kubeconfig, err := clientconfig.ClientConfig()
+// kubernetesClient returns a Kubernetes client, its rest.Config, and the
+// ClientConfig it was loaded from, for the given context (the current one if
+// empty) and impersonation flags.
+func kubernetesClient(kubeContext string, imp kube.ImpersonationFlags) (controllerClient.Client, *rest.Config, clientcmd.ClientConfig, error) {
+	cfg, clientconfig, err := kube.RESTConfig(kubeContext, imp)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	imp.Apply(kubeconfig)
-
-	client, err := controllerClient.New(rest.CopyConfig(kubeconfig), controllerClient.Options{})
+	client, err := controllerClient.New(cfg, controllerClient.Options{})
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	return client, rest.CopyConfig(kubeconfig), clientconfig, nil
+	return client, cfg, clientconfig, nil
 }
 
-// parseConfigOverride parses ConfigOverrides for the k8s client from the completed command line arguments.
-func parseConfigOverride(a complete.Args) *clientcmd.ConfigOverrides {
-	context := ""
+// parseContext parses the Kubernetes context override from the completed command line arguments.
+func parseContext(a complete.Args) string {
+	return parseFlagValue(a, "context", "c")
+}
 
+// parseFlagValue returns the value of the first occurrence of the flag with the
+// given long and short names, in any form kong accepts: "--long value",
+// "--long=value", "-s value" and "-svalue". It returns "" if the flag is absent
+// or its value is not yet typed.
+func parseFlagValue(a complete.Args, long, short string) string {
 	for i, arg := range a.All {
-		if (arg == "--context" || arg == "-c") && i < len(a.All) {
-			context = a.All[i+1]
-			break
+		switch {
+		case (arg == "--"+long || arg == "-"+short) && i+1 < len(a.All):
+			return a.All[i+1]
+		case strings.HasPrefix(arg, "--"+long+"="):
+			return strings.TrimPrefix(arg, "--"+long+"=")
+		case len(arg) > 2 && strings.HasPrefix(arg, "-"+short):
+			return strings.TrimPrefix(arg, "-"+short)
 		}
 	}
 
-	return &clientcmd.ConfigOverrides{
-		CurrentContext: context,
-	}
+	return ""
 }
 
 // parseImpersonation parses the kubectl-compatible impersonation flags (--as,
@@ -292,14 +288,5 @@ func parseImpersonation(a complete.Args) kube.ImpersonationFlags {
 
 // parseNamespaceOverride parses the namespace override from the completed command line arguments.
 func parseNamespaceOverride(a complete.Args) string {
-	namespace := ""
-
-	for i, arg := range a.All {
-		if (arg == "--namespace" || arg == "-n") && i < len(a.All) {
-			namespace = a.All[i+1]
-			break
-		}
-	}
-
-	return namespace
+	return parseFlagValue(a, "namespace", "n")
 }

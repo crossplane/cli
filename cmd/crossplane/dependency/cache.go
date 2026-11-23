@@ -17,23 +17,20 @@ limitations under the License.
 package dependency
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 
-	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
-	"github.com/crossplane/cli/v2/internal/git"
-	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
-	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/project"
 
 	_ "embed"
 )
@@ -41,23 +38,26 @@ import (
 //go:embed help/update-cache.md
 var updateHelp string
 
-// updateCacheCmd updates the dependency cache by regenerating all schemas.
-type updateCacheCmd struct {
-	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents." name:"cache-dir"`
-	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"  help:"Token for git HTTPS authentication."`
-	GitUsername string `default:"x-access-token"    env:"CROSSPLANE_GIT_USERNAME"                      help:"Username for git HTTPS authentication."`
+// UpdateCacheCmd updates the dependency cache by regenerating all schemas.
+// It is exported so host CLIs embedding the dependency commands can wrap it,
+// e.g. to generate additional schemas after the update.
+type UpdateCacheCmd struct {
+	common.GitFlags
+
+	CacheDir string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents." name:"cache-dir"`
 
 	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                           optional:""             predictor:"yaml_file" short:"f" type:"path"`
 	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."                 name:"schemas-dir"`
 	SchemaLanguages []string `help:"Comma-separated schema languages to generate (go, json, kcl, python, rust). Overrides the project's schemas.languages; defaults to all." name:"schema-languages"`
 }
 
-func (c *updateCacheCmd) Help() string {
+// Help returns help for the update-cache command.
+func (c *UpdateCacheCmd) Help() string {
 	return updateHelp
 }
 
 // Run executes the update-cache command.
-func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
+func (c *UpdateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
 	proj, store, projFS, err := loadProject(c.ProjectFile, Overrides{
@@ -68,43 +68,26 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, 
 		return err
 	}
 
-	client, err := clixpkg.NewClient(clixpkg.WithCacheDir(afero.NewOsFs(), cmp.Or(c.CacheDir, dependency.DefaultCacheDir())), clixpkg.WithImageConfigs(proj.Spec.ImageConfigs))
-	if err != nil {
-		return errors.Wrap(err, "cannot create xpkg client")
-	}
-
-	opts := []dependency.ManagerOption{
-		dependency.WithStore(store),
-		dependency.WithSchemaGenerators(generator.Filter(
-			generator.AllLanguages(
-				generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
-				generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
-			),
-			proj.Spec.Schemas.GetLanguages(),
-		)),
-		dependency.WithXpkgClient(client),
-	}
-
-	if c.GitToken != "" {
-		opts = append(opts, dependency.WithGitAuthProvider(&git.HTTPSAuthProvider{
-			Username: c.GitUsername,
-			Password: c.GitToken,
-		}))
-	}
-
-	m := dependency.NewManager(proj, projFS, opts...)
-
 	logger.Debug("Updating all dependencies")
 	return sp.WrapAsyncWithSuccessSpinners(func(ch async.EventChannel) error {
-		return m.RefreshAll(ctx, ch)
+		return project.UpdateSchemas(ctx, cfg, proj, projFS, project.UpdateSchemasOptions{
+			Store:              store,
+			CacheDir:           c.CacheDir,
+			GitUsername:        c.GitUsername,
+			GitToken:           c.GitToken,
+			GitProxy:           c.GitProxy,
+			GitInsecureHostKey: c.GitInsecureHostKey,
+			Refresh:            true,
+			EventChannel:       ch,
+		})
 	})
 }
 
 //go:embed help/clean-cache.md
 var cleanHelp string
 
-// cleanCacheCmd removes all generated schemas.
-type cleanCacheCmd struct {
+// CleanCacheCmd removes all generated schemas.
+type CleanCacheCmd struct {
 	CacheDir     string `env:"CROSSPLANE_XPKG_CACHE"                                              help:"Directory for cached xpkg package contents." name:"cache-dir"`
 	KeepPackages bool   `help:"Keep cached xpkg package contents; remove only generated schemas." name:"keep-packages"`
 
@@ -112,12 +95,13 @@ type cleanCacheCmd struct {
 	SchemasDir  string `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)." name:"schemas-dir"`
 }
 
-func (c *cleanCacheCmd) Help() string {
+// Help returns help for the clean-cache command.
+func (c *CleanCacheCmd) Help() string {
 	return cleanHelp
 }
 
 // Run executes the clean-cache command.
-func (c *cleanCacheCmd) Run(k *kong.Context, _ logging.Logger) error {
+func (c *CleanCacheCmd) Run(k *kong.Context, _ logging.Logger) error {
 	proj, _, projFS, err := loadProject(c.ProjectFile, Overrides{SchemasDir: c.SchemasDir})
 	if err != nil {
 		return err

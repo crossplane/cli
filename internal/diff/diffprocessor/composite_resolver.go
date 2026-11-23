@@ -177,9 +177,9 @@ func (r *CompositeResolver) backingXR(ctx context.Context, claim *cmp.Unstructur
 		r.advisories.Raise(dt.OutputWarning{
 			Message: "The claim's backing XR does not exist in the cluster; diffing as though Crossplane will create it",
 			Context: map[string]string{
-				"claim":     fmt.Sprintf("%s/%s", claim.GetKind(), claim.GetName()),
-				"namespace": claim.GetNamespace(),
-				"backingXR": fmt.Sprintf("%s/%s", ref.kind, ref.name),
+				"claim":      fmt.Sprintf("%s/%s", claim.GetKind(), claim.GetName()),
+				ctxNamespace: claim.GetNamespace(),
+				"backingXR":  fmt.Sprintf("%s/%s", ref.kind, ref.name),
 			},
 		})
 
@@ -353,7 +353,7 @@ func syncClaimSpec(claim *un.Unstructured, backingSpec map[string]any, manual bo
 		"apiVersion": claim.GetAPIVersion(),
 		"kind":       claim.GetKind(),
 		"name":       claim.GetName(),
-		"namespace":  claim.GetNamespace(),
+		ctxNamespace: claim.GetNamespace(),
 	}
 
 	for _, field := range append([]string{fieldResourceRefs, fieldWriteConnectionSecretToRef}, clusterWrittenFields...) {

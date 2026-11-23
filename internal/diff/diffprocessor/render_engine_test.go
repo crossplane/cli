@@ -25,7 +25,6 @@ import (
 	"time"
 
 	gcmp "github.com/google/go-cmp/cmp"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
@@ -81,13 +80,13 @@ func minimalRenderInputs() RenderInputs {
 			},
 		},
 		Functions: []pkgv1.Function{
-			{ObjectMeta: metav1.ObjectMeta{
+			{
 				Name: "fn-default",
 				Annotations: map[string]string{
 					render.AnnotationKeyRuntime:                  string(render.AnnotationValueRuntimeDevelopment),
 					render.AnnotationKeyRuntimeDevelopmentTarget: "fn-default:9443",
 				},
-			}},
+			},
 		},
 	}
 }

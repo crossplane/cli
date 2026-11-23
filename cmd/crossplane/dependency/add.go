@@ -25,9 +25,9 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/common"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
-	"github.com/crossplane/cli/v2/internal/git"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -38,12 +38,12 @@ import (
 //go:embed help/add.md
 var addHelp string
 
-// addCmd adds a dependency to the current project.
-type addCmd struct {
-	CacheDir    string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
-	GitToken    string `env:"CROSSPLANE_GIT_TOKEN"  help:"Token for git HTTPS authentication."`
-	GitUsername string `default:"x-access-token"    env:"CROSSPLANE_GIT_USERNAME"                                                                  help:"Username for git HTTPS authentication."`
-	Package     string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
+// AddCmd adds a dependency to the current project.
+type AddCmd struct {
+	common.GitFlags
+
+	CacheDir string `env:"CROSSPLANE_XPKG_CACHE" help:"Directory for cached xpkg package contents."                                             name:"cache-dir"`
+	Package  string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
 
 	ProjectFile     string   `help:"Path to the project file or package metadata file (crossplane.yaml). Autodetected if not set."                                           optional:""             predictor:"yaml_file" short:"f" type:"path"`
 	SchemasDir      string   `help:"Directory for generated schemas, relative to the project file. Overrides the project's schemas path (default: schemas)."                 name:"schemas-dir"`
@@ -55,12 +55,13 @@ type addCmd struct {
 	GitPath string `help:"Path to CRDs in the git repository."                             name:"git-path"`
 }
 
-func (c *addCmd) Help() string {
+// Help returns help for the add command.
+func (c *AddCmd) Help() string {
 	return addHelp
 }
 
 // Run executes the add command.
-func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
+func (c *AddCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
 	proj, store, projFS, err := loadProject(c.ProjectFile, Overrides{
@@ -76,7 +77,9 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 		return errors.Wrap(err, "cannot create xpkg client")
 	}
 
-	opts := []dependency.ManagerOption{
+	gitOpts := c.ManagerOptions()
+	opts := make([]dependency.ManagerOption, 0, 3+len(gitOpts))
+	opts = append(opts,
 		dependency.WithStore(store),
 		dependency.WithSchemaGenerators(generator.Filter(
 			generator.AllLanguages(
@@ -86,14 +89,8 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 			proj.Spec.Schemas.GetLanguages(),
 		)),
 		dependency.WithXpkgClient(client),
-	}
-
-	if c.GitToken != "" {
-		opts = append(opts, dependency.WithGitAuthProvider(&git.HTTPSAuthProvider{
-			Username: c.GitUsername,
-			Password: c.GitToken,
-		}))
-	}
+	)
+	opts = append(opts, gitOpts...)
 
 	m := dependency.NewManager(proj, projFS, opts...)
 

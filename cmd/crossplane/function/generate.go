@@ -292,6 +292,10 @@ func (c *generateCmd) generateKCLFiles(fs afero.Fs) error {
 			Alias:      alias,
 		})
 	}
+	// Sort for deterministic output; imports is a map.
+	slices.SortFunc(importStatements, func(a, b kclImportStatement) int {
+		return strings.Compare(a.ImportPath, b.ImportPath)
+	})
 
 	tmplData := kclTemplateData{
 		ModName: c.Name,

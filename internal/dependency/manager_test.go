@@ -29,7 +29,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/afero"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -509,11 +508,9 @@ func TestManager_AddDependency(t *testing.T) {
 
 			projFS := afero.NewMemMapFs()
 			proj := &v1alpha1.Project{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "dev.crossplane.io/v1alpha1",
-					Kind:       "Project",
-				},
-				ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+				APIVersion: "dev.crossplane.io/v1alpha1",
+				Kind:       "Project",
+				Name:       "test-project",
 				Spec: v1alpha1.ProjectSpec{
 					Repository:   "xpkg.crossplane.io/test/test",
 					Dependencies: tc.inputDeps,
@@ -675,8 +672,8 @@ func refRepo(ref string) string {
 	if repo, _, ok := strings.Cut(ref, "@"); ok {
 		return repo
 	}
-	if i := strings.LastIndex(ref, ":"); i >= 0 {
-		return ref[:i]
+	if before, _, ok := strings.CutLast(ref, ":"); ok {
+		return before
 	}
 	return ref
 }
@@ -946,11 +943,9 @@ func TestManager_AddDependency_TransitiveNotPersisted(t *testing.T) {
 
 	projFS := afero.NewMemMapFs()
 	proj := &v1alpha1.Project{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "dev.crossplane.io/v1alpha1",
-			Kind:       "Project",
-		},
-		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+		APIVersion: "dev.crossplane.io/v1alpha1",
+		Kind:       "Project",
+		Name:       "test-project",
 		Spec: v1alpha1.ProjectSpec{
 			Repository: "xpkg.crossplane.io/test/test",
 			Paths:      &v1alpha1.ProjectPaths{Schemas: "schemas"},

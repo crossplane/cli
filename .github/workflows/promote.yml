@@ -21,12 +21,15 @@ permissions:
 
 env:
   AWS_USR: ${{ secrets.AWS_USR }}
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  CLOUDFRONT_DISTRIBUTION_IDS: ${{ secrets.CLOUDFRONT_DISTRIBUTION_IDS }}
 
 jobs:
   promote:
     permissions:
       contents: read
       packages: write  # for pushing to ghcr.io
+      id-token: write  # for assuming the CloudFront invalidation role via OIDC
     runs-on: ubuntu-26.04
 
     outputs:
@@ -36,7 +39,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Nix
-        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
 
       - name: Setup Cachix
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
@@ -68,6 +71,44 @@ jobs:
           fi
           nix run .#promote-artifacts -- "${GITHUB_REF##*/}" "$VERSION" "$CHANNEL" $PRERELEASE_FLAG
 
+      - name: Configure AWS credentials (OIDC)
+        if: env.AWS_ROLE_ARN != '' && env.CLOUDFRONT_DISTRIBUTION_IDS != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: us-east-1
+
+      - name: Invalidate CloudFront cache
+        if: env.AWS_ROLE_ARN != '' && env.CLOUDFRONT_DISTRIBUTION_IDS != ''
+        env:
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          echo "$CHANNEL" | grep -Eq '^[A-Za-z0-9._-]+$' || {
+            echo "::error::channel contains unexpected characters"
+            exit 1
+          }
+          echo "### CloudFront invalidations (/$CHANNEL/*)" >> "$GITHUB_STEP_SUMMARY"
+          : > invalidations.txt
+          for DIST in $CLOUDFRONT_DISTRIBUTION_IDS; do
+            echo "$DIST" | grep -Eq '^E[A-Z0-9]{8,20}$' || {
+              echo "::error::CLOUDFRONT_DISTRIBUTION_IDS must be a whitespace-separated list of distribution IDs"
+              exit 1
+            }
+            echo "::add-mask::$DIST"
+            ID=$(aws cloudfront create-invalidation \
+              --distribution-id "$DIST" \
+              --paths "/$CHANNEL/*" \
+              --query 'Invalidation.Id' \
+              --output text)
+            echo "$DIST $ID" >> invalidations.txt
+            echo "Created $ID"
+          done
+          while read -r DIST ID; do
+            aws cloudfront wait invalidation-completed --distribution-id "$DIST" --id "$ID"
+            echo "- \`$ID\` OK" >> "$GITHUB_STEP_SUMMARY"
+          done < invalidations.txt
+
   update-docs:
     # Docs update once a release is promoted to the stable channel:
     # other-channel promotions must not publish reference docs. Patch releases
@@ -80,7 +121,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Download Artifacts
@@ -95,7 +136,7 @@ jobs:
           chmod +x bin/crossplane
 
       - name: Checkout Docs
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: crossplane/docs
           persist-credentials: false
@@ -121,7 +162,7 @@ jobs:
 
       - name: Create Pull Request
         if: env.docs-changed == 'true'
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
         id: generate-token
         with:
           app-id: ${{ secrets.CLI_DOCS_BOT_APP_ID }}
@@ -131,7 +172,7 @@ jobs:
 
       - name: Create docs PR
         if: env.docs-changed == 'true'
-        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8
         with:
           token: ${{ steps.generate-token.outputs.token }}
           path: docs

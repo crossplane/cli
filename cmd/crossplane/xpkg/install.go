@@ -26,7 +26,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -120,18 +119,18 @@ func (c *installCmd) Run(k *kong.Context, logger logging.Logger) error {
 	switch c.Kind {
 	case "provider":
 		pkg = &v1.Provider{
-			ObjectMeta: metav1.ObjectMeta{Name: pkgName},
-			Spec:       v1.ProviderSpec{PackageSpec: spec},
+			Name: pkgName,
+			Spec: v1.ProviderSpec{PackageSpec: spec},
 		}
 	case "configuration":
 		pkg = &v1.Configuration{
-			ObjectMeta: metav1.ObjectMeta{Name: pkgName},
-			Spec:       v1.ConfigurationSpec{PackageSpec: spec},
+			Name: pkgName,
+			Spec: v1.ConfigurationSpec{PackageSpec: spec},
 		}
 	case "function":
 		pkg = &v1.Function{
-			ObjectMeta: metav1.ObjectMeta{Name: pkgName},
-			Spec:       v1.FunctionSpec{PackageSpec: spec},
+			Name: pkgName,
+			Spec: v1.FunctionSpec{PackageSpec: spec},
 		}
 	default:
 		// The enum struct tag on the Kind field should make this impossible.

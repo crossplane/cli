@@ -74,7 +74,7 @@ spec:
 	sp := terminal.NewSpinnerPrinter(io.Discard, false)
 	cfg := &config.Config{}
 
-	c := &buildCmd{ProjectFile: projectFile, CacheDir: filepath.Join(dir, "cache"), GitToken: token, GitUsername: "test-user", MaxConcurrency: 1}
+	c := &BuildCmd{ProjectFile: projectFile, CacheDir: filepath.Join(dir, "cache"), GitToken: token, GitUsername: "test-user", MaxConcurrency: 1}
 	if err := c.AfterApply(); err != nil {
 		t.Fatal(err)
 	}

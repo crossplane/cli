@@ -66,6 +66,20 @@
       datasourceTemplate: 'npm',
       depNameTemplate: 'renovate',
     },
+    {
+      customType: 'regex',
+      description: 'Bump the tagged images in the default image catalog',
+      managerFilePatterns: [
+        '/^pkg/images/images\\.yaml$/',
+      ],
+      // Matches `<key>: "<repo>:<tag>"` entries. Digest-pinned and
+      // tag-less entries (the go base image, package dependencies) are
+      // managed manually.
+      matchStrings: [
+        ': "(?<depName>[^"@]+):(?<currentValue>[^"@:]+)"',
+      ],
+      datasourceTemplate: 'docker',
+    },
   ],
   // PackageRules disabled below should be enabled in case of vulnerabilities
   vulnerabilityAlerts: {

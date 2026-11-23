@@ -37,6 +37,7 @@ import (
 
 	"github.com/crossplane/cli/v2/internal/docker"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/images"
 )
 
 // TestPythonBuildDeterministic builds the same python function twice, in two
@@ -85,7 +86,7 @@ func TestPythonBuildDeterministic(t *testing.T) {
 	}
 
 	b := &pythonBuilder{
-		buildImage:   pythonBuildImage,
+		buildImage:   images.Image(images.Python, images.ImageBuild),
 		runtimeImage: baseImageRef.String(),
 		transport:    regSrv.Client().Transport,
 		configStore:  clixpkg.NewStaticImageConfigStore(nil),

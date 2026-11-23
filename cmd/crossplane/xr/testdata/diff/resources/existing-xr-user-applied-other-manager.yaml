@@ -1,0 +1,9 @@
+# A second server-side applier (a user or another controller) sets spec.region on the XR
+# existing-xr-user-applied-with-team.yaml's applier applied. Neither manifest of the XR sets it.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XTestDefaultResource
+metadata:
+  name: test-resource-user-applied
+  namespace: default
+spec:
+  region: eu-west-1

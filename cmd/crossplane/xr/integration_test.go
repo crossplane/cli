@@ -1798,7 +1798,11 @@ Summary: 2 modified, 2 removed`,
 			FieldManagerApplies: []integration.FieldManagerApply{
 				{File: "testdata/diff/resources/existing-claim-defaulted-fields-other-manager.yaml", FieldManager: "platform-operator"},
 			},
-			InputFiles: []string{"testdata/diff/modified-claim-omitting-defaulted-fields.yaml"},
+			// The claim was created, not applied, so its managedFields record no applier but
+			// platform-operator, which would otherwise be inferred as the one applying the manifest. Say
+			// it is client-side applied, by kubectl, which owns none of platform-operator's fields.
+			FieldManager: "kubectl-client-side-apply",
+			InputFiles:   []string{"testdata/diff/modified-claim-omitting-defaulted-fields.yaml"},
 			ExpectedStructured: simtest.Expect().
 				// As in ModifiedClaimShowsDiff: the composed resource belongs to the claim's backing XR (#534).
 				WithNoWarnings().
@@ -1986,6 +1990,95 @@ Summary: 2 modified, 2 removed`,
 				WithSummary(0, 1, 0).
 				WithModifiedResource("XTestDefaultResource", "test-resource-user-applied", "default").
 				WithFieldChange("spec.tags.team", "platform", nil),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// As FieldDroppedFromUserAppliedXRIsReportedRemoved, but a second manager also server-side applied
+		// the XR, so either could be the one applying the manifest. Which fields applying it removes
+		// can't be told, so nothing is shown removed, and a warning names both candidates.
+		"FieldDroppedFromXRWithTwoAppliersWarnsAndIsNotReportedRemoved": {
+			Reason:       "With two server-side appliers and no --field-manager, a dropped field is not shown removed and a warning names both",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-user-applied-with-team.yaml", FieldManager: "argocd-controller"},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+				{File: "testdata/diff/resources/existing-xr-user-applied-other-manager.yaml", FieldManager: "platform-operator"},
+			},
+			ExpectedStructured: simtest.Expect().
+				WithWarning("Cannot tell which field manager applies this resource").
+				WithWarningContext(map[string]string{
+					"resource":   "XTestDefaultResource/test-resource-user-applied",
+					"candidates": "argocd-controller, platform-operator",
+				}).
+				And().
+				WithSummary(0, 0, 0),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeSuccess,
+		},
+		// As FieldDroppedFromXRWithTwoAppliersWarnsAndIsNotReportedRemoved, with --field-manager naming
+		// the applier: the field only it owns is removed, the other manager's is kept, and nothing warns.
+		"FieldDroppedFromXRWithTwoAppliersIsReportedRemovedForFieldManager": {
+			Reason:       "With two server-side appliers, --field-manager picks the applier: its dropped field is shown removed, with no warning",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-user-applied-with-team.yaml", FieldManager: "argocd-controller"},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+				{File: "testdata/diff/resources/existing-xr-user-applied-other-manager.yaml", FieldManager: "platform-operator"},
+			},
+			FieldManager: "argocd-controller",
+			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
+				WithSummary(0, 1, 0).
+				WithModifiedResource("XTestDefaultResource", "test-resource-user-applied", "default").
+				WithFieldChange("spec.tags.team", "platform", nil),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// FieldDroppedFromUserAppliedXRIsReportedRemoved for a claim: the claim is dry-run applied as the
+		// manager that server-side applied it, so the field its manifest drops is shown removed.
+		"FieldDroppedFromUserAppliedClaimIsReportedRemoved": {
+			Reason:       "A field the claim's applying manager owns and its manifest omits is shown removed",
+			OutputFormat: "json",
+			SetupFiles: []string{
+				"testdata/diff/resources/existing-namespace.yaml",
+				"testdata/diff/resources/claim-xrd.yaml",
+				"testdata/diff/resources/claim-composition.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+				"testdata/diff/resources/existing-claim.yaml",
+			},
+			CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+				integration.Composes(
+					"testdata/diff/resources/existing-claim-xr.yaml",
+					"testdata/diff/resources/existing-claim-downstream-resource.yaml",
+				),
+			},
+			XrdAPIVersion: integration.XRDV1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-claim-user-applied.yaml", FieldManager: "argocd-controller"},
+			},
+			InputFiles: []string{"testdata/diff/modified-claim.yaml"},
+			ExpectedStructured: simtest.Expect().
+				// As in ModifiedClaimShowsDiff: the composed resource belongs to the claim's backing XR (#534).
+				WithNoWarnings().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("NopClaim", "test-claim", "existing-namespace").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value").
+				WithFieldChange("spec.writeConnectionSecretsToNamespace", "argocd-secrets", nil).
+				And().
+				WithModifiedResource("XDownstreamResource", "test-claim-82crv", "").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value"),
 			ExpectedError:    false,
 			ExpectedExitCode: dp.ExitCodeDiffDetected,
 		},

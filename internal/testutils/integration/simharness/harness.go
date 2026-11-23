@@ -88,6 +88,7 @@ type simArgs struct {
 	FunctionCredentials    string        `help:"Secret credentials to pass to Functions."                      name:"function-credentials"               placeholder:"PATH"`
 	EventualState          bool          `help:"Show eventual state after all reconciliation cycles complete." name:"eventual-state"`
 	DryRunOn               string        `default:"all"                                                        enum:"existing,all"                       help:"Which resources to verify against the apiserver with a dry run." name:"dry-run-on"`
+	FieldManager           string        `help:"Field manager that applies the input composite resources."    name:"field-manager"`
 	Resource               []string      `help:"Composite resources to scope to."                              sep:","`
 	IncludeManual          bool          `help:"Include composites with a manual update policy."               name:"include-manual"`
 	AnalyzeUnchanged       bool          `help:"Analyze compositions identical to their in-cluster version."   name:"analyze-unchanged"`
@@ -167,6 +168,9 @@ func simulateArgv(t *testing.T, testType TestType, a *simArgs) []string {
 	}
 	if a.IncludeManual {
 		argv = append(argv, "--include-pinned")
+	}
+	if a.FieldManager != "" {
+		argv = append(argv, "--field-manager="+a.FieldManager)
 	}
 
 	switch {

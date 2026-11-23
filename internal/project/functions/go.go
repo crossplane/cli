@@ -80,8 +80,12 @@ func (b *goBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, erro
 			if err != nil {
 				return nil, nil, err
 			}
-			img, err := remote.Index(ref, remote.WithTransport(b.transport), remote.WithAuthFromKeychain(authn.DefaultKeychain))
-			return ref, img, err
+			// The index's images and layers are read lazily, after this
+			// returns; see fetchContext.
+			fetchCtx, detach := fetchContext(ctx)
+			defer detach()
+			img, err := remote.Index(ref, remote.WithContext(fetchCtx), remote.WithTransport(b.transport), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+			return ref, img, fetchError(fetchCtx, err)
 		}),
 		build.WithPlatforms(platforms...),
 	)

@@ -18,6 +18,7 @@ package functions
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -54,6 +55,7 @@ func TestBuildStalledRegistry(t *testing.T) {
 	}
 	type want struct {
 		errContains string
+		errIs       error
 		within      time.Duration
 	}
 	cases := map[string]struct {
@@ -71,6 +73,17 @@ func TestBuildStalledRegistry(t *testing.T) {
 				// httptest serves HTTP/1.1, where ggcr does not retry the
 				// timeout; allow for its 1s and 3s backoff anyway.
 				within: 10 * time.Second,
+			},
+		},
+		"ContextDeadline": {
+			reason: "A deadline on Build's context should end a stalled fetch even when the transport would wait forever.",
+			args: args{
+				transport: http.DefaultTransport,
+				timeout:   200 * time.Millisecond,
+			},
+			want: want{
+				errIs:  context.DeadlineExceeded,
+				within: 2 * time.Second,
 			},
 		},
 	}
@@ -102,8 +115,133 @@ func TestBuildStalledRegistry(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want.errContains) {
 				t.Errorf("\n%s\nBuild(...): want error containing %q, got %v", tc.reason, tc.want.errContains, err)
 			}
+			if tc.want.errIs != nil && !errors.Is(err, tc.want.errIs) {
+				t.Errorf("\n%s\nBuild(...): want errors.Is(err, %v), got %v", tc.reason, tc.want.errIs, err)
+			}
 			if elapsed > tc.want.within {
 				t.Errorf("\n%s\nBuild(...): returned after %s, want within %s", tc.reason, elapsed, tc.want.within)
+			}
+		})
+	}
+}
+
+func TestFetchContext(t *testing.T) {
+	t.Parallel()
+
+	type args struct {
+		cancelBeforeFetch  bool
+		detachBeforeCancel bool
+	}
+	type want struct {
+		cancelled bool
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"AlreadyCancelled": {
+			reason: "A build whose context is already cancelled should not start its fetch.",
+			args:   args{cancelBeforeFetch: true},
+			want:   want{cancelled: true},
+		},
+		"CancelledBeforeDetach": {
+			reason: "Cancelling the build's context during the eager fetch should cancel the fetch.",
+			args:   args{},
+			want:   want{cancelled: true},
+		},
+		"CancelledAfterDetach": {
+			reason: "Cancelling the build's context after the fetch returns should not cancel the lazy layer reads bound to it.",
+			args:   args{detachBeforeCancel: true},
+			want:   want{cancelled: false},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			if tc.args.cancelBeforeFetch {
+				cancel()
+			}
+			fetchCtx, detach := fetchContext(ctx)
+			if tc.args.detachBeforeCancel {
+				detach()
+			}
+			cancel()
+
+			if !tc.want.cancelled {
+				// detach returned, so AfterFunc can no longer cancel fetchCtx.
+				if err := fetchCtx.Err(); err != nil {
+					t.Errorf("\n%s\nfetchCtx.Err(): want nil, got %v", tc.reason, err)
+				}
+				return
+			}
+			select {
+			case <-fetchCtx.Done():
+			case <-time.After(10 * time.Second):
+				t.Errorf("\n%s\nfetchCtx not cancelled within 10s", tc.reason)
+			}
+		})
+	}
+}
+
+func TestFetchError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+
+	type args struct {
+		deadline bool // Whether the build's context ends by deadline rather than cancel.
+		err      error
+	}
+	type want struct {
+		is []error
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"Nil": {
+			reason: "A nil error should stay nil.",
+			args:   args{deadline: true, err: nil},
+			want:   want{},
+		},
+		"HTTP2CancelOnDeadline": {
+			reason: "The HTTP/2 transport reports only ctx.Err(), context.Canceled; a caller deadline should still match DeadlineExceeded.",
+			args:   args{deadline: true, err: context.Canceled},
+			want:   want{is: []error{context.Canceled, context.DeadlineExceeded}},
+		},
+		"Cancel": {
+			reason: "A caller cancellation should read as context.Canceled.",
+			args:   args{err: errBoom},
+			want:   want{is: []error{errBoom, context.Canceled}},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			if tc.args.deadline {
+				ctx, cancel = context.WithDeadline(t.Context(), time.Now())
+			}
+			fetchCtx, detach := fetchContext(ctx)
+			defer detach()
+			cancel()
+			<-fetchCtx.Done()
+
+			err := fetchError(fetchCtx, tc.args.err)
+			if tc.want.is == nil && err != nil {
+				t.Errorf("\n%s\nfetchError(...): want nil, got %v", tc.reason, err)
+			}
+			for _, target := range tc.want.is {
+				if !errors.Is(err, target) {
+					t.Errorf("\n%s\nfetchError(...): want errors.Is(err, %v), got %v", tc.reason, target, err)
+				}
 			}
 		})
 	}

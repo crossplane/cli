@@ -66,7 +66,7 @@ func TestBuildStalledRegistry(t *testing.T) {
 		"ResponseHeaderTimeout": {
 			reason: "A registry that never sends response headers should fail the fetch once the transport's header timeout expires, even with no deadline on the context.",
 			args: args{
-				transport: newRegistryTransport(100*time.Millisecond, time.Second),
+				transport: clixpkg.NewRegistryTransport(100*time.Millisecond, time.Second),
 			},
 			want: want{
 				errContains: "timeout awaiting response headers",

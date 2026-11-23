@@ -27,9 +27,11 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiextv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/terminal"
+	"github.com/crossplane/cli/v2/pkg/images"
 )
 
 const testProjectYAML = `apiVersion: dev.crossplane.io/v1alpha1
@@ -72,7 +74,7 @@ func testProjectWithAutoReady() *v1alpha1.Project {
 				{
 					Type: v1alpha1.DependencyTypeXpkg,
 					Xpkg: &v1alpha1.XpkgDependency{
-						Package: functionAutoReadyPackage,
+						Package: images.ToolImage(images.ToolFunctionAutoReady),
 						Version: ">=v0.0.0",
 					},
 				},
@@ -116,7 +118,7 @@ func TestGenerateComposition(t *testing.T) {
 				kind:        "XExample",
 				mode:        apiextv1.CompositionModePipeline,
 				pipelineLen: 1,
-				firstStep:   functionAutoReadyName,
+				firstStep:   "crossplane-contrib-function-auto-ready",
 			},
 		},
 		"WithName": {
@@ -157,6 +159,9 @@ func TestGenerateComposition(t *testing.T) {
 				projFS: fs,
 				apisFS: apisFS,
 				proj:   testProjectWithAutoReady(),
+			}
+			if err := cmd.resolveAutoReady(context.Background()); err != nil {
+				t.Fatalf("resolveAutoReady() failed: %v", err)
 			}
 
 			err := cmd.Run(terminal.NewSpinnerPrinter(io.Discard, false))
@@ -235,8 +240,65 @@ func TestEnsureFunctionAutoReady(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			cmd := &generateCmd{proj: tc.proj}
+			if err := cmd.resolveAutoReady(context.Background()); err != nil {
+				t.Fatalf("resolveAutoReady() failed: %v", err)
+			}
 			if err := cmd.ensureFunctionAutoReady(context.Background()); err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestResolveAutoReady pins how the function-auto-ready dependency is
+// resolved: the image catalog's default by default, and the project's image
+// config rewrites applied on top, so a mirrored (e.g. air-gapped) project
+// depends on the mirror's path. The pipeline step's functionRef is derived
+// from the resolved package the way the package manager names installed
+// Functions, so it keeps matching after a rewrite.
+func TestResolveAutoReady(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		reason       string
+		imageConfigs []pkgv1beta1.ImageConfig
+		wantPackage  string
+		wantName     string
+	}{
+		"Default": {
+			reason:      "Without image configs the catalog default is used as-is.",
+			wantPackage: "xpkg.crossplane.io/crossplane-contrib/function-auto-ready",
+			wantName:    "crossplane-contrib-function-auto-ready",
+		},
+		"RewrittenToMirror": {
+			reason: "An image config rewriting the default registry must rewrite the dependency; the functionRef name follows the rewritten path, since that's how the package manager names the installed Function.",
+			imageConfigs: []pkgv1beta1.ImageConfig{{
+				Spec: pkgv1beta1.ImageConfigSpec{
+					MatchImages: []pkgv1beta1.ImageMatch{{Type: pkgv1beta1.Prefix, Prefix: "xpkg.crossplane.io"}},
+					RewriteImage: &pkgv1beta1.ImageRewrite{
+						Prefix: "registry.example.org/mirror",
+					},
+				},
+			}},
+			wantPackage: "registry.example.org/mirror/crossplane-contrib/function-auto-ready",
+			wantName:    "mirror-crossplane-contrib-function-auto-ready",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			proj := &v1alpha1.Project{Spec: v1alpha1.ProjectSpec{ImageConfigs: tc.imageConfigs}}
+			cmd := &generateCmd{proj: proj}
+			if err := cmd.resolveAutoReady(context.Background()); err != nil {
+				t.Fatalf("\n%s\nresolveAutoReady() failed: %v", tc.reason, err)
+			}
+			if cmd.autoReadyPackage != tc.wantPackage {
+				t.Errorf("\n%s\nautoReadyPackage = %q, want %q", tc.reason, cmd.autoReadyPackage, tc.wantPackage)
+			}
+			if cmd.autoReadyName != tc.wantName {
+				t.Errorf("\n%s\nautoReadyName = %q, want %q", tc.reason, cmd.autoReadyName, tc.wantName)
 			}
 		})
 	}

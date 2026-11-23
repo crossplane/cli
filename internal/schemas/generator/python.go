@@ -41,6 +41,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/crd"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
+	"github.com/crossplane/cli/v2/pkg/images"
 )
 
 const (
@@ -48,7 +49,6 @@ const (
 	pythonPackageRoot          = "models"
 	pythonAdoptModelsStructure = "sorted"
 	pythonGeneratedFolder      = "models/workdir"
-	pythonImage                = "docker.io/koxudaxi/datamodel-code-generator:0.59.0"
 )
 
 var importRE = regexp.MustCompile(`^(from\s+)(\.*)([^\s]+)(.*)`)
@@ -256,7 +256,7 @@ func (p pythonGenerator) generatePythonSchemas(ctx context.Context, inputFS afer
 		inputFS,
 		baseFolder,
 		"",
-		pythonImage,
+		images.Image(images.Python, images.ImageSchema),
 		[]string{
 			"--input-file-type",
 			"openapi",

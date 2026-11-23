@@ -41,6 +41,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/images"
 )
 
 const (
@@ -48,10 +49,6 @@ const (
 	// runtime image must have this version of Python installed.
 	pythonVersion = "3.13"
 
-	// pythonBuildImage is the image in which we build the function.
-	pythonBuildImage = "docker.io/library/debian:13-slim"
-	// pythonRuntimeImage is the distroless base used at runtime.
-	pythonRuntimeImage = "gcr.io/distroless/python3-debian13:nonroot"
 	// pythonBuildScript is the shell pipeline that runs in the build
 	// container.
 	//
@@ -306,8 +303,8 @@ func configurePythonImage(img v1.Image, arch string) (v1.Image, error) {
 
 func newPythonBuilder(imageConfigs []pkgv1beta1.ImageConfig) *pythonBuilder {
 	return &pythonBuilder{
-		buildImage:   pythonBuildImage,
-		runtimeImage: pythonRuntimeImage,
+		buildImage:   images.Image(images.Python, images.ImageBuild),
+		runtimeImage: images.Image(images.Python, images.ImageRuntime),
 		transport:    http.DefaultTransport,
 		configStore:  clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}

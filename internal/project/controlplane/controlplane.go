@@ -53,6 +53,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/certs"
 	"github.com/crossplane/cli/v2/internal/project/helm"
+	"github.com/crossplane/cli/v2/pkg/images"
 )
 
 const (
@@ -516,7 +517,7 @@ func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clus
 }
 
 func ensureLocalRegistry(ctx context.Context, cl client.Client, regName, dir string, certSecret *corev1.Secret) (string, error) {
-	const regImage = "ghcr.io/olareg/olareg:edge"
+	regImage := images.ToolImage(images.ToolDevRegistry)
 	certDir := filepath.Join(dir, ".certs")
 
 	// Check for existing registry container.
@@ -637,7 +638,7 @@ func configureContainerdLocalRegistry(ctx context.Context, cl client.Client, reg
 							Name:      "containerd-certs",
 							MountPath: "/containerd-certs",
 						}},
-						Image:   "docker.io/library/alpine:3",
+						Image:   images.ToolImage(images.ToolDevRegistryConfigurator),
 						Command: []string{"sh", "-c", cmd},
 					}},
 					Volumes: []corev1.Volume{{

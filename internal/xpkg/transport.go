@@ -35,10 +35,15 @@ const (
 	// layer bodies mid-read, so later requests dial fresh instead of queueing
 	// on a dead connection.
 	RegistrySendPingTimeout = 30 * time.Second
+
+	// RegistryMaxIdleConnsPerHost matches ggcr's remote.DefaultTransport.
+	// http.DefaultTransport keeps only 2 idle connections per host, so
+	// concurrent layer pulls and pushes to one registry would redial.
+	RegistryMaxIdleConnsPerHost = 50
 )
 
 // NewRegistryTransport returns a clone of http.DefaultTransport with the given
-// response header timeout and HTTP/2 ping health check. Callers may customise
+// response header timeout, HTTP/2 ping health check and idle pool size. Callers may customise
 // the returned clone (for example its TLS config) before use.
 //
 // ponytail: an HTTP/1.1 connection that stalls mid-body (after headers) is
@@ -51,6 +56,7 @@ const (
 func NewRegistryTransport(responseHeaderTimeout, sendPingTimeout time.Duration) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // http.DefaultTransport is always *http.Transport.
 	t.ResponseHeaderTimeout = responseHeaderTimeout
+	t.MaxIdleConnsPerHost = RegistryMaxIdleConnsPerHost
 	t.HTTP2 = &http.HTTP2Config{SendPingTimeout: sendPingTimeout}
 	return t
 }

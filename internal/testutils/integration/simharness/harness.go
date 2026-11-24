@@ -227,7 +227,7 @@ func RunSimulateArgvWith(t *testing.T, cfg *rest.Config, argv []string, hooks *s
 		kong.Vars{"project_file": clixpkg.ProjectFile},
 		kong.Writers(stdout, stderr),
 		kong.Exit(func(int) { t.Fatal("kong tried to exit the test binary") }),
-		kong.BindTo(context.Background(), (*context.Context)(nil)),
+		kong.BindTo(t.Context(), (*context.Context)(nil)),
 		kong.BindTo(tu.TestLogger(t, true), (*logging.Logger)(nil)),
 		kong.BindTo(terminal.NewNopSpinnerPrinter(), (*terminal.SpinnerPrinter)(nil)),
 		kong.Bind(&config.Config{}),

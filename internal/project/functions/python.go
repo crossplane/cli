@@ -148,7 +148,7 @@ func (b *pythonBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, 
 	eg, _ := errgroup.WithContext(ctx)
 	for i, arch := range c.Architectures {
 		eg.Go(func() error {
-			baseImg, err := baseImageForArch(runtimeRef, arch, b.transport, c.BaseImageCacheDir)
+			baseImg, err := baseImageForArch(ctx, runtimeRef, arch, b.transport, c.BaseImageCacheDir)
 			if err != nil {
 				return errors.Wrap(err, "failed to fetch python runtime base image")
 			}
@@ -309,7 +309,7 @@ func newPythonBuilder(imageConfigs []pkgv1beta1.ImageConfig) *pythonBuilder {
 	return &pythonBuilder{
 		buildImage:   images.Image(images.Python, images.ImageBuild),
 		runtimeImage: images.Image(images.Python, images.ImageRuntime),
-		transport:    http.DefaultTransport,
+		transport:    registryTransport,
 		configStore:  clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

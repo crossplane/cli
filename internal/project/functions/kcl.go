@@ -87,7 +87,7 @@ func (b *kclBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, err
 	eg, _ := errgroup.WithContext(ctx)
 	for i, arch := range c.Architectures {
 		eg.Go(func() error {
-			baseImg, err := baseImageForArch(baseRef, arch, b.transport, c.BaseImageCacheDir)
+			baseImg, err := baseImageForArch(ctx, baseRef, arch, b.transport, c.BaseImageCacheDir)
 			if err != nil {
 				return errors.Wrap(err, "failed to fetch KCL base image")
 			}
@@ -141,12 +141,15 @@ func (b *kclBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, err
 // distroless base is over a hundred megabytes spread across dozens of small
 // requests. cacheDir, when set, backs those layers with a content-addressed
 // on-disk cache so a repeat build reads them locally instead.
-func baseImageForArch(ref name.Reference, arch string, transport http.RoundTripper, cacheDir string) (v1.Image, error) {
+func baseImageForArch(ctx context.Context, ref name.Reference, arch string, transport http.RoundTripper, cacheDir string) (v1.Image, error) {
+	ctx, detach := fetchContext(ctx)
+	defer detach()
+
 	img, err := remote.Image(ref, remote.WithPlatform(v1.Platform{
 		OS:           "linux",
 		Architecture: arch,
-	}), remote.WithTransport(transport), remote.WithAuthFromKeychain(authn.DefaultKeychain))
-	if err != nil {
+	}), remote.WithContext(ctx), remote.WithTransport(transport), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err = fetchError(ctx, err); err != nil {
 		return nil, errors.Wrap(err, "failed to pull image")
 	}
 
@@ -158,8 +161,9 @@ func baseImageForArch(ref name.Reference, arch string, transport http.RoundTripp
 		img = cache.Image(img, tolerantCache{newAtomicCache(cacheDir)})
 	}
 
+	// The config blob is fetched here, still under ctx.
 	cfg, err := img.ConfigFile()
-	if err != nil {
+	if err = fetchError(ctx, err); err != nil {
 		return nil, errors.Wrap(err, "failed to get config from image")
 	}
 	if cfg.Architecture != arch {
@@ -226,7 +230,7 @@ func setImageEnvvars(image v1.Image, envVars map[string]string) (v1.Image, error
 func newKCLBuilder(imageConfigs []v1beta1.ImageConfig) *kclBuilder {
 	return &kclBuilder{
 		baseImage:   images.Image(images.KCL, images.ImageBase),
-		transport:   http.DefaultTransport,
+		transport:   registryTransport,
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

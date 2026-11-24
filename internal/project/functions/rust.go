@@ -196,7 +196,7 @@ func (b *rustBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, er
 	eg, _ := errgroup.WithContext(ctx)
 	for i, arch := range c.Architectures {
 		eg.Go(func() error {
-			baseImg, err := baseImageForArch(runtimeRef, arch, b.transport, c.BaseImageCacheDir)
+			baseImg, err := baseImageForArch(ctx, runtimeRef, arch, b.transport, c.BaseImageCacheDir)
 			if err != nil {
 				return errors.Wrap(err, "failed to fetch rust runtime base image")
 			}
@@ -372,7 +372,7 @@ func newRustBuilder(imageConfigs []pkgv1beta1.ImageConfig) *rustBuilder {
 	return &rustBuilder{
 		buildImage:   images.Image(images.Rust, images.ImageBuild),
 		runtimeImage: images.Image(images.Rust, images.ImageRuntime),
-		transport:    http.DefaultTransport,
+		transport:    registryTransport,
 		configStore:  clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

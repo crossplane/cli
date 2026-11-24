@@ -22,8 +22,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
+	"github.com/go-logr/logr"
 	rbacv1 "k8s.io/api/rbac/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,11 +33,15 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	xpextv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	xpextv2 "github.com/crossplane/crossplane/apis/v2/apiextensions/v2"
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 )
+
+// silenceControllerRuntimeLog sets controller-runtime's global logger once per test binary.
+var silenceControllerRuntimeLog = sync.OnceFunc(func() { ctrllog.SetLogger(logr.Discard()) }) //nolint:gochecknoglobals // The logger it sets is process-global.
 
 // XRDAPIVersion is the apiextensions.crossplane.io version of the XRDs a Setup's XRs are defined by. It decides
 // where Start writes an XR's resourceRefs.
@@ -120,6 +126,10 @@ type Cluster struct {
 // cancelled when the test ends.
 func Start(t *testing.T, s Setup) *Cluster {
 	t.Helper()
+
+	// envtest and the controller-runtime client log through controller-runtime's global logger, which warns
+	// "log.SetLogger(...) was never called" until one is set. These tests assert on results, not those logs.
+	silenceControllerRuntimeLog()
 
 	// envtest needs kube-apiserver and etcd binaries it cannot download itself. Only a run that opted in with
 	// the integration tag gets here, so a missing binary is a broken environment, not a reason to skip.

@@ -150,7 +150,7 @@ if [ -f .git ]; then
 	worktree_dir=$(pwd -P)
 	git_dir=$(git rev-parse --absolute-git-dir)
 	git_common_dir=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)
-	git_file=$(mktemp)
+	git_file=$(mktemp "${git_dir}/nix-sh-gitdir.XXXXXX")
 	trap 'rm -f "${git_file}"' EXIT
 	echo "gitdir: ${git_dir}" >"${git_file}"
 	WORKTREE_FLAGS=(-e "WORKTREE_DIR=${worktree_dir}" -e "WORKTREE_GIT_DIR=${git_dir}" -e "WORKTREE_COMMON_DIR=${git_common_dir}" -v "${worktree_dir}:${worktree_dir}" -v "${git_common_dir}:${git_common_dir}" -v "${git_file}:/crossplane-cli/.git:ro")

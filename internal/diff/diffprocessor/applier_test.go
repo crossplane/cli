@@ -189,3 +189,73 @@ func TestCalculateDiffClientSideApply(t *testing.T) {
 		})
 	}
 }
+
+func TestCalculateDiffServerSideFieldOwner(t *testing.T) {
+	const composed = "apiextensions.crossplane.io/composed/abc"
+
+	live := &un.Unstructured{Object: map[string]any{
+		"apiVersion": "example.org/v1",
+		"kind":       "XR",
+		"metadata":   map[string]any{"name": "x", "namespace": "default"},
+		"spec":       map[string]any{"size": "large"},
+	}}
+	live.SetManagedFields([]metav1.ManagedFieldsEntry{
+		{Manager: composed, Operation: metav1.ManagedFieldsOperationApply},
+		{Manager: "argocd-controller", Operation: metav1.ManagedFieldsOperationApply},
+	})
+	parent := &un.Unstructured{Object: map[string]any{
+		"apiVersion": "example.org/v1",
+		"kind":       "XParent",
+		"metadata":   map[string]any{"name": "parent", "namespace": "default"},
+	}}
+
+	type args struct {
+		composite *un.Unstructured
+	}
+	type want struct {
+		fieldOwner string
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"UserSuppliedXRAppliesAsTheNamedManager": {
+			reason: "A user-supplied XR, with --server-side --field-manager M, is dry-run applied as M.",
+			want:   want{fieldOwner: "platform-operator"},
+		},
+		"ComposedResourceAppliesAsItsComposedManager": {
+			reason: "A composed resource keeps the composed field manager live records, even when the root XR has the user's applier.",
+			args:   args{composite: parent},
+			want:   want{fieldOwner: composed},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var got string
+			apply := tu.NewMockApplyClient().
+				WithDryRunApply(func(_ context.Context, obj *un.Unstructured, fieldOwner string) (*un.Unstructured, error) {
+					got = fieldOwner
+					return obj, nil
+				}).
+				WithDryRunPatch(func(context.Context, *un.Unstructured, []byte) (*un.Unstructured, error) {
+					return nil, errors.New("server-side apply must not client-side apply")
+				}).Build()
+			advisories := NewAdvisoryCollector(nil)
+			calculator := NewDiffCalculator(apply, tu.NewMockAccessChecker().Build(), tu.NewMockResourceTreeClient().Build(),
+				NewResourceManager(tu.NewMockResourceClient().WithResourcesExist(live).Build(), tu.NewMockDefinitionClient().Build(),
+					tu.NewMockResourceTreeClient().Build(), tu.TestLogger(t, false), advisories),
+				tu.TestLogger(t, false), compare.Options{}, DryRunOnAll, &tu.MockDefaulter{}, nil)
+
+			p := &DefaultDiffProcessor{config: ProcessorConfig{Advisories: advisories, Applier: plan.ApplierFlags{FieldManager: "platform-operator", ServerSide: new(true)}}}
+			ctx := p.withApplier(withUserSupplied(t.Context()), live, 0, "XR/x")
+
+			if _, err := calculator.CalculateDiff(ctx, tc.args.composite, live.DeepCopy()); err != nil {
+				t.Fatalf("%s\nCalculateDiff(...): unexpected error: %v", tc.reason, err)
+			}
+			if diff := gcmp.Diff(tc.want.fieldOwner, got); diff != "" {
+				t.Errorf("%s\nCalculateDiff(...) dry-run field owner: -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

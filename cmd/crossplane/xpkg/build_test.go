@@ -164,15 +164,15 @@ func TestBuildCmdRun(t *testing.T) {
 		"MissingMetadata": {
 			reason: "A package root without crossplane.yaml should fail to build.",
 			args:   args{files: map[string]string{"apis/xrd.yaml": testXRD}},
-			want:   want{err: errBuildPackage},
+			want:   want{err: errBuildPackage + ": not exactly one package meta type"},
 		},
 		"InvalidResource": {
-			reason: "A configuration containing a non-configuration resource should fail linting.",
+			reason: "A configuration containing a CRD should fail the configuration linter.",
 			args: args{files: map[string]string{
 				"crossplane.yaml": testConfigurationMeta,
-				"cm.yaml":         "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\n",
+				"crd.yaml":        testCRDYAML("example.org"),
 			}},
-			want: want{err: errBuildPackage},
+			want: want{err: errBuildPackage + ": failed to lint package"},
 		},
 	}
 
@@ -227,7 +227,7 @@ func TestBuildCmdRuntimeImageTarball(t *testing.T) {
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{"crossplane.yaml": testConfigurationMeta})
 
-	base := testPackageImage(t, "linux", "arm64")
+	base := testBaseImage(t, "linux", "arm64")
 	baseLayers, err := base.Layers()
 	if err != nil {
 		t.Fatal(err)

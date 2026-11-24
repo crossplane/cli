@@ -125,7 +125,7 @@ func (c *pushCmd) Run(ctx context.Context, logger logging.Logger, sp terminal.Sp
 
 			img, err := tarball.ImageFromPath(cleanPath, nil)
 			if err != nil {
-				return err
+				return errors.Wrapf(err, errFmtReadPackage, cleanPath)
 			}
 
 			images = append(images, packageImage{Image: img, Path: cleanPath})

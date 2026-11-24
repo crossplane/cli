@@ -502,9 +502,9 @@ func TestPushCmdRun(t *testing.T) {
 			want:   want{err: errFindPackageinWd},
 		},
 		"UnreadablePackageFile": {
-			reason: "A package file that isn't an image tarball should fail to read.",
+			reason: "A package file that isn't an image tarball should fail to read, naming the file.",
 			args:   args{packageArgs: []string{"crossplane.yaml"}},
-			want:   want{err: "EOF"},
+			want:   want{err: "failed to read package file crossplane.yaml"},
 		},
 	}
 

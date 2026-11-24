@@ -126,8 +126,9 @@ func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) 
 	return p.planWithLive(ctx, desired, live, a, onFallback)
 }
 
-// warnUndetermined warns that the fallback may not show the fields desired's
-// manifest drops as removed, since applier a cannot be told.
+// warnUndetermined warns that the fallback's removals, guessed from every
+// candidate applier's fields, may not match the real apply, since applier a
+// cannot be told.
 func (p *Planner) warnUndetermined(desired *unstructured.Unstructured, a plan.Applier) {
 	id := desired.GetName()
 	if ns := desired.GetNamespace(); ns != "" {
@@ -137,7 +138,7 @@ func (p *Planner) warnUndetermined(desired *unstructured.Unstructured, a plan.Ap
 	if len(a.ImperativeWriters) > 0 {
 		msg += fmt.Sprintf(", since imperative writers (managers that updated it without applying, such as kubectl create or edit, or a controller) wrote it too (%s)", strings.Join(a.ImperativeWriters, ", "))
 	}
-	_, _ = fmt.Fprintln(p.warn, msg+", so fields its manifest drops may not be shown as removed; "+
+	_, _ = fmt.Fprintln(p.warn, msg+", so the removals shown are a best guess from every candidate's fields and may not match how its manifest is applied; "+
 		"name the applier with --field-manager, and --server-side or --server-side=false")
 }
 

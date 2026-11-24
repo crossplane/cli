@@ -653,7 +653,7 @@ func TestPlannerApplierFlags(t *testing.T) {
 					{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}},
 					{Path: "spec.forProvider.instanceTenancy", Actual: &plan.Value{Value: "default"}},
 				},
-				warning: "Warning: cannot tell which field manager applies VPC my-vpc (candidates: argocd, kubectl), so fields its manifest drops may not be shown as removed; name the applier with --field-manager, and --server-side or --server-side=false\n",
+				warning: "Warning: cannot tell which field manager applies VPC my-vpc (candidates: argocd, kubectl), so the removals shown are a best guess from every candidate's fields and may not match how its manifest is applied; name the applier with --field-manager, and --server-side or --server-side=false\n",
 			},
 		},
 		"UndeterminedWarningNamesTheNamespace": {
@@ -664,7 +664,7 @@ func TestPlannerApplierFlags(t *testing.T) {
 					{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}},
 					{Path: "spec.forProvider.instanceTenancy", Actual: &plan.Value{Value: "default"}},
 				},
-				warning: "Warning: cannot tell which field manager applies VPC team-a/my-vpc (candidates: argocd, kubectl), so fields its manifest drops may not be shown as removed; name the applier with --field-manager, and --server-side or --server-side=false\n",
+				warning: "Warning: cannot tell which field manager applies VPC team-a/my-vpc (candidates: argocd, kubectl), so the removals shown are a best guess from every candidate's fields and may not match how its manifest is applied; name the applier with --field-manager, and --server-side or --server-side=false\n",
 			},
 		},
 		"UndeterminedWarningNamesImperativeWriters": {
@@ -672,7 +672,7 @@ func TestPlannerApplierFlags(t *testing.T) {
 			args:   args{managedFields: []metav1.ManagedFieldsEntry{twoAppliers[0], update}},
 			want: want{
 				changes: []plan.FieldChange{{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}}},
-				warning: "Warning: cannot tell which field manager applies VPC my-vpc (candidates: argocd), since imperative writers (managers that updated it without applying, such as kubectl create or edit, or a controller) wrote it too (kubectl), so fields its manifest drops may not be shown as removed; name the applier with --field-manager, and --server-side or --server-side=false\n",
+				warning: "Warning: cannot tell which field manager applies VPC my-vpc (candidates: argocd), since imperative writers (managers that updated it without applying, such as kubectl create or edit, or a controller) wrote it too (kubectl), so the removals shown are a best guess from every candidate's fields and may not match how its manifest is applied; name the applier with --field-manager, and --server-side or --server-side=false\n",
 			},
 		},
 		"RoutedPlanDoesNotWarn": {

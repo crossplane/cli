@@ -30,7 +30,8 @@ plan shows the fields that applying them would remove. Unset, they're inferred
 from each one's `managedFields` and `kubectl.kubernetes.io/last-applied-configuration`
 annotation, as `crossplane xr simulate` infers them. When the applier can't be
 told and the command falls back to an approximate plan, it warns on stderr that
-dropped fields may not be shown removed. The flags also apply to input managed
+the removals shown are a best guess from every candidate applier's fields and
+may not match the real apply. The flags also apply to input managed
 resources that Crossplane composed.
 
 Which providers run as diff servers comes from the current kubeconfig context

@@ -31,7 +31,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -149,12 +148,12 @@ func TestTLSCertificateGeneratorIntegration(t *testing.T) {
 			// Each case gets its own namespace, so the secrets one leaves don't affect another.
 			i++
 			ns := fmt.Sprintf("certs-%d", i)
-			if err := cluster.Client.Create(cluster.Context, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
+			if err := cluster.Client.Create(cluster.Context, &corev1.Namespace{Name: ns}); err != nil {
 				t.Fatalf("cannot create namespace: %v", err)
 			}
 
 			for n, data := range tc.args.existing {
-				s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: n, Namespace: ns}, Data: data}
+				s := &corev1.Secret{Name: n, Namespace: ns, Data: data}
 				if err := cluster.Client.Create(cluster.Context, s); err != nil {
 					t.Fatalf("cannot create secret %s: %v", n, err)
 				}

@@ -31,10 +31,9 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/version"
 
 	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
-
-	"github.com/crossplane/crossplane-runtime/v2/pkg/version"
 )
 
 // runUpdate parses args as `crossplane xpkg update` would and runs it, returning its stdout.

@@ -86,9 +86,10 @@ func TestSimulateFlags(t *testing.T) {
 				"--include-pinned", "--max-iterations", "3", "--timeout", "2m",
 				"--max-concurrency", "2", "-o", "json", "--crossplane-version", "v2.3.4",
 				"--as", "jane", "--as-group", "admins",
+				"--resource-file", "a.yaml,b", "--resource-file", "-",
 			},
 			want: want{cmd: &SimulateCmd{
-				MaxConcurrency: 2, ProjectFile: "p.yaml",
+				MaxConcurrency: 2, ProjectFile: "p.yaml", ResourceFile: []string{"a.yaml", "b", "-"},
 				Context:           "staging",
 				MaxIterations:     3,
 				Timeout:           2 * time.Minute,
@@ -374,6 +375,62 @@ func TestSimulateFlags(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.want.cmd, got, cmpopts.IgnoreFields(simulate.Flags{}, "Impersonation"), cmpopts.IgnoreUnexported(simulate.Flags{}, simulate.CompositionFlags{})); diff != "" {
 				t.Errorf("\n%s\nParse(%v): -want, +got:\n%s", tc.reason, tc.args, diff)
+			}
+		})
+	}
+}
+
+func TestSimulateLoadResourceFiles(t *testing.T) {
+	type want struct {
+		names []string
+		err   string
+	}
+	cases := map[string]struct {
+		reason string
+		yaml   string
+		want   want
+	}{
+		"Composite": {
+			reason: "A candidate composite resource or claim is loaded.",
+			yaml:   "apiVersion: example.org/v1\nkind: Bucket\nmetadata:\n  name: b\n",
+			want:   want{names: []string{"b"}},
+		},
+		"Composition": {
+			reason: "A Composition is rejected; the project supplies them.",
+			yaml:   "apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: c\n",
+			want:   want{err: `--resource-file inputs include Composition "c" (apiextensions.crossplane.io/v1); --resource-file takes composite resource or claim files; the project's Compositions are under its APIs path`},
+		},
+		"ProjectFile": {
+			reason: "A project file is rejected.",
+			yaml:   "apiVersion: dev.crossplane.io/v1alpha1\nkind: Project\nmetadata:\n  name: p\n",
+			want:   want{err: `--resource-file inputs include Project "p" (dev.crossplane.io/v1alpha1); --resource-file takes composite resource or claim files; pass the project file with -f`},
+		},
+		"List": {
+			reason: "A List is rejected with the hint to split it.",
+			yaml:   "apiVersion: v1\nkind: List\nmetadata:\n  name: l\nitems: []\n",
+			want:   want{err: `--resource-file inputs include List "l" (v1); --resource-file takes composite resource or claim files; pass its items as separate YAML documents instead of a List`},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "in.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := (&SimulateCmd{ResourceFile: []string{path}}).loadResourceFiles()
+			gotErr := ""
+			if err != nil {
+				gotErr = err.Error()
+			}
+			if diff := cmp.Diff(tc.want.err, gotErr); diff != "" {
+				t.Errorf("\n%s\nloadResourceFiles(): -want err, +got err:\n%s", tc.reason, diff)
+			}
+			var names []string
+			for _, r := range got {
+				names = append(names, r.GetName())
+			}
+			if diff := cmp.Diff(tc.want.names, names); diff != "" {
+				t.Errorf("\n%s\nloadResourceFiles(): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

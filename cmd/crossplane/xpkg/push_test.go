@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -410,14 +411,25 @@ func TestPushImages(t *testing.T) {
 }
 
 func TestPushImagesRegistryError(t *testing.T) {
-	// Reject image manifest uploads, which are pushed by digest for a
-	// multi-platform package, and every manifest upload to org/single. Index
-	// uploads to org/multi are allowed so the test can check none was written.
-	// 403 is not retried by go-containerregistry.
+	// Reject the first upload of each image manifest, which is pushed by digest
+	// for a multi-platform package, and every manifest upload to org/single.
+	// A later upload of the same digest succeeds, so if pushImages went on to
+	// write the index after a per-platform failure the index would land and the
+	// Head check below would catch it. 403 is not retried by go-containerregistry.
+	var rejected sync.Map
 	host := newTestRegistry(t, func(w http.ResponseWriter, r *http.Request) bool {
-		if r.Method == http.MethodPut && (strings.Contains(r.URL.Path, "/manifests/sha256:") || strings.HasPrefix(r.URL.Path, "/v2/org/single/manifests/")) {
+		if r.Method != http.MethodPut {
+			return false
+		}
+		if strings.HasPrefix(r.URL.Path, "/v2/org/single/manifests/") {
 			w.WriteHeader(http.StatusForbidden)
 			return true
+		}
+		if strings.Contains(r.URL.Path, "/manifests/sha256:") {
+			if _, seen := rejected.LoadOrStore(r.URL.Path, true); !seen {
+				w.WriteHeader(http.StatusForbidden)
+				return true
+			}
 		}
 		return false
 	})
@@ -435,7 +447,7 @@ func TestPushImagesRegistryError(t *testing.T) {
 			want:      "failed to push package file amd64",
 		},
 		"MultiPlatform": {
-			reason:    "A failed per-platform push should fail the whole push before any index is written.",
+			reason:    "A failed per-platform push should fail the whole push without writing an index, even though a retry of the same manifests would succeed.",
 			platforms: [][2]string{{"linux", "amd64"}, {"linux", "arm64"}},
 			repo:      "multi",
 			want:      "failed to push package file",

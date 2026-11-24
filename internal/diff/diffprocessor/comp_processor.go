@@ -993,6 +993,8 @@ func (p *DefaultCompDiffProcessor) withNetNewComposites(ctx context.Context, xrs
 		}
 
 		// A failed resolve is the render's to report: it resolves the same composite.
+		// ponytail: this resolves the claim once more than the render does, as pinnedFunctionChangeXRs
+		// does for a pin. Extract a shared backingKey helper if a third caller needs the backing key.
 		if composite, err := p.xrProc.ResolveComposite(ctx, xr); err == nil {
 			out[dt.CompositeKeyOf(composite)] = true
 		}

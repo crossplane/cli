@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -3437,6 +3438,8 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		return nil, apierrors.NewNotFound(schema.GroupResource{Group: "apiextensions.crossplane.io", Resource: "compositions"}, "test-comp")
 	}
 
+	const predicted = "<predicted>"
+
 	type args struct {
 		find      func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error)
 		resources []k8stypes.NamespacedName
@@ -3445,6 +3448,10 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		comps []*un.Unstructured
 		// cluster are the cluster's Compositions; a run Composition the cluster lacks is net-new.
 		cluster []*apiextensionsv1.Composition
+		// clusterComposite is the cluster's copy of a composite; it has none when nil.
+		clusterComposite func(context.Context, *un.Unstructured) (*un.Unstructured, error)
+		// resolve is a composite's effective composite; the composite itself when nil.
+		resolve func(context.Context, *un.Unstructured) (*un.Unstructured, error)
 	}
 
 	type want struct {
@@ -3455,6 +3462,13 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		supplied map[string][]string
 		// skipped is each Composition's ImpactAnalysisSkipped; unchecked when nil.
 		skipped map[string]bool
+		// revisions is the revision name each rendered composite was given, by name, where predicted
+		// stands for the Composition's PredictedRevisionName; unchecked when nil.
+		revisions map[string]string
+		// errored names each composite whose impact is an error; unchecked when nil.
+		errored []string
+		// healthy names each composite whose impact carries its live health; unchecked when nil.
+		healthy []string
 	}
 
 	cases := map[string]struct {
@@ -3574,6 +3588,87 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			},
 			want: want{rendered: []string{"new/file"}, repointed: map[string]int{"test-comp": 0}, supplied: map[string][]string{"test-comp": {"new"}}},
 		},
+		"ScopedOutLiveManualDeferred": {
+			reason: "A live Manual composite pinned to a revision that --resource leaves out is still live, so its supplied counterpart stays pinned and is deferred.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return []*un.Unstructured{xr("db", "cluster")}, nil
+				},
+				resources: []k8stypes.NamespacedName{{Namespace: "ns", Name: "db"}},
+				supplied:  map[string][]*un.Unstructured{"test-comp": {pinned(manual(xr("a", "file")))}},
+				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					return xr(u.GetName(), "cluster"), nil
+				},
+			},
+			want: want{rendered: []string{"db/cluster"}, repointed: map[string]int{"test-comp": 1}, supplied: map[string][]string{"test-comp": {"a"}}},
+		},
+		"OtherNamespaceLiveRepoints": {
+			reason: "A live composite in a namespace discovery did not list re-points, since the cluster has it.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return nil, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {func() *un.Unstructured {
+					u := xr("b", "file")
+					u.SetNamespace("team-b")
+					return u
+				}()}},
+				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) { return u, nil },
+			},
+			want: want{rendered: []string{"b/file"}, repointed: map[string]int{"test-comp": 1}, supplied: map[string][]string{"test-comp": {"b"}}},
+		},
+		"LivenessLookupErrorReported": {
+			reason: "A supplied composite whose cluster lookup fails is reported with that error, not treated as net-new.",
+			args: args{
+				find:     notFound,
+				supplied: map[string][]*un.Unstructured{"test-comp": {manual(xr("a", "file"))}},
+				clusterComposite: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+					return nil, errors.New("forbidden")
+				},
+			},
+			want: want{rendered: nil, repointed: map[string]int{"test-comp": 0}, supplied: map[string][]string{"test-comp": {"a"}}, errored: []string{"a"}},
+		},
+		"GenerateNameOnlySuppliedRenderEach": {
+			reason: "Supplied composites with only a generateName are distinct and net-new, so each renders and none is looked up.",
+			args: args{
+				find: notFound,
+				supplied: map[string][]*un.Unstructured{"test-comp": {
+					func() *un.Unstructured { u := xr("", "one"); u.SetGenerateName("x-"); return u }(),
+					func() *un.Unstructured { u := xr("", "two"); u.SetGenerateName("x-"); return u }(),
+				}},
+				clusterComposite: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+					return nil, errors.New("unexpected lookup")
+				},
+			},
+			want: want{rendered: []string{"/one", "/two"}, repointed: map[string]int{"test-comp": 0}},
+		},
+		"NetNewManualClaimGetsRevision": {
+			reason: "A supplied net-new Manual claim renders through its backing XR with the predicted revision, as it adopts it.",
+			args: args{
+				find: notFound,
+				supplied: map[string][]*un.Unstructured{"test-comp": {manual(tu.NewResource("example.org/v1", "Claim", "claim").
+					InNamespace("ns").
+					WithSpecField("marker", "file").
+					Build())}},
+				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					if u.GetKind() != "Claim" {
+						return u, nil
+					}
+					return manual(xr("claim-xyz", "file")), nil
+				},
+			},
+			want: want{rendered: []string{"claim/file"}, revisions: map[string]string{"claim": predicted}},
+		},
+		"ReplacingSuppliedKeepsLiveHealth": {
+			reason: "A supplied composite that replaces a live one carries the live health its render read.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return []*un.Unstructured{xr("a", "cluster")}, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file")}},
+			},
+			want: want{rendered: []string{"a/file"}, healthy: []string{"a"}},
+		},
 		"ReplacingManualSuppliedDeferred": {
 			reason: "A supplied Manual composite pinned to a revision that replaces a live one stays pinned, so it is deferred as today.",
 			args: args{
@@ -3603,17 +3698,44 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 
 			var got []string
 
+			revisions := map[string]string{}
+			resolve := tt.args.resolve
+			if resolve == nil {
+				resolve = func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) { return u, nil }
+			}
+
 			proc.xrProc = &tu.MockDiffProcessor{
-				DiffSingleResourceFn: func(_ context.Context, res *un.Unstructured, _ types.CompositionProvider) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+				ResolveCompositeFn: resolve,
+				ClusterCompositeFn: tt.args.clusterComposite,
+				// Like the real one, the provider is handed the effective composite, and the live health is
+				// that of the cluster's copy.
+				DiffSingleResourceFn: func(ctx context.Context, res *un.Unstructured, provider types.CompositionProvider) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 					marker, _, _ := un.NestedString(res.Object, "spec", "marker")
 					got = append(got, res.GetName()+"/"+marker)
 
-					return map[string]*dt.ResourceDiff{}, types.RenderedResources{}, nil
+					composite, err := resolve(ctx, res)
+					if err != nil {
+						return nil, types.RenderedResources{}, err
+					}
+
+					resolved, err := provider(ctx, composite)
+					if err != nil {
+						return nil, types.RenderedResources{}, err
+					}
+
+					revisions[res.GetName()] = resolved.RevisionName
+
+					var rendered types.RenderedResources
+					if marker == "file" && res.GetName() == "a" {
+						rendered.SetComposite(xr("a", "cluster"))
+					}
+
+					return map[string]*dt.ResourceDiff{}, rendered, nil
 				},
 			}
 
 			out, err := proc.DiffComposition(t.Context(), comps, "ns", tt.args.resources)
-			if err != nil {
+			if err != nil && tt.want.errored == nil {
 				t.Fatalf("\n%s\nDiffComposition(...): unexpected error: %v", tt.reason, err)
 			}
 
@@ -3622,6 +3744,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			}
 
 			repointed, supplied, skipped := map[string]int{}, map[string][]string{}, map[string]bool{}
+			var errored, healthy []string
 			for _, c := range out.Compositions {
 				repointed[c.Name] = c.RevisionImpact.RepointedComposites
 				skipped[c.Name] = c.ImpactAnalysisSkipped
@@ -3629,6 +3752,36 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 					if i.Supplied {
 						supplied[c.Name] = append(supplied[c.Name], i.Name)
 					}
+					if i.Status == dt.XRStatusError {
+						errored = append(errored, i.Name)
+					}
+					if i.Health.XR != nil {
+						healthy = append(healthy, i.Name)
+					}
+				}
+			}
+
+			if tt.want.revisions != nil {
+				want := maps.Clone(tt.want.revisions)
+				for name, rev := range want {
+					if rev == predicted && len(out.Compositions) > 0 {
+						want[name] = out.Compositions[0].RevisionImpact.PredictedRevisionName
+					}
+				}
+				if diff := gcmp.Diff(want, revisions); diff != "" {
+					t.Errorf("\n%s\nDiffComposition(...): revision names -want +got:\n%s", tt.reason, diff)
+				}
+			}
+
+			if tt.want.errored != nil {
+				if diff := gcmp.Diff(tt.want.errored, errored); diff != "" {
+					t.Errorf("\n%s\nDiffComposition(...): errored composites -want +got:\n%s", tt.reason, diff)
+				}
+			}
+
+			if tt.want.healthy != nil {
+				if diff := gcmp.Diff(tt.want.healthy, healthy); diff != "" {
+					t.Errorf("\n%s\nDiffComposition(...): composites with live health -want +got:\n%s", tt.reason, diff)
 				}
 			}
 

@@ -260,6 +260,7 @@ type MockDiffProcessor struct {
 	PerformDiffFn        func(ctx context.Context, resources []*un.Unstructured, compositionProvider types.CompositionProvider) (*dt.XRReport, error)
 	DiffSingleResourceFn func(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, types.RenderedResources, error)
 	ResolveCompositeFn   func(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
+	ClusterCompositeFn   func(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
 	CleanupFn            func(ctx context.Context) error
 }
 
@@ -271,6 +272,16 @@ func (m *MockDiffProcessor) ResolveComposite(ctx context.Context, res *un.Unstru
 	}
 
 	return res, nil
+}
+
+// ClusterComposite implements the DiffProcessor.ClusterComposite method. Unset, the cluster has no copy
+// of res.
+func (m *MockDiffProcessor) ClusterComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error) {
+	if m.ClusterCompositeFn != nil {
+		return m.ClusterCompositeFn(ctx, res)
+	}
+
+	return nil, nil
 }
 
 // Initialize implements the DiffProcessor interface.

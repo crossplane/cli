@@ -7,3 +7,7 @@ codecov:
 
 comment:
   after_n_builds: 2
+
+# Test helpers and mocks, not production code.
+ignore:
+  - "**/testutils/**"

@@ -214,13 +214,13 @@ func TestRenderCompDiffHealth(t *testing.T) {
 			reason: "An unhealthy XR's affected line carries its health, each XR's unhealthy resources without changes follow the impact analysis under its name, and the Health: line ends the run, counting only XBucket/a since XBucket/b has no health.",
 			args: args{impacts: []dt.XRImpact{
 				{
-					ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XBucket", Namespace: "ns", Name: "a"},
-					Status:          dt.XRStatusUnchanged,
-					Health:          dt.CompositeHealth{XR: failing, Composed: []dt.ResourceHealth{{ObjectReference: rt, Health: notReady}}},
+					APIVersion: "example.org/v1", Kind: "XBucket", Namespace: "ns", Name: "a",
+					Status: dt.XRStatusUnchanged,
+					Health: dt.CompositeHealth{XR: failing, Composed: []dt.ResourceHealth{{ObjectReference: rt, Health: notReady}}},
 				},
 				{
-					ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XBucket", Name: "b"},
-					Status:          dt.XRStatusUnchanged,
+					APIVersion: "example.org/v1", Kind: "XBucket", Name: "b",
+					Status: dt.XRStatusUnchanged,
 				},
 			}},
 			want: `=== Composition Changes ===

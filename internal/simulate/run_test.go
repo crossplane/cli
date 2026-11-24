@@ -589,9 +589,9 @@ func TestSimulateRun(t *testing.T) {
 		return &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
 			Name: "comp",
 			ImpactAnalysis: []dt.XRImpact{{
-				ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XDB", Name: "db"},
-				Status:          status,
-				Health:          dt.CompositeHealth{XR: &health.Health{State: health.Failing, Synced: &health.Condition{Status: corev1.ConditionFalse}}},
+				APIVersion: "example.org/v1", Kind: "XDB", Name: "db",
+				Status: status,
+				Health: dt.CompositeHealth{XR: &health.Health{State: health.Failing, Synced: &health.Condition{Status: corev1.ConditionFalse}}},
 			}},
 		}}}
 	}

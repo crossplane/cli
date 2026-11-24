@@ -38,6 +38,7 @@ import (
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	k8client "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -104,10 +105,16 @@ func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) 
 // counterpart, or nil when none exists: route it to a diff server, and fall
 // back to the approximate client-side diff when no server can plan it.
 // Failures become per-resource errors so one resource never fails the whole
-// run. It is for composed resources, whose applier is not the user's, so the
-// fallback takes removals from every applier live records.
+// run. It is for composed resources, which Crossplane applies, not the user,
+// so the fallback removes fields as the composed field manager live records.
+// When live records none (it is not composed yet, say), the fallback takes
+// removals from every applier live records.
 func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.Unstructured) *plan.ResourcePlan {
-	return p.planWithLive(ctx, desired, live, plan.Applier{Mode: plan.ApplyUndetermined})
+	a := plan.Applier{Mode: plan.ApplyUndetermined}
+	if m := k8client.GetComposedFieldOwner(live); m != "" {
+		a = plan.Applier{Mode: plan.ApplyServerSide, FieldManager: m}
+	}
+	return p.planWithLive(ctx, desired, live, a)
 }
 
 // planWithLive is PlanWithLive with the applier the fallback removes fields

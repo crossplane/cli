@@ -26,6 +26,7 @@ import (
 
 	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -565,4 +566,65 @@ func TestPlanner(t *testing.T) {
 			t.Errorf("Plan(...): want a create for an unserved kind, got %+v", got)
 		}
 	})
+}
+
+func TestPlanWithLive(t *testing.T) {
+	const composed = "apiextensions.crossplane.io/composed/abc"
+
+	type args struct {
+		managedFields []metav1.ManagedFieldsEntry
+	}
+	type want struct {
+		changes []plan.FieldChange
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"ProviderOwnedFieldIsKept": {
+			reason: "A field only the provider owns survives Crossplane's apply as its composed manager.",
+			args: args{managedFields: []metav1.ManagedFieldsEntry{
+				fieldsOf(composed, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`),
+				fieldsOf("provider", `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{}}}}`),
+			}},
+		},
+		"ComposedOwnedFieldIsRemoved": {
+			reason: "A field only the composed manager owns, and the desired state drops, is removed.",
+			args: args{managedFields: []metav1.ManagedFieldsEntry{
+				fieldsOf(composed, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{},"f:enableDnsHostnames":{}}}}`),
+			}},
+			want: want{changes: []plan.FieldChange{{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}}}},
+		},
+		"CoOwnedFieldIsKept": {
+			reason: "A field the composed manager co-owns with another manager survives the apply.",
+			args: args{managedFields: []metav1.ManagedFieldsEntry{
+				fieldsOf(composed, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{},"f:enableDnsHostnames":{}}}}`),
+				fieldsOf("provider", `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{}}}}`),
+			}},
+		},
+		"NoComposedManagerRemovesEveryAppliersFields": {
+			reason: "With no composed manager on live, removals are every applier's exclusively owned fields.",
+			args: args{managedFields: []metav1.ManagedFieldsEntry{
+				fieldsOf("kubectl", `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`),
+				fieldsOf("provider", `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{}}}}`),
+			}},
+			want: want{changes: []plan.FieldChange{{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}}}},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			live := vpc("my-vpc", "10.0.0.0/16")
+			_ = unstructured.SetNestedField(live.Object, true, "spec", "forProvider", "enableDnsHostnames")
+			live.SetManagedFields(tc.args.managedFields)
+
+			planner := NewPlanner(nil, meta.NewDefaultRESTMapper(nil), noCRDs(t), "default", &fakeRouter{}, time.Second)
+			got := planner.PlanWithLive(context.Background(), vpc("my-vpc", "10.0.0.0/16"), live)
+			if diff := cmp.Diff(tc.want.changes, got.Changes, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nPlanWithLive(...): -want changes, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
 }

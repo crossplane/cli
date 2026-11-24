@@ -410,9 +410,12 @@ func TestPushImages(t *testing.T) {
 }
 
 func TestPushImagesRegistryError(t *testing.T) {
-	// Reject every manifest upload; 403 is not retried by go-containerregistry.
+	// Reject image manifest uploads, which are pushed by digest for a
+	// multi-platform package, and every manifest upload to org/single. Index
+	// uploads to org/multi are allowed so the test can check none was written.
+	// 403 is not retried by go-containerregistry.
 	host := newTestRegistry(t, func(w http.ResponseWriter, r *http.Request) bool {
-		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/manifests/") {
+		if r.Method == http.MethodPut && (strings.Contains(r.URL.Path, "/manifests/sha256:") || strings.HasPrefix(r.URL.Path, "/v2/org/single/manifests/")) {
 			w.WriteHeader(http.StatusForbidden)
 			return true
 		}
@@ -422,28 +425,39 @@ func TestPushImagesRegistryError(t *testing.T) {
 	cases := map[string]struct {
 		reason    string
 		platforms [][2]string
+		repo      string
 		want      string
 	}{
 		"SingleImage": {
 			reason:    "A failed single-image push should name the package path.",
 			platforms: [][2]string{{"linux", "amd64"}},
+			repo:      "single",
 			want:      "failed to push package file amd64",
 		},
 		"MultiPlatform": {
 			reason:    "A failed per-platform push should fail the whole push before any index is written.",
 			platforms: [][2]string{{"linux", "amd64"}, {"linux", "arm64"}},
+			repo:      "multi",
 			want:      "failed to push package file",
 		},
 	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
+	for caseName, tc := range cases {
+		t.Run(caseName, func(t *testing.T) {
 			imgs := make([]packageImage, 0, len(tc.platforms))
 			for _, p := range tc.platforms {
 				imgs = append(imgs, packageImage{Image: testPackageImage(t, p[0], p[1]), Path: p[1]})
 			}
-			err := pushImages(t.Context(), logging.NewNopLogger(), nil, imgs, host+"/org/fail:v1", nil, remote.WithAuth(authn.Anonymous))
+			ref := host + "/org/" + tc.repo + ":v1"
+			err := pushImages(t.Context(), logging.NewNopLogger(), nil, imgs, ref, nil, remote.WithAuth(authn.Anonymous))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("\n%s\npushImages(...): want error containing %q, got %v", tc.reason, tc.want, err)
+			}
+			r, err := name.ParseReference(ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := remote.Head(r); err == nil {
+				t.Errorf("\n%s\npushImages(...): want nothing at %s, but a manifest was written", tc.reason, ref)
 			}
 		})
 	}

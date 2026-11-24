@@ -375,13 +375,7 @@ func (p *DefaultCompDiffProcessor) suppliedLiveness(ctx context.Context, resolve
 				continue
 			}
 
-			getter, ok := p.xrProc.(ClusterCompositeGetter)
-			if !ok {
-				live[id] = suppliedState{err: errors.Errorf("cannot tell whether %s %q exists in the cluster", u.GetKind(), u.GetName())}
-				continue
-			}
-
-			cluster, err := getter.ClusterComposite(ctx, u)
+			cluster, err := p.xrProc.ClusterComposite(ctx, u)
 			switch {
 			case err != nil:
 				live[id] = suppliedState{err: errors.Wrapf(err, "cannot get %s %q from the cluster", u.GetKind(), u.GetName())}

@@ -61,6 +61,10 @@ type DiffProcessor interface {
 	// the defaulted effective composite (see CompositeResolver), which for a claim is its backing XR.
 	ResolveComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
 
+	// ClusterComposite returns the cluster's copy of the composite res names, or nil when the cluster
+	// has none. Any other lookup error is returned.
+	ClusterComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
+
 	// Initialize prepares the processor's providers before the first diff.
 	Initialize(ctx context.Context) error
 
@@ -386,15 +390,7 @@ func (p *DefaultDiffProcessor) ResolveComposite(ctx context.Context, res *un.Uns
 	return defaultedXR, err
 }
 
-// ClusterCompositeGetter is implemented by a DiffProcessor that can look a composite up in the cluster.
-type ClusterCompositeGetter interface {
-	// ClusterComposite returns the cluster's copy of the composite res names, or nil when the cluster
-	// has none. Any other lookup error is returned.
-	ClusterComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
-}
-
-// ClusterComposite returns the cluster's copy of res, or nil when it has none; see
-// ClusterCompositeGetter.
+// ClusterComposite returns the cluster's copy of res, or nil when it has none; see DiffProcessor.
 func (p *DefaultDiffProcessor) ClusterComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error) {
 	current, _, err := p.resourceManager.FetchCurrentObject(ctx, nil, res)
 	return current, err

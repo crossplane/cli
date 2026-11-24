@@ -560,6 +560,7 @@ type MockApplyClient struct {
 	ApplyFn        func(ctx context.Context, obj *un.Unstructured) (*un.Unstructured, error)
 	DryRunApplyFn  func(ctx context.Context, obj *un.Unstructured, fieldOwner string) (*un.Unstructured, error)
 	DryRunCreateFn func(ctx context.Context, obj *un.Unstructured) (*un.Unstructured, error)
+	DryRunPatchFn  func(ctx context.Context, obj *un.Unstructured, patch []byte) (*un.Unstructured, error)
 }
 
 // Initialize implements kubernetes.ApplyClient.
@@ -596,6 +597,15 @@ func (m *MockApplyClient) DryRunCreate(ctx context.Context, obj *un.Unstructured
 	}
 
 	return nil, errors.New("DryRunCreate not implemented")
+}
+
+// DryRunPatch implements kubernetes.ApplyClient.
+func (m *MockApplyClient) DryRunPatch(ctx context.Context, obj *un.Unstructured, patch []byte) (*un.Unstructured, error) {
+	if m.DryRunPatchFn != nil {
+		return m.DryRunPatchFn(ctx, obj, patch)
+	}
+
+	return nil, errors.New("DryRunPatch not implemented")
 }
 
 // MockAccessChecker implements the kubernetes.AccessChecker interface.

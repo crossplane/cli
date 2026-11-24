@@ -27,7 +27,10 @@ These flags tune the diff:
   server-side applies as M; `--server-side=false` is client-side apply;
   `--field-manager M` alone is server-side apply as M if M has an `Apply`
   entry, otherwise client-side. An explicit `--field-manager` is used even
-  when an imperative writer wrote the resource.
+  when an imperative writer wrote the resource. Client-side apply is
+  modelled as kubectl's: it removes the fields the annotation has and the
+  manifest drops, whoever set them, and nothing on a resource without the
+  annotation.
   They only affect the composite resources and claims `xr simulate` takes as
   input, never composed resources.
 - `--eventual-state` shows the state after all reconciliation cycles complete.

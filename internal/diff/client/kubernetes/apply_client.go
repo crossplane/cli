@@ -7,6 +7,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -65,6 +66,9 @@ type ApplyClient interface {
 
 	// DryRunCreate performs a dry-run create, for resources that do not yet exist.
 	DryRunCreate(ctx context.Context, obj *un.Unstructured) (*un.Unstructured, error)
+
+	// DryRunPatch performs a dry-run JSON merge patch of the existing object obj names.
+	DryRunPatch(ctx context.Context, obj *un.Unstructured, patch []byte) (*un.Unstructured, error)
 }
 
 // DefaultApplyClient implements ApplyClient.
@@ -200,6 +204,48 @@ func (c *DefaultApplyClient) DryRunCreate(ctx context.Context, obj *un.Unstructu
 	}
 
 	c.logger.Debug("Dry-run create successful", "resource", resourceID, "resourceVersion", result.GetResourceVersion())
+
+	return result, nil
+}
+
+// DryRunPatch performs a dry-run JSON merge patch (application/merge-patch+json) of the existing object
+// whose kind, name and namespace obj gives, as kubectl's client-side apply patches a custom resource.
+// Only obj's identity is read; patch is the whole change.
+//
+// Like DryRunCreate it has no fieldOwner parameter and patches as FieldOwnerDefault: a merge patch removes
+// what it nulls whoever sends it, so the manager changes only managedFields, which no diff shows.
+//
+// Errors are wrapped as DryRunCreate's are, and for the same reason: callers classify them with the
+// apierrors predicates, so the chain must stay unwrappable.
+func (c *DefaultApplyClient) DryRunPatch(ctx context.Context, obj *un.Unstructured, patch []byte) (*un.Unstructured, error) {
+	resourceID := fmt.Sprintf("%s/%s", obj.GetKind(), obj.GetName())
+
+	c.logger.Debug("Performing dry-run patch", "resource", resourceID, "namespace", obj.GetNamespace(), "fieldOwner", FieldOwnerDefault)
+
+	gvk := obj.GroupVersionKind()
+
+	gvr, err := c.typeConverter.GVKToGVR(ctx, gvk)
+	if err != nil {
+		c.logger.Debug("Failed to convert GVK to GVR", "gvk", gvk.String(), "error", err)
+
+		// See the matching branch in DryRunApply, and ErrUnresolvableGVK, for why this must be
+		// distinguishable from an admission-time NotFound.
+		return nil, errors.Join(ErrUnresolvableGVK, errors.Wrapf(err, "cannot perform dry-run patch for %s (%s)", resourceID, gvk))
+	}
+
+	patchOptions := metav1.PatchOptions{
+		FieldManager: FieldOwnerDefault,
+		DryRun:       []string{metav1.DryRunAll},
+	}
+
+	result, err := c.dynamicClient.Resource(gvr).Namespace(obj.GetNamespace()).Patch(ctx, obj.GetName(), types.MergePatchType, patch, patchOptions)
+	if err != nil {
+		c.logger.Debug("Dry-run patch failed", "resource", resourceID, "error", err)
+
+		return nil, errors.Wrapf(err, "failed to dry-run patch resource %s/%s", obj.GetNamespace(), obj.GetName())
+	}
+
+	c.logger.Debug("Dry-run patch successful", "resource", resourceID, "resourceVersion", result.GetResourceVersion())
 
 	return result, nil
 }

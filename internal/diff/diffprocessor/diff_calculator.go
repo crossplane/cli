@@ -2,11 +2,14 @@ package diffprocessor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/jsonmergepatch"
+	"k8s.io/apimachinery/pkg/util/mergepatch"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
@@ -137,20 +140,26 @@ func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un
 
 		// A user-supplied XR or claim is applied by whoever applies its manifest, not by Crossplane, so
 		// it is dry-run applied as that applier: the apiserver then removes the fields it would.
+		clientSide := false
 		if composite == nil {
-			fieldOwner = c.userApplierFieldOwner(ctx, fieldOwner, resourceID)
+			fieldOwner, clientSide = c.userApplierFieldOwner(ctx, fieldOwner, resourceID)
 		}
 
 		applyDesired := sanitizeForDryRun(desired)
 
-		// Perform a dry-run apply to get the result after we'd apply
-		c.logger.Debug("Performing dry-run apply",
-			"resource", resourceID,
-			"name", desired.GetName(),
-			"fieldOwner", fieldOwner,
-			"desired", applyDesired)
+		if clientSide {
+			wouldBeResult, err = c.dryRunClientSideApply(ctx, current, applyDesired, resourceID)
+		} else {
+			// Perform a dry-run apply to get the result after we'd apply
+			c.logger.Debug("Performing dry-run apply",
+				"resource", resourceID,
+				"name", desired.GetName(),
+				"fieldOwner", fieldOwner,
+				"desired", applyDesired)
 
-		wouldBeResult, err = c.applyClient.DryRunApply(ctx, applyDesired, fieldOwner)
+			wouldBeResult, err = c.applyClient.DryRunApply(ctx, applyDesired, fieldOwner)
+		}
+
 		if err != nil {
 			c.logger.Debug("Dry-run apply failed", "resource", resourceID, "error", err)
 			return nil, c.classifyApplyFailure(ctx, desired, resourceID, err)
@@ -188,27 +197,86 @@ func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un
 
 // userApplierFieldOwner returns the field manager to dry-run apply a user-supplied XR or claim as,
 // from the applier withApplier put on ctx: its manager under server-side apply, otherwise fallback,
-// today's owner. Without an applier on ctx (a nested XR) it is fallback.
-func (c *DefaultDiffCalculator) userApplierFieldOwner(ctx context.Context, fallback, resourceID string) string {
+// today's owner. Without an applier on ctx (a nested XR) it is fallback. clientSide reports a
+// client-side applier, which dryRunClientSideApply models instead of any apply.
+func (c *DefaultDiffCalculator) userApplierFieldOwner(ctx context.Context, fallback, resourceID string) (fieldOwner string, clientSide bool) {
 	a, ok := applierFrom(ctx)
 	if !ok {
-		return fallback
+		return fallback, false
 	}
 
 	c.logger.Debug("Resolved applier", "resource", resourceID, "mode", a.Mode, "fieldManager", a.FieldManager, "candidates", a.Candidates, "clientSide", a.ClientSide, "imperativeWriters", a.ImperativeWriters)
 
 	switch a.Mode {
 	case plan.ApplyServerSide:
-		return a.FieldManager
+		return a.FieldManager, false
 	case plan.ApplyClientSide:
-		// TODO(jcogilvie): model client-side apply: a dry-run three-way JSON merge patch from the
-		// last-applied-configuration annotation, as kubectl sends. Until then it is today's dry-run apply.
-		return fallback
+		return fallback, true
 	case plan.ApplyUndetermined:
 		// withApplier warned, if the object records any applier.
 	}
 
-	return fallback
+	return fallback, false
+}
+
+// dryRunClientSideApply models kubectl's client-side apply of desired, a sanitized dry-run payload, to
+// current, its live object, as kubectl's apply does for a custom resource (Patcher.buildMergePatch in
+// k8s.io/kubectl/pkg/cmd/apply): a three-way JSON merge patch from the last-applied-configuration
+// annotation (original), desired with that annotation set to desired itself (modified), and current,
+// sent as a dry-run merge patch. It removes what the annotation has and desired drops, whoever owns
+// it; with no annotation there is no original, so it removes nothing, as kubectl does.
+func (c *DefaultDiffCalculator) dryRunClientSideApply(ctx context.Context, current, desired *un.Unstructured, resourceID string) (*un.Unstructured, error) {
+	original := []byte(current.GetAnnotations()[plan.LastAppliedConfigAnnotation])
+
+	modified, err := lastAppliedModified(desired)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot compute the client-side apply of %s", resourceID)
+	}
+
+	live, err := json.Marshal(current.Object)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot serialize the cluster's %s", resourceID)
+	}
+
+	// kubectl's preconditions for a custom resource's patch.
+	patch, err := jsonmergepatch.CreateThreeWayJSONMergePatch(original, modified, live,
+		mergepatch.RequireKeyUnchanged("apiVersion"), mergepatch.RequireKeyUnchanged("kind"), mergepatch.RequireMetadataKeyUnchanged("name"))
+	if err != nil {
+		if mergepatch.IsPreconditionFailed(err) {
+			return nil, errors.Errorf("cannot client-side apply %s: at least one of apiVersion, kind and name was changed", resourceID)
+		}
+
+		return nil, errors.Wrapf(err, "cannot compute the client-side apply patch of %s", resourceID)
+	}
+
+	c.logger.Debug("Performing dry-run client-side apply", "resource", resourceID, "patch", string(patch))
+
+	return c.applyClient.DryRunPatch(ctx, desired, patch)
+}
+
+// lastAppliedModified returns obj as kubectl's client-side apply sends it (GetModifiedConfiguration in
+// k8s.io/kubectl/pkg/util): obj without the last-applied-configuration annotation, serialized, then
+// set as that annotation, and serialized again. obj is not modified.
+func lastAppliedModified(obj *un.Unstructured) ([]byte, error) {
+	out := obj.DeepCopy()
+
+	annotations := out.GetAnnotations()
+	delete(annotations, plan.LastAppliedConfigAnnotation)
+	out.SetAnnotations(annotations)
+
+	applied, err := json.Marshal(out.Object)
+	if err != nil {
+		return nil, err
+	}
+
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+
+	annotations[plan.LastAppliedConfigAnnotation] = string(applied)
+	out.SetAnnotations(annotations)
+
+	return json.Marshal(out.Object)
 }
 
 // CalculateNonRemovalDiffs computes diffs for modified/added resources and returns

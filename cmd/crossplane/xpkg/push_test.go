@@ -19,6 +19,8 @@ package xpkg
 import (
 	"context"
 	"errors"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -26,12 +28,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/registry"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/spf13/afero"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -203,6 +212,329 @@ func TestPushImagesDefaultTransport(t *testing.T) { //nolint:paralleltest // Mut
 			}
 			if elapsed > tc.want.within {
 				t.Errorf("\n%s\npushImages(...): took %s, want within %s", tc.reason, elapsed, tc.want.within)
+			}
+		})
+	}
+}
+
+// newTestRegistry serves an in-memory OCI registry on a loopback address, which
+// go-containerregistry talks to over plain HTTP. The optional middleware can
+// intercept requests before they reach the registry.
+func newTestRegistry(t *testing.T, middleware func(http.ResponseWriter, *http.Request) bool) string {
+	t.Helper()
+	reg := registry.New(registry.Logger(log.New(io.Discard, "", 0)))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if middleware != nil && middleware(w, r) {
+			return
+		}
+		reg.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return strings.TrimPrefix(srv.URL, "http://")
+}
+
+// testPackageImage returns a random image for the given platform whose single
+// layer is labelled as an xpkg package layer in the image config, the way
+// xpkg build does.
+func testPackageImage(t *testing.T, os, arch string) v1.Image {
+	t.Helper()
+	img, err := random.Image(64, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layers, err := img.Layers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := layers[0].Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = cfg.DeepCopy()
+	cfg.OS = os
+	cfg.Architecture = arch
+	cfg.Config.Labels = map[string]string{xpkg.Label(d.String()): xpkg.PackageAnnotation}
+	img, err = mutate.ConfigFile(img, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
+}
+
+// pushed describes what a test found in the registry under a tag.
+type pushed struct {
+	// Annotations on the manifest (or index) the tag points to.
+	Annotations map[string]string
+	// Platforms of the index manifests; empty when the tag is a single image.
+	Platforms []string
+	// LayerAnnotations of every pushed image manifest, in order.
+	LayerAnnotations []map[string]string
+}
+
+func inspectTag(t *testing.T, ref string) pushed {
+	t.Helper()
+	tag, err := name.NewTag(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc, err := remote.Get(tag)
+	if err != nil {
+		t.Fatalf("remote.Get(%s): %v", ref, err)
+	}
+
+	layerAnns := func(img v1.Image) map[string]string {
+		m, err := img.Manifest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.Layers[0].Annotations
+	}
+
+	if !desc.MediaType.IsIndex() {
+		img, err := desc.Image()
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := img.Manifest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pushed{Annotations: m.Annotations, LayerAnnotations: []map[string]string{layerAnns(img)}}
+	}
+
+	idx, err := desc.ImageIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	im, err := idx.IndexManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := pushed{Annotations: im.Annotations}
+	for _, d := range im.Manifests {
+		got.Platforms = append(got.Platforms, d.Platform.OS+"/"+d.Platform.Architecture)
+		img, err := idx.Image(d.Digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got.LayerAnnotations = append(got.LayerAnnotations, layerAnns(img))
+	}
+	return got
+}
+
+func TestPushImages(t *testing.T) {
+	host := newTestRegistry(t, nil)
+	pkgLayer := map[string]string{xpkg.AnnotationKey: xpkg.PackageAnnotation}
+
+	type args struct {
+		platforms   [][2]string
+		url         string
+		annotations map[string]string
+	}
+	type want struct {
+		pushed pushed
+		err    string
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"SingleImage": {
+			reason: "A single package should be pushed as an image manifest at the tag, with layer and manifest annotations.",
+			args: args{
+				platforms:   [][2]string{{"linux", "amd64"}},
+				url:         host + "/org/single:v1",
+				annotations: map[string]string{"a": "b"},
+			},
+			want: want{pushed: pushed{
+				Annotations:      map[string]string{"a": "b"},
+				LayerAnnotations: []map[string]string{pkgLayer},
+			}},
+		},
+		"MultiPlatform": {
+			reason: "Multiple packages should be pushed by digest and tagged as an index carrying each platform and the annotations.",
+			args: args{
+				platforms:   [][2]string{{"linux", "amd64"}, {"linux", "arm64"}},
+				url:         host + "/org/multi:v1",
+				annotations: map[string]string{"a": "b"},
+			},
+			want: want{pushed: pushed{
+				Annotations:      map[string]string{"a": "b"},
+				Platforms:        []string{"linux/amd64", "linux/arm64"},
+				LayerAnnotations: []map[string]string{pkgLayer, pkgLayer},
+			}},
+		},
+		"InvalidTag": {
+			reason: "A URL that isn't a fully qualified tag should be rejected before pushing.",
+			args: args{
+				platforms: [][2]string{{"linux", "amd64"}},
+				url:       "not a tag",
+			},
+			want: want{err: `failed to parse package tag "not a tag"`},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			imgs := make([]packageImage, 0, len(tc.args.platforms))
+			for _, p := range tc.args.platforms {
+				imgs = append(imgs, packageImage{Image: testPackageImage(t, p[0], p[1]), Path: p[1]})
+			}
+
+			err := pushImages(t.Context(), logging.NewNopLogger(), terminal.NewNopSpinnerPrinter(), imgs, tc.args.url, tc.args.annotations, remote.WithAuth(authn.Anonymous))
+			if tc.want.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
+					t.Fatalf("\n%s\npushImages(...): want error containing %q, got %v", tc.reason, tc.want.err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("\n%s\npushImages(...): %v", tc.reason, err)
+			}
+			if diff := cmp.Diff(tc.want.pushed, inspectTag(t, tc.args.url)); diff != "" {
+				t.Errorf("\n%s\npushImages(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestPushImagesRegistryError(t *testing.T) {
+	// Reject every manifest upload; 403 is not retried by go-containerregistry.
+	host := newTestRegistry(t, func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/manifests/") {
+			w.WriteHeader(http.StatusForbidden)
+			return true
+		}
+		return false
+	})
+
+	cases := map[string]struct {
+		reason    string
+		platforms [][2]string
+		want      string
+	}{
+		"SingleImage": {
+			reason:    "A failed single-image push should name the package path.",
+			platforms: [][2]string{{"linux", "amd64"}},
+			want:      "failed to push package file amd64",
+		},
+		"MultiPlatform": {
+			reason:    "A failed per-platform push should fail the whole push before any index is written.",
+			platforms: [][2]string{{"linux", "amd64"}, {"linux", "arm64"}},
+			want:      "failed to push package file",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			imgs := make([]packageImage, 0, len(tc.platforms))
+			for _, p := range tc.platforms {
+				imgs = append(imgs, packageImage{Image: testPackageImage(t, p[0], p[1]), Path: p[1]})
+			}
+			err := pushImages(t.Context(), logging.NewNopLogger(), nil, imgs, host+"/org/fail:v1", nil, remote.WithAuth(authn.Anonymous))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("\n%s\npushImages(...): want error containing %q, got %v", tc.reason, tc.want, err)
+			}
+		})
+	}
+}
+
+func TestPushCmdRun(t *testing.T) {
+	host := newTestRegistry(t, nil)
+
+	type args struct {
+		// files to write to the working directory, by platform arch.
+		files       []string
+		packageArgs []string
+		annotations []string
+	}
+	type want struct {
+		pushed pushed
+		err    string
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"FindsPackageInWorkingDir": {
+			reason: "With no --package-files the single xpkg in the working directory should be pushed.",
+			args: args{
+				files:       []string{"amd64"},
+				annotations: []string{"org.opencontainers.image.source=https://example.org"},
+			},
+			want: want{pushed: pushed{
+				Annotations:      map[string]string{"org.opencontainers.image.source": "https://example.org"},
+				LayerAnnotations: []map[string]string{{xpkg.AnnotationKey: xpkg.PackageAnnotation}},
+			}},
+		},
+		"MultiplePackageFiles": {
+			reason: "Explicit package files should be pushed together as a multi-platform index.",
+			args: args{
+				files:       []string{"amd64", "arm64"},
+				packageArgs: []string{"amd64.xpkg", "arm64.xpkg"},
+			},
+			want: want{pushed: pushed{
+				Platforms: []string{"linux/amd64", "linux/arm64"},
+				LayerAnnotations: []map[string]string{
+					{xpkg.AnnotationKey: xpkg.PackageAnnotation},
+					{xpkg.AnnotationKey: xpkg.PackageAnnotation},
+				},
+			}},
+		},
+		"InvalidAnnotation": {
+			reason: "A malformed --oci-annotation should fail before anything is read.",
+			args:   args{annotations: []string{"novalue"}},
+			want:   want{err: errParseAnnotations},
+		},
+		"NoPackageInWorkingDir": {
+			reason: "With no --package-files and no xpkg in the working directory the command should fail.",
+			want:   want{err: errFindPackageinWd},
+		},
+		"UnreadablePackageFile": {
+			reason: "A package file that isn't an image tarball should fail to read.",
+			args:   args{packageArgs: []string{"crossplane.yaml"}},
+			want:   want{err: "EOF"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			for _, arch := range tc.args.files {
+				if err := tarball.WriteToFile(filepath.Join(dir, arch+".xpkg"), nil, testPackageImage(t, "linux", arch)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := afero.WriteFile(afero.NewOsFs(), filepath.Join(dir, "crossplane.yaml"), []byte("not a tarball"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			ref := host + "/org/" + strings.ToLower(name) + ":v1"
+			c := &pushCmd{Package: ref, PackageFiles: tc.args.packageArgs, OCIAnnotation: tc.args.annotations}
+			if err := c.AfterApply(); err != nil {
+				t.Fatal(err)
+			}
+
+			err := c.Run(t.Context(), logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
+			if tc.want.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
+					t.Fatalf("\n%s\nRun(...): want error containing %q, got %v", tc.reason, tc.want.err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("\n%s\nRun(...): %v", tc.reason, err)
+			}
+			if diff := cmp.Diff(tc.want.pushed, inspectTag(t, ref)); diff != "" {
+				t.Errorf("\n%s\nRun(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

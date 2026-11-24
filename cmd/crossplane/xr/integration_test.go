@@ -2042,6 +2042,53 @@ Summary: 2 modified, 2 removed`,
 			ExpectedError:    false,
 			ExpectedExitCode: dp.ExitCodeDiffDetected,
 		},
+		// An XR client-side applied, as Argo CD's default sync does: an Update by argocd-controller and
+		// the last-applied-configuration annotation, then Crossplane reconciled it. Its manifest drops a
+		// field the annotation has, so client-side apply removes it, and the plan must say so.
+		"FieldDroppedFromClientSideAppliedXRIsReportedRemoved": {
+			Reason:       "A field the last-applied-configuration annotation has and the manifest omits is shown removed",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-client-side-applied-with-team.yaml", FieldManager: "argocd-controller", Create: true},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+			},
+			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
+				WithSummary(0, 1, 0).
+				WithModifiedResource("XTestDefaultResource", "test-resource-user-applied", "default").
+				WithFieldChange("spec.tags.team", "platform", nil),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// The same XR client-side created with no last-applied-configuration annotation. Client-side
+		// apply then has no record of what it applied, so, as kubectl's, it removes nothing.
+		"FieldDroppedFromClientSideAppliedXRWithoutAnnotationIsNotReportedRemoved": {
+			Reason:       "Client-side apply of an object without a last-applied-configuration annotation removes no field",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-user-applied-with-team.yaml", FieldManager: "kubectl-client-side-apply", Create: true},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+			},
+			// kubectl-client-side-apply has no Apply entry, so --field-manager names a client-side applier.
+			FieldManager: "kubectl-client-side-apply",
+			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
+				WithSummary(0, 0, 0),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeSuccess,
+		},
 		// FieldDroppedFromUserAppliedXRIsReportedRemoved for a claim: the claim is dry-run applied as the
 		// manager that server-side applied it, so the field its manifest drops is shown removed. The claim
 		// is applied, not created as a setup file is, since a create would record an imperative writer.

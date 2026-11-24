@@ -256,21 +256,22 @@ func (c *DefaultDiffCalculator) dryRunClientSideApply(ctx context.Context, curre
 
 // lastAppliedModified returns obj as kubectl's client-side apply sends it (GetModifiedConfiguration in
 // k8s.io/kubectl/pkg/util): obj without the last-applied-configuration annotation, serialized, then
-// set as that annotation, and serialized again. obj is not modified.
+// set as that annotation, and serialized again. Like kubectl's, the serialization always has
+// metadata.annotations, empty or not. obj is not modified.
 func lastAppliedModified(obj *un.Unstructured) ([]byte, error) {
 	out := obj.DeepCopy()
 
 	annotations := out.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+
 	delete(annotations, plan.LastAppliedConfigAnnotation)
 	out.SetAnnotations(annotations)
 
 	applied, err := json.Marshal(out.Object)
 	if err != nil {
 		return nil, err
-	}
-
-	if annotations == nil {
-		annotations = map[string]string{}
 	}
 
 	annotations[plan.LastAppliedConfigAnnotation] = string(applied)

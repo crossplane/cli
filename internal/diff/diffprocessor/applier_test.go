@@ -106,7 +106,8 @@ func TestCalculateDiffClientSideApply(t *testing.T) {
 		plan.LastAppliedConfigAnnotation: `{"apiVersion":"example.org/v1","kind":"XR","metadata":{"name":"x","namespace":"default"},"spec":{"size":"large","team":"platform"}}`,
 	}
 	desired := xr(nil, map[string]any{"size": "large"})
-	desiredApplied := `{"apiVersion":"example.org/v1","kind":"XR","metadata":{"name":"x","namespace":"default"},"spec":{"size":"large"}}`
+	// As kubectl serializes it: with metadata.annotations even when empty.
+	desiredApplied := `{"apiVersion":"example.org/v1","kind":"XR","metadata":{"annotations":{},"name":"x","namespace":"default"},"spec":{"size":"large"}}`
 
 	type want struct {
 		// patch is the merge patch sent, decoded.

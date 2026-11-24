@@ -628,3 +628,70 @@ func TestPlanWithLive(t *testing.T) {
 		})
 	}
 }
+
+func TestPlannerApplierFlags(t *testing.T) {
+	ctx := context.Background()
+
+	s := runtime.NewScheme()
+	s.AddKnownTypeWithName(vpcGVK, &unstructured.Unstructured{})
+	rm := meta.NewDefaultRESTMapper([]schema.GroupVersion{vpcGVK.GroupVersion()})
+	rm.Add(vpcGVK, meta.RESTScopeRoot)
+
+	type args struct {
+		flags plan.ApplierFlags
+	}
+	type want struct {
+		changes []plan.FieldChange
+		warning string
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"NamedManagerRemovesItsExclusiveField": {
+			reason: "With --field-manager argocd, the fallback removes only the field argocd alone owns, and does not warn.",
+			args:   args{flags: plan.ApplierFlags{FieldManager: "argocd"}},
+			want:   want{changes: []plan.FieldChange{{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}}}},
+		},
+		"UndeterminedWarns": {
+			reason: "With two appliers and no flags, the applier cannot be told, so the Planner warns naming both.",
+			want: want{
+				changes: []plan.FieldChange{
+					{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}},
+					{Path: "spec.forProvider.instanceTenancy", Actual: &plan.Value{Value: "default"}},
+				},
+				warning: "Warning: cannot tell which field manager applies VPC/my-vpc (candidates: argocd, kubectl), so fields its manifest drops may not be shown as removed; name the applier with --field-manager, and --server-side or --server-side=false\n",
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			live := vpc("my-vpc", "10.0.0.0/16")
+			_ = unstructured.SetNestedField(live.Object, true, "spec", "forProvider", "enableDnsHostnames")
+			_ = unstructured.SetNestedField(live.Object, "default", "spec", "forProvider", "instanceTenancy")
+			live.SetManagedFields([]metav1.ManagedFieldsEntry{
+				fieldsOf("argocd", `{"f:spec":{"f:forProvider":{"f:cidrBlock":{},"f:enableDnsHostnames":{}}}}`),
+				fieldsOf("kubectl", `{"f:spec":{"f:forProvider":{"f:cidrBlock":{},"f:instanceTenancy":{}}}}`),
+			})
+			// The fake client drops managedFields on create, so Get serves live.
+			kube := fake.NewClientBuilder().WithScheme(s).
+				WithInterceptorFuncs(interceptor.Funcs{Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+					live.DeepCopyInto(obj.(*unstructured.Unstructured))
+					return nil
+				}}).Build()
+
+			var stderr bytes.Buffer
+			planner := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{}, time.Second, WithApplierFlags(tc.args.flags, &stderr))
+			got := planner.Plan(ctx, vpc("my-vpc", "10.0.0.0/16"))
+			if diff := cmp.Diff(tc.want.changes, got.Changes, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nPlan(...): -want changes, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(tc.want.warning, stderr.String()); diff != "" {
+				t.Errorf("\n%s\nPlan(...): -want warning, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

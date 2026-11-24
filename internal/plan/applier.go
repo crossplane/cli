@@ -75,6 +75,16 @@ func (a Applier) HasCandidates() bool {
 	return len(a.Candidates) > 0 || a.ClientSide
 }
 
+// DescribeCandidates lists the appliers the live object records, for a
+// warning that the applier cannot be told.
+func (a Applier) DescribeCandidates() string {
+	c := a.Candidates
+	if a.ClientSide {
+		c = append(slices.Clip(c), "client-side apply ("+LastAppliedConfigAnnotation+")")
+	}
+	return strings.Join(c, ", ")
+}
+
 // ResolveApplier works out who applies a manifest to live, from flags and
 // live's managedFields. Its candidates are the field managers with an Apply
 // entry, other than Crossplane's own and those of subresources, and a

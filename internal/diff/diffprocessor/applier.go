@@ -18,7 +18,6 @@ package diffprocessor
 
 import (
 	"context"
-	"slices"
 	"strings"
 
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -73,7 +72,7 @@ func (p *DefaultDiffProcessor) withApplier(ctx context.Context, live *un.Unstruc
 		msg := "Cannot tell which field manager applies this resource"
 		wctx := map[string]string{
 			warningContextResource: resourceID,
-			"candidates":           candidateAppliers(a),
+			"candidates":           a.DescribeCandidates(),
 		}
 		if len(a.ImperativeWriters) > 0 {
 			msg += ", since imperative writers (managers that updated it without applying, such as kubectl create or edit, or a controller) wrote it too"
@@ -88,14 +87,4 @@ func (p *DefaultDiffProcessor) withApplier(ctx context.Context, live *un.Unstruc
 	}
 
 	return context.WithValue(ctx, applierKey{}, &a)
-}
-
-// candidateAppliers describes the appliers a live object records, for the warning.
-func candidateAppliers(a plan.Applier) string {
-	c := a.Candidates
-	if a.ClientSide {
-		c = append(slices.Clip(c), "client-side apply ("+plan.LastAppliedConfigAnnotation+")")
-	}
-
-	return strings.Join(c, ", ")
 }

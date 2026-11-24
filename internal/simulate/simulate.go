@@ -62,14 +62,28 @@ type Planner struct {
 	timeout          time.Duration
 	stores           *objectStoreCache
 	crds             CRDs
+	applier          plan.ApplierFlags
+	warn             io.Writer
+}
+
+// A PlannerOption configures a Planner.
+type PlannerOption func(*Planner)
+
+// WithApplierFlags makes Plan resolve the applier of the resources the user
+// supplied from flags, as kubectl apply's --field-manager and --server-side,
+// and write a warning to w when it cannot tell the applier of one.
+func WithApplierFlags(flags plan.ApplierFlags, w io.Writer) PlannerOption {
+	return func(p *Planner) {
+		p.applier, p.warn = flags, w
+	}
 }
 
 // NewPlanner returns a Planner that reads live state with kubeClient and
 // rmapper, defaults the approximate fallback's desired state from crds,
 // resolves unset namespaces to defaultNamespace, and bounds each diff server
 // plan by timeout, when positive.
-func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, defaultNamespace string, r Router, timeout time.Duration) *Planner {
-	return &Planner{
+func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, defaultNamespace string, r Router, timeout time.Duration, opts ...PlannerOption) *Planner {
+	p := &Planner{
 		kube:             kubeClient,
 		rmapper:          rmapper,
 		defaultNamespace: defaultNamespace,
@@ -78,12 +92,16 @@ func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, de
 		stores:           newObjectStoreCache(),
 		crds:             crds,
 	}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
 }
 
 // Plan plans a single resource the user supplied: fetch its live
 // counterpart, then plan it as PlanWithLive does, except that the approximate
-// fallback removes only what the applier plan.ResolveApplier infers from live
-// would remove. Failures become per-resource errors so one resource never
+// fallback removes only what the applier plan.ResolveApplier resolves from
+// live and the Planner's WithApplierFlags would remove. Failures become per-resource errors so one resource never
 // fails the whole run.
 func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) *plan.ResourcePlan {
 	if desired.GetName() == "" {
@@ -98,7 +116,22 @@ func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) 
 		rp.Error = fmt.Sprintf("cannot fetch live resource: %s", err)
 		return rp
 	}
-	return p.planWithLive(ctx, desired, live, plan.ResolveApplier(live, plan.ApplierFlags{}))
+	a := plan.ResolveApplier(live, p.applier)
+	if a.Mode == plan.ApplyUndetermined && a.HasCandidates() && p.warn != nil {
+		p.warnUndetermined(desired, a)
+	}
+	return p.planWithLive(ctx, desired, live, a)
+}
+
+// warnUndetermined warns that the fallback may not show the fields desired's
+// manifest drops as removed, since applier a cannot be told.
+func (p *Planner) warnUndetermined(desired *unstructured.Unstructured, a plan.Applier) {
+	msg := fmt.Sprintf("Warning: cannot tell which field manager applies %s/%s (candidates: %s)", desired.GetKind(), desired.GetName(), a.DescribeCandidates())
+	if len(a.ImperativeWriters) > 0 {
+		msg += fmt.Sprintf(", since imperative writers (managers that updated it without applying, such as kubectl create or edit, or a controller) wrote it too (%s)", strings.Join(a.ImperativeWriters, ", "))
+	}
+	_, _ = fmt.Fprintln(p.warn, msg+", so fields its manifest drops may not be shown as removed; "+
+		"name the applier with --field-manager, and --server-side or --server-side=false")
 }
 
 // PlanWithLive plans a single resource against an already-fetched live

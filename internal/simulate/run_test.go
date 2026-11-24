@@ -1169,3 +1169,33 @@ func TestSimulateNewCompositionHint(t *testing.T) {
 		})
 	}
 }
+
+func TestInputNamespace(t *testing.T) {
+	type args struct {
+		sel   CompositionFlags
+		ctxNS string
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   string
+	}{
+		"NamespaceFlagWins": {
+			reason: "--namespace is the namespace an input that sets none gets, over the context's.",
+			args:   args{sel: CompositionFlags{Namespace: "team-a"}, ctxNS: "default"},
+			want:   "team-a",
+		},
+		"ContextNamespaceOtherwise": {
+			reason: "Without --namespace the kubeconfig context's namespace applies.",
+			args:   args{ctxNS: "default"},
+			want:   "default",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if diff := cmp.Diff(tc.want, inputNamespace(tc.args.sel, tc.args.ctxNS)); diff != "" {
+				t.Errorf("\n%s\ninputNamespace(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

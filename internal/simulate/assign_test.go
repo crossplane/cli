@@ -224,6 +224,15 @@ func TestAssignInputs(t *testing.T) {
 	gvk := func(kind string) schema.GroupVersionKind {
 		return schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: kind}
 	}
+	enforced := func(x *un.Unstructured, name string) *un.Unstructured {
+		_ = un.SetNestedField(x.Object, name, "spec", "enforcedCompositionRef", "name")
+		return x
+	}
+	generateNamed := func(prefix string) *un.Unstructured {
+		x := testInput("XBucket", "", nil)
+		x.SetGenerateName(prefix)
+		return x
+	}
 	a := testComp("a", "XBucket", nil)
 	b := testComp("b", "XBucket", nil)
 
@@ -279,6 +288,21 @@ func TestAssignInputs(t *testing.T) {
 				return x
 			}()}},
 			want: want{assigned: map[string][]string{"b": {"ctx-ns/x", "other/x"}}},
+		},
+		"GenerateNameOnlyDistinct": {
+			reason: "Inputs with only a generateName name no composite, so two of one kind and namespace are both accepted.",
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "b", true), inputs: []*un.Unstructured{generateNamed("x-"), generateNamed("x-")}},
+			want:   want{assigned: map[string][]string{"b": {"ctx-ns/", "ctx-ns/"}}},
+		},
+		"V1XRDEnforcedComposition": {
+			reason: "A v1 XRD's spec.enforcedCompositionRef is read, and wins over the input's compositionRef.",
+			args:   args{xrd: enforced(xrd("apiextensions.crossplane.io/v1", "b", true), "b"), inputs: []*un.Unstructured{testInput("XBucket", "x", map[string]any{"compositionRef": map[string]any{"name": "a"}})}},
+			want:   want{assigned: map[string][]string{"b": {"ctx-ns/x"}}},
+		},
+		"V2XRDEnforcedComposition": {
+			reason: "A v2 XRD's spec.enforcedCompositionRef is read, and wins over the input's compositionRef.",
+			args:   args{xrd: enforced(xrd("apiextensions.crossplane.io/v2", "b", true), "b"), inputs: []*un.Unstructured{testInput("XBucket", "x", map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "a"}}})}},
+			want:   want{assigned: map[string][]string{"b": {"ctx-ns/x"}}},
 		},
 		"NoXRDFailsFast": {
 			reason: "An input no cluster XRD defines fails the check, worded for --resource-file.",

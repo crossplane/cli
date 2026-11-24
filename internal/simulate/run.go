@@ -707,11 +707,17 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, append(opts, dp.WithSuppliedComposites(supplied))...)
 	diff := c.diffCompositions(k, logger, sp, progress, proc, comps, msg)
 	return c.simulate(sigCtx, logger, clients.Initialize, proc, func(ctx context.Context) (bool, error) {
-		if err := assignInputs(ctx, clients.XpClients.Definition, cmp.Or(c.sel.Namespace, ns), comps, in.ResourceFile, supplied); err != nil {
+		if err := assignInputs(ctx, clients.XpClients.Definition, inputNamespace(c.sel, ns), comps, in.ResourceFile, supplied); err != nil {
 			return false, err
 		}
 		return diff(ctx)
 	})
+}
+
+// inputNamespace is the namespace a --resource-file input that sets none
+// gets: --namespace when set, else the kubeconfig context's ctxNS.
+func inputNamespace(sel CompositionFlags, ctxNS string) string {
+	return cmp.Or(sel.Namespace, ctxNS)
 }
 
 // build builds in's project, or for file inputs (Compositions or composite

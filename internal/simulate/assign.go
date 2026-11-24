@@ -33,7 +33,7 @@ import (
 
 // assignInputs checks the --resource-file inputs against the cluster's XRDs
 // (see checkComposites), which also gives namespaced inputs that set none ns,
-// rejects two inputs of one group, kind, namespace and name, then assigns each to one of comps (see
+// rejects two named inputs of one group, kind, namespace and name, then assigns each to one of comps (see
 // assignComposites) into into, keyed by Composition name.
 func assignInputs(ctx context.Context, defs xpclient.DefinitionClient, ns string, comps, inputs []*un.Unstructured, into map[string][]*un.Unstructured) error {
 	if err := checkComposites(ctx, defs, FlagResourceFile, ns, inputs); err != nil {
@@ -41,6 +41,10 @@ func assignInputs(ctx context.Context, defs xpclient.DefinitionClient, ns string
 	}
 	seen := map[[4]string]bool{}
 	for _, in := range inputs {
+		// An input with only a generateName names no composite, so it never duplicates one.
+		if in.GetName() == "" {
+			continue
+		}
 		id := [4]string{in.GroupVersionKind().Group, in.GetKind(), in.GetNamespace(), in.GetName()}
 		if seen[id] {
 			return rejectInput(in, FlagResourceFile, "which another --resource-file input also names", "pass each composite once")

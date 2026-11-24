@@ -38,6 +38,7 @@ import (
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
@@ -567,6 +568,10 @@ func TestTraceWatchIntegration(t *testing.T) {
 		t.Fatalf("Watch(): %v", err)
 	}
 
+	// The producer reads the watch through fw, so the test can tell when it has been handed a Modified event.
+	fw := &forwardingWatch{Interface: w, events: make(chan watch.Event), modified: make(chan struct{}, 1)}
+	go fw.forward()
+
 	// Without a terminal the program doesn't know its size, and renders nothing until it's given one.
 	stdout := &syncBuffer{}
 	prog := tea.NewProgram(treeModel{}, tea.WithContext(cluster.Context), tea.WithInput(nil), tea.WithOutput(stdout),
@@ -576,7 +581,7 @@ func TestTraceWatchIntegration(t *testing.T) {
 	producerDone := make(chan struct{})
 	go func() {
 		defer close(producerDone)
-		c.watchProducer(cluster.Context, log, kClient, root, mapping, p, prog, w)
+		c.watchProducer(cluster.Context, log, kClient, root, mapping, p, prog, fw)
 	}()
 
 	done := make(chan error, 1)
@@ -649,6 +654,34 @@ func TestTraceWatchIntegration(t *testing.T) {
 
 	waitFor("redraw the changed tree", "Unavailable: watch-redraw-check")
 
+	// A change to the XR itself should be handed to the producer as a Modified event, and redrawn without quitting.
+	// The periodic refresh re-reads the XR too, so the output alone can't show which of the two redrew it; the
+	// Modified event reaching the producer, and the program still running after it, is what this adds.
+	xr := root.Unstructured.DeepCopy()
+	if err := cluster.Client.Get(cluster.Context, client.ObjectKeyFromObject(xr), xr); err != nil {
+		t.Fatalf("cannot get the XR: %v", err)
+	}
+
+	// The XR's CRD comes from its XRD, which gives it a status subresource.
+	if err := un.SetNestedSlice(xr.Object, []any{map[string]any{
+		"type": "Synced", "status": "False", "reason": "ReconcileError", "message": "xr-redraw-check",
+		"lastTransitionTime": "2026-01-01T00:00:00Z",
+	}}, "status", "conditions"); err != nil {
+		t.Fatalf("cannot set the XR's conditions: %v", err)
+	}
+
+	if err := cluster.Client.Status().Update(cluster.Context, xr); err != nil {
+		t.Fatalf("cannot update the XR's status: %v", err)
+	}
+
+	select {
+	case <-fw.modified:
+	case <-time.After(30 * time.Second):
+		t.Fatal("watch didn't deliver a Modified event for the XR in time")
+	}
+
+	waitFor("redraw the changed XR", "ReconcileError: xr-redraw-check")
+
 	if err := cluster.Client.Delete(cluster.Context, root.Unstructured.DeepCopy()); err != nil {
 		t.Fatalf("cannot delete the XR: %v", err)
 	}
@@ -660,5 +693,32 @@ func TestTraceWatchIntegration(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("watch didn't quit after the XR was deleted")
+	}
+}
+
+// forwardingWatch hands its watch's events on, and signals modified each time one is a Modified event.
+type forwardingWatch struct {
+	watch.Interface
+
+	events   chan watch.Event
+	modified chan struct{}
+}
+
+func (f *forwardingWatch) ResultChan() <-chan watch.Event { return f.events }
+
+// forward hands each event on until the watch is stopped. ponytail: it blocks if the producer stops reading before
+// the watch is stopped; the test's cleanup stops the watch, which ends it.
+func (f *forwardingWatch) forward() {
+	defer close(f.events)
+
+	for evt := range f.Interface.ResultChan() {
+		if evt.Type == watch.Modified {
+			select {
+			case f.modified <- struct{}{}:
+			default:
+			}
+		}
+
+		f.events <- evt
 	}
 }

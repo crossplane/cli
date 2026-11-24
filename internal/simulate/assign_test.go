@@ -29,19 +29,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 
-func testComp(name, kind string, labels map[string]string) *un.Unstructured {
-	c := &un.Unstructured{Object: map[string]any{
-		"apiVersion": "apiextensions.crossplane.io/v1",
-		"kind":       "Composition",
-		"metadata":   map[string]any{"name": name},
-		"spec": map[string]any{"compositeTypeRef": map[string]any{
-			"apiVersion": "example.org/v1", "kind": kind,
-		}},
-	}}
-	c.SetLabels(labels)
-	return c
-}
-
 func testInput(kind, name string, spec map[string]any) *un.Unstructured {
 	return &un.Unstructured{Object: map[string]any{
 		"apiVersion": "example.org/v1", "kind": kind,
@@ -62,9 +49,9 @@ func TestAssignComposites(t *testing.T) {
 			return xrdInfo{CompositeGVK: xr, DefaultComposition: def, EnforcedComposition: enforced, Legacy: in.GetKind() != "XBucket"}, nil
 		}
 	}
-	a := testComp("a", "XBucket", map[string]string{"tier": "gold", "team": "x"})
-	b := testComp("b", "XBucket", map[string]string{"tier": "silver", "team": "x"})
-	other := testComp("o", "XOther", map[string]string{"tier": "gold"})
+	a := testutils.NewComposition("a").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"tier": "gold", "team": "x"}).BuildAsUnstructured()
+	b := testutils.NewComposition("b").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"tier": "silver", "team": "x"}).BuildAsUnstructured()
+	other := testutils.NewComposition("o").WithCompositeTypeRef("example.org/v1", "XOther").WithLabels(map[string]string{"tier": "gold"}).BuildAsUnstructured()
 
 	type args struct {
 		comps    []*un.Unstructured
@@ -119,7 +106,7 @@ func TestAssignComposites(t *testing.T) {
 		"CompositionRefMalformed": {
 			reason: "A compositionRef name of the wrong type fails rather than being ignored.",
 			args:   args{comps: []*un.Unstructured{a}, input: testInput("XBucket", "x", map[string]any{"compositionRef": map[string]any{"name": 3}})},
-			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose spec.compositionRef.name is malformed: .spec.compositionRef.name accessor error: 3 is of the type int, expected string`},
+			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose compositionRef.name is malformed: .spec.compositionRef.name accessor error: 3 is of the type int, expected string`},
 		},
 		"V2Selector": {
 			reason: "A v2 compositionSelector matches labels among type-matching Compositions.",
@@ -233,8 +220,8 @@ func TestAssignInputs(t *testing.T) {
 		x.SetGenerateName(prefix)
 		return x
 	}
-	a := testComp("a", "XBucket", nil)
-	b := testComp("b", "XBucket", nil)
+	a := testutils.NewComposition("a").WithCompositeTypeRef("example.org/v1", "XBucket").BuildAsUnstructured()
+	b := testutils.NewComposition("b").WithCompositeTypeRef("example.org/v1", "XBucket").BuildAsUnstructured()
 
 	type args struct {
 		xrd    *un.Unstructured
@@ -258,7 +245,25 @@ func TestAssignInputs(t *testing.T) {
 		"ClaimNoReferenceableVersion": {
 			reason: "A claim whose XRD has no referenceable version fails, naming the input.",
 			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", false), inputs: []*un.Unstructured{testInput("Bucket", "c", nil)}},
-			want:   want{err: `--resource-file inputs include Bucket "c" (example.org/v1), whose XRD "xbuckets.example.org" has no referenceable version`},
+			want:   want{err: `--resource-file inputs include Bucket "c" (example.org/v1), whose XRD "xbuckets.example.org" gives no composite type: no referenceable version found in XRD`},
+		},
+		"ClaimFirstReferenceableVersion": {
+			reason: "A claim composes its XRD's first referenceable version, as xr diff resolves it.",
+			args: args{xrd: func() *un.Unstructured {
+				x := xrd("apiextensions.crossplane.io/v1", "b", true)
+				_ = un.SetNestedSlice(x.Object, []any{map[string]any{"name": "v1", "referenceable": true}, map[string]any{"name": "v2", "referenceable": true}}, "spec", "versions")
+				return x
+			}(), inputs: []*un.Unstructured{testInput("Bucket", "c", nil)}},
+			want: want{assigned: map[string][]string{"b": {"ctx-ns/c"}}},
+		},
+		"ClaimXRDMissingKind": {
+			reason: "A claim whose XRD names no composite kind fails rather than matching an empty kind.",
+			args: args{xrd: func() *un.Unstructured {
+				x := xrd("apiextensions.crossplane.io/v1", "b", true)
+				un.RemoveNestedField(x.Object, "spec", "names", "kind")
+				return x
+			}(), inputs: []*un.Unstructured{testInput("Bucket", "c", nil)}},
+			want: want{err: `--resource-file inputs include Bucket "c" (example.org/v1), whose XRD "xbuckets.example.org" gives no composite type: could not determine group or kind from XRD`},
 		},
 		"V1XRDReadsSpecPathOnly": {
 			reason: "An XR of a v1 XRD ignores spec.crossplane.compositionRef, so the XRD default applies.",

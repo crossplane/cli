@@ -24,11 +24,13 @@ import (
 	"strings"
 
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
 	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
+	"github.com/crossplane/cli/v2/internal/diff/result"
 )
 
 // assignInputs checks the --resource-file inputs against the cluster's XRDs
@@ -39,13 +41,13 @@ func assignInputs(ctx context.Context, defs xpclient.DefinitionClient, ns string
 	if err := checkComposites(ctx, defs, FlagResourceFile, ns, inputs); err != nil {
 		return err
 	}
-	seen := map[[4]string]bool{}
+	seen := map[result.CompositeKey]bool{}
 	for _, in := range inputs {
 		// An input with only a generateName names no composite, so it never duplicates one.
 		if in.GetName() == "" {
 			continue
 		}
-		id := [4]string{in.GroupVersionKind().Group, in.GetKind(), in.GetNamespace(), in.GetName()}
+		id := result.CompositeKeyOf(in)
 		if seen[id] {
 			return rejectInput(in, FlagResourceFile, "which another --resource-file input also names", "pass each composite once")
 		}
@@ -66,19 +68,11 @@ func assignInputs(ctx context.Context, defs xpclient.DefinitionClient, ns string
 func clusterXRDInfo(ctx context.Context, defs xpclient.DefinitionClient, in *un.Unstructured) (xrdInfo, error) {
 	gvk := in.GroupVersionKind()
 	if xrd, err := defs.GetXRDForClaim(ctx, gvk); err == nil && xrd != nil {
-		info := xrdInfo{DefaultComposition: defaultComposition(xrd), EnforcedComposition: enforcedComposition(xrd), Legacy: true}
-		info.CompositeGVK.Group, _, _ = un.NestedString(xrd.Object, "spec", "group")
-		info.CompositeGVK.Kind, _, _ = un.NestedString(xrd.Object, "spec", "names", "kind")
-		versions, _, _ := un.NestedSlice(xrd.Object, "spec", "versions")
-		for _, v := range versions {
-			if m, ok := v.(map[string]any); ok && m["referenceable"] == true {
-				info.CompositeGVK.Version, _ = m["name"].(string)
-			}
+		xr, err := xpclient.XRTypeFromXRD(xrd)
+		if err != nil {
+			return xrdInfo{}, rejectInput(in, FlagResourceFile, fmt.Sprintf("whose XRD %q gives no composite type: %v", xrd.GetName(), err), "")
 		}
-		if info.CompositeGVK.Version == "" {
-			return xrdInfo{}, rejectInput(in, FlagResourceFile, fmt.Sprintf("whose XRD %q has no referenceable version", xrd.GetName()), "")
-		}
-		return info, nil
+		return xrdInfo{CompositeGVK: xr, DefaultComposition: defaultComposition(xrd), EnforcedComposition: enforcedComposition(xrd), Legacy: true}, nil
 	}
 	xrd, err := defs.GetXRDForXR(ctx, gvk)
 	if err != nil {
@@ -156,7 +150,7 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 		return byName(xrd.EnforcedComposition, "XRD enforcedCompositionRef")
 	}
 
-	ref, err := crossplaneField[string](in, xrd.Legacy, un.NestedString, "compositionRef", "name")
+	ref, err := crossplaneField(in, xrd.Legacy, "a string", un.NestedString, "compositionRef", "name")
 	if err != nil {
 		return "", err
 	}
@@ -164,14 +158,14 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 		return byName(ref, "compositionRef")
 	}
 
-	sel, err := crossplaneField[map[string]string](in, xrd.Legacy, un.NestedStringMap, "compositionSelector", "matchLabels")
+	sel, err := crossplaneField(in, xrd.Legacy, "a map of strings", un.NestedStringMap, "compositionSelector", "matchLabels")
 	if err != nil {
 		return "", err
 	}
 	if len(sel) > 0 {
 		var match []*un.Unstructured
 		for _, c := range typed {
-			if labelsMatch(c.GetLabels(), sel) {
+			if labels.SelectorFromSet(sel).Matches(labels.Set(c.GetLabels())) {
 				match = append(match, c)
 			}
 		}
@@ -203,32 +197,16 @@ func sole(in *un.Unstructured, match []*un.Unstructured, none string) (string, e
 }
 
 // crossplaneField reads field at spec.<path> if legacy, otherwise at
-// spec.crossplane.<path> or, if not set there, spec.<path>, as the engine does
-// (see getCrossplaneRefPaths in internal/diff/client/crossplane). A value of
-// the wrong type fails.
-func crossplaneField[T any](in *un.Unstructured, legacy bool, get func(map[string]any, ...string) (T, bool, error), path ...string) (T, error) {
-	var zero T
-	paths := [][]string{append([]string{"spec", "crossplane"}, path...), append([]string{"spec"}, path...)}
+// spec.crossplane.<path> or, if not set there, spec.<path>, as the engine does.
+// A value of the wrong type fails.
+func crossplaneField[T any](in *un.Unstructured, legacy bool, typeName string, get func(map[string]any, ...string) (T, bool, error), path ...string) (T, error) {
+	apiVersion := ""
 	if legacy {
-		paths = paths[1:]
+		apiVersion = xpclient.CrossplaneAPIExtGroupV1
 	}
-	for _, p := range paths {
-		v, found, err := get(in.Object, p...)
-		if err != nil {
-			return zero, rejectInput(in, FlagResourceFile, fmt.Sprintf("whose %s is malformed: %v", strings.Join(p, "."), err), "")
-		}
-		if found {
-			return v, nil
-		}
+	v, _, err := xpclient.NestedCrossplaneValue(in.Object, apiVersion, typeName, get, path...)
+	if err != nil {
+		return v, rejectInput(in, FlagResourceFile, fmt.Sprintf("whose %s is malformed: %v", strings.Join(path, "."), errors.Cause(err)), "")
 	}
-	return zero, nil
-}
-
-func labelsMatch(labels, sel map[string]string) bool {
-	for k, v := range sel {
-		if labels[k] != v {
-			return false
-		}
-	}
-	return true
+	return v, nil
 }

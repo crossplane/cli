@@ -34,11 +34,13 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -161,6 +163,36 @@ func writeConfigurationPackage(t *testing.T, path, repo string) {
 	}
 }
 
+// testLabelledImage returns a random single-layer image whose layer is
+// labelled as an xpkg package layer in the image config, the way xpkg build
+// does.
+func testLabelledImage(t *testing.T) v1.Image {
+	t.Helper()
+	img, err := random.Image(64, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layers, err := img.Layers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := layers[0].Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = cfg.DeepCopy()
+	cfg.Config.Labels = map[string]string{xpkg.Label(d.String()): xpkg.PackageAnnotation}
+	img, err = mutate.ConfigFile(img, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
+}
+
 func TestPushCmdRun(t *testing.T) {
 	// Use an empty Docker config so the default keychain doesn't consult the
 	// host's credential helpers.
@@ -179,8 +211,9 @@ func TestPushCmdRun(t *testing.T) {
 		tag         string
 	}
 	type want struct {
-		// refs that must exist in the registry after the push.
-		refs []string
+		// refs that must exist in the registry after the push, mapped to
+		// whether each is an index.
+		refs map[string]bool
 		err  string
 	}
 
@@ -195,7 +228,7 @@ func TestPushCmdRun(t *testing.T) {
 				tags: []string{"REPO:" + project.ConfigurationTag, "REPO_fn:amd64"},
 				tag:  "v1.0.0",
 			},
-			want: want{refs: []string{"REPO:v1.0.0", "REPO_fn:v1.0.0"}},
+			want: want{refs: map[string]bool{"REPO:v1.0.0": false, "REPO_fn:v1.0.0": true}},
 		},
 		"RepositoryOverride": {
 			reason: "--repository should replace the project's repository, and an explicit package file path should be read.",
@@ -205,7 +238,7 @@ func TestPushCmdRun(t *testing.T) {
 				packageFile: "custom.xpkg",
 				tag:         "v2.0.0",
 			},
-			want: want{refs: []string{"REPO:v2.0.0"}},
+			want: want{refs: map[string]bool{"REPO:v2.0.0": false}},
 		},
 		"MissingConfiguration": {
 			reason: "A package file without a configuration image should fail to push.",
@@ -251,10 +284,7 @@ spec:
 			if len(tc.args.tags) > 0 {
 				refs := make(map[name.Reference]v1.Image, len(tc.args.tags))
 				for _, s := range tc.args.tags {
-					img, err := random.Image(64, 1)
-					if err != nil {
-						t.Fatal(err)
-					}
+					img := testLabelledImage(t)
 					ref, err := name.ParseReference(expand(s))
 					if err != nil {
 						t.Fatal(err)
@@ -296,14 +326,52 @@ spec:
 				t.Fatalf("\n%s\nRun(...): %v", tc.reason, err)
 			}
 
-			var got []string
-			for _, r := range tc.want.refs {
+			got := make(map[string]bool, len(tc.want.refs))
+			for r := range tc.want.refs {
 				ref, err := name.ParseReference(expand(r))
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := remote.Head(ref); err == nil {
-					got = append(got, r)
+				desc, err := remote.Get(ref)
+				if err != nil {
+					continue
+				}
+				got[r] = desc.MediaType.IsIndex()
+
+				// Every pushed image should carry its xpkg label as a layer
+				// annotation.
+				imgs := []v1.Image{}
+				if got[r] {
+					idx, err := desc.ImageIndex()
+					if err != nil {
+						t.Fatal(err)
+					}
+					im, err := idx.IndexManifest()
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, d := range im.Manifests {
+						img, err := idx.Image(d.Digest)
+						if err != nil {
+							t.Fatal(err)
+						}
+						imgs = append(imgs, img)
+					}
+				} else {
+					img, err := desc.Image()
+					if err != nil {
+						t.Fatal(err)
+					}
+					imgs = append(imgs, img)
+				}
+				for _, img := range imgs {
+					m, err := img.Manifest()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if a := m.Layers[0].Annotations[xpkg.AnnotationKey]; a != xpkg.PackageAnnotation {
+						t.Errorf("\n%s\nRun(...): %s layer annotation %q = %q, want %q", tc.reason, r, xpkg.AnnotationKey, a, xpkg.PackageAnnotation)
+					}
 				}
 			}
 			if diff := cmp.Diff(tc.want.refs, got); diff != "" {

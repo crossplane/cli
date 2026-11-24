@@ -90,10 +90,10 @@ func TestUpdateIntegration(t *testing.T) {
 				existing: &v1.Provider{Name: "provider-a", Spec: v1.ProviderSpec{PackageSpec: v1.PackageSpec{
 					Package:                     "xpkg.crossplane.io/acme/prov:v1.0.0",
 					RevisionHistoryLimit:        ptr.To[int64](3),
-					IgnoreCrossplaneConstraints: ptr.To(true),
+					IgnoreCrossplaneConstraints: new(true),
 					PackagePullPolicy:           ptr.To(corev1.PullAlways),
 				}}},
-				update:   []string{"provider", "xpkg.crossplane.io/acme/prov:v2.0.0", "provider-a"},
+				update: []string{"provider", "xpkg.crossplane.io/acme/prov:v2.0.0", "provider-a"},
 			},
 			want: want{
 				source: "xpkg.crossplane.io/acme/prov:v2.0.0",

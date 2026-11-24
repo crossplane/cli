@@ -52,9 +52,24 @@ metadata:
   namespace: test-namespace
 spec:
   coolField: claim-value
+  writeConnectionSecretToRef:
+    name: test-claim-conn
   compositionRef:
     name: xnops.trace.example.org
   resourceRef:
     apiVersion: trace.example.org/v1alpha1
     kind: XNop
     name: test-claim-xr
+---
+# The connection secrets the claim and its XR write.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: test-claim-conn
+  namespace: test-namespace
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: test-claim-xr-conn
+  namespace: test-namespace

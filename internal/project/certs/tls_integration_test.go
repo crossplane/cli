@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,12 +143,10 @@ func TestTLSCertificateGeneratorIntegration(t *testing.T) {
 		},
 	}
 
-	i := 0
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			// Each case gets its own namespace, so the secrets one leaves don't affect another.
-			i++
-			ns := fmt.Sprintf("certs-%d", i)
+			ns := "certs-" + strings.ToLower(name)
 			if err := cluster.Client.Create(cluster.Context, &corev1.Namespace{Name: ns}); err != nil {
 				t.Fatalf("cannot create namespace: %v", err)
 			}
@@ -169,6 +168,13 @@ func TestTLSCertificateGeneratorIntegration(t *testing.T) {
 				}
 
 				if tc.want.err != nil {
+					// A failed run should leave the secrets that were there as they were.
+					for n, data := range tc.args.existing {
+						if diff := cmp.Diff(data, getSecret(t, cluster, ns, n).Data); diff != "" {
+							t.Errorf("\n%s\nsecret %s data after a failed run: -want, +got:\n%s", tc.reason, n, diff)
+						}
+					}
+
 					return
 				}
 
@@ -178,10 +184,17 @@ func TestTLSCertificateGeneratorIntegration(t *testing.T) {
 			}
 
 			server := getSecret(t, cluster, ns, "server")
+			ca := getSecret(t, cluster, ns, RootCACertSecretName)
+			caCert := ca.Data[corev1.TLSCertKey]
 
 			if tc.want.serverData != nil {
 				if diff := cmp.Diff(tc.want.serverData, server.Data); diff != "" {
 					t.Errorf("\n%s\nserver secret data: -want, +got:\n%s", tc.reason, diff)
+				}
+
+				// Run creates the CA before it looks at the server secret.
+				if len(caCert) == 0 || len(ca.Data[corev1.TLSPrivateKeyKey]) == 0 {
+					t.Errorf("\n%s\nCA secret wasn't created with a certificate and key", tc.reason)
 				}
 
 				return
@@ -191,8 +204,6 @@ func TestTLSCertificateGeneratorIntegration(t *testing.T) {
 				t.Errorf("\n%s\nserver secret changed after the first run: -first, +last:\n%s", tc.reason, diff)
 			}
 
-			ca := getSecret(t, cluster, ns, RootCACertSecretName)
-			caCert := ca.Data[corev1.TLSCertKey]
 			if tc.want.caCert != nil && !bytes.Equal(tc.want.caCert, caCert) {
 				t.Errorf("\n%s\nCA secret: the existing CA certificate was replaced", tc.reason)
 			}

@@ -28,6 +28,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/spf13/afero"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
@@ -97,8 +99,24 @@ func testBaseImgMap(t *testing.T, platforms []string) map[string]v1.Image {
 	t.Helper()
 	m := make(map[string]v1.Image, len(platforms))
 	for _, p := range platforms {
-		os, arch, _ := strings.Cut(p, "_")
-		m[p] = testPackageImage(t, os, arch)
+		goos, arch, _ := strings.Cut(p, "_")
+		// Use an unlabelled base, like a real provider runtime image, so the
+		// only package-annotated layer is the one batch builds.
+		img, err := random.Image(64, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := img.ConfigFile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg = cfg.DeepCopy()
+		cfg.OS = goos
+		cfg.Architecture = arch
+		if img, err = mutate.ConfigFile(img, cfg); err != nil {
+			t.Fatal(err)
+		}
+		m[p] = img
 	}
 	return m
 }
@@ -128,10 +146,10 @@ func TestBatchProcessService(t *testing.T) {
 		want   want
 	}{
 		"PushMultiArch": {
-			reason: "The service package should be pushed as a multi-arch index whose images each carry the shared package layer.",
+			reason: "The service package should be pushed as a multi-arch index whose images each have the unlabelled base layer, exactly one package layer, and the unlabelled provider binary layer. The second platform reuses the first platform's addendum layers and labels.",
 			want: want{pushed: pushed{
 				Platforms:        []string{"linux/amd64", "linux/arm64"},
-				LayerAnnotations: []map[string]string{pkgLayer, pkgLayer},
+				LayerAnnotations: [][]map[string]string{{nil, pkgLayer, nil}, {nil, pkgLayer, nil}},
 			}},
 		},
 		"BuildOnlyAndStore": {

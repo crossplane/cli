@@ -236,7 +236,7 @@ func newTestRegistry(t *testing.T, middleware func(http.ResponseWriter, *http.Re
 // testPackageImage returns a random image for the given platform whose single
 // layer is labelled as an xpkg package layer in the image config, the way
 // xpkg build does.
-func testPackageImage(t *testing.T, os, arch string) v1.Image {
+func testPackageImage(t *testing.T, goos, arch string) v1.Image {
 	t.Helper()
 	img, err := random.Image(64, 1)
 	if err != nil {
@@ -255,7 +255,7 @@ func testPackageImage(t *testing.T, os, arch string) v1.Image {
 		t.Fatal(err)
 	}
 	cfg = cfg.DeepCopy()
-	cfg.OS = os
+	cfg.OS = goos
 	cfg.Architecture = arch
 	cfg.Config.Labels = map[string]string{xpkg.Label(d.String()): xpkg.PackageAnnotation}
 	img, err = mutate.ConfigFile(img, cfg)
@@ -271,8 +271,9 @@ type pushed struct {
 	Annotations map[string]string
 	// Platforms of the index manifests; empty when the tag is a single image.
 	Platforms []string
-	// LayerAnnotations of every pushed image manifest, in order.
-	LayerAnnotations []map[string]string
+	// LayerAnnotations of every layer of every pushed image manifest, in
+	// order.
+	LayerAnnotations [][]map[string]string
 }
 
 func inspectTag(t *testing.T, ref string) pushed {
@@ -286,12 +287,16 @@ func inspectTag(t *testing.T, ref string) pushed {
 		t.Fatalf("remote.Get(%s): %v", ref, err)
 	}
 
-	layerAnns := func(img v1.Image) map[string]string {
+	layerAnns := func(img v1.Image) []map[string]string {
 		m, err := img.Manifest()
 		if err != nil {
 			t.Fatal(err)
 		}
-		return m.Layers[0].Annotations
+		anns := make([]map[string]string, 0, len(m.Layers))
+		for _, l := range m.Layers {
+			anns = append(anns, l.Annotations)
+		}
+		return anns
 	}
 
 	if !desc.MediaType.IsIndex() {
@@ -303,7 +308,7 @@ func inspectTag(t *testing.T, ref string) pushed {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return pushed{Annotations: m.Annotations, LayerAnnotations: []map[string]string{layerAnns(img)}}
+		return pushed{Annotations: m.Annotations, LayerAnnotations: [][]map[string]string{layerAnns(img)}}
 	}
 
 	idx, err := desc.ImageIndex()
@@ -354,7 +359,7 @@ func TestPushImages(t *testing.T) {
 			},
 			want: want{pushed: pushed{
 				Annotations:      map[string]string{"a": "b"},
-				LayerAnnotations: []map[string]string{pkgLayer},
+				LayerAnnotations: [][]map[string]string{{pkgLayer}},
 			}},
 		},
 		"MultiPlatform": {
@@ -367,7 +372,7 @@ func TestPushImages(t *testing.T) {
 			want: want{pushed: pushed{
 				Annotations:      map[string]string{"a": "b"},
 				Platforms:        []string{"linux/amd64", "linux/arm64"},
-				LayerAnnotations: []map[string]string{pkgLayer, pkgLayer},
+				LayerAnnotations: [][]map[string]string{{pkgLayer}, {pkgLayer}},
 			}},
 		},
 		"InvalidTag": {
@@ -475,7 +480,7 @@ func TestPushCmdRun(t *testing.T) {
 			},
 			want: want{pushed: pushed{
 				Annotations:      map[string]string{"org.opencontainers.image.source": "https://example.org"},
-				LayerAnnotations: []map[string]string{{xpkg.AnnotationKey: xpkg.PackageAnnotation}},
+				LayerAnnotations: [][]map[string]string{{{xpkg.AnnotationKey: xpkg.PackageAnnotation}}},
 			}},
 		},
 		"MultiplePackageFiles": {
@@ -486,9 +491,9 @@ func TestPushCmdRun(t *testing.T) {
 			},
 			want: want{pushed: pushed{
 				Platforms: []string{"linux/amd64", "linux/arm64"},
-				LayerAnnotations: []map[string]string{
-					{xpkg.AnnotationKey: xpkg.PackageAnnotation},
-					{xpkg.AnnotationKey: xpkg.PackageAnnotation},
+				LayerAnnotations: [][]map[string]string{
+					{{xpkg.AnnotationKey: xpkg.PackageAnnotation}},
+					{{xpkg.AnnotationKey: xpkg.PackageAnnotation}},
 				},
 			}},
 		},

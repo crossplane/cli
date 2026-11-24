@@ -444,7 +444,7 @@ func (p *DefaultDiffProcessor) diffSingleResourceInternal(ctx context.Context, r
 	p.warnIfDeleting(composite.Cluster, parentXR, resourceID)
 
 	// Who applies the XR or claim, for its own dry run; composed resources, nested XRs included, carry none.
-	ctx = p.withApplier(ctx, composite.Cluster, parentXR, resourceID)
+	ctx = p.withApplier(ctx, composite.Cluster, depth, resourceID)
 
 	// Get the composition using the provided function. It is resolved from the defaulted effective XR,
 	// so that it sees the revision a composite is pinned to and the update policy an XRD defaults.

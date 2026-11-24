@@ -31,9 +31,17 @@ func TestWithApplierWarning(t *testing.T) {
 		imperative bool
 		noWarnings bool
 	}
+	twoAppliers := live(
+		metav1.ManagedFieldsEntry{Manager: "platform-operator", Operation: apply},
+		metav1.ManagedFieldsEntry{Manager: "argocd-controller", Operation: apply},
+	)
+	namespaced := twoAppliers.DeepCopy()
+	namespaced.SetNamespace("team-a")
+
 	cases := map[string]struct {
 		reason string
 		live   *un.Unstructured
+		depth  int
 		want   want
 	}{
 		"OneApplier": {
@@ -48,11 +56,19 @@ func TestWithApplierWarning(t *testing.T) {
 		},
 		"TwoAppliers": {
 			reason: "Two candidate appliers warn, naming both, and no imperative writer.",
-			live: live(
-				metav1.ManagedFieldsEntry{Manager: "platform-operator", Operation: apply},
-				metav1.ManagedFieldsEntry{Manager: "argocd-controller", Operation: apply},
-			),
-			want: want{context: map[string]string{"resource": "XR/x", "candidates": "argocd-controller, platform-operator"}},
+			live:   twoAppliers,
+			want:   want{context: map[string]string{"resource": "XR/x", "candidates": "argocd-controller, platform-operator"}},
+		},
+		"TwoAppliersNamespaced": {
+			reason: "The warning names a namespaced resource's namespace, so same-named resources in two namespaces warn apart.",
+			live:   namespaced,
+			want:   want{context: map[string]string{"resource": "XR/x", "namespace": "team-a", "candidates": "argocd-controller, platform-operator"}},
+		},
+		"NestedXR": {
+			reason: "A nested XR is composed, so it takes no user applier and gives no warning.",
+			live:   twoAppliers,
+			depth:  1,
+			want:   want{noWarnings: true},
 		},
 		"ApplierAndImperativeWriter": {
 			reason: "An imperative writer beside the only applier warns, naming both.",
@@ -69,7 +85,7 @@ func TestWithApplierWarning(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			p := &DefaultDiffProcessor{config: ProcessorConfig{Advisories: NewAdvisoryCollector(nil)}}
-			p.withApplier(withUserSupplied(t.Context()), tc.live, nil, "XR/x")
+			p.withApplier(withUserSupplied(t.Context()), tc.live, tc.depth, "XR/x")
 
 			got := p.config.Advisories.Advisories()
 			if tc.want.noWarnings {
@@ -152,7 +168,7 @@ func TestCalculateDiffClientSideApply(t *testing.T) {
 				tu.TestLogger(t, false), compare.Options{}, DryRunOnAll, &tu.MockDefaulter{}, nil)
 
 			p := &DefaultDiffProcessor{config: ProcessorConfig{Advisories: advisories, Applier: plan.ApplierFlags{ServerSide: new(false)}}}
-			ctx := p.withApplier(withUserSupplied(t.Context()), tc.live, nil, "XR/x")
+			ctx := p.withApplier(withUserSupplied(t.Context()), tc.live, 0, "XR/x")
 
 			if _, err := calculator.CalculateDiff(ctx, nil, desired); err != nil {
 				t.Fatalf("%s\nCalculateDiff(...): unexpected error: %v", tc.reason, err)

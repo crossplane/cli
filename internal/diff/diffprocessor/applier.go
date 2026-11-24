@@ -22,8 +22,6 @@ import (
 
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	cmp "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
-
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
@@ -57,13 +55,13 @@ func applierFrom(ctx context.Context) (plan.Applier, bool) {
 
 // withApplier returns ctx carrying the applier of the composite resource or claim resourceID names,
 // whose cluster copy is live, when it is user-supplied: a top-level input of a context
-// withUserSupplied marked, with a cluster copy to apply to. A nested XR (parentXR set) is composed, so
-// its context carries no applier, even when its parent's does. When the applier cannot be told and
+// withUserSupplied marked, with a cluster copy to apply to. A nested XR (depth above 0) is composed, so
+// its context carries no applier, even when its parent's does, whether or not its parent exists yet. When the applier cannot be told and
 // live records one, a warning names the appliers and imperative writers it records: the diff then may
 // not show fields the manifest drops.
-func (p *DefaultDiffProcessor) withApplier(ctx context.Context, live *un.Unstructured, parentXR *cmp.Unstructured, resourceID string) context.Context {
+func (p *DefaultDiffProcessor) withApplier(ctx context.Context, live *un.Unstructured, depth int, resourceID string) context.Context {
 	supplied, _ := ctx.Value(userSuppliedKey{}).(bool)
-	if parentXR != nil || !supplied || live == nil {
+	if depth > 0 || !supplied || live == nil {
 		return context.WithValue(ctx, applierKey{}, (*plan.Applier)(nil))
 	}
 
@@ -73,6 +71,9 @@ func (p *DefaultDiffProcessor) withApplier(ctx context.Context, live *un.Unstruc
 		wctx := map[string]string{
 			warningContextResource: resourceID,
 			"candidates":           a.DescribeCandidates(),
+		}
+		if ns := live.GetNamespace(); ns != "" {
+			wctx[ctxNamespace] = ns
 		}
 		if len(a.ImperativeWriters) > 0 {
 			msg += ", since imperative writers (managers that updated it without applying, such as kubectl create or edit, or a controller) wrote it too"

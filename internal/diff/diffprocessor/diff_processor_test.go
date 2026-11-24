@@ -14,6 +14,7 @@ import (
 	"github.com/sergi/go-diff/diffmatchpatch"
 	corev1 "k8s.io/api/core/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -2891,6 +2892,9 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 		wantDiffCount     int
 		wantErr           bool
 		wantErrContain    string
+		// userSupplied marks the context as PerformDiff does for the user's input.
+		userSupplied   bool
+		wantNoWarnings bool
 	}{
 		"NoComposedResourcesReturnsEmpty": {
 			setupMocks: func() (xp.Clients, k8.Clients) {
@@ -2994,6 +2998,82 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 			depth:            1,
 			wantDiffCount:    1, // Should have diff for the child XR itself
 			wantErr:          false,
+		},
+		"NestedXROfNewParentTakesNoUserApplier": {
+			// A nested XR whose parent is new has no parent cluster copy, but Crossplane composes it, so
+			// it never takes the user's applier: two appliers on it raise no warning.
+			userSupplied:   true,
+			wantNoWarnings: true,
+			setupMocks: func() (xp.Clients, k8.Clients) {
+				live := childXR.DeepCopy()
+				live.SetManagedFields([]metav1.ManagedFieldsEntry{
+					{Manager: "platform-operator", Operation: metav1.ManagedFieldsOperationApply},
+					{Manager: "argocd-controller", Operation: metav1.ManagedFieldsOperationApply},
+				})
+
+				// Create functions that the composition references
+				functions := []pkgv1.Function{
+					{
+						Name: "function-go-templating",
+						Spec: pkgv1.FunctionSpec{
+							PackageSpec: pkgv1.PackageSpec{
+								Package: "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.11.0",
+							},
+						},
+					},
+				}
+
+				xpClients := xp.Clients{
+					Composition: tu.NewMockCompositionClient().
+						WithComposition(childComposition).
+						Build(),
+					Credential: &tu.MockCredentialClient{},
+					Definition: tu.NewMockDefinitionClient().
+						WithXRD(childXRD).
+						Build(),
+					Function: tu.NewMockFunctionClient().
+						WithSuccessfulFunctionsFetch(functions).
+						Build(),
+					ResourceTree: tu.NewMockResourceTreeClient().WithResourceTreeFromXRAndComposed(live, nil).Build(),
+				}
+
+				// Create a child CRD with proper schema for childField
+				childCRD := tu.NewCRD("xchildresources.nested.example.org", "nested.example.org", "XChildResource").
+					WithListKind("XChildResourceList").
+					WithPlural("xchildresources").
+					WithSingular("xchildresource").
+					WithVersion("v1alpha1", true, true).
+					WithStandardSchema("childField").
+					Build()
+
+				// Create a CRD for the managed NopResource that the composition creates
+				nopCRD := tu.NewCRD("nopresources.nop.example.org", "nop.example.org", "NopResource").
+					WithListKind("NopResourceList").
+					WithPlural("nopresources").
+					WithSingular("nopresource").
+					WithVersion("v1alpha1", true, true).
+					WithStandardSchema("configData").
+					Build()
+
+				k8sClients := k8.Clients{
+					Apply:    tu.NewMockApplyClient().Build(),
+					Resource: tu.NewMockResourceClient().WithResourcesExist(live).Build(),
+					Schema: tu.NewMockSchemaClient().
+						WithFoundCRD("nested.example.org", "XChildResource", childCRD).
+						WithFoundCRD("nop.example.org", "NopResource", nopCRD).
+						WithSuccessfulCRDByNameFetch("xchildresources.nested.example.org", childCRD).
+						Build(),
+					Type: tu.NewMockTypeConverter().Build(),
+				}
+
+				return xpClients, k8sClients
+			},
+			composedResources: []cpd.Unstructured{
+				{Unstructured: *childXR},
+			},
+			parentResourceID: "XParentResource/test-parent",
+			depth:            1,
+			wantDiffCount:    1,
 		},
 		"MaxDepthExceededReturnsError": {
 			setupMocks: func() (xp.Clients, k8.Clients) {
@@ -3300,7 +3380,12 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 				// Call the method under test
 				var observedResources []cpd.Unstructured
 
-				diffs, _, err := processor.ProcessNestedXRs(ctx, tt.composedResources, compositionProvider, tt.parentResourceID, parentXR, observedResources, tt.depth)
+				pctx := ctx
+				if tt.userSupplied {
+					pctx = withUserSupplied(ctx)
+				}
+
+				diffs, _, err := processor.ProcessNestedXRs(pctx, tt.composedResources, compositionProvider, tt.parentResourceID, parentXR, observedResources, tt.depth)
 
 				// Check error
 				if (err != nil) != tt.wantErr {
@@ -3316,6 +3401,10 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 				// Check diff count
 				if diff := gcmp.Diff(tt.wantDiffCount, len(diffs)); diff != "" {
 					t.Errorf("ProcessNestedXRs() diff count mismatch (-want +got):\n%s", diff)
+				}
+
+				if got := processor.config.Advisories.Advisories(); tt.wantNoWarnings && len(got) != 0 {
+					t.Errorf("ProcessNestedXRs(): want no warnings, got %v", got)
 				}
 			}
 		})

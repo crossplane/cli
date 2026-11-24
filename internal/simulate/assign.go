@@ -31,11 +31,20 @@ import (
 )
 
 // assignInputs checks the --resource-file inputs against the cluster's XRDs
-// (see checkComposites), then assigns each to one of comps (see
+// (see checkComposites), which also gives namespaced inputs that set none ns,
+// rejects two inputs of one group, kind, namespace and name, then assigns each to one of comps (see
 // assignComposites) into into, keyed by Composition name.
 func assignInputs(ctx context.Context, defs xpclient.DefinitionClient, ns string, comps, inputs []*un.Unstructured, into map[string][]*un.Unstructured) error {
 	if err := checkComposites(ctx, defs, FlagResourceFile, ns, inputs); err != nil {
 		return err
+	}
+	seen := map[[4]string]bool{}
+	for _, in := range inputs {
+		id := [4]string{in.GroupVersionKind().Group, in.GetKind(), in.GetNamespace(), in.GetName()}
+		if seen[id] {
+			return rejectInput(in, FlagResourceFile, "which another --resource-file input also names", "pass each composite once")
+		}
+		seen[id] = true
 	}
 	byComp, err := assignComposites(comps, inputs, func(in *un.Unstructured) (xrdInfo, error) {
 		return clusterXRDInfo(ctx, defs, in)
@@ -54,7 +63,7 @@ func assignInputs(ctx context.Context, defs xpclient.DefinitionClient, ns string
 func clusterXRDInfo(ctx context.Context, defs xpclient.DefinitionClient, in *un.Unstructured) (xrdInfo, error) {
 	gvk := in.GroupVersionKind()
 	if xrd, err := defs.GetXRDForClaim(ctx, gvk); err == nil && xrd != nil {
-		info := xrdInfo{DefaultComposition: defaultComposition(xrd), Legacy: true}
+		info := xrdInfo{DefaultComposition: defaultComposition(xrd), EnforcedComposition: enforcedComposition(xrd), Legacy: true}
 		info.CompositeGVK.Group, _, _ = un.NestedString(xrd.Object, "spec", "group")
 		info.CompositeGVK.Kind, _, _ = un.NestedString(xrd.Object, "spec", "names", "kind")
 		versions, _, _ := un.NestedSlice(xrd.Object, "spec", "versions")
@@ -72,11 +81,16 @@ func clusterXRDInfo(ctx context.Context, defs xpclient.DefinitionClient, in *un.
 	if err != nil {
 		return xrdInfo{}, errors.Wrapf(err, "cannot get the XRD for %s", gvk)
 	}
-	return xrdInfo{CompositeGVK: gvk, DefaultComposition: defaultComposition(xrd), Legacy: xrd.GetAPIVersion() == xpclient.CrossplaneAPIExtGroupV1}, nil
+	return xrdInfo{CompositeGVK: gvk, DefaultComposition: defaultComposition(xrd), EnforcedComposition: enforcedComposition(xrd), Legacy: xrd.GetAPIVersion() == xpclient.CrossplaneAPIExtGroupV1}, nil
 }
 
 func defaultComposition(xrd *un.Unstructured) string {
 	name, _, _ := un.NestedString(xrd.Object, "spec", "defaultCompositionRef", "name")
+	return name
+}
+
+func enforcedComposition(xrd *un.Unstructured) string {
+	name, _, _ := un.NestedString(xrd.Object, "spec", "enforcedCompositionRef", "name")
 	return name
 }
 
@@ -87,6 +101,8 @@ type xrdInfo struct {
 	CompositeGVK schema.GroupVersionKind
 	// DefaultComposition is spec.defaultCompositionRef.name, if set.
 	DefaultComposition string
+	// EnforcedComposition is spec.enforcedCompositionRef.name, if set.
+	EnforcedComposition string
 	// Legacy is true for a claim or an XR whose XRD is
 	// apiextensions.crossplane.io/v1: its Composition fields are under spec
 	// only, not spec.crossplane.
@@ -94,7 +110,8 @@ type xrdInfo struct {
 }
 
 // assignComposites assigns each input to exactly one of comps (by name) the
-// way Crossplane selects a Composition: compositionRef, then
+// way Crossplane selects a Composition: the XRD's enforcedCompositionRef,
+// then compositionRef, then
 // compositionSelector, then the XRD's defaultCompositionRef, then the sole
 // Composition whose compositeTypeRef matches. xrdFor returns the XRD details
 // for an input.
@@ -130,6 +147,10 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 			}
 		}
 		return "", rejectInput(in, FlagResourceFile, fmt.Sprintf("whose %s %q is not a project Composition composing %s", field, name, xrd.CompositeGVK.Kind), "")
+	}
+
+	if xrd.EnforcedComposition != "" {
+		return byName(xrd.EnforcedComposition, "XRD enforcedCompositionRef")
 	}
 
 	ref, err := crossplaneField[string](in, xrd.Legacy, un.NestedString, "compositionRef", "name")

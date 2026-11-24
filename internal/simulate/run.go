@@ -170,8 +170,9 @@ func (c *Runner) noteNoServers(k *kong.Context, notes []string) {
 // restConfig returns the cluster to simulate against and the namespace for
 // namespaced resources that set none: the hooks' cluster and "default" when
 // set, otherwise the kubeconfig's cluster and namespace. Unlike kubectl's
-// -n, simulate's -n filters composite resources, so it doesn't override this
-// namespace.
+// -n, simulate's -n filters discovered composite resources, so it doesn't
+// override this namespace, except for --resource-file inputs, which it
+// defaults but doesn't filter.
 func (c *Flags) restConfig() (*rest.Config, string, error) {
 	if c.Hooks != nil && c.Hooks.RESTConfig != nil {
 		return c.Hooks.RESTConfig, "default", nil
@@ -706,7 +707,7 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, append(opts, dp.WithSuppliedComposites(supplied))...)
 	diff := c.diffCompositions(k, logger, sp, progress, proc, comps, msg)
 	return c.simulate(sigCtx, logger, clients.Initialize, proc, func(ctx context.Context) (bool, error) {
-		if err := assignInputs(ctx, clients.XpClients.Definition, ns, comps, in.ResourceFile, supplied); err != nil {
+		if err := assignInputs(ctx, clients.XpClients.Definition, cmp.Or(c.sel.Namespace, ns), comps, in.ResourceFile, supplied); err != nil {
 			return false, err
 		}
 		return diff(ctx)

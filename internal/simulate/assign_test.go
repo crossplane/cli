@@ -17,6 +17,7 @@ limitations under the License.
 package simulate
 
 import (
+	cmpstd "cmp"
 	"context"
 	"errors"
 	"testing"
@@ -52,23 +53,24 @@ func testInput(kind, name string, spec map[string]any) *un.Unstructured {
 func TestAssignComposites(t *testing.T) {
 	xr := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XBucket"}
 	// Claims of kind Bucket compose XBucket; XBucket inputs compose themselves.
-	xrdFor := func(def string) func(*un.Unstructured) (xrdInfo, error) {
+	xrdFor := func(def, enforced string) func(*un.Unstructured) (xrdInfo, error) {
 		return func(in *un.Unstructured) (xrdInfo, error) {
 			if in.GetKind() == "Other" {
 				return xrdInfo{}, errors.New("boom")
 			}
 			// Claims, and XRs of kind XLegacy (a v1 XRD), use legacy paths.
-			return xrdInfo{CompositeGVK: xr, DefaultComposition: def, Legacy: in.GetKind() != "XBucket"}, nil
+			return xrdInfo{CompositeGVK: xr, DefaultComposition: def, EnforcedComposition: enforced, Legacy: in.GetKind() != "XBucket"}, nil
 		}
 	}
-	a := testComp("a", "XBucket", map[string]string{"tier": "gold"})
-	b := testComp("b", "XBucket", map[string]string{"tier": "silver"})
+	a := testComp("a", "XBucket", map[string]string{"tier": "gold", "team": "x"})
+	b := testComp("b", "XBucket", map[string]string{"tier": "silver", "team": "x"})
 	other := testComp("o", "XOther", map[string]string{"tier": "gold"})
 
 	type args struct {
-		comps  []*un.Unstructured
-		input  *un.Unstructured
-		defalt string
+		comps    []*un.Unstructured
+		input    *un.Unstructured
+		defalt   string
+		enforced string
 	}
 	type want struct {
 		comp string
@@ -136,8 +138,23 @@ func TestAssignComposites(t *testing.T) {
 		},
 		"SelectorAmbiguous": {
 			reason: "A selector matching several Compositions fails naming them.",
-			args:   args{comps: []*un.Unstructured{b, a}, input: testInput("XBucket", "x", map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{}}})},
-			want:   want{comp: "", err: `--resource-file inputs include XBucket "x" (example.org/v1), which matches several project Compositions (a, b); set its compositionRef to pick one`},
+			args:   args{comps: []*un.Unstructured{b, a}, input: testInput("XBucket", "x", map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"team": "x"}}})},
+			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), which matches several project Compositions (a, b); set its compositionRef to pick one`},
+		},
+		"EmptySelectorFallsThrough": {
+			reason: "An empty matchLabels selects nothing, so the XRD default picks.",
+			args:   args{comps: []*un.Unstructured{a, b}, defalt: "b", input: testInput("XBucket", "x", map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{}}})},
+			want:   want{comp: "b"},
+		},
+		"EnforcedCompositionRef": {
+			reason: "The XRD's enforcedCompositionRef wins over the input's compositionRef, as in Crossplane.",
+			args:   args{comps: []*un.Unstructured{a, b}, enforced: "b", input: testInput("XBucket", "x", map[string]any{"compositionRef": map[string]any{"name": "a"}})},
+			want:   want{comp: "b"},
+		},
+		"EnforcedNotInProject": {
+			reason: "An enforcedCompositionRef the project doesn't build fails.",
+			args:   args{comps: []*un.Unstructured{a}, enforced: "z", input: testInput("XBucket", "x", nil)},
+			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose XRD enforcedCompositionRef "z" is not a project Composition composing XBucket`},
 		},
 		"DefaultCompositionRef": {
 			reason: "With no ref or selector, the XRD's defaultCompositionRef picks.",
@@ -172,7 +189,7 @@ func TestAssignComposites(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := assignComposites(tc.args.comps, []*un.Unstructured{tc.args.input}, xrdFor(tc.args.defalt))
+			got, err := assignComposites(tc.args.comps, []*un.Unstructured{tc.args.input}, xrdFor(tc.args.defalt, tc.args.enforced))
 			gotErr := ""
 			if err != nil {
 				gotErr = err.Error()
@@ -211,8 +228,9 @@ func TestAssignInputs(t *testing.T) {
 	b := testComp("b", "XBucket", nil)
 
 	type args struct {
-		xrd   *un.Unstructured
-		input *un.Unstructured
+		xrd    *un.Unstructured
+		ns     string
+		inputs []*un.Unstructured
 	}
 	type want struct {
 		assigned map[string][]string // Composition -> namespace/name
@@ -225,27 +243,46 @@ func TestAssignInputs(t *testing.T) {
 	}{
 		"ClaimUsesCompositeKindAndDefault": {
 			reason: "A claim is matched to Compositions of its XRD's composite kind, the XRD default picking one, and gets the context namespace.",
-			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", true), input: testInput("Bucket", "c", nil)},
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", true), inputs: []*un.Unstructured{testInput("Bucket", "c", nil)}},
 			want:   want{assigned: map[string][]string{"b": {"ctx-ns/c"}}},
 		},
 		"ClaimNoReferenceableVersion": {
 			reason: "A claim whose XRD has no referenceable version fails, naming the input.",
-			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", false), input: testInput("Bucket", "c", nil)},
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", false), inputs: []*un.Unstructured{testInput("Bucket", "c", nil)}},
 			want:   want{err: `--resource-file inputs include Bucket "c" (example.org/v1), whose XRD "xbuckets.example.org" has no referenceable version`},
 		},
 		"V1XRDReadsSpecPathOnly": {
 			reason: "An XR of a v1 XRD ignores spec.crossplane.compositionRef, so the XRD default applies.",
-			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", true), input: testInput("XBucket", "x", map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "a"}}})},
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", true), inputs: []*un.Unstructured{testInput("XBucket", "x", map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "a"}}})}},
 			want:   want{assigned: map[string][]string{"b": {"ctx-ns/x"}}},
 		},
 		"V2XRDReadsCrossplanePath": {
 			reason: "An XR of a v2 XRD reads spec.crossplane.compositionRef.",
-			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "b", true), input: testInput("XBucket", "x", map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "a"}}})},
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "b", true), inputs: []*un.Unstructured{testInput("XBucket", "x", map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "a"}}})}},
 			want:   want{assigned: map[string][]string{"a": {"ctx-ns/x"}}},
+		},
+		"NamespaceFlagDefaults": {
+			reason: "--namespace, when set, is the namespace an input that sets none gets.",
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "b", true), ns: "team-a", inputs: []*un.Unstructured{testInput("XBucket", "x", nil)}},
+			want:   want{assigned: map[string][]string{"b": {"team-a/x"}}},
+		},
+		"DuplicateIdentity": {
+			reason: "Two inputs of one group, kind, namespace and name fail rather than one silently winning.",
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "b", true), inputs: []*un.Unstructured{testInput("XBucket", "x", nil), testInput("XBucket", "x", nil)}},
+			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), which another --resource-file input also names; pass each composite once`},
+		},
+		"SameNameOtherNamespace": {
+			reason: "Inputs that differ only in namespace are distinct.",
+			args: args{xrd: xrd("apiextensions.crossplane.io/v2", "b", true), inputs: []*un.Unstructured{testInput("XBucket", "x", nil), func() *un.Unstructured {
+				x := testInput("XBucket", "x", nil)
+				x.SetNamespace("other")
+				return x
+			}()}},
+			want: want{assigned: map[string][]string{"b": {"ctx-ns/x", "other/x"}}},
 		},
 		"NoXRDFailsFast": {
 			reason: "An input no cluster XRD defines fails the check, worded for --resource-file.",
-			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "", true), input: testInput("Other", "o", nil)},
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "", true), inputs: []*un.Unstructured{testInput("Other", "o", nil)}},
 			want:   want{err: `--resource-file inputs include Other "o" (example.org/v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)`},
 		},
 	}
@@ -261,7 +298,7 @@ func TestAssignInputs(t *testing.T) {
 			}
 			defs := &testutils.MockDefinitionClient{GetXRDForXRFn: lookup("XBucket"), GetXRDForClaimFn: lookup("Bucket")}
 			into := map[string][]*un.Unstructured{}
-			err := assignInputs(context.Background(), defs, "ctx-ns", []*un.Unstructured{a, b}, []*un.Unstructured{tc.args.input}, into)
+			err := assignInputs(context.Background(), defs, cmpstd.Or(tc.args.ns, "ctx-ns"), []*un.Unstructured{a, b}, tc.args.inputs, into)
 			gotErr := ""
 			if err != nil {
 				gotErr = err.Error()

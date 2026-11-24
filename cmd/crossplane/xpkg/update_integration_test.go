@@ -24,8 +24,11 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -60,7 +63,8 @@ func runUpdate(t *testing.T, args ...string) (string, error) {
 	return stdout.String(), err
 }
 
-// TestUpdateIntegration updates packages in a real API server and checks the source read back from it.
+// TestUpdateIntegration updates packages in a real API server and checks the spec read back from it: only the source
+// should change.
 func TestUpdateIntegration(t *testing.T) {
 	cluster := startInstallCluster(t)
 
@@ -70,7 +74,6 @@ func TestUpdateIntegration(t *testing.T) {
 	}
 
 	type want struct {
-		obj    v1.Package
 		source string
 		stdout string
 		err    error
@@ -82,13 +85,17 @@ func TestUpdateIntegration(t *testing.T) {
 		want   want
 	}{
 		"Provider": {
-			reason: "A provider's package source is replaced with the new reference.",
+			reason: "A provider's package source is replaced with the new reference, and its other settings are kept.",
 			args: args{
-				existing: &v1.Provider{Name: "provider-a", Spec: v1.ProviderSpec{PackageSpec: v1.PackageSpec{Package: "xpkg.crossplane.io/acme/prov:v1.0.0"}}},
+				existing: &v1.Provider{Name: "provider-a", Spec: v1.ProviderSpec{PackageSpec: v1.PackageSpec{
+					Package:                     "xpkg.crossplane.io/acme/prov:v1.0.0",
+					RevisionHistoryLimit:        ptr.To[int64](3),
+					IgnoreCrossplaneConstraints: ptr.To(true),
+					PackagePullPolicy:           ptr.To(corev1.PullAlways),
+				}}},
 				update:   []string{"provider", "xpkg.crossplane.io/acme/prov:v2.0.0", "provider-a"},
 			},
 			want: want{
-				obj:    &v1.Provider{Name: "provider-a"},
 				source: "xpkg.crossplane.io/acme/prov:v2.0.0",
 				stdout: "provider/provider-a updated\n",
 			},
@@ -100,7 +107,6 @@ func TestUpdateIntegration(t *testing.T) {
 				update:   []string{"configuration", "xpkg.crossplane.io/acme/config:v1.1.0", "config-a"},
 			},
 			want: want{
-				obj:    &v1.Configuration{Name: "config-a"},
 				source: "xpkg.crossplane.io/acme/config:v1.1.0",
 				stdout: "configuration/config-a updated\n",
 			},
@@ -112,7 +118,6 @@ func TestUpdateIntegration(t *testing.T) {
 				update:   []string{"function", "xpkg.crossplane.io/acme/fn:v1.2.0"},
 			},
 			want: want{
-				obj:    &v1.Function{Name: "acme-fn"},
 				source: "xpkg.crossplane.io/acme/fn:v1.2.0",
 				stdout: "function/acme-fn updated\n",
 			},
@@ -156,14 +161,32 @@ func TestUpdateIntegration(t *testing.T) {
 				t.Errorf("\n%s\nstdout: -want, +got:\n%s", tc.reason, diff)
 			}
 
-			got := tc.want.obj
+			// Create filled in the API server's defaults, so the rest of the spec should read back as created.
+			want := tc.args.existing.DeepCopyObject().(v1.Package)
+			want.SetSource(tc.want.source)
+
+			got := tc.args.existing.DeepCopyObject().(v1.Package)
 			if err := cluster.Client.Get(cluster.Context, client.ObjectKeyFromObject(got), got); err != nil {
 				t.Fatalf("\n%s\nGet(%s): %v", tc.reason, got.GetName(), err)
 			}
 
-			if diff := cmp.Diff(tc.want.source, got.GetSource()); diff != "" {
-				t.Errorf("\n%s\nspec.package: -want, +got:\n%s", tc.reason, diff)
+			if diff := cmp.Diff(spec(t, want), spec(t, got)); diff != "" {
+				t.Errorf("\n%s\nspec: -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}
+}
+
+// spec returns pkg's spec as unstructured content, so packages of every kind compare the same way.
+func spec(t *testing.T, pkg v1.Package) map[string]any {
+	t.Helper()
+
+	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(pkg)
+	if err != nil {
+		t.Fatalf("cannot convert %s to unstructured: %v", pkg.GetName(), err)
+	}
+
+	s, _ := u["spec"].(map[string]any)
+
+	return s
 }

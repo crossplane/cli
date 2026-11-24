@@ -501,9 +501,11 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestTraceWatchIntegration watches an XR in a real API server: the producer should render its tree, then quit the
-// program once the XR is deleted. It drives watchProducer with a program that reads no input, since the program
-// watchResourceTree builds opens /dev/tty, which go test doesn't have.
+// TestTraceWatchIntegration watches an XR in a real API server: the producer should render its tree, redraw it when a
+// composed resource changes, then quit the program once the XR is deleted. It drives watchProducer with a program
+// that reads no input, since the program watchResourceTree builds opens /dev/tty, which go test doesn't have. So it
+// sets up the root lookup and watch itself, and watchResourceTree's own setup, such as its ListOptions, stays
+// untested.
 func TestTraceWatchIntegration(t *testing.T) {
 	cluster := integration.Start(t, integration.Setup{
 		CRDDirs:    []string{"testdata/integration/crds"},
@@ -564,16 +566,23 @@ func TestTraceWatchIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Watch(): %v", err)
 	}
-	defer w.Stop()
 
 	// Without a terminal the program doesn't know its size, and renders nothing until it's given one.
 	stdout := &syncBuffer{}
-	prog := tea.NewProgram(treeModel{}, tea.WithInput(nil), tea.WithOutput(stdout), tea.WithWindowSize(200, 50))
+	prog := tea.NewProgram(treeModel{}, tea.WithContext(cluster.Context), tea.WithInput(nil), tea.WithOutput(stdout),
+		tea.WithWindowSize(200, 50))
 
-	go c.watchProducer(cluster.Context, log, kClient, root, mapping, p, prog, w)
+	// Both goroutines are joined when the test ends, so neither outlives it if it fails early.
+	producerDone := make(chan struct{})
+	go func() {
+		defer close(producerDone)
+		c.watchProducer(cluster.Context, log, kClient, root, mapping, p, prog, w)
+	}()
 
 	done := make(chan error, 1)
+	progDone := make(chan struct{})
 	go func() {
+		defer close(progDone)
 		m, err := prog.Run()
 		if err == nil && m.(treeModel).err != nil {
 			err = m.(treeModel).err
@@ -581,17 +590,64 @@ func TestTraceWatchIntegration(t *testing.T) {
 		done <- err
 	}()
 
-	// The tree should be rendered before the XR is deleted.
-	deadline := time.After(30 * time.Second)
-	for !strings.Contains(stdout.String(), "NopResource/standalone-xr-only") {
-		select {
-		case err := <-done:
-			t.Fatalf("program quit before rendering the tree: %v\nstdout:\n%s", err, stdout.String())
-		case <-deadline:
-			t.Fatalf("watch didn't render the tree in time; stdout:\n%s", stdout.String())
-		case <-time.After(100 * time.Millisecond):
+	t.Cleanup(func() {
+		prog.Kill()
+		<-progDone
+		w.Stop()
+		<-producerDone
+	})
+
+	// waitFor waits for stdout to contain each of want, failing if the program quits or the deadline passes first.
+	waitFor := func(what string, want ...string) {
+		t.Helper()
+
+		deadline := time.After(30 * time.Second)
+		for {
+			out := stdout.String()
+			if !slices.ContainsFunc(want, func(s string) bool { return !strings.Contains(out, s) }) {
+				return
+			}
+
+			select {
+			case err := <-done:
+				t.Fatalf("program quit before %s: %v\nstdout:\n%s", what, err, out)
+			case <-deadline:
+				t.Fatalf("watch didn't %s in time; stdout:\n%s", what, out)
+			case <-time.After(100 * time.Millisecond):
+			}
 		}
 	}
+
+	waitFor("render the tree", "XNop/standalone-xr", "NopResource/standalone-xr-only")
+
+	// A change to a composed resource should be redrawn. No watch covers it, so the periodic refresh picks it up.
+	child := &un.Unstructured{}
+	child.SetAPIVersion("nop.example.org/v1alpha1")
+	child.SetKind("NopResource")
+	if err := cluster.Client.Get(cluster.Context, client.ObjectKey{Name: "standalone-xr-only"}, child); err != nil {
+		t.Fatalf("cannot get the composed resource: %v", err)
+	}
+
+	conds, _, _ := un.NestedSlice(child.Object, "status", "conditions")
+	for i, cond := range conds {
+		if cond, ok := cond.(map[string]any); ok && cond["type"] == "Ready" {
+			cond["status"] = "False"
+			cond["reason"] = "Unavailable"
+			cond["message"] = "watch-redraw-check"
+			conds[i] = cond
+		}
+	}
+
+	if err := un.SetNestedSlice(child.Object, conds, "status", "conditions"); err != nil {
+		t.Fatalf("cannot set the composed resource's conditions: %v", err)
+	}
+
+	// The NopResource CRD has no status subresource, so its status is updated with the rest of it.
+	if err := cluster.Client.Update(cluster.Context, child); err != nil {
+		t.Fatalf("cannot update the composed resource's status: %v", err)
+	}
+
+	waitFor("redraw the changed tree", "Unavailable: watch-redraw-check")
 
 	if err := cluster.Client.Delete(cluster.Context, root.Unstructured.DeepCopy()); err != nil {
 		t.Fatalf("cannot delete the XR: %v", err)

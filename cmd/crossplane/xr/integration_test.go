@@ -1798,11 +1798,7 @@ Summary: 2 modified, 2 removed`,
 			FieldManagerApplies: []integration.FieldManagerApply{
 				{File: "testdata/diff/resources/existing-claim-defaulted-fields-other-manager.yaml", FieldManager: "platform-operator"},
 			},
-			// The claim was created, not applied, so its managedFields record no applier but
-			// platform-operator, which would otherwise be inferred as the one applying the manifest. Say
-			// it is client-side applied, by kubectl, which owns none of platform-operator's fields.
-			FieldManager: "kubectl-client-side-apply",
-			InputFiles:   []string{"testdata/diff/modified-claim-omitting-defaulted-fields.yaml"},
+			InputFiles: []string{"testdata/diff/modified-claim-omitting-defaulted-fields.yaml"},
 			ExpectedStructured: simtest.Expect().
 				// As in ModifiedClaimShowsDiff: the composed resource belongs to the claim's backing XR (#534).
 				WithNoWarnings().

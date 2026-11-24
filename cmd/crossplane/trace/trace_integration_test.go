@@ -26,13 +26,18 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
@@ -40,7 +45,9 @@ import (
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	"github.com/crossplane/cli/v2/cmd/crossplane/trace/internal/printer"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
+	"github.com/crossplane/cli/v2/pkg/resource"
 )
 
 func TestMain(m *testing.M) {
@@ -472,4 +479,130 @@ func trimLines(s string) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// syncBuffer is a bytes.Buffer safe to read while watch mode writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
+// TestTraceWatchIntegration watches an XR in a real API server: the producer should render its tree, then quit the
+// program once the XR is deleted. It drives watchProducer with a program that reads no input, since the program
+// watchResourceTree builds opens /dev/tty, which go test doesn't have.
+func TestTraceWatchIntegration(t *testing.T) {
+	cluster := integration.Start(t, integration.Setup{
+		CRDDirs:    []string{"testdata/integration/crds"},
+		SetupFiles: []string{"testdata/integration/setup.yaml"},
+		CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+			integration.Composes("testdata/integration/xr-standalone.yaml",
+				"testdata/integration/composed-standalone.yaml"),
+		},
+		XRDAPIVersion: integration.XRDV1,
+	})
+
+	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(kubeconfig, cluster.Kubeconfig, 0o600); err != nil {
+		t.Fatalf("cannot write kubeconfig: %v", err)
+	}
+
+	t.Setenv("KUBECONFIG", kubeconfig)
+
+	// Parse the flags so every one has its default.
+	var c Cmd
+
+	parser, err := kong.New(&c)
+	if err != nil {
+		t.Fatalf("kong.New(): %v", err)
+	}
+
+	if _, err := parser.Parse([]string{"xnop", "standalone-xr"}); err != nil {
+		t.Fatalf("Parse(): %v", err)
+	}
+
+	log := logging.NewNopLogger()
+
+	_, kClient, rmapper, err := c.setupKubeClient(log)
+	if err != nil {
+		t.Fatalf("setupKubeClient(): %v", err)
+	}
+
+	mapping, err := rmapper.RESTMapping(schema.GroupKind{Group: "trace.example.org", Kind: "XNop"})
+	if err != nil {
+		t.Fatalf("RESTMapping(): %v", err)
+	}
+
+	p, err := printer.New(c.Output)
+	if err != nil {
+		t.Fatalf("printer.New(): %v", err)
+	}
+
+	root := resource.GetResource(cluster.Context, kClient, &corev1.ObjectReference{
+		APIVersion: "trace.example.org/v1alpha1", Kind: "XNop", Name: "standalone-xr",
+	})
+	if root.Error != nil {
+		t.Fatalf("GetResource(): %v", root.Error)
+	}
+
+	w, err := kClient.Watch(cluster.Context, root.Unstructured.DeepCopy(), &client.ListOptions{
+		FieldSelector: fields.OneTermEqualSelector("metadata.name", "standalone-xr"),
+	})
+	if err != nil {
+		t.Fatalf("Watch(): %v", err)
+	}
+	defer w.Stop()
+
+	// Without a terminal the program doesn't know its size, and renders nothing until it's given one.
+	stdout := &syncBuffer{}
+	prog := tea.NewProgram(treeModel{}, tea.WithInput(nil), tea.WithOutput(stdout), tea.WithWindowSize(200, 50))
+
+	go c.watchProducer(cluster.Context, log, kClient, root, mapping, p, prog, w)
+
+	done := make(chan error, 1)
+	go func() {
+		m, err := prog.Run()
+		if err == nil && m.(treeModel).err != nil {
+			err = m.(treeModel).err
+		}
+		done <- err
+	}()
+
+	// The tree should be rendered before the XR is deleted.
+	deadline := time.After(30 * time.Second)
+	for !strings.Contains(stdout.String(), "NopResource/standalone-xr-only") {
+		select {
+		case err := <-done:
+			t.Fatalf("program quit before rendering the tree: %v\nstdout:\n%s", err, stdout.String())
+		case <-deadline:
+			t.Fatalf("watch didn't render the tree in time; stdout:\n%s", stdout.String())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	if err := cluster.Client.Delete(cluster.Context, root.Unstructured.DeepCopy()); err != nil {
+		t.Fatalf("cannot delete the XR: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("program: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("watch didn't quit after the XR was deleted")
+	}
 }

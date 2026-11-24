@@ -494,7 +494,7 @@ func (c *Runner) notes() []string {
 // renderReport does.
 func (c *Runner) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport, runErr error) (bool, error) {
 	plans := c.providerPlans()
-	return c.renderReport(k, logger, runErr, FromXRReport(r, plans, c.keep), r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
+	return c.renderReport(k, logger, runErr, FromXRReport(r, plans, c.keep), nil, r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
 		// Annotated even without plans, so a Secret's values are redacted.
 		r = AnnotateXRReport(r, plans)
 		return renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
@@ -505,7 +505,11 @@ func (c *Runner) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XR
 // selects, as renderReport does.
 func (c *Runner) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput, runErr error) (bool, error) {
 	plans := c.providerPlans()
-	return c.renderReport(k, logger, runErr, FromCompReport(o, plans, c.keep), o.HasChanges(), dt.CompDryRunWarnings(o), func(opts renderer.DiffOptions) error {
+	var hints []string
+	if c.hintNewCompositions {
+		hints = newCompositionNotes(o)
+	}
+	return c.renderReport(k, logger, runErr, FromCompReport(o, plans, c.keep), hints, o.HasChanges(), dt.CompDryRunWarnings(o), func(opts renderer.DiffOptions) error {
 		opts.MinimizeComposition = c.sel.MinimizeComposition
 		// Annotated even without plans, so a Secret's values are redacted.
 		o = AnnotateCompReport(o, plans)
@@ -517,8 +521,9 @@ func (c *Runner) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.
 // human diff for diff, and res otherwise, followed by warnings. It returns
 // whether the run changed anything, provider plans included, and runErr
 // with any render failure joined to it, so neither is lost. changed is
-// whether the report itself has changes.
-func (c *Runner) renderReport(k *kong.Context, logger logging.Logger, runErr error, res Result, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (bool, error) {
+// whether the report itself has changes. hints are notes appended after the
+// result's own; -o diff, which has no notes, prints them to stderr.
+func (c *Runner) renderReport(k *kong.Context, logger logging.Logger, runErr error, res Result, hints []string, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (bool, error) {
 	opts := c.diffOptions(k)
 	plans := c.providerPlans()
 	if plans != nil {
@@ -529,6 +534,12 @@ func (c *Runner) renderReport(k *kong.Context, logger logging.Logger, runErr err
 		res.Notes = n
 	}
 	c.noteNoServers(k, n)
+	res.Notes = append(res.Notes, hints...)
+	if c.Output == string(renderer.OutputFormatDiff) {
+		for _, h := range hints {
+			_, _ = fmt.Fprintln(k.Stderr, h)
+		}
+	}
 	changed = changed || (plans != nil && res.Summary.Changes() > 0)
 
 	var err error
@@ -602,6 +613,9 @@ type Runner struct {
 	noServersNoted bool
 	// sel is Inputs.Selection, which run copies in; zero without one.
 	sel CompositionFlags
+	// hintNewCompositions is set for project simulate without
+	// --resource-file, to note each new Composition nothing would render.
+	hintNewCompositions bool
 }
 
 // NewRunner returns a Runner configured by f.
@@ -618,6 +632,7 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 		c.sel = *in.Selection
 	}
 	project := in.Build != nil
+	c.hintNewCompositions = hintsNewCompositions(in)
 	warnIgnoredFlags(k.Stderr, setFlags(k), c.SkipPlan, project)
 
 	if err := docker.Check(sigCtx); err != nil {
@@ -742,6 +757,13 @@ func warnIgnoredFlags(stderr io.Writer, set map[string]bool, skipPlan, project b
 	if !project && skipPlan && set["cache-dir"] {
 		_, _ = fmt.Fprintln(stderr, "Warning: ignoring --cache-dir; with --skip-plan and no project file there is nothing to cache.")
 	}
+}
+
+// hintsNewCompositions reports whether a run of in notes each new
+// Composition nothing would render: only project simulate, and only without
+// --resource-file, which renders them.
+func hintsNewCompositions(in *Inputs) bool {
+	return in.Build != nil && len(in.ResourceFile) == 0
 }
 
 // Built is a built project: what Inputs.Build returns.

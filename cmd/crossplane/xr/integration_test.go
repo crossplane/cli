@@ -1799,10 +1799,10 @@ Summary: 2 modified, 2 removed`,
 				{File: "testdata/diff/resources/existing-claim-defaulted-fields-other-manager.yaml", FieldManager: "platform-operator"},
 			},
 			InputFiles: []string{"testdata/diff/modified-claim-omitting-defaulted-fields.yaml"},
-			// The claim was created, not applied, so its author (xr.test, the test binary's default field
-			// manager) is named explicitly. It has no Apply entry, so it is a client-side applier, and with no
-			// last-applied annotation it removes nothing. This case pins #503 and #534, not applier inference.
-			FieldManager: "xr.test",
+			// The claim was created, not applied, so its author (the harness's SetupFieldManager) is named
+			// explicitly. It has no Apply entry, so it is a client-side applier, and with no last-applied
+			// annotation it removes nothing. This case pins #503 and #534, not applier inference.
+			FieldManager: integration.SetupFieldManager,
 			ExpectedStructured: simtest.Expect().
 				// As in ModifiedClaimShowsDiff: the composed resource belongs to the claim's backing XR (#534).
 				WithNoWarnings().

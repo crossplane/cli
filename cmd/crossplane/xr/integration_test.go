@@ -2043,7 +2043,8 @@ Summary: 2 modified, 2 removed`,
 			ExpectedExitCode: dp.ExitCodeDiffDetected,
 		},
 		// FieldDroppedFromUserAppliedXRIsReportedRemoved for a claim: the claim is dry-run applied as the
-		// manager that server-side applied it, so the field its manifest drops is shown removed.
+		// manager that server-side applied it, so the field its manifest drops is shown removed. The claim
+		// is applied, not created as a setup file is, since a create would record an imperative writer.
 		"FieldDroppedFromUserAppliedClaimIsReportedRemoved": {
 			Reason:       "A field the claim's applying manager owns and its manifest omits is shown removed",
 			OutputFormat: "json",
@@ -2052,7 +2053,6 @@ Summary: 2 modified, 2 removed`,
 				"testdata/diff/resources/claim-xrd.yaml",
 				"testdata/diff/resources/claim-composition.yaml",
 				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
-				"testdata/diff/resources/existing-claim.yaml",
 			},
 			CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
 				integration.Composes(
@@ -2063,6 +2063,7 @@ Summary: 2 modified, 2 removed`,
 			XrdAPIVersion: integration.XRDV1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
 			FieldManagerApplies: []integration.FieldManagerApply{
 				{File: "testdata/diff/resources/existing-claim-user-applied.yaml", FieldManager: "argocd-controller"},
+				{File: "testdata/diff/resources/existing-claim-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
 			},
 			InputFiles: []string{"testdata/diff/modified-claim.yaml"},
 			ExpectedStructured: simtest.Expect().

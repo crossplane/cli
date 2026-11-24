@@ -18,11 +18,16 @@ These flags tune the diff:
   inferred from each one's `managedFields`: the applier is its only field
   manager with an `Apply` entry, other than Crossplane's, or client-side apply
   if it has only a `kubectl.kubernetes.io/last-applied-configuration`
-  annotation. With more than one candidate, the command warns that dropped
-  fields may not be shown removed. `--server-side` alone picks the only
-  server-side applier; `--server-side --field-manager M` server-side applies
-  as M; `--server-side=false` is client-side apply; `--field-manager M` alone
-  is server-side apply as M if M has an `Apply` entry, otherwise client-side.
+  annotation. With more than one candidate, or an imperative writer (a
+  manager, other than Crossplane's, that wrote it with an `Update`, such as
+  `kubectl create` or `edit` or a controller, on an object without that
+  annotation), the command warns that dropped fields may not be shown
+  removed. `--server-side` alone picks the only server-side applier, unless
+  an imperative writer wrote it; `--server-side --field-manager M`
+  server-side applies as M; `--server-side=false` is client-side apply;
+  `--field-manager M` alone is server-side apply as M if M has an `Apply`
+  entry, otherwise client-side. An explicit `--field-manager` is used even
+  when an imperative writer wrote the resource.
   They only affect the composite resources and claims `xr simulate` takes as
   input, never composed resources.
 - `--eventual-state` shows the state after all reconciliation cycles complete.

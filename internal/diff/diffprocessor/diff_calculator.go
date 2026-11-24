@@ -195,7 +195,7 @@ func (c *DefaultDiffCalculator) userApplierFieldOwner(ctx context.Context, fallb
 		return fallback
 	}
 
-	c.logger.Debug("Resolved applier", "resource", resourceID, "mode", a.Mode, "fieldManager", a.FieldManager, "candidates", a.Candidates, "clientSide", a.ClientSide)
+	c.logger.Debug("Resolved applier", "resource", resourceID, "mode", a.Mode, "fieldManager", a.FieldManager, "candidates", a.Candidates, "clientSide", a.ClientSide, "imperativeWriters", a.ImperativeWriters)
 
 	switch a.Mode {
 	case plan.ApplyServerSide:

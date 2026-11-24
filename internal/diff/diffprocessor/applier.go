@@ -60,7 +60,8 @@ func applierFrom(ctx context.Context) (plan.Applier, bool) {
 // whose cluster copy is live, when it is user-supplied: a top-level input of a context
 // withUserSupplied marked, with a cluster copy to apply to. A nested XR (parentXR set) is composed, so
 // its context carries no applier, even when its parent's does. When the applier cannot be told and
-// live records one, a warning says so: the diff then may not show fields the manifest drops.
+// live records one, a warning names the appliers and imperative writers it records: the diff then may
+// not show fields the manifest drops.
 func (p *DefaultDiffProcessor) withApplier(ctx context.Context, live *un.Unstructured, parentXR *cmp.Unstructured, resourceID string) context.Context {
 	supplied, _ := ctx.Value(userSuppliedKey{}).(bool)
 	if parentXR != nil || !supplied || live == nil {
@@ -69,13 +70,20 @@ func (p *DefaultDiffProcessor) withApplier(ctx context.Context, live *un.Unstruc
 
 	a := plan.ResolveApplier(live, p.config.Applier)
 	if a.Mode == plan.ApplyUndetermined && a.HasCandidates() {
+		msg := "Cannot tell which field manager applies this resource"
+		wctx := map[string]string{
+			warningContextResource: resourceID,
+			"candidates":           candidateAppliers(a),
+		}
+		if len(a.ImperativeWriters) > 0 {
+			msg += ", since imperative writers (managers that updated it without applying, such as kubectl create or edit, or a controller) wrote it too"
+			wctx["imperativeWriters"] = strings.Join(a.ImperativeWriters, ", ")
+		}
+
 		p.config.Advisories.Raise(dt.OutputWarning{
-			Message: "Cannot tell which field manager applies this resource, so fields its manifest drops may not be shown as removed; " +
+			Message: msg + ", so fields its manifest drops may not be shown as removed; " +
 				"name the applier with --field-manager, and --server-side or --server-side=false",
-			Context: map[string]string{
-				warningContextResource: resourceID,
-				"candidates":           candidateAppliers(a),
-			},
+			Context: wctx,
 		})
 	}
 

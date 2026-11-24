@@ -61,8 +61,41 @@ func TestResolveApplier(t *testing.T) {
 		},
 		"OneServerSideApplier": {
 			reason: "With no flags, the only candidate is the applier.",
-			args:   args{live: live(false, apply("argocd-controller"), update("kube-controller-manager"))},
+			args:   args{live: live(false, apply("argocd-controller"))},
 			want:   Applier{Mode: ApplyServerSide, FieldManager: "argocd-controller", Candidates: []string{"argocd-controller"}},
+		},
+		"ServerSideApplierAndCrossplaneManagers": {
+			reason: "Crossplane's own Updates and Applies make no imperative writer, so they leave the only server-side applier inferred.",
+			args: args{live: live(false,
+				apply("argocd-controller"),
+				update("crossplane"),
+				apply("apiextensions.crossplane.io/composed/0f9a"),
+				update("apiextensions.crossplane.io/claim"),
+			)},
+			want: Applier{Mode: ApplyServerSide, FieldManager: "argocd-controller", Candidates: []string{"argocd-controller"}},
+		},
+		"CreatedThenServerSideApplied": {
+			reason: "An object created imperatively, then server-side applied by another manager, leaves the applier undetermined: that applier may only have set a few fields.",
+			args:   args{live: live(false, update("kubectl-create"), apply("platform-operator"), update("kubectl-create"))},
+			want:   Applier{Mode: ApplyUndetermined, Candidates: []string{"platform-operator"}, ImperativeWriters: []string{"kubectl-create"}},
+		},
+		"ServerSideCreatedThenServerSideApplied": {
+			reason: "--server-side alone also leaves the applier undetermined when an imperative writer wrote the object.",
+			args:   args{live: live(false, update("kubectl-create"), apply("platform-operator")), flags: ApplierFlags{ServerSide: new(true)}},
+			want:   Applier{Mode: ApplyUndetermined, Candidates: []string{"platform-operator"}, ImperativeWriters: []string{"kubectl-create"}},
+		},
+		"FieldManagerOverridesImperativeWriter": {
+			reason: "--field-manager M names the applier even when an imperative writer wrote the object.",
+			args:   args{live: live(false, update("kubectl-create"), apply("platform-operator")), flags: ApplierFlags{FieldManager: "platform-operator"}},
+			want:   Applier{Mode: ApplyServerSide, FieldManager: "platform-operator", Candidates: []string{"platform-operator"}, ImperativeWriters: []string{"kubectl-create"}},
+		},
+		"SubresourceUpdatesAreNoImperativeWriters": {
+			reason: "An Update to a subresource, such as a controller writing status, does not write the manifest's fields.",
+			args: args{live: live(false,
+				apply("argocd-controller"),
+				metav1.ManagedFieldsEntry{Manager: "kube-controller-manager", Operation: metav1.ManagedFieldsOperationUpdate, Subresource: "status"},
+			)},
+			want: Applier{Mode: ApplyServerSide, FieldManager: "argocd-controller", Candidates: []string{"argocd-controller"}},
 		},
 		"CrossplaneManagersAreNotCandidates": {
 			reason: "Crossplane's own managers and simulate's never apply a user's manifest.",
@@ -86,11 +119,16 @@ func TestResolveApplier(t *testing.T) {
 		"OnlyUpdates": {
 			reason: "Managers that only Update are no appliers, so there is no candidate.",
 			args:   args{live: live(false, update("kubectl-edit"))},
-			want:   Applier{Mode: ApplyUndetermined},
+			want:   Applier{Mode: ApplyUndetermined, ImperativeWriters: []string{"kubectl-edit"}},
 		},
 		"OneClientSideApplier": {
 			reason: "With no flags, a last-applied-configuration annotation alone makes client-side apply the applier, whatever its manager is called.",
 			args:   args{live: live(true, update("argocd-controller"))},
+			want:   Applier{Mode: ApplyClientSide, ClientSide: true},
+		},
+		"ClientSideApplierUpdatesAreNoImperativeWriters": {
+			reason: "Client-side apply records Updates, kubectl's or Argo CD's, so on an object with the annotation they are no imperative writers.",
+			args:   args{live: live(true, update("kubectl-client-side-apply"), update("argocd-controller"), update("crossplane"))},
 			want:   Applier{Mode: ApplyClientSide, ClientSide: true},
 		},
 		"TwoServerSideAppliers": {

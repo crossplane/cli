@@ -62,6 +62,11 @@ type Applier struct {
 	Candidates []string
 	// ClientSide reports that the live object records a client-side apply.
 	ClientSide bool
+	// ImperativeWriters are the field managers that wrote the live object
+	// with an Update rather than an apply, sorted. Only an object without
+	// LastAppliedConfigAnnotation has them, since client-side apply records
+	// Updates.
+	ImperativeWriters []string
 }
 
 // HasCandidates reports whether the live object records any applier. With
@@ -78,9 +83,17 @@ func (a Applier) HasCandidates() bool {
 // records an Update as argocd-controller, say), and does not change what it
 // removes.
 //
-//   - No flags: the only candidate, if there is exactly one.
+// An imperative writer is a field manager, other than Crossplane's own and
+// those of subresources, with an Update entry on an object without
+// LastAppliedConfigAnnotation: kubectl create or edit, a controller, or an
+// API client. A lone server-side applier on such an object may only have set
+// a few of its fields, so an imperative writer stops the applier being
+// inferred.
+//
+//   - No flags: the only candidate, if there is exactly one and no imperative
+//     writer.
 //   - --server-side alone: the only server-side candidate, if there is
-//     exactly one.
+//     exactly one and no imperative writer.
 //   - --server-side --field-manager M: server-side apply as M.
 //   - --server-side=false, with or without --field-manager: client-side apply.
 //   - --field-manager M alone: server-side apply as M if M has an Apply entry,
@@ -97,15 +110,23 @@ func ResolveApplier(live *unstructured.Unstructured, flags ApplierFlags) Applier
 
 	applies := false
 	for _, e := range live.GetManagedFields() {
-		if e.Subresource != "" || e.Operation != metav1.ManagedFieldsOperationApply {
+		if e.Subresource != "" {
 			continue
 		}
-		applies = applies || e.Manager == flags.FieldManager
-		if !crossplaneManager(e.Manager) && !slices.Contains(a.Candidates, e.Manager) {
-			a.Candidates = append(a.Candidates, e.Manager)
+		switch e.Operation {
+		case metav1.ManagedFieldsOperationApply:
+			applies = applies || e.Manager == flags.FieldManager
+			if !crossplaneManager(e.Manager) && !slices.Contains(a.Candidates, e.Manager) {
+				a.Candidates = append(a.Candidates, e.Manager)
+			}
+		case metav1.ManagedFieldsOperationUpdate:
+			if !a.ClientSide && !crossplaneManager(e.Manager) && !slices.Contains(a.ImperativeWriters, e.Manager) {
+				a.ImperativeWriters = append(a.ImperativeWriters, e.Manager)
+			}
 		}
 	}
 	slices.Sort(a.Candidates)
+	slices.Sort(a.ImperativeWriters)
 
 	switch {
 	case flags.ServerSide != nil && !*flags.ServerSide:
@@ -114,7 +135,7 @@ func ResolveApplier(live *unstructured.Unstructured, flags ApplierFlags) Applier
 		a.Mode, a.FieldManager = ApplyServerSide, flags.FieldManager
 	case flags.FieldManager != "":
 		a.Mode = ApplyClientSide
-	case len(a.Candidates) == 1 && (flags.ServerSide != nil || !a.ClientSide):
+	case len(a.Candidates) == 1 && len(a.ImperativeWriters) == 0 && (flags.ServerSide != nil || !a.ClientSide):
 		a.Mode, a.FieldManager = ApplyServerSide, a.Candidates[0]
 	case len(a.Candidates) == 0 && a.ClientSide && flags.ServerSide == nil:
 		a.Mode = ApplyClientSide

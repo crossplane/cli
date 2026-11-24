@@ -32,6 +32,12 @@ Simulate two composite resources in different namespaces:
 crossplane project simulate --name=team-a/my-database --name=team-b/my-database
 ```
 
+Preview what a new Composition would create for a composite resource file:
+
+```shell
+crossplane project simulate --resource-file=examples/my-database.yaml
+```
+
 Print the plan as JSON:
 
 ```shell

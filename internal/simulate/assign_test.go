@@ -54,7 +54,8 @@ func TestAssignComposites(t *testing.T) {
 			if in.GetKind() == "Other" {
 				return xrdInfo{}, errors.New("boom")
 			}
-			return xrdInfo{CompositeGVK: xr, DefaultComposition: def}, nil
+			// Claims, and XRs of kind XLegacy (a v1 XRD), use legacy paths.
+			return xrdInfo{CompositeGVK: xr, DefaultComposition: def, Legacy: in.GetKind() != "XBucket"}, nil
 		}
 	}
 	a := testComp("a", "XBucket", map[string]string{"tier": "gold"})
@@ -84,6 +85,26 @@ func TestAssignComposites(t *testing.T) {
 			reason: "A claim's spec.compositionRef picks the Composition.",
 			args:   args{comps: []*un.Unstructured{a, b}, input: testInput("Bucket", "c", map[string]any{"compositionRef": map[string]any{"name": "a"}})},
 			want:   want{comp: "a"},
+		},
+		"V2PrefersCrossplanePath": {
+			reason: "A v2 XR's spec.crossplane.compositionRef wins over spec.compositionRef.",
+			args:   args{comps: []*un.Unstructured{a, b}, input: testInput("XBucket", "x", map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "b"}}, "compositionRef": map[string]any{"name": "a"}})},
+			want:   want{comp: "b"},
+		},
+		"V2FallsBackToSpecPath": {
+			reason: "A v2 XR's spec.compositionRef is read when spec.crossplane has none, as the engine does.",
+			args:   args{comps: []*un.Unstructured{a, b}, input: testInput("XBucket", "x", map[string]any{"compositionRef": map[string]any{"name": "b"}})},
+			want:   want{comp: "b"},
+		},
+		"LegacyIgnoresCrossplanePath": {
+			reason: "A v1 XRD's XR reads spec.compositionRef only; spec.crossplane is not its field.",
+			args:   args{comps: []*un.Unstructured{a, b}, input: testInput("XLegacy", "x", map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "b"}}, "compositionRef": map[string]any{"name": "a"}})},
+			want:   want{comp: "a"},
+		},
+		"ClaimIgnoresCrossplaneSelector": {
+			reason: "A claim reads spec.compositionSelector only.",
+			args:   args{comps: []*un.Unstructured{a, b}, input: testInput("Bucket", "c", map[string]any{"crossplane": map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"tier": "gold"}}}, "compositionSelector": map[string]any{"matchLabels": map[string]any{"tier": "silver"}}})},
+			want:   want{comp: "b"},
 		},
 		"CompositionRefNotInProject": {
 			reason: "A compositionRef to a Composition the project doesn't build, or of another type, fails.",

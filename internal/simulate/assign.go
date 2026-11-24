@@ -32,6 +32,10 @@ type xrdInfo struct {
 	CompositeGVK schema.GroupVersionKind
 	// DefaultComposition is spec.defaultCompositionRef.name, if set.
 	DefaultComposition string
+	// Legacy is true for a claim or an XR whose XRD is
+	// apiextensions.crossplane.io/v1: its Composition fields are under spec
+	// only, not spec.crossplane.
+	Legacy bool
 }
 
 // assignComposites assigns each input to exactly one of comps (by name) the
@@ -73,7 +77,7 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 		return "", rejectInput(in, FlagResourceFile, fmt.Sprintf("whose %s %q is not a project Composition composing %s", field, name, xrd.CompositeGVK.Kind), "")
 	}
 
-	ref, err := crossplaneField[string](in, un.NestedString, "compositionRef", "name")
+	ref, err := crossplaneField[string](in, xrd.Legacy, un.NestedString, "compositionRef", "name")
 	if err != nil {
 		return "", err
 	}
@@ -81,7 +85,7 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 		return byName(ref, "compositionRef")
 	}
 
-	sel, err := crossplaneField[map[string]string](in, un.NestedStringMap, "compositionSelector", "matchLabels")
+	sel, err := crossplaneField[map[string]string](in, xrd.Legacy, un.NestedStringMap, "compositionSelector", "matchLabels")
 	if err != nil {
 		return "", err
 	}
@@ -119,11 +123,17 @@ func sole(in *un.Unstructured, match []*un.Unstructured, none string) (string, e
 	return "", rejectInput(in, FlagResourceFile, "which matches several project Compositions ("+strings.Join(names, ", ")+")", "set its compositionRef to pick one")
 }
 
-// crossplaneField reads field at spec.crossplane.<path> (v2 XR) or, if not
-// set there, spec.<path> (v1 XR and claims). A value of the wrong type fails.
-func crossplaneField[T any](in *un.Unstructured, get func(map[string]any, ...string) (T, bool, error), path ...string) (T, error) {
+// crossplaneField reads field at spec.<path> if legacy, otherwise at
+// spec.crossplane.<path> or, if not set there, spec.<path>, as the engine does
+// (see getCrossplaneRefPaths in internal/diff/client/crossplane). A value of
+// the wrong type fails.
+func crossplaneField[T any](in *un.Unstructured, legacy bool, get func(map[string]any, ...string) (T, bool, error), path ...string) (T, error) {
 	var zero T
-	for _, p := range [][]string{append([]string{"spec", "crossplane"}, path...), append([]string{"spec"}, path...)} {
+	paths := [][]string{append([]string{"spec", "crossplane"}, path...), append([]string{"spec"}, path...)}
+	if legacy {
+		paths = paths[1:]
+	}
+	for _, p := range paths {
 		v, found, err := get(in.Object, p...)
 		if err != nil {
 			return zero, rejectInput(in, FlagResourceFile, fmt.Sprintf("whose %s is malformed: %v", strings.Join(p, "."), err), "")

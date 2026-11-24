@@ -242,7 +242,7 @@ func (c *Runner) diffCompositions(k *kong.Context, logger logging.Logger, sp ter
 // (crossplane/cli#367).
 func (c *Runner) diffComposites(k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, progress *dp.Progress, proc dp.DiffProcessor, xp *xpclient.Clients, ns string, xrs []*un.Unstructured) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
-		if err := checkComposites(ctx, xp.Definition, ns, xrs); err != nil {
+		if err := checkComposites(ctx, xp.Definition, FlagInput, ns, xrs); err != nil {
 			return false, err
 		}
 		var report *dt.XRReport

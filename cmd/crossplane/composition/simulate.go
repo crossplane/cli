@@ -55,9 +55,9 @@ func (c *simulateCmd) Help() string {
 // Run previews the Compositions -f names against the cluster, with the
 // cluster's functions.
 func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter) error {
-	comps, err := simulate.LoadInputs(c.Input, func(r *un.Unstructured) error {
+	comps, err := simulate.LoadInputs(simulate.FlagInput, c.Input, func(r *un.Unstructured) error {
 		if r.GroupVersionKind() != apiextensionsv1.CompositionGroupVersionKind {
-			return simulate.RejectInput(r, "composition simulate takes Composition files")
+			return simulate.RejectInput(r, simulate.FlagInput, "composition simulate takes Composition files")
 		}
 		return nil
 	})

@@ -88,12 +88,12 @@ func TestAssignComposites(t *testing.T) {
 		"CompositionRefNotInProject": {
 			reason: "A compositionRef to a Composition the project doesn't build, or of another type, fails.",
 			args:   args{comps: []*un.Unstructured{a, other}, input: testInput("XBucket", "x", map[string]any{"compositionRef": map[string]any{"name": "o"}})},
-			want:   want{err: `-f inputs include XBucket "x" (example.org/v1), whose compositionRef "o" is not a project Composition composing XBucket`},
+			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose compositionRef "o" is not a project Composition composing XBucket`},
 		},
 		"CompositionRefMalformed": {
 			reason: "A compositionRef name of the wrong type fails rather than being ignored.",
 			args:   args{comps: []*un.Unstructured{a}, input: testInput("XBucket", "x", map[string]any{"compositionRef": map[string]any{"name": 3}})},
-			want:   want{err: `-f inputs include XBucket "x" (example.org/v1), whose spec.compositionRef.name is malformed: .spec.compositionRef.name accessor error: 3 is of the type int, expected string`},
+			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose spec.compositionRef.name is malformed: .spec.compositionRef.name accessor error: 3 is of the type int, expected string`},
 		},
 		"V2Selector": {
 			reason: "A v2 compositionSelector matches labels among type-matching Compositions.",
@@ -108,12 +108,12 @@ func TestAssignComposites(t *testing.T) {
 		"SelectorNoMatch": {
 			reason: "A selector matching nothing fails, even if the XRD has a default.",
 			args:   args{comps: []*un.Unstructured{a, b}, defalt: "a", input: testInput("XBucket", "x", map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"tier": "bronze"}}})},
-			want:   want{err: `-f inputs include XBucket "x" (example.org/v1), whose compositionSelector matches no project Composition composing XBucket`},
+			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose compositionSelector matches no project Composition composing XBucket`},
 		},
 		"SelectorAmbiguous": {
 			reason: "A selector matching several Compositions fails naming them.",
 			args:   args{comps: []*un.Unstructured{b, a}, input: testInput("XBucket", "x", map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{}}})},
-			want:   want{comp: "", err: `-f inputs include XBucket "x" (example.org/v1), which matches several project Compositions (a, b); set its compositionRef to pick one`},
+			want:   want{comp: "", err: `--resource-file inputs include XBucket "x" (example.org/v1), which matches several project Compositions (a, b); set its compositionRef to pick one`},
 		},
 		"DefaultCompositionRef": {
 			reason: "With no ref or selector, the XRD's defaultCompositionRef picks.",
@@ -123,7 +123,7 @@ func TestAssignComposites(t *testing.T) {
 		"DefaultNotInProject": {
 			reason: "A defaultCompositionRef the project doesn't build fails.",
 			args:   args{comps: []*un.Unstructured{a}, defalt: "z", input: testInput("XBucket", "x", map[string]any{})},
-			want:   want{err: `-f inputs include XBucket "x" (example.org/v1), whose XRD defaultCompositionRef "z" is not a project Composition composing XBucket`},
+			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose XRD defaultCompositionRef "z" is not a project Composition composing XBucket`},
 		},
 		"SoleTypeMatch": {
 			reason: "Otherwise the only Composition of the composite type picks; a claim matches via its XRD's composite.",
@@ -133,12 +133,12 @@ func TestAssignComposites(t *testing.T) {
 		"NoTypeMatch": {
 			reason: "No Composition of the type fails naming the input.",
 			args:   args{comps: []*un.Unstructured{other}, input: testInput("XBucket", "x", nil)},
-			want:   want{err: `-f inputs include XBucket "x" (example.org/v1), but no project Composition composes its type example.org/v1, Kind=XBucket`},
+			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), but no project Composition composes its type example.org/v1, Kind=XBucket`},
 		},
 		"TypeAmbiguous": {
 			reason: "Several Compositions of the type fail asking for compositionRef.",
 			args:   args{comps: []*un.Unstructured{a, b}, input: testInput("XBucket", "x", nil)},
-			want:   want{err: `-f inputs include XBucket "x" (example.org/v1), which matches several project Compositions (a, b); set its compositionRef to pick one`},
+			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), which matches several project Compositions (a, b); set its compositionRef to pick one`},
 		},
 		"LookupError": {
 			reason: "An XRD lookup error is returned.",

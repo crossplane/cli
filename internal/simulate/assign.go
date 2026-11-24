@@ -70,7 +70,7 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 				return name, nil
 			}
 		}
-		return "", rejectInput(in, fmt.Sprintf("whose %s %q is not a project Composition composing %s", field, name, xrd.CompositeGVK.Kind), "")
+		return "", rejectInput(in, FlagResourceFile, fmt.Sprintf("whose %s %q is not a project Composition composing %s", field, name, xrd.CompositeGVK.Kind), "")
 	}
 
 	ref, err := crossplaneField[string](in, un.NestedString, "compositionRef", "name")
@@ -107,7 +107,7 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 func sole(in *un.Unstructured, match []*un.Unstructured, none string) (string, error) {
 	switch len(match) {
 	case 0:
-		return "", rejectInput(in, none, "")
+		return "", rejectInput(in, FlagResourceFile, none, "")
 	case 1:
 		return match[0].GetName(), nil
 	}
@@ -116,7 +116,7 @@ func sole(in *un.Unstructured, match []*un.Unstructured, none string) (string, e
 		names = append(names, c.GetName())
 	}
 	slices.Sort(names)
-	return "", rejectInput(in, "which matches several project Compositions ("+strings.Join(names, ", ")+")", "set its compositionRef to pick one")
+	return "", rejectInput(in, FlagResourceFile, "which matches several project Compositions ("+strings.Join(names, ", ")+")", "set its compositionRef to pick one")
 }
 
 // crossplaneField reads field at spec.crossplane.<path> (v2 XR) or, if not
@@ -126,7 +126,7 @@ func crossplaneField[T any](in *un.Unstructured, get func(map[string]any, ...str
 	for _, p := range [][]string{append([]string{"spec", "crossplane"}, path...), append([]string{"spec"}, path...)} {
 		v, found, err := get(in.Object, p...)
 		if err != nil {
-			return zero, rejectInput(in, fmt.Sprintf("whose %s is malformed: %v", strings.Join(p, "."), err), "")
+			return zero, rejectInput(in, FlagResourceFile, fmt.Sprintf("whose %s is malformed: %v", strings.Join(p, "."), err), "")
 		}
 		if found {
 			return v, nil

@@ -60,15 +60,15 @@ func (c *simulateCmd) Help() string {
 func (c *simulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter) error {
 	// Anything but a Composition or project file is a candidate composite
 	// resource or claim; checkComposites confirms it against the cluster's XRDs.
-	xrs, err := simulate.LoadInputs(c.Input, func(r *un.Unstructured) error {
+	xrs, err := simulate.LoadInputs(simulate.FlagInput, c.Input, func(r *un.Unstructured) error {
 		gvk := r.GroupVersionKind()
 		switch {
 		case gvk == apiextensionsv1.CompositionGroupVersionKind:
-			return simulate.RejectInput(r, takes+"; composition simulate takes Composition files")
+			return simulate.RejectInput(r, simulate.FlagInput, takes+"; composition simulate takes Composition files")
 		case gvk.GroupVersion().String() == projectfile.APIVersion && gvk.Kind == projectfile.Kind:
-			return simulate.RejectInput(r, takes+"; project simulate takes a project file")
+			return simulate.RejectInput(r, simulate.FlagInput, takes+"; project simulate takes a project file")
 		case r.IsList() || gvk.Kind == "List":
-			return simulate.RejectInput(r, takes)
+			return simulate.RejectInput(r, simulate.FlagInput, takes)
 		}
 		return nil
 	})

@@ -28,18 +28,26 @@ import (
 	ld "github.com/crossplane/cli/v2/pkg/load"
 )
 
-// RejectInput returns the error for an -f input r that the command doesn't
-// take. takes describes what the command does take, e.g. "composition
-// simulate takes Composition files".
-func RejectInput(r *un.Unstructured, takes string) error {
-	return rejectInput(r, "", takes)
+// Input flags, which name the inputs in errors about them.
+const (
+	// FlagInput is xr and composition simulate's -f.
+	FlagInput = "-f"
+	// FlagResourceFile is project simulate's --resource-file.
+	FlagResourceFile = "--resource-file"
+)
+
+// RejectInput returns the error for an input r, passed with flag (e.g.
+// FlagInput), that the command doesn't take. takes describes what the
+// command does take, e.g. "composition simulate takes Composition files".
+func RejectInput(r *un.Unstructured, flag, takes string) error {
+	return rejectInput(r, flag, "", takes)
 }
 
 // rejectInput is RejectInput with a reason, if not empty, that says why r was
 // rejected and follows the input. takes may be empty if reason says enough.
-func rejectInput(r *un.Unstructured, reason, takes string) error {
+func rejectInput(r *un.Unstructured, flag, reason, takes string) error {
 	gvk := r.GroupVersionKind()
-	msg := fmt.Sprintf("-f inputs include %s %q (%s)", gvk.Kind, r.GetName(), gvk.GroupVersion())
+	msg := fmt.Sprintf("%s inputs include %s %q (%s)", flag, gvk.Kind, r.GetName(), gvk.GroupVersion())
 	if reason != "" {
 		msg += ", " + reason
 	}
@@ -52,18 +60,18 @@ func rejectInput(r *un.Unstructured, reason, takes string) error {
 	return errors.New(msg)
 }
 
-// LoadInputs loads the -f inputs at paths ("-" is stdin) and rejects any
-// for which validate returns an error.
-func LoadInputs(paths []string, validate func(*un.Unstructured) error) ([]*un.Unstructured, error) {
+// LoadInputs loads the inputs passed with flag (e.g. FlagInput) at paths
+// ("-" is stdin) and rejects any for which validate returns an error.
+func LoadInputs(flag string, paths []string, validate func(*un.Unstructured) error) ([]*un.Unstructured, error) {
 	// Pipeline step inputs are part of their Composition, not resources of
 	// their own.
 	loader, err := ld.NewExactCompositeLoader(paths, ld.WithoutPipelineInputs())
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot load -f inputs")
+		return nil, errors.Wrap(err, "cannot load "+flag+" inputs")
 	}
 	resources, err := loader.Load()
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot load -f inputs")
+		return nil, errors.Wrap(err, "cannot load "+flag+" inputs")
 	}
 	for _, r := range resources {
 		if err := validate(r); err != nil {
@@ -88,13 +96,13 @@ func RejectDuplicateNames(comps []*un.Unstructured) error {
 
 // checkComposites rejects resources that no XRD in the cluster defines as a
 // composite resource or claim, such as package metadata, a Provider or a
-// ConfigMap, which the engine would otherwise fail on with no hint at what -f
-// accepts. It also gives a claim or namespaced composite resource with no
+// ConfigMap, which the engine would otherwise fail on with no hint at what
+// flag accepts. It also gives a claim or namespaced composite resource with no
 // namespace the kubeconfig context namespace ns, as kubectl apply would, and
 // clears any namespace on a cluster-scoped composite resource, which kubectl
 // apply ignores there. The definition client caches the XRDs when it
 // initializes, so the check costs no extra calls.
-func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, ns string, resources []*un.Unstructured) error {
+func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, flag, ns string, resources []*un.Unstructured) error {
 	for _, r := range resources {
 		gvk := r.GroupVersionKind()
 		if xrd, err := defs.GetXRDForClaim(ctx, gvk); err == nil && xrd != nil {
@@ -110,7 +118,7 @@ func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, ns str
 			}
 			continue
 		}
-		return rejectInput(r, "which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)", "")
+		return rejectInput(r, flag, "which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)", "")
 	}
 	return nil
 }

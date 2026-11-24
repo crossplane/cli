@@ -1080,7 +1080,7 @@ func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *u
 
 	rc, inRun := run[name]
 	if inRun {
-		if inRun, err = p.adoptsRunRevision(res, name, rc); err != nil {
+		if inRun, err = p.adoptsRunRevision(ctx, res, name, rc); err != nil {
 			return dtypes.ResolvedComposition{}, err
 		}
 	}
@@ -1106,7 +1106,7 @@ func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *u
 // compositionRevisionRef does not, and nothing about rc matters to it, so a run entry that cannot be used
 // does not fail it. For any other res, an rc that cannot be read, or composes another type than res, is
 // an error.
-func (p *DefaultCompDiffProcessor) adoptsRunRevision(res *un.Unstructured, name string, rc runComposition) (bool, error) {
+func (p *DefaultCompDiffProcessor) adoptsRunRevision(ctx context.Context, res *un.Unstructured, name string, rc runComposition) (bool, error) {
 	policy, err := xp.XRUpdatePolicy(res.Object, res.GetAPIVersion())
 	if err != nil {
 		return false, errors.Wrapf(err, "cannot read compositionUpdatePolicy for XR %q", res.GetName())
@@ -1131,7 +1131,7 @@ func (p *DefaultCompDiffProcessor) adoptsRunRevision(res *un.Unstructured, name 
 		return false, errors.Errorf("composition %q in the run composes %s %s, but nested XR %q is a %s %s", rc.comp.GetName(), ref.APIVersion, ref.Kind, res.GetName(), res.GetAPIVersion(), res.GetKind())
 	}
 
-	disposition, err := p.classifyXR(res, rc.revisionLabels, rc.comp.GetLabels())
+	disposition, err := p.classifyXR(ctx, res, rc.comp.Spec.CompositeTypeRef.Kind, rc.revisionLabels, rc.comp.GetLabels())
 	if err != nil {
 		return false, err
 	}

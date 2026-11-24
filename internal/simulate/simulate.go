@@ -30,6 +30,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -100,9 +101,9 @@ func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, de
 
 // Plan plans a single resource the user supplied: fetch its live
 // counterpart, then plan it as PlanWithLive does, except that the approximate
-// fallback removes only what the applier plan.ResolveApplier resolves from
-// live and the Planner's WithApplierFlags would remove. Failures become per-resource errors so one resource never
-// fails the whole run.
+// fallback removes fields as the applier plan.ResolveApplier resolves from
+// live and the WithApplierFlags flags. Failures become per-resource errors so
+// one resource never fails the whole run.
 func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) *plan.ResourcePlan {
 	if desired.GetName() == "" {
 		rp := plan.NewResourcePlan(desired)
@@ -117,16 +118,22 @@ func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) 
 		return rp
 	}
 	a := plan.ResolveApplier(live, p.applier)
+	var onFallback func()
+	// Only the fallback removes fields as the applier, so only it warns.
 	if a.Mode == plan.ApplyUndetermined && a.HasCandidates() && p.warn != nil {
-		p.warnUndetermined(desired, a)
+		onFallback = func() { p.warnUndetermined(desired, a) }
 	}
-	return p.planWithLive(ctx, desired, live, a)
+	return p.planWithLive(ctx, desired, live, a, onFallback)
 }
 
 // warnUndetermined warns that the fallback may not show the fields desired's
 // manifest drops as removed, since applier a cannot be told.
 func (p *Planner) warnUndetermined(desired *unstructured.Unstructured, a plan.Applier) {
-	msg := fmt.Sprintf("Warning: cannot tell which field manager applies %s/%s (candidates: %s)", desired.GetKind(), desired.GetName(), a.DescribeCandidates())
+	id := desired.GetName()
+	if ns := desired.GetNamespace(); ns != "" {
+		id = ns + "/" + id
+	}
+	msg := fmt.Sprintf("Warning: cannot tell which field manager applies %s %s (candidates: %s)", desired.GetKind(), id, a.DescribeCandidates())
 	if len(a.ImperativeWriters) > 0 {
 		msg += fmt.Sprintf(", since imperative writers (managers that updated it without applying, such as kubectl create or edit, or a controller) wrote it too (%s)", strings.Join(a.ImperativeWriters, ", "))
 	}
@@ -141,18 +148,31 @@ func (p *Planner) warnUndetermined(desired *unstructured.Unstructured, a plan.Ap
 // run. It is for composed resources, which Crossplane applies, not the user,
 // so the fallback removes fields as the composed field manager live records.
 // When live records none (it is not composed yet, say), the fallback takes
-// removals from every applier live records.
+// removals from every applier live records. A composed manager that recorded
+// no Apply entry outside a subresource owns nothing to remove, so the
+// fallback takes removals from every applier then too.
 func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.Unstructured) *plan.ResourcePlan {
 	a := plan.Applier{Mode: plan.ApplyUndetermined}
-	if m := k8client.GetComposedFieldOwner(live); m != "" {
+	if m := k8client.GetComposedFieldOwner(live); m != "" && appliesAs(live, m) {
 		a = plan.Applier{Mode: plan.ApplyServerSide, FieldManager: m}
 	}
-	return p.planWithLive(ctx, desired, live, a)
+	return p.planWithLive(ctx, desired, live, a, nil)
+}
+
+// appliesAs reports whether live records an Apply entry by manager outside a
+// subresource.
+func appliesAs(live *unstructured.Unstructured, manager string) bool {
+	for _, e := range live.GetManagedFields() {
+		if e.Manager == manager && e.Operation == metav1.ManagedFieldsOperationApply && e.Subresource == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // planWithLive is PlanWithLive with the applier the fallback removes fields
-// as.
-func (p *Planner) planWithLive(ctx context.Context, desired, live *unstructured.Unstructured, a plan.Applier) *plan.ResourcePlan {
+// as, calling onFallback, when not nil, whenever the fallback plans.
+func (p *Planner) planWithLive(ctx context.Context, desired, live *unstructured.Unstructured, a plan.Applier, onFallback func()) *plan.ResourcePlan {
 	// Crossplane's external tags survive every apply (the provider's
 	// initializer re-adds them), so a preview must never claim they would be
 	// removed.
@@ -165,10 +185,17 @@ func (p *Planner) planWithLive(ctx context.Context, desired, live *unstructured.
 	// state, whichever path planned it.
 	defaulted := applyCRDDefaults(ctx, p.rmapper, p.crds, desired)
 
+	fallback := func(reason string) *plan.ResourcePlan {
+		if onFallback != nil {
+			onFallback()
+		}
+		return plan.Fallback(defaulted, live, a, reason)
+	}
+
 	gk := desired.GroupVersionKind().GroupKind()
 	planClient, ok := p.router.Route(gk)
 	if !ok {
-		return plan.Fallback(defaulted, live, a, fmt.Sprintf("no diff server for %s", gk))
+		return fallback(fmt.Sprintf("no diff server for %s", gk))
 	}
 
 	pctx := ctx
@@ -183,7 +210,7 @@ func (p *Planner) planWithLive(ctx context.Context, desired, live *unstructured.
 	rp, err := plan.Plan(pctx, planClient, desired, live, store)
 	if err != nil {
 		if plan.IsNotSupported(err) {
-			return plan.Fallback(defaulted, live, a, "the provider cannot compute a diff for this resource")
+			return fallback("the provider cannot compute a diff for this resource")
 		}
 		rp := plan.NewResourcePlan(desired)
 		rp.Error = fmt.Sprintf("diff server cannot plan: %s", err)

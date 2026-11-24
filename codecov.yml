@@ -8,6 +8,9 @@ codecov:
 comment:
   after_n_builds: 2
 
-# Test helpers and mocks, not production code.
+# Test helpers and mocks, and generated code (controller-gen deepcopy, protoc
+# output), not hand-written production code.
 ignore:
   - "**/testutils/**"
+  - "**/zz_generated.*.go"
+  - "**/*.pb.go"

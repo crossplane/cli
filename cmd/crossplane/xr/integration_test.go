@@ -1987,6 +1987,7 @@ Summary: 2 modified, 2 removed`,
 				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
 			},
 			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
 				WithSummary(0, 1, 0).
 				WithModifiedResource("XTestDefaultResource", "test-resource-user-applied", "default").
 				WithFieldChange("spec.tags.team", "platform", nil),
@@ -2042,7 +2043,9 @@ Summary: 2 modified, 2 removed`,
 				WithNoWarnings().
 				WithSummary(0, 1, 0).
 				WithModifiedResource("XTestDefaultResource", "test-resource-user-applied", "default").
-				WithFieldChange("spec.tags.team", "platform", nil),
+				WithFieldChange("spec.tags.team", "platform", nil).
+				// platform-operator alone owns spec.region, which the manifest omits, so it is kept.
+				WithFieldChange("spec.region", "eu-west-1", "eu-west-1"),
 			ExpectedError:    false,
 			ExpectedExitCode: dp.ExitCodeDiffDetected,
 		},
@@ -2087,6 +2090,28 @@ Summary: 2 modified, 2 removed`,
 			},
 			// kubectl-client-side-apply has no Apply entry, so --field-manager names a client-side applier.
 			FieldManager: "kubectl-client-side-apply",
+			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
+				WithSummary(0, 0, 0),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeSuccess,
+		},
+		// As FieldDroppedFromClientSideAppliedXRWithoutAnnotationIsNotReportedRemoved, with no
+		// --field-manager: kubectl-client-side-apply's Update makes it an imperative writer and there is no
+		// candidate applier, so nothing is removed whoever applies it, and nothing warns.
+		"FieldDroppedFromClientSideCreatedXRWithoutAnnotationOrFlagsIsNotReportedRemoved": {
+			Reason:       "With only an imperative writer and no flags, no field is removed and nothing warns",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-user-applied-with-team.yaml", FieldManager: "kubectl-client-side-apply", Create: true},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+			},
 			ExpectedStructured: simtest.Expect().
 				WithNoWarnings().
 				WithSummary(0, 0, 0),
@@ -2146,6 +2171,7 @@ Summary: 2 modified, 2 removed`,
 				{File: "testdata/diff/resources/existing-xr-one-of-selector.yaml", FieldManager: "argocd-controller"},
 			},
 			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
 				WithSummary(0, 1, 0).
 				WithModifiedResource("XOneOfResource", "test-one-of", "default").
 				WithFieldChange("spec.target.selector.matchLabels.app", "example", nil).

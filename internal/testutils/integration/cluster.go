@@ -55,7 +55,8 @@ const (
 	XRDV1
 )
 
-// FieldManagerApply is a manifest to server-side apply under a specific field manager.
+// FieldManagerApply is a manifest to write under a specific field manager: server-side applied, or
+// created when Create is set.
 type FieldManagerApply struct {
 	File         string
 	FieldManager string

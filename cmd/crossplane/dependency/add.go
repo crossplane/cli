@@ -43,8 +43,8 @@ import (
 //go:embed help/add.md
 var addHelp string
 
-// addCmd adds a dependency to the current project.
-type addCmd struct {
+// AddCmd adds a dependency to the current project.
+type AddCmd struct {
 	common.GitFlags
 
 	Package     string `arg:""                      help:"Package to add (xpkg OCI reference, k8s:<version>, git repository URL, or HTTP(S) URL)."`
@@ -57,12 +57,13 @@ type addCmd struct {
 	GitPath string `help:"Path to CRDs in the git repository."                             name:"git-path"`
 }
 
-func (c *addCmd) Help() string {
+// Help returns help for the add command.
+func (c *AddCmd) Help() string {
 	return addHelp
 }
 
 // Run executes the add command.
-func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
+func (c *AddCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) error {
 	ctx := context.Background()
 
 	projFilePath, err := filepath.Abs(c.ProjectFile)
@@ -111,7 +112,7 @@ func (c *addCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 	})
 }
 
-func (c *addCmd) buildDependency() (v1alpha1.Dependency, error) {
+func (c *AddCmd) buildDependency() (v1alpha1.Dependency, error) {
 	// k8s dependency: k8s:vX.Y.Z
 	if version, found := strings.CutPrefix(c.Package, "k8s:"); found {
 		if version == "" {

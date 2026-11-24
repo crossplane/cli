@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	gcmp "github.com/google/go-cmp/cmp"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
@@ -36,7 +35,7 @@ func TestDefaultCompDiffRenderer_RenderCompDiff(t *testing.T) {
 				Compositions: []dt.CompositionDiff{{
 					Name:              "test-comp",
 					AffectedResources: dt.AffectedResourcesSummary{Total: 1, Unchanged: 1},
-					ImpactAnalysis:    []dt.XRImpact{{ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XResource", Name: "xr-1"}, Status: dt.XRStatusUnchanged}},
+					ImpactAnalysis:    []dt.XRImpact{{APIVersion: "example.org/v1", Kind: "XResource", Name: "xr-1", Status: dt.XRStatusUnchanged}},
 				}},
 			},
 			colorize: false,
@@ -63,10 +62,10 @@ func TestDefaultCompDiffRenderer_RenderCompDiff(t *testing.T) {
 					Name:              "test-comp",
 					AffectedResources: dt.AffectedResourcesSummary{Total: 1, FilteredByPolicy: 1},
 					ImpactAnalysis: []dt.XRImpact{{
-						ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "manual-xr", Namespace: "ns"},
-						Status:          dt.XRStatusFiltered,
-						FilterReason:    dt.FilterReasonManualPolicy,
-						FilterDetail:    "compositionRevisionRef: test-comp-abc1234",
+						APIVersion: "example.org/v1", Kind: "XR", Name: "manual-xr", Namespace: "ns",
+						Status:       dt.XRStatusFiltered,
+						FilterReason: dt.FilterReasonManualPolicy,
+						FilterDetail: "compositionRevisionRef: test-comp-abc1234",
 					}},
 				}},
 			},
@@ -91,11 +90,11 @@ func TestDefaultCompDiffRenderer_RenderCompDiff(t *testing.T) {
 					AffectedResources: dt.AffectedResourcesSummary{Total: 2, Unchanged: 1, FilteredBySelector: 1},
 					ImpactAnalysis: []dt.XRImpact{
 						{
-							ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "selector-xr", Namespace: "ns"},
-							Status:          dt.XRStatusFiltered,
-							FilterReason:    dt.FilterReasonRevisionSelectorMismatch,
+							APIVersion: "example.org/v1", Kind: "XR", Name: "selector-xr", Namespace: "ns",
+							Status:       dt.XRStatusFiltered,
+							FilterReason: dt.FilterReasonRevisionSelectorMismatch,
 						},
-						{ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "xr-1", Namespace: "ns"}, Status: dt.XRStatusUnchanged},
+						{APIVersion: "example.org/v1", Kind: "XR", Name: "xr-1", Namespace: "ns", Status: dt.XRStatusUnchanged},
 					},
 				}},
 			},
@@ -191,7 +190,7 @@ func TestDefaultCompDiffRenderer_RenderCompDiff(t *testing.T) {
 					Name:              "test-comp",
 					CompositionDiff:   &dt.ResourceDiff{DiffType: dt.DiffTypeModified, ResourceName: "test-comp", Gvk: schema.GroupVersionKind{Group: "apiextensions.crossplane.io", Version: "v1", Kind: "Composition"}},
 					AffectedResources: dt.AffectedResourcesSummary{Total: 1, Unchanged: 1},
-					ImpactAnalysis:    []dt.XRImpact{{ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XResource", Name: "xr-1"}, Status: dt.XRStatusUnchanged}},
+					ImpactAnalysis:    []dt.XRImpact{{APIVersion: "example.org/v1", Kind: "XResource", Name: "xr-1", Status: dt.XRStatusUnchanged}},
 				}},
 			},
 			colorize: false,
@@ -232,15 +231,15 @@ func TestDefaultCompDiffRenderer_RenderCompDiff(t *testing.T) {
 					AffectedResources:     dt.AffectedResourcesSummary{Total: 3, FilteredByPolicy: 1, FilteredByDeletion: 1},
 					ImpactAnalysis: []dt.XRImpact{
 						{
-							ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "my-manual-xr", Namespace: "default"},
-							Status:          dt.XRStatusFiltered,
-							FilterReason:    dt.FilterReasonManualPolicy,
+							APIVersion: "example.org/v1", Kind: "XR", Name: "my-manual-xr", Namespace: "default",
+							Status:       dt.XRStatusFiltered,
+							FilterReason: dt.FilterReasonManualPolicy,
 						},
 						{
-							ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "my-deleting-xr", Namespace: "default"},
-							Status:          dt.XRStatusFiltered,
-							FilterReason:    dt.FilterReasonDeleting,
-							FilterDetail:    "deletionTimestamp: 2026-09-07T11:25:03Z",
+							APIVersion: "example.org/v1", Kind: "XR", Name: "my-deleting-xr", Namespace: "default",
+							Status:       dt.XRStatusFiltered,
+							FilterReason: dt.FilterReasonDeleting,
+							FilterDetail: "deletionTimestamp: 2026-09-07T11:25:03Z",
 						},
 					},
 				}},
@@ -287,10 +286,10 @@ func TestDefaultCompDiffRenderer_RenderCompDiff(t *testing.T) {
 					RevisionImpact:        dt.RevisionImpact{ChangeScope: "metadata", CreatesRevision: true},
 					AffectedResources:     dt.AffectedResourcesSummary{Total: 1, FilteredByDeletion: 1},
 					ImpactAnalysis: []dt.XRImpact{{
-						ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "my-deleting-xr", Namespace: "default"},
-						Status:          dt.XRStatusFiltered,
-						FilterReason:    dt.FilterReasonDeleting,
-						FilterDetail:    "deletionTimestamp: 2026-09-07T11:25:03Z",
+						APIVersion: "example.org/v1", Kind: "XR", Name: "my-deleting-xr", Namespace: "default",
+						Status:       dt.XRStatusFiltered,
+						FilterReason: dt.FilterReasonDeleting,
+						FilterDetail: "deletionTimestamp: 2026-09-07T11:25:03Z",
 					}},
 				}},
 			},
@@ -467,22 +466,22 @@ func TestXRStatusFiltered_TextRenderer(t *testing.T) {
 		AffectedResources: dt.AffectedResourcesSummary{Total: 3, FilteredByPolicy: 1, FilteredBySelector: 1, FilteredByDeletion: 1},
 		ImpactAnalysis: []dt.XRImpact{
 			{
-				ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "manual-xr", Namespace: "ns"},
-				Status:          dt.XRStatusFiltered,
-				FilterReason:    dt.FilterReasonManualPolicy,
-				FilterDetail:    "compositionRevisionRef: test-comp-abc1234",
+				APIVersion: "example.org/v1", Kind: "XR", Name: "manual-xr", Namespace: "ns",
+				Status:       dt.XRStatusFiltered,
+				FilterReason: dt.FilterReasonManualPolicy,
+				FilterDetail: "compositionRevisionRef: test-comp-abc1234",
 			},
 			{
-				ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "selector-xr", Namespace: "ns"},
-				Status:          dt.XRStatusFiltered,
-				FilterReason:    dt.FilterReasonRevisionSelectorMismatch,
-				FilterDetail:    "compositionRevisionSelector {version: 0.0.1} does not match composition labels {version: 0.0.2}",
+				APIVersion: "example.org/v1", Kind: "XR", Name: "selector-xr", Namespace: "ns",
+				Status:       dt.XRStatusFiltered,
+				FilterReason: dt.FilterReasonRevisionSelectorMismatch,
+				FilterDetail: "compositionRevisionSelector {version: 0.0.1} does not match composition labels {version: 0.0.2}",
 			},
 			{
-				ObjectReference: corev1.ObjectReference{APIVersion: "example.org/v1", Kind: "XR", Name: "deleting-xr", Namespace: "ns"},
-				Status:          dt.XRStatusFiltered,
-				FilterReason:    dt.FilterReasonDeleting,
-				FilterDetail:    "deletionTimestamp: 2026-09-07T11:25:03Z",
+				APIVersion: "example.org/v1", Kind: "XR", Name: "deleting-xr", Namespace: "ns",
+				Status:       dt.XRStatusFiltered,
+				FilterReason: dt.FilterReasonDeleting,
+				FilterDetail: "deletionTimestamp: 2026-09-07T11:25:03Z",
 			},
 		},
 	}
@@ -749,8 +748,8 @@ func TestRenderCompDiff_RevisionImpactLine(t *testing.T) {
 				RevisionImpact:    impact,
 				AffectedResources: dt.AffectedResourcesSummary{Total: 1, Unchanged: 1},
 				ImpactAnalysis: []dt.XRImpact{{
-					ObjectReference: corev1.ObjectReference{Kind: "XBucket", Name: "test-xr"},
-					Status:          dt.XRStatusUnchanged,
+					Kind: "XBucket", Name: "test-xr",
+					Status: dt.XRStatusUnchanged,
 				}},
 			},
 			wantCount: 1,

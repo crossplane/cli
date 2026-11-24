@@ -22,7 +22,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/afero"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
@@ -315,13 +314,9 @@ func TestUpdate(t *testing.T) {
 	t.Parallel()
 
 	proj := &v1alpha1.Project{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "dev.crossplane.io/v1alpha1",
-			Kind:       "Project",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "my-project",
-		},
+		APIVersion: "dev.crossplane.io/v1alpha1",
+		Kind:       "Project",
+		Name:       "my-project",
 		Spec: v1alpha1.ProjectSpec{
 			Repository: "xpkg.crossplane.io/foo/bar",
 		},

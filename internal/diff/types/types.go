@@ -204,13 +204,11 @@ func (r *RenderedResources) Health() dt.CompositeHealth {
 
 func resourceHealth(u *un.Unstructured) dt.ResourceHealth {
 	return dt.ResourceHealth{
-		ObjectReference: corev1.ObjectReference{
-			APIVersion: u.GetAPIVersion(),
-			Kind:       u.GetKind(),
-			Name:       u.GetName(),
-			Namespace:  u.GetNamespace(),
-		},
-		Health: health.Of(u),
+		APIVersion: u.GetAPIVersion(),
+		Kind:       u.GetKind(),
+		Name:       u.GetName(),
+		Namespace:  u.GetNamespace(),
+		Health:     health.Of(u),
 	}
 }
 

@@ -291,13 +291,9 @@ func newXRDFromSimpleSchema(yamlData []byte, customPlural string) (*v2.Composite
 	}
 
 	return &v2.CompositeResourceDefinition{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: v2.CompositeResourceDefinitionGroupVersionKind.GroupVersion().String(),
-			Kind:       v2.CompositeResourceDefinitionGroupVersionKind.Kind,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: strings.ToLower(fmt.Sprintf("%s.%s", plural, gv.Group)),
-		},
+		APIVersion: v2.CompositeResourceDefinitionGroupVersionKind.GroupVersion().String(),
+		Kind:       v2.CompositeResourceDefinitionGroupVersionKind.Kind,
+		Name:       strings.ToLower(fmt.Sprintf("%s.%s", plural, gv.Group)),
 		Spec: v2.CompositeResourceDefinitionSpec{
 			Group: gv.Group,
 			Scope: v2.CompositeResourceScopeNamespaced,
@@ -435,13 +431,9 @@ func newXRDFromExample(yamlData []byte, customPlural string) (*v2.CompositeResou
 	}
 
 	return &v2.CompositeResourceDefinition{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: v2.CompositeResourceDefinitionGroupVersionKind.GroupVersion().String(),
-			Kind:       v2.CompositeResourceDefinitionGroupVersionKind.Kind,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: strings.ToLower(fmt.Sprintf("%s.%s", plural, gv.Group)),
-		},
+		APIVersion: v2.CompositeResourceDefinitionGroupVersionKind.GroupVersion().String(),
+		Kind:       v2.CompositeResourceDefinitionGroupVersionKind.Kind,
+		Name:       strings.ToLower(fmt.Sprintf("%s.%s", plural, gv.Group)),
 		Spec: v2.CompositeResourceDefinitionSpec{
 			Group: gv.Group,
 			Scope: scope,

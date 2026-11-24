@@ -23,8 +23,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/afero"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/yaml"
@@ -43,17 +43,13 @@ import (
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/images"
 
 	_ "embed"
 )
 
 //go:embed help/generate.md
 var generateHelp string
-
-const (
-	functionAutoReadyName    = "crossplane-contrib-function-auto-ready"
-	functionAutoReadyPackage = "xpkg.crossplane.io/crossplane-contrib/function-auto-ready"
-)
 
 type generateCmd struct {
 	XRD         string `arg:""                                        help:"Path to the CompositeResourceDefinition (XRD) file."`
@@ -67,6 +63,14 @@ type generateCmd struct {
 	apisFS     afero.Fs
 	proj       *v1alpha1.Project
 	depManager *dependency.Manager
+
+	// autoReadyPackage is the function-auto-ready package the composition
+	// depends on: the catalog default, run through the project's image
+	// config rewrites so a mirrored project depends on the mirror's path.
+	// autoReadyName is the Function name that package installs as, which the
+	// pipeline step references.
+	autoReadyPackage string
+	autoReadyName    string
 }
 
 func (c *generateCmd) Help() string {
@@ -105,6 +109,37 @@ func (c *generateCmd) AfterApply(cfg *config.Config) error {
 		)),
 		dependency.WithXpkgClient(client),
 	)
+
+	return c.resolveAutoReady(context.Background())
+}
+
+// resolveAutoReady resolves the function-auto-ready package from the image
+// catalog through the project's image config rewrites, and derives the
+// Function name its pipeline step must reference the same way the package
+// manager will name it.
+func (c *generateCmd) resolveAutoReady(ctx context.Context) error {
+	pkg := images.ToolImage(images.ToolFunctionAutoReady)
+
+	store := clixpkg.NewStaticImageConfigStore(c.proj.Spec.ImageConfigs)
+	_, rewritten, err := store.RewritePath(ctx, pkg)
+	if err != nil {
+		return errors.Wrap(err, "failed to apply image config rewrites to the function-auto-ready package")
+	}
+	if rewritten != "" {
+		pkg = rewritten
+	}
+
+	// The package has no tag - its version is a constraint on the dependency
+	// - so it parses as a repository, strictly: the registry must be
+	// explicit for the name derivation below to drop it.
+	repo, err := name.NewRepository(pkg, name.StrictValidation)
+	if err != nil {
+		return errors.Wrapf(err, "invalid function-auto-ready package %q", pkg)
+	}
+
+	c.autoReadyPackage = pkg
+	c.autoReadyName = xpkg.ToDNSLabel(repo.RepositoryStr())
+
 	return nil
 }
 
@@ -155,7 +190,7 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter) error {
 
 func (c *generateCmd) ensureFunctionAutoReady(ctx context.Context) error {
 	for _, dep := range c.proj.Spec.Dependencies {
-		if dep.Type == v1alpha1.DependencyTypeXpkg && dep.Xpkg != nil && dep.Xpkg.Package == functionAutoReadyPackage {
+		if dep.Type == v1alpha1.DependencyTypeXpkg && dep.Xpkg != nil && dep.Xpkg.Package == c.autoReadyPackage {
 			return nil
 		}
 	}
@@ -165,7 +200,7 @@ func (c *generateCmd) ensureFunctionAutoReady(ctx context.Context) error {
 		Xpkg: &v1alpha1.XpkgDependency{
 			APIVersion: pkgv1.FunctionGroupVersionKind.GroupVersion().String(),
 			Kind:       pkgv1.FunctionKind,
-			Package:    functionAutoReadyPackage,
+			Package:    c.autoReadyPackage,
 			Version:    ">=v0.0.0",
 		},
 	})
@@ -183,13 +218,9 @@ func (c *generateCmd) newComposition() (*apiextv1.Composition, string, error) {
 	}
 
 	comp := &apiextv1.Composition{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apiextv1.CompositionGroupVersionKind.GroupVersion().String(),
-			Kind:       apiextv1.CompositionGroupVersionKind.Kind,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
+		APIVersion: apiextv1.CompositionGroupVersionKind.GroupVersion().String(),
+		Kind:       apiextv1.CompositionGroupVersionKind.Kind,
+		Name:       name,
 		Spec: apiextv1.CompositionSpec{
 			CompositeTypeRef: apiextv1.TypeReference{
 				APIVersion: fmt.Sprintf("%s/%s", group, version),
@@ -198,9 +229,9 @@ func (c *generateCmd) newComposition() (*apiextv1.Composition, string, error) {
 			Mode: apiextv1.CompositionModePipeline,
 			Pipeline: []apiextv1.PipelineStep{
 				{
-					Step: functionAutoReadyName,
+					Step: c.autoReadyName,
 					FunctionRef: apiextv1.FunctionReference{
-						Name: xpkg.ToDNSLabel(functionAutoReadyName),
+						Name: c.autoReadyName,
 					},
 				},
 			},

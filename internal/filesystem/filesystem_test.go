@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/afero"
@@ -720,5 +721,90 @@ func TestWalkSkipDirHandling(t *testing.T) {
 				t.Errorf("(-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+// TestNormalizeTar verifies that two tars holding the same entries but
+// written at different times by different owners normalize to identical
+// bytes, since the normalized form is what an image layer's digest - and so
+// whether a rebuilt function counts as changed - is computed from.
+func TestNormalizeTar(t *testing.T) {
+	t.Parallel()
+
+	// buildTar writes a dir, a file, and a symlink with the given times and
+	// ownership - the variance a build container introduces between two
+	// builds of identical inputs.
+	buildTar := func(stamp time.Time, uid int, owner string) []byte {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		hdrs := []*tar.Header{
+			{Name: "fn/", Typeflag: tar.TypeDir, Mode: 0o755, ModTime: stamp, AccessTime: stamp, ChangeTime: stamp, Uid: uid, Gid: uid, Uname: owner, Gname: owner, Format: tar.FormatPAX},
+			{Name: "fn/main.py", Typeflag: tar.TypeReg, Mode: 0o644, Size: 5, ModTime: stamp, AccessTime: stamp, ChangeTime: stamp, Uid: uid, Gid: uid, Uname: owner, Gname: owner, Format: tar.FormatPAX},
+			{Name: "fn/python", Typeflag: tar.TypeSymlink, Linkname: "/usr/bin/python3", Mode: 0o777, ModTime: stamp, Uid: uid, Gid: uid, Uname: owner, Gname: owner, Format: tar.FormatPAX},
+		}
+		for _, h := range hdrs {
+			if err := tw.WriteHeader(h); err != nil {
+				t.Fatalf("WriteHeader(%q) failed: %v", h.Name, err)
+			}
+			if h.Typeflag == tar.TypeReg {
+				if _, err := tw.Write([]byte("print")); err != nil {
+					t.Fatalf("Write(%q) failed: %v", h.Name, err)
+				}
+			}
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatalf("Close() failed: %v", err)
+		}
+
+		return buf.Bytes()
+	}
+
+	first, err := NormalizeTar(buildTar(time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC), 1000, "builder"))
+	if err != nil {
+		t.Fatalf("NormalizeTar() failed: %v", err)
+	}
+	second, err := NormalizeTar(buildTar(time.Date(2026, 11, 23, 15, 30, 0, 0, time.UTC), 0, "root"))
+	if err != nil {
+		t.Fatalf("NormalizeTar() failed: %v", err)
+	}
+
+	if !bytes.Equal(first, second) {
+		t.Error("NormalizeTar(): tars with identical contents but different times and owners must normalize to identical bytes")
+	}
+
+	// The entries must survive with their contents, types and link targets.
+	tr := tar.NewReader(bytes.NewReader(first))
+	got := map[string]string{}
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading normalized tar failed: %v", err)
+		}
+		if !h.ModTime.Equal(time.Unix(normalizedEpochSeconds, 0)) || h.Uid != 0 || h.Uname != "" {
+			t.Errorf("entry %q kept variable metadata: mtime=%v uid=%d uname=%q", h.Name, h.ModTime, h.Uid, h.Uname)
+		}
+		switch h.Typeflag {
+		case tar.TypeReg:
+			bs, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatalf("reading %q failed: %v", h.Name, err)
+			}
+			got[h.Name] = string(bs)
+		case tar.TypeSymlink:
+			got[h.Name] = "-> " + h.Linkname
+		default:
+			got[h.Name] = h.FileInfo().Mode().Type().String()
+		}
+	}
+	want := map[string]string{
+		"fn/":        "d---------",
+		"fn/main.py": "print",
+		"fn/python":  "-> /usr/bin/python3",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("NormalizeTar(): entries -want, +got:\n%s", diff)
 	}
 }

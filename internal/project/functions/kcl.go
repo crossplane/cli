@@ -42,6 +42,7 @@ import (
 
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/images"
 )
 
 const (
@@ -224,7 +225,7 @@ func setImageEnvvars(image v1.Image, envVars map[string]string) (v1.Image, error
 
 func newKCLBuilder(imageConfigs []v1beta1.ImageConfig) *kclBuilder {
 	return &kclBuilder{
-		baseImage:   "xpkg.crossplane.io/crossplane-contrib/function-kcl:v0.12.3",
+		baseImage:   images.Image(images.KCL, images.ImageBase),
 		transport:   http.DefaultTransport,
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}

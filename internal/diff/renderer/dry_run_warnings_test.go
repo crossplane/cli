@@ -63,9 +63,9 @@ func TestRenderers_EmitDryRunWarnings(t *testing.T) {
 			Compositions: []dt.CompositionDiff{{
 				Name: "xrs.example.org",
 				ImpactAnalysis: []dt.XRImpact{
-					{ObjectReference: corev1.ObjectReference{Kind: "XR", Name: "one"}, Status: dt.XRStatusChanged, Diffs: diffMap(first)},
-					{ObjectReference: corev1.ObjectReference{Kind: "XR", Name: "two"}, Status: dt.XRStatusChanged, Diffs: diffMap(second)},
-					{ObjectReference: corev1.ObjectReference{Kind: "XR", Name: "broken"}, Status: dt.XRStatusError},
+					{Kind: "XR", Name: "one", Status: dt.XRStatusChanged, Diffs: diffMap(first)},
+					{Kind: "XR", Name: "two", Status: dt.XRStatusChanged, Diffs: diffMap(second)},
+					{Kind: "XR", Name: "broken", Status: dt.XRStatusError},
 				},
 			}},
 			Warnings: []dt.OutputWarning{raised},

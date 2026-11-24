@@ -199,8 +199,8 @@ func (f *FieldErrorExpectation) expectation() *Expected { return f.parent.parent
 // substring. Chain WithWarningContext to pin the machine-readable context pairs.
 func (e *Expected) WithWarning(messageContains string) *WarningExpectation {
 	w := &WarningExpectation{
-		parent:       e,
-		warningMatch: warningMatch{messageContains: messageContains},
+		parent:          e,
+		messageContains: messageContains,
 	}
 	e.warnings = append(e.warnings, w)
 

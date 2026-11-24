@@ -39,6 +39,7 @@ import (
 
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/images"
 )
 
 // goTemplatingBuilder builds "functions" written in go templating by injecting
@@ -153,7 +154,7 @@ func (b *goTemplatingBuilder) Build(ctx context.Context, c BuildContext) ([]v1.I
 func newGoTemplatingBuilder(imageConfigs []pkgv1beta1.ImageConfig) *goTemplatingBuilder {
 	return &goTemplatingBuilder{
 		transport:   http.DefaultTransport,
-		baseImage:   "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.12.0",
+		baseImage:   images.Image(images.GoTemplating, images.ImageBase),
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

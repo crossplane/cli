@@ -82,10 +82,8 @@ func xrResult() simulate.Result {
 	}
 
 	return simulate.Result{
-		Result: plan.Result{
-			Summary: plan.Summarize(plans),
-			Plans:   plans,
-		},
+		Summary: plan.Summarize(plans),
+		Plans:   plans,
 		Composites: []simulate.CompositeResult{
 			{Ref: xrA, Status: simulate.CompositeChanged},
 			{Ref: xrB, Status: simulate.CompositeUnchanged},
@@ -218,20 +216,18 @@ var (
 // composite; comp-b reaches only a composite whose analysis failed.
 func compResult() simulate.Result {
 	return simulate.Result{
-		Result: plan.Result{
-			Plans: []*plan.ResourcePlan{
-				{
-					APIVersion: compA.APIVersion, Kind: compA.Kind, Name: compA.Name, Action: plan.ActionUpdate,
-					Changes: []plan.FieldChange{{Path: "spec.mode", Actual: val("Resources"), Planned: val("Pipeline")}},
-				},
-				{APIVersion: compB.APIVersion, Kind: compB.Kind, Name: compB.Name, Error: "cannot convert composition"},
-				{
-					APIVersion: "example.org/v1", Kind: "XDownstream", Name: "xr-1-abc12", Namespace: "default", Action: plan.ActionUpdate, Composite: &xr1,
-					Changes: []plan.FieldChange{{Path: "spec.forProvider.configData", Actual: val("old"), Planned: val("new-value-42")}},
-					Before:  downstreamObject("old"),
-					After:   downstreamObject("new-value-42"),
-					DryRun:  &plan.Verification{SkipReason: "not-found", Detail: "the server could not find it"},
-				},
+		Plans: []*plan.ResourcePlan{
+			{
+				APIVersion: compA.APIVersion, Kind: compA.Kind, Name: compA.Name, Action: plan.ActionUpdate,
+				Changes: []plan.FieldChange{{Path: "spec.mode", Actual: val("Resources"), Planned: val("Pipeline")}},
+			},
+			{APIVersion: compB.APIVersion, Kind: compB.Kind, Name: compB.Name, Error: "cannot convert composition"},
+			{
+				APIVersion: "example.org/v1", Kind: "XDownstream", Name: "xr-1-abc12", Namespace: "default", Action: plan.ActionUpdate, Composite: &xr1,
+				Changes: []plan.FieldChange{{Path: "spec.forProvider.configData", Actual: val("old"), Planned: val("new-value-42")}},
+				Before:  downstreamObject("old"),
+				After:   downstreamObject("new-value-42"),
+				DryRun:  &plan.Verification{SkipReason: "not-found", Detail: "the server could not find it"},
 			},
 		},
 		Compositions: []simulate.CompositionResult{

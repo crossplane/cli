@@ -26,11 +26,66 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/afero"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
+
+// normalizedEpochSeconds is the fixed modification time NormalizeTar stamps
+// on every entry: 1980-01-01, the oldest time a zip can represent, matching
+// the SOURCE_DATE_EPOCH reproducible builds conventionally export.
+const normalizedEpochSeconds = 315532800
+
+// NormalizeTar rewrites the headers of the given tar so its bytes depend only
+// on the entries' names, contents, modes and types: a fixed modification
+// time, no access or change times, and root ownership without user names. A
+// tar retrieved from a build container otherwise embeds the wall-clock times
+// of the build that created its files, changing an image layer's digest on
+// every rebuild of identical inputs.
+func NormalizeTar(in []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	tr := tar.NewReader(bytes.NewReader(in))
+	tw := tar.NewWriter(&buf)
+
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to read tar entry")
+		}
+		if h.Typeflag == tar.TypeXGlobalHeader {
+			// Global extension headers only carry metadata like times.
+			continue
+		}
+
+		h.ModTime = time.Unix(normalizedEpochSeconds, 0)
+		h.AccessTime = time.Time{}
+		h.ChangeTime = time.Time{}
+		h.Uid = 0
+		h.Gid = 0
+		h.Uname = ""
+		h.Gname = ""
+		for key := range h.PAXRecords {
+			switch key {
+			case "atime", "ctime", "mtime":
+				delete(h.PAXRecords, key)
+			}
+		}
+
+		if err := tw.WriteHeader(h); err != nil {
+			return nil, errors.Wrap(err, "failed to write tar entry header")
+		}
+		if _, err := io.Copy(tw, tr); err != nil { //nolint:gosec // The tar is produced by our own build, not untrusted input.
+			return nil, errors.Wrap(err, "failed to copy tar entry")
+		}
+	}
+
+	return buf.Bytes(), errors.Wrap(tw.Close(), "failed to close tar archive")
+}
 
 // Walk is a replacement for afero.Walk that ensures paths are normalized for
 // in-memory filesystem compatibility on Windows. This reimplementation uses

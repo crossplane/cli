@@ -113,14 +113,12 @@ func BuildIndex(imgs ...v1.Image) (v1.ImageIndex, []v1.Image, error) {
 		}
 
 		adds = append(adds, mutate.IndexAddendum{
-			Add: aimg,
-			Descriptor: v1.Descriptor{
-				MediaType: mt,
-				Platform: &v1.Platform{
-					Architecture: conf.Architecture,
-					OS:           conf.OS,
-					OSVersion:    conf.OSVersion,
-				},
+			Add:       aimg,
+			MediaType: mt,
+			Platform: &v1.Platform{
+				Architecture: conf.Architecture,
+				OS:           conf.OS,
+				OSVersion:    conf.OSVersion,
 			},
 		})
 	}

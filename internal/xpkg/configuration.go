@@ -22,7 +22,6 @@ import (
 	"path"
 
 	"github.com/spf13/afero"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -78,9 +77,7 @@ func ResolveConfigurationFunctions(ctx context.Context, cfg *pkgmetav1.Configura
 		}
 
 		fns = append(fns, pkgv1.Function{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: path.Base(resolved.Context().RepositoryStr()),
-			},
+			Name: path.Base(resolved.Context().RepositoryStr()),
 			Spec: pkgv1.FunctionSpec{
 				PackageSpec: pkgv1.PackageSpec{
 					Package: resolved.Name(),

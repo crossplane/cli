@@ -252,6 +252,7 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 
 	for i, in := range toRender {
 		res := in.Resource
+		p.config.Progress.Report(i, len(toRender), dt.MakeDiffKeyFromResource(res))
 
 		// Attribute the group to the name the XR is rendered under. A synthesized one (generateName
 		// only) is shown the way the diff formatter shows it, "<generateName>(generated)", so the

@@ -167,7 +167,7 @@
               pkgs.coreutils
               pkgs.gnused
               pkgs.ncurses
-              pkgs.unstable.go_1_26
+              pkgs.unstable.go_1_27
               pkgs.unstable.golangci-lint
               pkgs.kubectl
               pkgs.kind

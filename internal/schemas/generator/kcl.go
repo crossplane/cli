@@ -46,12 +46,12 @@ import (
 	xcrd "github.com/crossplane/cli/v2/internal/crd"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
+	"github.com/crossplane/cli/v2/pkg/images"
 )
 
 const (
 	kclModelsFolder         = "models"
 	kclAdoptModelsStructure = "sorted"
-	kclImage                = "docker.io/kcllang/kcl:v0.11.2"
 )
 
 type kclGenerator struct{}
@@ -130,7 +130,7 @@ func (kclGenerator) GenerateFromCRD(ctx context.Context, fromFS afero.Fs, genera
 		crdFS,
 		baseFolder,
 		"",
-		kclImage,
+		images.Image(images.KCL, images.ImageSchema),
 		[]string{
 			"sh", "-c",
 			`find . -name "*.yaml" -exec kcl import -m crd -s {} \;`,

@@ -40,8 +40,6 @@ const (
 // and returns the version of the Crossplane deployment. If the version
 // does not have a leading 'v', it prepends it.
 func FetchCrossplaneVersion(ctx context.Context, imp kube.ImpersonationFlags) (string, error) {
-	var version string
-
 	config, err := ctrl.GetConfig()
 	if err != nil {
 		return "", errors.Wrap(err, errKubeConfig)
@@ -64,11 +62,7 @@ func FetchCrossplaneVersion(ctx context.Context, imp kube.ImpersonationFlags) (s
 	for _, deployment := range deployments.Items {
 		v, ok := deployment.Labels["app.kubernetes.io/version"]
 		if ok {
-			if !strings.HasPrefix(v, "v") {
-				version = "v" + v
-			}
-
-			return version, nil
+			return "v" + strings.TrimPrefix(v, "v"), nil
 		}
 
 		if len(deployment.Spec.Template.Spec.Containers) > 0 {

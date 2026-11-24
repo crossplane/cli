@@ -529,13 +529,11 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// list them or only count them is the renderer's decision (see CompositionDiff.Scoped).
 	for _, d := range droppedXRs {
 		result.ImpactAnalysis = append(result.ImpactAnalysis, dt.XRImpact{
-			ComposedBy: parentCompositeRef(d.xr, nil),
-			ObjectReference: corev1.ObjectReference{
-				APIVersion: d.xr.GetAPIVersion(),
-				Kind:       d.xr.GetKind(),
-				Name:       d.xr.GetName(),
-				Namespace:  d.xr.GetNamespace(),
-			},
+			ComposedBy:   parentCompositeRef(d.xr, nil),
+			APIVersion:   d.xr.GetAPIVersion(),
+			Kind:         d.xr.GetKind(),
+			Name:         d.xr.GetName(),
+			Namespace:    d.xr.GetNamespace(),
 			Status:       dt.XRStatusFiltered,
 			FilterReason: d.reason,
 			FilterDetail: d.detail,
@@ -805,8 +803,11 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 
 	results := make(map[string]*XRDiffResult)
 
-	for _, xr := range xrs {
+	for i, xr := range xrs {
 		resourceID := dt.MakeDiffKeyFromResource(xr)
+		// The composition prefix tells apart composites of the same name when
+		// several compositions are simulated in one run.
+		p.config.Progress.Report(i, len(xrs), cliComp.GetName()+": "+resourceID)
 
 		if pin, ok := pinned[resourceID]; ok && pin.err != nil {
 			results[resourceID] = &XRDiffResult{

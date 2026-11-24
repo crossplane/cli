@@ -61,7 +61,7 @@ func LoadOperation(fs afero.Fs, path string) (*opsv1alpha1.Operation, error) {
 		// controller does. The real controller always overwrites the name with
 		// a generated one; we use the parent's name for simplicity.
 		op := &opsv1alpha1.Operation{
-			TypeMeta:   metav1.TypeMeta{APIVersion: meta.APIVersion, Kind: opsv1alpha1.OperationKind},
+			APIVersion: meta.APIVersion, Kind: opsv1alpha1.OperationKind,
 			ObjectMeta: cop.Spec.OperationTemplate.ObjectMeta,
 			Spec:       cop.Spec.OperationTemplate.Spec,
 		}
@@ -77,7 +77,7 @@ func LoadOperation(fs afero.Fs, path string) (*opsv1alpha1.Operation, error) {
 		// controller does. The real controller always overwrites the name with
 		// a generated one; we use the parent's name for simplicity.
 		op := &opsv1alpha1.Operation{
-			TypeMeta:   metav1.TypeMeta{APIVersion: meta.APIVersion, Kind: opsv1alpha1.OperationKind},
+			APIVersion: meta.APIVersion, Kind: opsv1alpha1.OperationKind,
 			ObjectMeta: wop.Spec.OperationTemplate.ObjectMeta,
 			Spec:       *wop.Spec.OperationTemplate.Spec.DeepCopy(),
 		}

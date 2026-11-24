@@ -706,12 +706,12 @@ func goRenamePropertyTypes(baseName string, props map[string]spec.Schema) {
 }
 
 func goFixName(name string) string {
-	lastDot := strings.LastIndex(name, ".")
-	if lastDot == -1 {
+	before, _, ok := strings.CutLast(name, ".")
+	if !ok {
 		return codegen.ToCamelCaseWithInitialisms(name)
 	}
 	genName := codegen.SchemaNameToTypeName(name)
-	prefix := codegen.SchemaNameToTypeName(name[:lastDot])
+	prefix := codegen.SchemaNameToTypeName(before)
 	return codegen.ToCamelCaseWithInitialisms(strings.TrimPrefix(genName, prefix))
 }
 
@@ -921,11 +921,11 @@ func goReferenceK8sTypesPropertiesWithMetaPath(props map[string]spec.Schema, use
 }
 
 func tryReplaceK8sTypeWithMetaPath(schema *spec.Schema, ref string, useCorePath, useRealMeta bool) {
-	lastDot := strings.LastIndex(ref, ".")
-	if lastDot == -1 {
+	_, after, ok := strings.CutLast(ref, ".")
+	if !ok {
 		return
 	}
-	t := ref[lastDot+1:]
+	t := after
 
 	// useRealMeta always resolves meta.v1 to the real apimachinery package,
 	// since client.Object needs its exact types, not a similar mirror.

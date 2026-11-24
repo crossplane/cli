@@ -1,0 +1,19 @@
+languages:
+  go:
+    baseImage: "gcr.io/distroless/static-debian12@sha256:a9329520abc449e3b14d5bc3a6ffae065bdde0f02667fa10880c49b35c109fd1"
+  go-templating:
+    baseImage: "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.12.0"
+  kcl:
+    baseImage: "xpkg.crossplane.io/crossplane-contrib/function-kcl:v0.12.3"
+    schemaImage: "docker.io/kcllang/kcl:v0.11.2"
+  python:
+    buildImage: "xpkg.crossplane.io/crossplane/cli-python-build:20261123.210850"
+    runtimeImage: "gcr.io/distroless/python3-debian13:nonroot"
+    schemaImage: "docker.io/koxudaxi/datamodel-code-generator:0.59.0"
+  rust:
+    buildImage: "docker.io/library/rust:1-trixie"
+    runtimeImage: "gcr.io/distroless/cc-debian13:nonroot"
+tools:
+  functionAutoReady: "xpkg.crossplane.io/crossplane-contrib/function-auto-ready"
+  devRegistry: "ghcr.io/olareg/olareg:edge"
+  devRegistryConfigurator: "docker.io/library/alpine:3"

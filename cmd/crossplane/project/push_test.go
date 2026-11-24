@@ -162,6 +162,10 @@ func writeConfigurationPackage(t *testing.T, path, repo string) {
 }
 
 func TestPushCmdRun(t *testing.T) {
+	// Use an empty Docker config so the default keychain doesn't consult the
+	// host's credential helpers.
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+
 	srv := httptest.NewServer(registry.New(registry.Logger(log.New(io.Discard, "", 0))))
 	t.Cleanup(srv.Close)
 	// go-containerregistry talks plain HTTP to loopback registries.

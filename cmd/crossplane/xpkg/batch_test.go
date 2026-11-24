@@ -104,6 +104,10 @@ func testBaseImgMap(t *testing.T, platforms []string) map[string]v1.Image {
 }
 
 func TestBatchProcessService(t *testing.T) {
+	// Use an empty Docker config so the default keychain doesn't consult the
+	// host's credential helpers.
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+
 	host := newTestRegistry(t, nil)
 	platforms := []string{"linux_amd64", "linux_arm64"}
 
@@ -235,6 +239,10 @@ func TestBatchProcessServiceErrors(t *testing.T) {
 }
 
 func TestBatchPushWithRetry(t *testing.T) {
+	// Use an empty Docker config so the default keychain doesn't consult the
+	// host's credential helpers.
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+
 	type args struct {
 		failures int32
 		retries  uint

@@ -445,6 +445,10 @@ func TestPushImagesRegistryError(t *testing.T) {
 }
 
 func TestPushCmdRun(t *testing.T) {
+	// Use an empty Docker config so the default keychain doesn't consult the
+	// host's credential helpers.
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+
 	host := newTestRegistry(t, nil)
 
 	type args struct {

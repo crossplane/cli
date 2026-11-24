@@ -2015,6 +2015,7 @@ Summary: 2 modified, 2 removed`,
 				WithWarning("Cannot tell which field manager applies this resource").
 				WithWarningContext(map[string]string{
 					"resource":   "XTestDefaultResource/test-resource-user-applied",
+					"namespace":  "default",
 					"candidates": "argocd-controller, platform-operator",
 				}).
 				And().

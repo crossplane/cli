@@ -482,7 +482,8 @@ func (p *DefaultCompDiffProcessor) preflightResourceRefs(ctx context.Context, co
 // processSingleComposition processes a single composition and builds the result.
 // `affectedXRs` is the pre-resolved set of XRs to evaluate (caller decides via DiffComposition's
 // switch whether this comes from the --resource preflight or default-discovery via FindComposites).
-// `supplied` maps the diff key of each composite from --resource-file inputs to its state (see
+// `supplied` maps the CompositeKey (group, kind, namespace, name) of each composite from
+// --resource-file inputs to its state (see
 // mergeSupplied). One whose liveness could not be told is reported with that error, unrendered.
 // `scoped` records that the set came from --resource rather than discovery (see CompositionDiff.Scoped).
 // `run` holds the run's Compositions by name, for nested XRs of other types (see runCompositions).

@@ -546,26 +546,22 @@ func (b *batchParserBackend) Init(ctx context.Context, opts ...parser.BackendOpt
 	if err != nil {
 		return nil, errors.Wrap(err, errCRDBackend)
 	}
+	// The separator keeps the first CRD a separate YAML document even when its
+	// file doesn't start with ---. The parser skips any resulting empty document.
 	return &batchReadCloser{
+		Reader:             io.MultiReader(rcMetadata, strings.NewReader("\n---\n"), rcCRD),
 		metadataReadCloser: rcMetadata,
 		crdReadCloser:      rcCRD,
 	}, nil
 }
 
 type batchReadCloser struct {
+	io.Reader
+
 	metadataReadCloser io.ReadCloser
 	crdReadCloser      io.ReadCloser
-	metadataRead       bool
-}
-
-func (b *batchReadCloser) Read(p []byte) (n int, err error) {
-	if !b.metadataRead {
-		b.metadataRead = true
-		return b.metadataReadCloser.Read(p)
-	}
-	return b.crdReadCloser.Read(p)
 }
 
 func (b *batchReadCloser) Close() error {
-	return b.crdReadCloser.Close() // echo backend's io.Closer implementation is a noop one.
+	return errors.Join(b.metadataReadCloser.Close(), b.crdReadCloser.Close())
 }

@@ -6,7 +6,8 @@ metadata:
   name: test-resource-user-applied
   namespace: default
   annotations:
-    kubectl.kubernetes.io/last-applied-configuration: '{"apiVersion":"ns.diff.example.org/v1alpha1","kind":"XTestDefaultResource","metadata":{"annotations":{},"name":"test-resource-user-applied","namespace":"default"},"spec":{"size":"large","tags":{"team":"platform"}}}'
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"ns.diff.example.org/v1alpha1","kind":"XTestDefaultResource","metadata":{"annotations":{},"name":"test-resource-user-applied","namespace":"default"},"spec":{"size":"large","tags":{"team":"platform"}}}
 spec:
   size: "large"
   tags:

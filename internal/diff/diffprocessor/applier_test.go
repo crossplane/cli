@@ -119,11 +119,11 @@ func TestCalculateDiffClientSideApply(t *testing.T) {
 		return u
 	}
 	lastApplied := map[string]string{
-		plan.LastAppliedConfigAnnotation: `{"apiVersion":"example.org/v1","kind":"XR","metadata":{"name":"x","namespace":"default"},"spec":{"size":"large","team":"platform"}}`,
+		plan.LastAppliedConfigAnnotation: `{"apiVersion":"example.org/v1","kind":"XR","metadata":{"name":"x","namespace":"default"},"spec":{"size":"large","team":"platform"}}` + "\n",
 	}
 	desired := xr(nil, map[string]any{"size": "large"})
-	// As kubectl serializes it: with metadata.annotations even when empty.
-	desiredApplied := `{"apiVersion":"example.org/v1","kind":"XR","metadata":{"annotations":{},"name":"x","namespace":"default"},"spec":{"size":"large"}}`
+	// As kubectl serializes it: with metadata.annotations even when empty, and a trailing newline.
+	desiredApplied := `{"apiVersion":"example.org/v1","kind":"XR","metadata":{"annotations":{},"name":"x","namespace":"default"},"spec":{"size":"large"}}` + "\n"
 
 	type want struct {
 		// patch is the merge patch sent, decoded.
@@ -141,6 +141,11 @@ func TestCalculateDiffClientSideApply(t *testing.T) {
 				"metadata": map[string]any{"annotations": map[string]any{plan.LastAppliedConfigAnnotation: desiredApplied}},
 				"spec":     map[string]any{"team": nil},
 			}},
+		},
+		"UnchangedManifestPatchesNothing": {
+			reason: "An annotation kubectl wrote for the same manifest equals the modified one, so the patch is empty, as kubectl's is.",
+			live:   xr(map[string]string{plan.LastAppliedConfigAnnotation: desiredApplied}, map[string]any{"size": "large"}),
+			want:   want{patch: map[string]any{}},
 		},
 		"NoAnnotationRemovesNothing": {
 			reason: "With no annotation there is no original, so no field is nulled: only the annotation is added.",

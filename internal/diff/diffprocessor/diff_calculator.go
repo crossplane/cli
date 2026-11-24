@@ -225,6 +225,11 @@ func (c *DefaultDiffCalculator) userApplierFieldOwner(ctx context.Context, fallb
 // annotation (original), desired with that annotation set to desired itself (modified), and current,
 // sent as a dry-run merge patch. It removes what the annotation has and desired drops, whoever owns
 // it; with no annotation there is no original, so it removes nothing, as kubectl does.
+//
+// desired is the sanitized dry-run payload, not the manifest as kubectl would send it, so modified
+// lacks what sanitizeForDryRun strips (ownerReferences, uid, resourceVersion and the like) and has
+// the composite label CalculateDiff preserves. An annotation recording those, as one applied from a
+// manifest exported from the cluster would, makes the patch null them where kubectl's would not.
 func (c *DefaultDiffCalculator) dryRunClientSideApply(ctx context.Context, current, desired *un.Unstructured, resourceID string) (*un.Unstructured, error) {
 	original := []byte(current.GetAnnotations()[plan.LastAppliedConfigAnnotation])
 
@@ -257,7 +262,8 @@ func (c *DefaultDiffCalculator) dryRunClientSideApply(ctx context.Context, curre
 // lastAppliedModified returns obj as kubectl's client-side apply sends it (GetModifiedConfiguration in
 // k8s.io/kubectl/pkg/util): obj without the last-applied-configuration annotation, serialized, then
 // set as that annotation, and serialized again. Like kubectl's, the serialization always has
-// metadata.annotations, empty or not. obj is not modified.
+// metadata.annotations, empty or not, and the annotation ends in a newline, as kubectl's JSON
+// encoder writes it. obj is not modified.
 func lastAppliedModified(obj *un.Unstructured) ([]byte, error) {
 	out := obj.DeepCopy()
 
@@ -274,7 +280,7 @@ func lastAppliedModified(obj *un.Unstructured) ([]byte, error) {
 		return nil, err
 	}
 
-	annotations[plan.LastAppliedConfigAnnotation] = string(applied)
+	annotations[plan.LastAppliedConfigAnnotation] = string(applied) + "\n"
 	out.SetAnnotations(annotations)
 
 	return json.Marshal(out.Object)

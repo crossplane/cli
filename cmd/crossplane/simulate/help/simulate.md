@@ -27,10 +27,11 @@ resources to simulate, and is required. Give a comma-separated list for more;
 `--field-manager` and `--server-side` say how the input managed resources are
 applied, as `kubectl apply`'s flags of the same names do, so an approximate
 plan shows the fields that applying them would remove. Unset, they're inferred
-from each one's `managedFields`, as `crossplane xr simulate` infers them. When
-the applier can't be told, the command warns on stderr that dropped fields may
-not be shown removed. Composed resources are always planned as the Crossplane
-field manager that composed them.
+from each one's `managedFields` and `kubectl.kubernetes.io/last-applied-configuration`
+annotation, as `crossplane xr simulate` infers them. When the applier can't be
+told and the command falls back to an approximate plan, it warns on stderr that
+dropped fields may not be shown removed. The flags also apply to input managed
+resources that Crossplane composed.
 
 Which providers run as diff servers comes from the current kubeconfig context
 by default: the CLI follows each resource's kind to the provider that

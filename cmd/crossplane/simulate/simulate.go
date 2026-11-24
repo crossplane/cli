@@ -68,8 +68,8 @@ type Cmd struct {
 	Timeout      time.Duration `default:"2m"                                                                                                                                                                                                         help:"Max time to plan one managed resource."`
 	Output       string        `default:"plan"                                                                                                                                                                                                       enum:"plan,json,yaml"                                                           help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
 
-	FieldManager string `help:"Field manager that applies the input managed resources, as kubectl apply's --field-manager. Inferred from their managedFields when unset."`
-	ServerSide   *bool  `help:"Whether the input managed resources are applied server-side, as kubectl apply's --server-side. Inferred from their managedFields when unset."`
+	FieldManager string `help:"Field manager that applies the input managed resources, as kubectl apply's --field-manager. Inferred from their managedFields and last-applied-configuration annotation when unset."`
+	ServerSide   *bool  `help:"Whether the input managed resources are applied server-side, as kubectl apply's --server-side. Inferred from their managedFields and last-applied-configuration annotation when unset."`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
 }

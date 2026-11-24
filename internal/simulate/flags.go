@@ -51,8 +51,8 @@ type Flags struct {
 	EventualState       bool     `help:"Show eventual state after all reconciliation cycles complete (useful with function-sequencer)."`
 	MaxRecvMessageSize  int      `help:"Max gRPC message size (MB) for render function containers (4 MB if undefined)."`
 	DryRunOn            string   `default:"all"                                                                                                                                                    enum:"existing,all"                           help:"Which resources to verify with a server-side dry run: existing or all (default)."`
-	FieldManager        string   `help:"Field manager that applies the input composite resources and claims, as kubectl apply's --field-manager. Inferred from their managedFields when unset."`
-	ServerSide          *bool    `help:"Whether the input composite resources and claims are applied server-side, as kubectl apply's --server-side. Inferred from their managedFields when unset."`
+	FieldManager        string   `help:"Field manager that applies the input composite resources and claims, as kubectl apply's --field-manager. Inferred from their managedFields and last-applied-configuration annotation when unset."`
+	ServerSide          *bool    `help:"Whether the input composite resources and claims are applied server-side, as kubectl apply's --server-side. Inferred from their managedFields and last-applied-configuration annotation when unset."`
 
 	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster diff."`
 	Providers    string `help:"YAML file or directory of Provider manifests to run as diff servers, instead of discovering them from the cluster."                                name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`

@@ -743,11 +743,12 @@ func TestSimulateRun(t *testing.T) {
 
 func TestWarnIgnoredFlags(t *testing.T) {
 	cases := map[string]struct {
-		reason   string
-		args     []string
-		skipPlan bool
-		project  bool
-		warn     string
+		reason     string
+		args       []string
+		skipPlan   bool
+		project    bool
+		composites bool
+		warn       string
 	}{
 		"ProjectAcceptsAll": {
 			reason:  "A project uses every flag.",
@@ -783,6 +784,21 @@ func TestWarnIgnoredFlags(t *testing.T) {
 			skipPlan: true,
 			warn:     "ignoring --session-id",
 		},
+		"FieldManagerWithoutComposites": {
+			reason: "--field-manager only says how input composite resources and claims are applied, so a run without them ignores it with a warning.",
+			args:   []string{"--field-manager", "argocd"},
+			warn:   "ignoring --field-manager",
+		},
+		"ServerSideWithoutComposites": {
+			reason: "--server-side only says how input composite resources and claims are applied, so a run without them ignores it with a warning.",
+			args:   []string{"--server-side=false"},
+			warn:   "ignoring --server-side",
+		},
+		"FieldManagerWithComposites": {
+			reason:     "A run with input composite resources or claims uses --field-manager.",
+			args:       []string{"--field-manager", "argocd", "--server-side"},
+			composites: true,
+		},
 		"DefaultsAreNotSet": {
 			reason:   "Flags left at their defaults, or set from the environment, are not warned about.",
 			skipPlan: true,
@@ -809,7 +825,7 @@ func TestWarnIgnoredFlags(t *testing.T) {
 			}
 
 			var stderr bytes.Buffer
-			warnIgnoredFlags(&stderr, setFlags(k), tc.skipPlan, tc.project)
+			warnIgnoredFlags(&stderr, setFlags(k), tc.skipPlan, tc.project, tc.composites)
 			if tc.warn == "" && stderr.Len() > 0 || !strings.Contains(stderr.String(), tc.warn) {
 				t.Errorf("\n%s\nwarnIgnoredFlags(...): want warning containing %q, got %q", tc.reason, tc.warn, stderr.String())
 			}

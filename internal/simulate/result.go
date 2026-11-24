@@ -83,6 +83,10 @@ type CompositeResult struct {
 	// with any other status it was simulated anyway, under --include-pinned
 	// or rendered against its pinned revision (see Detail).
 	Pinned bool `json:"pinned,omitempty"`
+	// Supplied marks a composite from --resource-file rather than
+	// discovered from the cluster. One the cluster lacks would be created by
+	// applying it, so it is not counted in RevisionImpact.RepointedComposites.
+	Supplied bool `json:"supplied,omitempty"`
 	// Composition is the Composition whose change reaches this composite,
 	// set only for a composition simulate run.
 	Composition *plan.ResourceRef `json:"composition,omitempty"`

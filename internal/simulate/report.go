@@ -187,7 +187,7 @@ func FromCompReport(o *dt.CompDiffOutput, plans *ProviderPlans, keep func(*unstr
 // rendered against its pinned revision because that calls a changed function)
 // keeps the status of its simulation. Other filtered composites are skipped.
 func compositeResult(impact dt.XRImpact) CompositeResult {
-	c := CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned || impact.FilterReason == dt.FilterReasonManualPolicy}
+	c := CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned || impact.FilterReason == dt.FilterReasonManualPolicy, Supplied: impact.Supplied}
 	if impact.ComposedBy != nil {
 		ref := resourceRef(*impact.ComposedBy)
 		c.ComposedBy = &ref

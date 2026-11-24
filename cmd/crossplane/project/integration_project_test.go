@@ -187,7 +187,7 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			},
 		},
 		"NewCompositionResourceFile": {
-			reason: "A Composition the cluster lacks renders a --resource-file XR against it: the XR and its composed resources are creates.",
+			reason: "A Composition the cluster lacks renders a --resource-file XR against it: the XR and its composed resources are creates, and the XR, which nothing in the cluster has, re-points no live composite.",
 			setupFiles: []string{
 				"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
 				"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
@@ -197,8 +197,8 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			expectedExitCode: dp.ExitCodeDiffDetected,
 			expectedResult: planShape{
 				Summary:      plan.Summary{Create: 3},
-				Composites:   []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp}},
-				Compositions: compositions(1),
+				Composites:   []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp, Supplied: true}},
+				Compositions: compositions(0),
 				Plans: []planEntry{
 					{Kind: "Composition", Name: comp.Name, Action: plan.ActionCreate},
 					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionCreate, Composite: "test-resource"},

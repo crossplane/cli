@@ -274,7 +274,7 @@ func (m *MockDiffProcessor) ResolveComposite(ctx context.Context, res *un.Unstru
 	return res, nil
 }
 
-// ClusterComposite implements the DiffProcessor.ClusterComposite method. Unset, the cluster has no copy
+// ClusterComposite implements the ClusterCompositeGetter.ClusterComposite method. Unset, the cluster has no copy
 // of res.
 func (m *MockDiffProcessor) ClusterComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error) {
 	if m.ClusterCompositeFn != nil {

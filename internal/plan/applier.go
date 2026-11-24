@@ -70,7 +70,7 @@ type Applier struct {
 }
 
 // HasCandidates reports whether the live object records any applier. With
-// none, no apply removes anything, so an undetermined applier changes nothing.
+// none, a warning that the applier cannot be told would name nothing.
 func (a Applier) HasCandidates() bool {
 	return len(a.Candidates) > 0 || a.ClientSide
 }

@@ -121,6 +121,20 @@ func TestResolveApplier(t *testing.T) {
 			args:   args{live: live(false, update("kubectl-edit"))},
 			want:   Applier{Mode: ApplyUndetermined, ImperativeWriters: []string{"kubectl-edit"}},
 		},
+		"ApplierThatAlsoUpdates": {
+			reason: "A manager with both an Apply and an Update entry, on an object without the last-applied annotation, is both a candidate and an imperative writer, so the applier is undetermined.",
+			args:   args{live: live(false, apply("platform-operator"), update("platform-operator"))},
+			want:   Applier{Mode: ApplyUndetermined, Candidates: []string{"platform-operator"}, ImperativeWriters: []string{"platform-operator"}},
+		},
+		"EmptyLastAppliedAnnotation": {
+			reason: "A last-applied-configuration annotation that is present but empty still records a client-side apply.",
+			args: args{live: func() *unstructured.Unstructured {
+				u := live(false, update("kubectl-client-side-apply"))
+				u.SetAnnotations(map[string]string{LastAppliedConfigAnnotation: ""})
+				return u
+			}()},
+			want: Applier{Mode: ApplyClientSide, ClientSide: true},
+		},
 		"OneClientSideApplier": {
 			reason: "With no flags, a last-applied-configuration annotation alone makes client-side apply the applier, whatever its manager is called.",
 			args:   args{live: live(true, update("argocd-controller"))},

@@ -78,9 +78,9 @@ func ownedBy(e metav1.ManagedFieldsEntry, a Applier) bool {
 
 // ownedLeaf reports whether leaves - the leaf members of an applier-owned
 // field set, or the paths clientSideRemovable returns - contains fp or a
-// prefix of it. An exact leaf is a plainly owned
-// field; a prefix leaf means the applier owns that whole subtree, the way
-// FieldsV1 records atomic lists and maps.
+// prefix of it. An exact leaf is a plainly owned field; a prefix leaf means
+// the applier owns that whole subtree, the way FieldsV1 records atomic lists
+// and maps.
 func ownedLeaf(leaves *fieldpath.Set, fp fieldpath.Path) bool {
 	for i := 1; i <= len(fp); i++ {
 		if leaves.Has(fp[:i]) {

@@ -316,6 +316,19 @@ func TestFallback(t *testing.T) {
 			},
 			want: want{action: ActionNoOp},
 		},
+		"ClientSideApplyWithUnparseableAnnotationRemovesNothing": {
+			reason: "Client-side apply with a last-applied annotation that is not JSON has nothing to remove fields from, so it removes nothing.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{}}),
+				live:    mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}}),
+				managedFields: []metav1.ManagedFieldsEntry{
+					managedBy("kubectl-client-side-apply", metav1.ManagedFieldsOperationUpdate, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`),
+				},
+				annotations: map[string]string{LastAppliedConfigAnnotation: "{not json"},
+				applier:     Applier{Mode: ApplyClientSide},
+			},
+			want: want{action: ActionNoOp},
+		},
 		"UndeterminedApplierRemovesEveryAppliersExclusiveFields": {
 			reason: "With no telling which applier applies the manifest, removals are every applier's exclusively owned fields, as without an applier.",
 			args: args{

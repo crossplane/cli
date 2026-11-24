@@ -814,9 +814,13 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 		reason dt.FilterReason
 	}
 
+	errBackingXRGone := errors.New("backing XR gone")
+
 	tests := map[string]struct {
+		reason        string
 		includeManual bool
-		compName      string // defaults to "test-comp" when empty
+		xrTimeout     time.Duration // the per-XR budget; zero adds none
+		compName      string        // defaults to "test-comp" when empty
 		compLabels    map[string]string
 		xrs           []*un.Unstructured
 		wantKept      []string
@@ -826,15 +830,155 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 		// except where --include-pinned keeps a Manual-policy XR, which stays pinned by its
 		// compositionRevisionRef (issue #479).
 		wantRepointing []string
+		// resolve stands in for DiffProcessor.ResolveComposite, which a Manual claim naming no revision
+		// itself is resolved with to read its backing XR's; unset, a composite is its own.
+		resolve func(context.Context, *un.Unstructured) (*un.Unstructured, error)
+		// wantUnresolved maps the name of each kept composite whose pin could not be read to the error it
+		// carries.
+		wantUnresolved map[string]error
 		wantErr        bool
 	}{
+		// Crossplane pins a Manual composite only once it names a revision (crossplane v2.4.3
+		// internal/controller/apiextensions/composite/api.go:163); one that names none gets the latest
+		// revision, so it re-points like an Automatic one. Both the v2 and the legacy field paths count.
+		"ManualWithRevisionRefV2PathIsDropped": {
+			reason: "A Manual composite naming a revision at the v2 path is pinned to it, so applying the change does not reach it.",
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "XResource", "manual-xr").WithNamespace("default").
+					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
+					WithNestedField(map[string]any{"name": "test-comp-0ld0001"}, "spec", "crossplane", "compositionRevisionRef").Build(),
+			},
+			wantDropped: []droppedWant{{name: "manual-xr", reason: dt.FilterReasonManualPolicy}},
+		},
+		"ManualWithRevisionRefV1PathIsDropped": {
+			reason: "A Manual composite naming a revision at the legacy path is pinned to it too.",
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "XResource", "manual-xr").
+					WithNestedField("Manual", "spec", "compositionUpdatePolicy").
+					WithNestedField(map[string]any{"name": "test-comp-0ld0001"}, "spec", "compositionRevisionRef").Build(),
+			},
+			wantDropped: []droppedWant{{name: "manual-xr", reason: dt.FilterReasonManualPolicy}},
+		},
+		"ManualWithoutRevisionRefV2PathIsKeptAndRepoints": {
+			reason: "A Manual composite naming no revision at the v2 path gets the latest one, so it is kept and re-points.",
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "XResource", "manual-xr").WithNamespace("default").
+					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").Build(),
+			},
+			wantKept:       []string{"manual-xr"},
+			wantRepointing: []string{"manual-xr"},
+		},
+		"ManualWithoutRevisionRefV1PathIsKeptAndRepoints": {
+			reason: "A Manual composite naming no revision at the legacy path gets the latest one, so it is kept and re-points.",
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "XResource", "manual-xr").
+					WithNestedField("Manual", "spec", "compositionUpdatePolicy").Build(),
+			},
+			wantKept:       []string{"manual-xr"},
+			wantRepointing: []string{"manual-xr"},
+		},
+		// --include-pinned has nothing to unpin: the composite already re-points.
+		"ManualWithoutRevisionRefUnderIncludeManualRepoints": {
+			reason:        "--include-pinned has nothing to unpin: the composite already re-points.",
+			includeManual: true,
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "XResource", "manual-xr").WithNamespace("default").
+					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").Build(),
+			},
+			wantKept:       []string{"manual-xr"},
+			wantRepointing: []string{"manual-xr"},
+		},
+		// Crossplane ignores a compositionRevisionSelector under Manual (api.go:203), so one that
+		// rejects the new revision does not keep a Manual composite with no revision off it.
+		"ManualWithoutRevisionRefIgnoresRejectingSelector": {
+			reason:     "Crossplane ignores a compositionRevisionSelector under Manual, so a rejecting one does not keep a Manual composite with no revision off the new revision.",
+			compLabels: map[string]string{"version": "0.0.2"},
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "XResource", "manual-xr").WithNamespace("default").
+					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
+					WithCompositionRevisionSelector(xp.CrossplaneAPIExtGroupV2, map[string]string{"version": "0.0.1"}, nil).Build(),
+			},
+			wantKept:       []string{"manual-xr"},
+			wantRepointing: []string{"manual-xr"},
+		},
+		// A Manual claim usually names no revision itself: Crossplane writes the pin onto its backing XR
+		// alone (claim/syncer_ssa.go:147-152, :211). So it is pinned by its backing XR's ref.
+		"ManualClaimWithoutRevisionRefBackingXRPinnedIsDropped": {
+			reason: "A Manual claim usually names no revision itself, because Crossplane writes the pin onto its backing XR alone, so the backing XR's ref pins it.",
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "Resource", "my-claim").WithNamespace("default").
+					WithNestedField("Manual", "spec", "compositionUpdatePolicy").Build(),
+			},
+			resolve: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+				return tu.NewResource("example.org/v1", "XResource", "my-claim-x7k2p").
+					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
+					WithNestedField(map[string]any{"name": "test-comp-0ld0001"}, "spec", "crossplane", "compositionRevisionRef").Build(), nil
+			},
+			wantDropped: []droppedWant{{name: "my-claim", reason: dt.FilterReasonManualPolicy}},
+		},
+		"ManualClaimWithoutRevisionRefBackingXRUnpinnedIsKeptAndRepoints": {
+			reason: "A Manual claim whose backing XR names no revision either is not pinned, so it is kept and re-points.",
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "Resource", "my-claim").WithNamespace("default").
+					WithNestedField("Manual", "spec", "compositionUpdatePolicy").Build(),
+			},
+			resolve: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+				return tu.NewResource("example.org/v1", "XResource", "my-claim").
+					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").Build(), nil
+			},
+			wantKept:       []string{"my-claim"},
+			wantRepointing: []string{"my-claim"},
+		},
+		// Whether the claim is pinned is unknown, so it is neither filtered nor counted as re-pointing:
+		// it is that claim's own error, not the run's.
+		"ManualClaimWithoutRevisionRefResolveFailureIsKeptAsError": {
+			reason: "Whether the claim is pinned is unknown when its backing XR cannot be resolved, so it is neither filtered nor counted as re-pointing: it is that claim's own error, not the run's.",
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "Resource", "my-claim").WithNamespace("default").
+					WithNestedField("Manual", "spec", "compositionUpdatePolicy").Build(),
+			},
+			resolve: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+				return nil, errBackingXRGone
+			},
+			wantKept:       []string{"my-claim"},
+			wantUnresolved: map[string]error{"my-claim": errBackingXRGone},
+		},
+		"ManualClaimWithoutRevisionRefSlowLookupTimesOutAlone": {
+			reason:    "The backing XR read runs under the claim's own XRTimeout, so a slow one fails that claim alone, as a failed read does.",
+			xrTimeout: 10 * time.Millisecond,
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "Resource", "my-claim").WithNamespace("default").
+					WithNestedField("Manual", "spec", "compositionUpdatePolicy").Build(),
+			},
+			resolve: func(ctx context.Context, _ *un.Unstructured) (*un.Unstructured, error) {
+				<-ctx.Done()
+
+				return nil, context.Cause(ctx)
+			},
+			wantKept:       []string{"my-claim"},
+			wantUnresolved: map[string]error{"my-claim": ErrXRTimedOut},
+		},
+		// A claim naming its own revision is pinned by it, without resolving its backing XR.
+		"ManualClaimWithRevisionRefIsDroppedWithoutResolving": {
+			reason: "A claim naming its own revision is pinned by it, without resolving its backing XR.",
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "Resource", "my-claim").WithNamespace("default").
+					WithNestedField("Manual", "spec", "compositionUpdatePolicy").
+					WithNestedField(map[string]any{"name": "test-comp-0ld0001"}, "spec", "compositionRevisionRef").Build(),
+			},
+			resolve: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+				return nil, errors.New("resolved a claim that names its revision")
+			},
+			wantDropped: []droppedWant{{name: "my-claim", reason: dt.FilterReasonManualPolicy}},
+		},
 		// Manual side: --include-pinned keeps Manual XRs...
 		"IncludeManualTrue_KeepsManualXRs": {
 			includeManual: true,
 			compLabels:    map[string]string{"version": "0.0.2"},
 			xrs: []*un.Unstructured{
 				tu.NewResource("example.org/v1", "XResource", "manual-xr").WithNamespace("default").
-					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").Build(),
+					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
+					WithNestedField(map[string]any{"name": "test-comp-0ld0001"}, "spec", "crossplane", "compositionRevisionRef").Build(),
 				tu.NewResource("example.org/v1", "XResource", "auto-xr").WithNamespace("default").
 					WithNestedField("Automatic", "spec", "crossplane", "compositionUpdatePolicy").Build(),
 			},
@@ -850,7 +994,8 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			compLabels:    map[string]string{"version": "0.0.2"},
 			xrs: []*un.Unstructured{
 				tu.NewResource("example.org/v1", "XResource", "manual-only").WithNamespace("default").
-					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").Build(),
+					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
+					WithNestedField(map[string]any{"name": "test-comp-0ld0001"}, "spec", "crossplane", "compositionRevisionRef").Build(),
 			},
 			wantKept:       []string{"manual-only"},
 			wantRepointing: nil,
@@ -863,7 +1008,8 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			compLabels:    map[string]string{"version": "0.0.2"},
 			xrs: []*un.Unstructured{
 				tu.NewResource("example.org/v1", "XResource", "manual-xr").WithNamespace("default").
-					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").Build(),
+					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
+					WithNestedField(map[string]any{"name": "test-comp-0ld0001"}, "spec", "crossplane", "compositionRevisionRef").Build(),
 				tu.NewResource("example.org/v1", "XResource", "auto-mismatch").WithNamespace("default").
 					WithNestedField("Automatic", "spec", "crossplane", "compositionUpdatePolicy").
 					WithCompositionRevisionSelector(xp.CrossplaneAPIExtGroupV2, map[string]string{"version": "0.0.1"}, nil).Build(),
@@ -878,7 +1024,8 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			compLabels:    map[string]string{"version": "0.0.2"},
 			xrs: []*un.Unstructured{
 				tu.NewResource("example.org/v1", "XResource", "manual-xr").WithNamespace("default").
-					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").Build(),
+					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
+					WithNestedField(map[string]any{"name": "test-comp-0ld0001"}, "spec", "crossplane", "compositionRevisionRef").Build(),
 				tu.NewResource("example.org/v1", "XResource", "auto-xr").WithNamespace("default").
 					WithNestedField("Automatic", "spec", "crossplane", "compositionUpdatePolicy").Build(),
 			},
@@ -970,6 +1117,7 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			xrs: []*un.Unstructured{
 				tu.NewResource("example.org/v1", "XResource", "manual-match").WithNamespace("default").
 					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
+					WithNestedField(map[string]any{"name": "test-comp-0ld0001"}, "spec", "crossplane", "compositionRevisionRef").
 					WithCompositionRevisionSelector(xp.CrossplaneAPIExtGroupV2, map[string]string{"version": "0.0.2"}, nil).Build(),
 			},
 			wantKept:       nil,
@@ -1063,8 +1211,10 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			processor := &DefaultCompDiffProcessor{
 				config: ProcessorConfig{
 					IncludeManual: tt.includeManual,
+					XRTimeout:     tt.xrTimeout,
 					Logger:        tu.TestLogger(t, false),
 				},
+				xrProc: &tu.MockDiffProcessor{ResolveCompositeFn: tt.resolve},
 			}
 
 			compName := tt.compName
@@ -1079,7 +1229,7 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 
 			pred := predictRevision(typedComposition(t, newComp))
 
-			kept, dropped, repointing, err := processor.partitionXRsByUpdatePolicy(tt.xrs, newComp, pred)
+			kept, dropped, repointing, unresolved, err := processor.partitionXRsByUpdatePolicy(t.Context(), tt.xrs, newComp, pred)
 
 			if tt.wantErr {
 				if err == nil {
@@ -1099,7 +1249,7 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			}
 
 			if diff := gcmp.Diff(tt.wantKept, gotKept, cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("kept XR names mismatch (-want +got):\n%s", diff)
+				t.Errorf("%s\nkept XR names mismatch (-want +got):\n%s", tt.reason, diff)
 			}
 
 			gotDropped := make([]droppedWant, len(dropped))
@@ -1108,7 +1258,7 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			}
 
 			if diff := gcmp.Diff(tt.wantDropped, gotDropped, cmpopts.EquateEmpty(), gcmp.AllowUnexported(droppedWant{})); diff != "" {
-				t.Errorf("dropped XRs mismatch (-want +got):\n%s", diff)
+				t.Errorf("%s\ndropped XRs mismatch (-want +got):\n%s", tt.reason, diff)
 			}
 
 			var gotRepointing []string
@@ -1120,7 +1270,19 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			}
 
 			if diff := gcmp.Diff(tt.wantRepointing, gotRepointing, cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("repointing XRs mismatch (-want +got):\n%s", diff)
+				t.Errorf("%s\nrepointing XRs mismatch (-want +got):\n%s", tt.reason, diff)
+			}
+
+			gotUnresolved := make(map[string]error)
+
+			for _, xr := range kept {
+				if u, ok := unresolved[dt.MakeDiffKeyFromResource(xr)]; ok && u.err != nil {
+					gotUnresolved[xr.GetName()] = u.err
+				}
+			}
+
+			if diff := gcmp.Diff(tt.wantUnresolved, gotUnresolved, cmpopts.EquateEmpty(), cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("%s\nunresolved XRs mismatch (-want +got):\n%s", tt.reason, diff)
 			}
 		})
 	}
@@ -1236,10 +1398,14 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_RevisionName(t *testing.T) {
 	manual := tu.NewResource("example.org/v1", "XResource", "manual-xr").WithNamespace("default").
 		WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").
 		WithNestedField(map[string]any{"name": "comp-0ld0001"}, "spec", "crossplane", "compositionRevisionRef").Build()
+	manualWithoutRef := tu.NewResource("example.org/v1", "XResource", "manual-unpinned-xr").WithNamespace("default").
+		WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").Build()
 	selective := tu.NewResource("example.org/v1", "XResource", "selective-xr").WithNamespace("default").
 		WithCompositionRevisionSelector(xp.CrossplaneAPIExtGroupV2, map[string]string{"channel": "stable"}, nil).Build()
 	claim := tu.NewResource("example.org/v1", "Resource", "my-claim").WithNamespace("default").Build()
 	backing := tu.NewResource("example.org/v1", "XResource", "my-claim-x7k2p").Build()
+	// backingOlderVersion is a backing XR on a served version that is not the referenceable one.
+	backingOlderVersion := tu.NewResource("example.org/v1alpha1", "XResource", "my-claim-x7k2p").Build()
 
 	// The labels the predicted revision would carry; the selective composite's selector rejects them.
 	revisionLabels := map[string]string{xp.LabelCompositionName: "comp"}
@@ -1268,10 +1434,23 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_RevisionName(t *testing.T) {
 			revisionName: predicted,
 			wantRevision: predicted,
 		},
+		"ClaimsBackingXROnOlderServedVersionGetsThePredictedName": {
+			reason:       "A backing XR on a served version other than the compositeTypeRef's is matched by group and kind, so it renders with the diffed composition and gets the name, as the report says.",
+			xr:           claim,
+			rendered:     backingOlderVersion,
+			revisionName: predicted,
+			wantRevision: predicted,
+		},
 		"ManualCompositeKeepsItsRef": {
-			reason:       "A Manual composite stays pinned, so no revision is resolved and it keeps the ref it has.",
+			reason:       "A Manual composite that names a revision stays pinned, so no revision is resolved and it keeps the ref it has.",
 			xr:           manual,
 			revisionName: predicted,
+		},
+		"ManualCompositeWithoutRefGetsThePredictedName": {
+			reason:       "A Manual composite naming no revision gets the latest one, so it is rendered with the new revision's name.",
+			xr:           manualWithoutRef,
+			revisionName: predicted,
+			wantRevision: predicted,
 		},
 		"SelectorRejectingTheRevisionKeepsItsRef": {
 			reason:       "An Automatic composite whose compositionRevisionSelector rejects the new revision does not adopt it.",
@@ -2095,11 +2274,14 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 		WithSpecField("compositionRef", map[string]any{"name": "test-comp"}).
 		Build()
 
-	// Manual-policy XR (v2 path).
+	// Manual-policy XR (v2 path), pinned: Crossplane pins only a Manual XR that names a revision.
 	manualXR := tu.NewResource("example.org/v1", "XR", "manual-xr").
 		InNamespace("ns").
 		WithSpecField("compositionRef", map[string]any{"name": "test-comp"}).
-		WithSpecField("crossplane", map[string]any{"compositionUpdatePolicy": "Manual"}).
+		WithSpecField("crossplane", map[string]any{
+			"compositionUpdatePolicy": "Manual",
+			"compositionRevisionRef":  map[string]any{"name": "test-comp-0ld0001"},
+		}).
 		Build()
 
 	// DispatchesToCorrectFindMode: DiffComposition routes to ref-lookup vs default-discovery
@@ -2165,7 +2347,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 
 	// RecordsFilteredInBothModes: Manual-policy XRs are recorded as XRStatusFiltered impacts (reason
 	// manual_policy) whether the set came from --resource or from discovery; Scoped records which, so
-	// the renderer can decide whether to name them. A Manual XR that names its revision carries it as
+	// the renderer can decide whether to name them. Each carries the revision it is pinned to as
 	// FilterDetail.
 	t.Run("RecordsFilteredInBothModes", func(t *testing.T) {
 		pinnedManualXR := tu.NewResource("example.org/v1", "XR", "pinned-manual-xr").
@@ -2193,7 +2375,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 		}
 
 		wantImpacts := []dt.XRImpact{
-			filtered("manual-xr", ""),
+			filtered("manual-xr", "compositionRevisionRef: test-comp-0ld0001"),
 			filtered("pinned-manual-xr", "compositionRevisionRef: test-comp-abc1234"),
 		}
 
@@ -2264,12 +2446,42 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 			Impacts []string
 		}
 
+		// A Manual claim naming no revision itself, whose pin is read from its backing XR.
+		claimWithoutRef := tu.NewResource("example.org/v1", "Claim", "unresolved-claim").
+			InNamespace("ns").
+			WithSpecField("crossplane", map[string]any{"compositionUpdatePolicy": "Manual"}).
+			Build()
+
 		cases := map[string]struct {
+			reason        string
 			analyzeOn     AnalyzeOn
 			includeManual bool
 			scoped        bool
-			want          want
+			// unresolvedClaim adds claimWithoutRef, whose backing XR cannot be resolved.
+			unresolvedClaim bool
+			want            want
 		}{
+			"SkippedUnresolvedClaimKeepsItsError": {
+				reason:          "Whether the claim is pinned is unknown, and that error is a verdict the run did earn, so a skip must not drop it: it stays in the report, the error counts and the exit status. It is not counted as re-pointing, and not marked Pinned.",
+				analyzeOn:       AnalyzeOnSpecChange,
+				unresolvedClaim: true,
+				want: want{
+					Skipped:        true,
+					Summary:        dt.AffectedResourcesSummary{Total: 3, WithErrors: 1, FilteredByPolicy: 1},
+					RevisionImpact: dt.RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 1},
+					Impacts:        []string{"filtered manual-xr", "error unresolved-claim"},
+				},
+			},
+			"AnalysedUnresolvedClaimKeepsItsError": {
+				reason:          "The same unresolved claim is reported as an error when the analysis does run, next to the verdicts of the composites that were evaluated.",
+				analyzeOn:       AnalyzeOnAnyChange,
+				unresolvedClaim: true,
+				want: want{
+					Summary:        dt.AffectedResourcesSummary{Total: 3, Unchanged: 1, WithErrors: 1, FilteredByPolicy: 1},
+					RevisionImpact: dt.RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 1},
+					Impacts:        []string{"filtered manual-xr", "unchanged xr-1", "error unresolved-claim"},
+				},
+			},
 			// Discovery records the filtered composite too; only the renderer leaves it unnamed.
 			"Skipped_DefaultDiscovery_RecordsFilteredComposites": {
 				analyzeOn: AnalyzeOnSpecChange,
@@ -2326,7 +2538,19 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 				proc := newCompProcessorForTest(t, client, tt.includeManual)
 				proc.config.AnalyzeOn = tt.analyzeOn
 
-				got, _, err := proc.processSingleComposition(t.Context(), metaOnlyComp, []*un.Unstructured{xr1, manualXR}, tt.scoped, proc.runCompositions(t.Context(), []*un.Unstructured{metaOnlyComp}))
+				xrs := []*un.Unstructured{xr1, manualXR}
+				if tt.unresolvedClaim {
+					xrs = append(xrs, claimWithoutRef)
+					proc.xrProc.(*tu.MockDiffProcessor).ResolveCompositeFn = func(_ context.Context, res *un.Unstructured) (*un.Unstructured, error) {
+						if res.GetKind() == "Claim" {
+							return nil, errors.New("backing XR gone")
+						}
+
+						return res, nil
+					}
+				}
+
+				got, _, err := proc.processSingleComposition(t.Context(), metaOnlyComp, xrs, tt.scoped, proc.runCompositions(t.Context(), []*un.Unstructured{metaOnlyComp}))
 				if err != nil {
 					t.Fatalf("processSingleComposition: %v", err)
 				}
@@ -2356,7 +2580,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ResourceMode(t *testing.T) {
 				}
 
 				if diff := gcmp.Diff(tt.want, gotWant, cmpopts.EquateEmpty()); diff != "" {
-					t.Errorf("processSingleComposition() mismatch (-want +got):\n%s", diff)
+					t.Errorf("%s\nprocessSingleComposition() mismatch (-want +got):\n%s", tt.reason, diff)
 				}
 			})
 		}
@@ -2546,13 +2770,16 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 			"compositionRevisionRef":  map[string]any{"name": "test-comp-rev1"},
 		}).
 		Build()
-	resolveComposite := func(_ context.Context, res *un.Unstructured) (*un.Unstructured, error) {
-		if res.GetKind() == "Claim" {
-			return pinnedXR("pinned-xyz"), nil
-		}
-
-		return res, nil
-	}
+	// A Manual claim naming no revision itself, as Crossplane leaves one: the pin is on its backing XR.
+	claimWithoutRef := tu.NewResource("example.org/v1", "Claim", "pinned").InNamespace("ns").
+		WithSpecField("crossplane", map[string]any{"compositionUpdatePolicy": "Manual"}).
+		Build()
+	// The backing XR of a claim not bound to a revision yet, which Crossplane gives the latest one.
+	unpinnedXR := tu.NewResource("example.org/v1", "XR", "pinned-xyz").
+		InNamespace("ns").
+		WithSpecField("compositionRef", map[string]any{"name": "test-comp"}).
+		WithSpecField("crossplane", map[string]any{"compositionUpdatePolicy": "Manual"}).
+		Build()
 
 	// The pinned revision's pipeline has a step the CLI composition lacks, so a render that saw the
 	// CLI composition instead is detectable.
@@ -2575,12 +2802,18 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 	}
 
 	cases := map[string]struct {
+		reason        string
 		revision      *apiextensionsv1.Composition
 		lookupErr     error
 		includeManual bool
 		unrelated     bool
-		claim         bool
-		want          want
+		// claim is the composite diffed instead of a pinned XR, and backing its effective composite
+		// (pinnedXR("pinned-xyz") when nil).
+		claim   *un.Unstructured
+		backing *un.Unstructured
+		// resolveErr fails resolving the claim's effective composite.
+		resolveErr error
+		want       want
 	}{
 		"PinnedXRWithChangedFunctionRendersPinnedRevision": {
 			revision: revisionWith("function-a"),
@@ -2594,13 +2827,33 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 		// backing XR, finds the pin under its key.
 		"PinnedClaimWithChangedFunctionRendersPinnedRevision": {
 			revision: revisionWith("function-a"),
-			claim:    true,
+			claim:    claim,
 			want:     want{Status: dt.XRStatusUnchanged, Pinned: true, RenderedRevision: "test-comp-rev1", Pipeline: []string{"function-a"}},
 		},
 		"PinnedClaimWithUnrelatedFunctionChangeStaysDeferred": {
 			revision: revisionWith("function-other"),
-			claim:    true,
+			claim:    claim,
 			want:     want{Status: dt.XRStatusFiltered, FilterReason: dt.FilterReasonManualPolicy},
+		},
+		"ClaimPinnedByBackingXRWithChangedFunctionRendersPinnedRevision": {
+			reason:   "A Manual claim naming no revision is pinned by its backing XR's, so it is treated the same.",
+			revision: revisionWith("function-a"),
+			claim:    claimWithoutRef,
+			want:     want{Status: dt.XRStatusUnchanged, Pinned: true, RenderedRevision: "test-comp-rev1", Pipeline: []string{"function-a"}},
+		},
+		"ClaimWithoutRevisionRenderedAgainstDiffedComposition": {
+			reason:   "With no revision on the backing XR either, the claim is not pinned: Crossplane gives it the latest revision, so it renders against the diffed composition and re-points, like an Automatic one, whatever the revision it is not pinned to calls.",
+			revision: revisionWith("function-other"),
+			claim:    claimWithoutRef,
+			backing:  unpinnedXR,
+			want:     want{Status: dt.XRStatusUnchanged, Pipeline: []string{"function-a"}},
+		},
+		"ClaimWithoutRevisionUnresolvableBackingXRIsPerClaimError": {
+			reason:     "Whether that claim is pinned is unknown when its backing XR cannot be resolved: the claim's own error, with no render, and not counted as re-pointing.",
+			revision:   revisionWith("function-a"),
+			claim:      claimWithoutRef,
+			resolveErr: errors.New("backing XR gone"),
+			want:       want{Status: dt.XRStatusError, Error: true},
 		},
 		"PinnedXRWithChangedFunctionRendersWhenCompositionCallsNone": {
 			revision:  revisionWith("function-a"),
@@ -2655,6 +2908,19 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 				gotRevision string
 			)
 
+			backing := tt.backing
+			if backing == nil {
+				backing = pinnedXR("pinned-xyz")
+			}
+
+			resolveComposite := func(_ context.Context, res *un.Unstructured) (*un.Unstructured, error) {
+				if res.GetKind() == "Claim" {
+					return backing, tt.resolveErr
+				}
+
+				return res, nil
+			}
+
 			proc.xrProc = &tu.MockDiffProcessor{
 				ResolveCompositeFn: resolveComposite,
 				// Like the real one, the provider is handed the effective composite.
@@ -2679,8 +2945,8 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 			}
 
 			input := pinnedXR("pinned")
-			if tt.claim {
-				input = claim
+			if tt.claim != nil {
+				input = tt.claim
 			}
 
 			comp := cliComp.BuildAsUnstructured()
@@ -2705,7 +2971,7 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 
 			// A lookup failure is reported on the XR, and no render is attempted for it.
 			if diff := gcmp.Diff(tt.want, gotWant); diff != "" {
-				t.Errorf("processSingleComposition() mismatch (-want +got):\n%s", diff)
+				t.Errorf("%s\nprocessSingleComposition() mismatch (-want +got):\n%s", tt.reason, diff)
 			}
 
 			if tt.want.RenderedRevision != "" && gotRevision != tt.want.RenderedRevision {

@@ -1,0 +1,21 @@
+# A Manual XR that names no compositionRevisionRef yet, as one has before Crossplane first reconciles
+# it. Crossplane pins a Manual XR only once it names a revision; until then it gives the XR the latest
+# revision and writes the ref (crossplane v2.4.3 internal/controller/apiextensions/composite/
+# api.go:163-189). The selector is there only so the fixture loader leaves the ref unset (it derives a
+# ref for an XR naming neither). It deliberately rejects the diffed composition's labels
+# (version: 0.0.2): Crossplane ignores a selector under Manual (api.go:203), so the XR is still
+# evaluated and re-points.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XNopResource
+metadata:
+  name: manual-unpinned-resource
+  namespace: default
+spec:
+  coolField: manual-unpinned-existing-value
+  crossplane:
+    compositionRef:
+      name: xnopresources.diff.example.org
+    compositionUpdatePolicy: Manual
+    compositionRevisionSelector:
+      matchLabels:
+        version: 0.0.1

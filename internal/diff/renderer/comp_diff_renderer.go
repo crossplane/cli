@@ -134,11 +134,36 @@ func (r *DefaultCompDiffRenderer) renderCompositionImpact(comp *dt.CompositionDi
 // that case, so say so once instead — then report the composites the tool did rule out locally, which
 // no render was needed to establish.
 func (r *DefaultCompDiffRenderer) renderSkippedComposition(comp *dt.CompositionDiff) error {
-	if _, err := fmt.Fprint(r.opts.Stdout, skippedMessage(comp.RevisionImpact)); err != nil {
+	supplied := suppliedRendered(comp.ImpactAnalysis)
+	if _, err := fmt.Fprint(r.opts.Stdout, skippedMessage(comp.RevisionImpact, supplied)); err != nil {
 		return errors.Wrap(err, "cannot write impact analysis skipped message")
 	}
 
-	return r.renderFilteredUnderSkip(comp)
+	if supplied == 0 {
+		return r.renderFilteredUnderSkip(comp)
+	}
+
+	// The supplied composites were rendered, so their verdicts are earned: show them as an analysed
+	// composition would.
+	if err := r.renderAffectedResourcesList(comp); err != nil {
+		return err
+	}
+
+	return r.renderImpactAnalysis(comp)
+}
+
+// suppliedRendered counts the --resource-file composites that were rendered, which a skip does not
+// suppress.
+func suppliedRendered(impacts []dt.XRImpact) int {
+	n := 0
+
+	for _, impact := range impacts {
+		if impact.Supplied && impact.Status != dt.XRStatusFiltered {
+			n++
+		}
+	}
+
+	return n
 }
 
 // renderCompositionChanges renders the composition changes section.
@@ -189,7 +214,21 @@ func (r *DefaultCompDiffRenderer) renderCompositionChanges(comp *dt.CompositionD
 // CompositionRevision and so genuinely cannot affect anything, whereas a metadata-only change does
 // create one — the user simply asked not to pay for evaluating it. Reporting the first message for
 // the second case would claim a guarantee the tool did not establish.
-func skippedMessage(impact dt.RevisionImpact) string {
+//
+// supplied counts the --resource-file composites rendered regardless; when any were, the message
+// confines its claim to the cluster's composites and says those were rendered.
+func skippedMessage(impact dt.RevisionImpact, supplied int) string {
+	if supplied > 0 {
+		reason := "this composition is identical to the cluster's, so applying it creates no new CompositionRevision"
+		if impact.CreatesRevision {
+			reason = fmt.Sprintf("--analyze-on=spec-change and this composition's spec is unchanged, though applying it creates a new CompositionRevision that %d composite%s would adopt",
+				impact.RepointedComposites, pluralize(impact.RepointedComposites))
+		}
+
+		return fmt.Sprintf("Impact analysis skipped for the cluster's composites: %s. The %d composite%s from --resource-file %s rendered.\n\n",
+			reason, supplied, pluralize(supplied), map[bool]string{true: "was", false: "were"}[supplied == 1])
+	}
+
 	if impact.CreatesRevision {
 		return fmt.Sprintf("Impact analysis skipped: --analyze-on=spec-change and this composition's spec is unchanged. Applying it still creates a new CompositionRevision that %d composite%s would adopt; whether that changes any rendered output was not evaluated. Pass --analyze-on=any-change to check.\n\n",
 			impact.RepointedComposites, pluralize(impact.RepointedComposites))
@@ -566,6 +605,10 @@ func (r *DefaultCompDiffRenderer) buildXRStatusList(impacts []dt.XRImpact) strin
 			indicator = "⊘" // ⊘
 			color = colorYellow
 			suffix = filteredSuffix(impact)
+		}
+
+		if impact.Supplied {
+			suffix = " (from --resource-file)" + suffix
 		}
 
 		fmt.Fprintf(&sb, "%s  %s %s/%s (%s)%s%s\n",

@@ -373,7 +373,7 @@ type planRenderer struct{}
 
 // Render writes the result to w in the human-readable plan format.
 func (planRenderer) Render(w io.Writer, r Result) error {
-	impacts := revisionImpactLines(r.Compositions)
+	impacts := revisionImpactLines(r.Compositions, r.Composites)
 	if len(r.Composites) == 0 && !slices.ContainsFunc(r.Plans, func(p *plan.ResourcePlan) bool { return p.Composite != nil }) {
 		for _, p := range r.Plans {
 			plan.RenderPlan(w, p, impacts[p.ResourceRef()])
@@ -398,8 +398,15 @@ func (planRenderer) Render(w io.Writer, r Result) error {
 // revisionImpactLines returns, per Composition, the line saying whether
 // applying it creates a CompositionRevision and how many composites would
 // adopt it, and whether their impact went unanalyzed. A Composition with
-// neither to say has no line.
-func revisionImpactLines(comps []CompositionResult) map[plan.ResourceRef]string {
+// neither to say has no line. A skip names the composites from
+// --resource-file that were rendered regardless.
+func revisionImpactLines(comps []CompositionResult, composites []CompositeResult) map[plan.ResourceRef]string {
+	supplied := map[plan.ResourceRef]int{}
+	for _, c := range composites {
+		if c.Supplied && c.Composition != nil && c.Status != CompositeSkipped && c.Status != CompositeDeferred {
+			supplied[*c.Composition]++
+		}
+	}
 	lines := map[plan.ResourceRef]string{}
 	for _, c := range comps {
 		var parts []string
@@ -410,7 +417,11 @@ func revisionImpactLines(comps []CompositionResult) map[plan.ResourceRef]string 
 		default:
 			parts = append(parts, "Applying this creates no new CompositionRevision.")
 		}
-		if c.ImpactAnalysisSkipped {
+		switch n := supplied[c.Ref]; {
+		case !c.ImpactAnalysisSkipped:
+		case n > 0:
+			parts = append(parts, fmt.Sprintf("Impact analysis skipped for the cluster's composites; %s from --resource-file rendered.", pluralize(n, "composite", "composites")))
+		default:
 			parts = append(parts, "Impact analysis skipped.")
 		}
 		if len(parts) > 0 {
@@ -517,6 +528,9 @@ func compositeHeader(c CompositeResult, ref plan.ResourceRef) string {
 	}
 	if c.Pinned && c.Detail == "" && c.Status != CompositeDeferred {
 		h += " (pinned)"
+	}
+	if c.Supplied {
+		h += " (from --resource-file)"
 	}
 	return h
 }

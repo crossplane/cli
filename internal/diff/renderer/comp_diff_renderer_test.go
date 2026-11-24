@@ -579,7 +579,8 @@ func Test_allFilteredMessage(t *testing.T) {
 // never established, which is the whole reason skippedMessage branches at all.
 func TestSkippedMessage(t *testing.T) {
 	tests := map[string]struct {
-		impact dt.RevisionImpact
+		impact   dt.RevisionImpact
+		supplied int
 		// wantContains are substrings that must appear; wantOmits must not.
 		wantContains []string
 		wantOmits    []string
@@ -625,11 +626,31 @@ func TestSkippedMessage(t *testing.T) {
 			wantContains: []string{"1 composite would adopt"},
 			wantOmits:    []string{"1 composites"},
 		},
+		"IdenticalWithSuppliedNamesThemRendered": {
+			impact:   dt.RevisionImpact{ChangeScope: "none"},
+			supplied: 2,
+			wantContains: []string{
+				"Impact analysis skipped for the cluster's composites",
+				"creates no new CompositionRevision",
+				"The 2 composites from --resource-file were rendered.",
+			},
+			wantOmits: []string{"no composite resource could change", "--analyze-on=always"},
+		},
+		"MetadataOnlyWithSuppliedNamesThemRendered": {
+			impact:   dt.RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 3},
+			supplied: 1,
+			wantContains: []string{
+				"Impact analysis skipped for the cluster's composites",
+				"3 composites would adopt",
+				"The 1 composite from --resource-file was rendered.",
+			},
+			wantOmits: []string{"no composite resource could change"},
+		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := skippedMessage(tt.impact)
+			got := skippedMessage(tt.impact, tt.supplied)
 
 			for _, want := range tt.wantContains {
 				if !strings.Contains(got, want) {
@@ -810,5 +831,41 @@ func TestCompositionDiff_HasChanges_FilteredOnly(t *testing.T) {
 	}
 	if c.HasChanges() {
 		t.Errorf("dt.CompositionDiff with only filtered impacts should not be HasChanges()")
+	}
+}
+
+func TestBuildXRStatusListSuppliedLabel(t *testing.T) {
+	type args struct {
+		impact dt.XRImpact
+	}
+
+	type want struct {
+		line string
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"Supplied": {
+			reason: "A --resource-file composite is labelled as such.",
+			args:   args{impact: dt.XRImpact{Kind: "XR", Name: "new-xr", Namespace: "ns", Status: dt.XRStatusChanged, Supplied: true}},
+			want:   want{line: "  ⚠ XR/new-xr (namespace: ns) (from --resource-file)\n"},
+		},
+		"Live": {
+			reason: "A cluster composite's line is unchanged.",
+			args:   args{impact: dt.XRImpact{Kind: "XR", Name: "live-xr", Namespace: "ns", Status: dt.XRStatusChanged}},
+			want:   want{line: "  ⚠ XR/live-xr (namespace: ns)\n"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := &DefaultCompDiffRenderer{logger: tu.TestLogger(t, false), opts: DiffOptions{}}
+			if got := r.buildXRStatusList([]dt.XRImpact{tc.args.impact}); got != tc.want.line {
+				t.Errorf("\n%s\nbuildXRStatusList(): want %q, got %q", tc.reason, tc.want.line, got)
+			}
+		})
 	}
 }

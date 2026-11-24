@@ -3405,3 +3405,115 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_ReportsProgress(t *testing.T) {
 		t.Errorf("collectXRDiffs(): progress reports -want, +got:\n%s", diff)
 	}
 }
+
+// TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites covers WithSuppliedComposites:
+// supplied composites render alongside the discovered or scoped set, once per identity, with the
+// supplied object winning.
+func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.T) {
+	comp := tu.NewComposition("test-comp").
+		WithCompositeTypeRef("example.org/v1", "XR").
+		WithPipelineMode().
+		BuildAsUnstructured()
+
+	xr := func(name, marker string) *un.Unstructured {
+		return tu.NewResource("example.org/v1", "XR", name).
+			InNamespace("ns").
+			WithSpecField("compositionRef", map[string]any{"name": "test-comp"}).
+			WithSpecField("marker", marker).
+			Build()
+	}
+
+	notFound := func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+		return nil, apierrors.NewNotFound(schema.GroupResource{Group: "apiextensions.crossplane.io", Resource: "compositions"}, "test-comp")
+	}
+
+	type args struct {
+		find      func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error)
+		resources []k8stypes.NamespacedName
+		supplied  map[string][]*un.Unstructured
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   []string // name/marker of every rendered composite, in order
+	}{
+		"NoneSuppliedUnchanged": {
+			reason: "Without supplied composites only the discovered ones render.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return []*un.Unstructured{xr("live", "cluster")}, nil
+				},
+			},
+			want: []string{"live/cluster"},
+		},
+		"NetNewCompositionRendersSupplied": {
+			reason: "A net-new Composition (NotFound) renders the supplied composite.",
+			args: args{
+				find:     notFound,
+				supplied: map[string][]*un.Unstructured{"test-comp": {xr("new", "file")}},
+			},
+			want: []string{"new/file"},
+		},
+		"SuppliedForOtherCompositionIgnored": {
+			reason: "Supplied composites render only against the Composition they are keyed by.",
+			args: args{
+				find:     notFound,
+				supplied: map[string][]*un.Unstructured{"other-comp": {xr("new", "file")}},
+			},
+			want: nil,
+		},
+		"DedupeAgainstDiscoveredKeepsSupplied": {
+			reason: "A supplied composite with a discovered one's identity replaces it and renders once.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return []*un.Unstructured{xr("a", "cluster"), xr("b", "cluster")}, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file"), xr("c", "file")}},
+			},
+			want: []string{"a/file", "b/cluster", "c/file"},
+		},
+		"UnionWithScopedRefs": {
+			reason: "Supplied composites are added to the --resource scoped set.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return []*un.Unstructured{xr("scoped", "cluster")}, nil
+				},
+				resources: []k8stypes.NamespacedName{{Namespace: "ns", Name: "scoped"}},
+				supplied:  map[string][]*un.Unstructured{"test-comp": {xr("new", "file")}},
+			},
+			want: []string{"scoped/cluster", "new/file"},
+		},
+	}
+
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			client := tu.NewMockCompositionClient().
+				WithSuccessfulCompositionFetch(&apiextensionsv1.Composition{}).
+				Build()
+			client.FindCompositesFn = tt.args.find
+
+			proc := newCompProcessorForTest(t, client, false)
+			WithSuppliedComposites(tt.args.supplied)(&proc.config)
+
+			var got []string
+
+			proc.xrProc = &tu.MockDiffProcessor{
+				DiffSingleResourceFn: func(_ context.Context, res *un.Unstructured, _ types.CompositionProvider) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+					marker, _, _ := un.NestedString(res.Object, "spec", "marker")
+					got = append(got, res.GetName()+"/"+marker)
+
+					return map[string]*dt.ResourceDiff{}, types.RenderedResources{}, nil
+				},
+			}
+
+			if _, err := proc.DiffComposition(t.Context(), []*un.Unstructured{comp}, "ns", tt.args.resources); err != nil {
+				t.Fatalf("\n%s\nDiffComposition(...): unexpected error: %v", tt.reason, err)
+			}
+
+			if diff := gcmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("\n%s\nDiffComposition(...): rendered composites -want +got:\n%s", tt.reason, diff)
+			}
+		})
+	}
+}

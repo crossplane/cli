@@ -244,6 +244,10 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 			}
 		}
 
+		if discoveryErr == nil {
+			affectedXRs = mergeSupplied(affectedXRs, p.config.SuppliedComposites[compositionID])
+		}
+
 		// Process this single composition and build the result
 		var (
 			compResult *dt.CompositionDiff
@@ -353,6 +357,42 @@ func outputErrorsJoined(errs []dt.OutputError) error {
 // If any ref is relevant to no supplied composition, it returns an error naming the unmatched
 // refs (CLI input error). When `refs` is empty, returns (nil, nil) and the caller falls back to
 // default-discovery mode.
+// mergeSupplied returns the affected composites with the supplied ones added. A supplied composite
+// with the same group, kind, namespace and name as an affected one replaces it in place: it is the
+// desired state, and still diffs against the live object.
+func mergeSupplied(affected, supplied []*un.Unstructured) []*un.Unstructured {
+	if len(supplied) == 0 {
+		return affected
+	}
+
+	type identity struct{ group, kind, namespace, name string }
+
+	id := func(u *un.Unstructured) identity {
+		gvk := u.GroupVersionKind()
+		return identity{gvk.Group, gvk.Kind, u.GetNamespace(), u.GetName()}
+	}
+
+	at := make(map[identity]int, len(affected))
+	out := make([]*un.Unstructured, 0, len(affected)+len(supplied))
+
+	for _, u := range affected {
+		at[id(u)] = len(out)
+		out = append(out, u)
+	}
+
+	for _, u := range supplied {
+		if i, ok := at[id(u)]; ok {
+			out[i] = u
+			continue
+		}
+
+		at[id(u)] = len(out)
+		out = append(out, u)
+	}
+
+	return out
+}
+
 func (p *DefaultCompDiffProcessor) preflightResourceRefs(ctx context.Context, compositions []*un.Unstructured, refs []k8stypes.NamespacedName) (map[string][]*un.Unstructured, error) {
 	if len(refs) == 0 {
 		return nil, nil

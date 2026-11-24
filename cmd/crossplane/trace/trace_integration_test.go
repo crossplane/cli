@@ -20,6 +20,7 @@ package trace
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -570,7 +571,12 @@ func TestTraceWatchIntegration(t *testing.T) {
 
 	// The producer reads the watch through fw, so the test can tell when it has been handed a Modified event.
 	fw := &forwardingWatch{Interface: w, events: make(chan watch.Event), modified: make(chan struct{}, 1)}
-	go fw.forward()
+	fwCtx, fwCancel := context.WithCancel(cluster.Context)
+	forwardDone := make(chan struct{})
+	go func() {
+		defer close(forwardDone)
+		fw.forward(fwCtx)
+	}()
 
 	// Without a terminal the program doesn't know its size, and renders nothing until it's given one.
 	stdout := &syncBuffer{}
@@ -599,6 +605,8 @@ func TestTraceWatchIntegration(t *testing.T) {
 		prog.Kill()
 		<-progDone
 		w.Stop()
+		fwCancel()
+		<-forwardDone
 		<-producerDone
 	})
 
@@ -706,19 +714,23 @@ type forwardingWatch struct {
 
 func (f *forwardingWatch) ResultChan() <-chan watch.Event { return f.events }
 
-// forward hands each event on until the watch is stopped. ponytail: it blocks if the producer stops reading before
-// the watch is stopped; the test's cleanup stops the watch, which ends it.
-func (f *forwardingWatch) forward() {
+// forward hands each event on until the watch is stopped or ctx is done, so it never blocks on a producer that has
+// stopped reading.
+func (f *forwardingWatch) forward(ctx context.Context) {
 	defer close(f.events)
 
 	for evt := range f.Interface.ResultChan() {
+		select {
+		case f.events <- evt:
+		case <-ctx.Done():
+			return
+		}
+
 		if evt.Type == watch.Modified {
 			select {
 			case f.modified <- struct{}{}:
 			default:
 			}
 		}
-
-		f.events <- evt
 	}
 }

@@ -24,7 +24,6 @@ import (
 	"strings"
 
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -156,7 +155,7 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 		return byName(xrd.EnforcedComposition, "XRD enforcedCompositionRef")
 	}
 
-	ref, err := crossplaneField(in, xrd.Legacy, "a string", un.NestedString, "compositionRef", "name")
+	ref, err := crossplaneField(in, xrd.Legacy, un.NestedString, "compositionRef", "name")
 	if err != nil {
 		return "", err
 	}
@@ -164,14 +163,14 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 		return byName(ref, "compositionRef")
 	}
 
-	sel, err := crossplaneField(in, xrd.Legacy, "a map of strings", un.NestedStringMap, "compositionSelector", "matchLabels")
+	sel, err := crossplaneField(in, xrd.Legacy, un.NestedStringMap, "compositionSelector", "matchLabels")
 	if err != nil {
 		return "", err
 	}
 	if len(sel) > 0 {
 		var match []*un.Unstructured
 		for _, c := range typed {
-			if labels.SelectorFromSet(sel).Matches(labels.Set(c.GetLabels())) {
+			if xpclient.LabelsMatch(sel, c.GetLabels()) {
 				match = append(match, c)
 			}
 		}
@@ -205,12 +204,12 @@ func sole(in *un.Unstructured, match []*un.Unstructured, none string) (string, e
 // crossplaneField reads field at spec.<path> if legacy, otherwise at
 // spec.crossplane.<path> or, if not set there, spec.<path>, as the engine does.
 // A value of the wrong type fails.
-func crossplaneField[T any](in *un.Unstructured, legacy bool, typeName string, get func(map[string]any, ...string) (T, bool, error), path ...string) (T, error) {
-	apiVersion := ""
+func crossplaneField[T any](in *un.Unstructured, legacy bool, get func(map[string]any, ...string) (T, bool, error), path ...string) (T, error) {
+	apiVersion := xpclient.CrossplaneAPIExtGroupV2
 	if legacy {
 		apiVersion = xpclient.CrossplaneAPIExtGroupV1
 	}
-	v, _, err := xpclient.NestedCrossplaneValue(in.Object, apiVersion, typeName, get, path...)
+	v, _, err := xpclient.NestedCrossplaneValue(in.Object, apiVersion, "of the expected type", get, path...)
 	if err != nil {
 		return v, rejectInput(in, FlagResourceFile, fmt.Sprintf("whose %s is malformed: %v", strings.Join(path, "."), errors.Cause(err)), "")
 	}

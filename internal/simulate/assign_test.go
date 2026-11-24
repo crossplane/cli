@@ -51,6 +51,7 @@ func TestAssignComposites(t *testing.T) {
 	}
 	a := testutils.NewComposition("a").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"tier": "gold", "team": "x"}).BuildAsUnstructured()
 	b := testutils.NewComposition("b").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"tier": "silver", "team": "x"}).BuildAsUnstructured()
+	untiered := testutils.NewComposition("u").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"team": "y"}).BuildAsUnstructured()
 	other := testutils.NewComposition("o").WithCompositeTypeRef("example.org/v1", "XOther").WithLabels(map[string]string{"tier": "gold"}).BuildAsUnstructured()
 
 	type args struct {
@@ -112,6 +113,11 @@ func TestAssignComposites(t *testing.T) {
 			reason: "A v2 compositionSelector matches labels among type-matching Compositions.",
 			args:   args{comps: []*un.Unstructured{other, a, b}, input: testInput("XBucket", "x", map[string]any{"crossplane": map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"tier": "gold"}}}})},
 			want:   want{comp: "a"},
+		},
+		"SelectorEmptyValue": {
+			reason: "An empty selector value matches a Composition lacking the label, as the cluster path's labelsMatch does.",
+			args:   args{comps: []*un.Unstructured{a, b, untiered}, input: testInput("XBucket", "x", map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"tier": ""}}})},
+			want:   want{comp: "u"},
 		},
 		"V1ClaimSelector": {
 			reason: "A claim's spec.compositionSelector matches labels.",

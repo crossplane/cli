@@ -260,10 +260,10 @@ func (c *DefaultCompositionClient) allCompositions(ctx context.Context) ([]*apie
 	return c.cachedCompositions(), nil
 }
 
-// compositionsMatching returns the compositions labelsMatch says match matchLabels. The first lookup
+// compositionsMatching returns the compositions LabelsMatch says match matchLabels. The first lookup
 // of a set of labels lists the compositions carrying them from the cluster, with them as the selector.
 func (c *DefaultCompositionClient) compositionsMatching(ctx context.Context, matchLabels map[string]string) ([]*apiextensionsv1.Composition, error) {
-	// labelsMatch lets a composition without a label match an empty value for it, which a selector
+	// LabelsMatch lets a composition without a label match an empty value for it, which a selector
 	// requiring the label would not, so only non-empty values go into the selector.
 	required := make(map[string]string, len(matchLabels))
 
@@ -288,7 +288,7 @@ func (c *DefaultCompositionClient) compositionsMatching(ctx context.Context, mat
 	var matching []*apiextensionsv1.Composition
 
 	for _, comp := range selected {
-		if c.labelsMatch(comp.GetLabels(), matchLabels) {
+		if LabelsMatch(matchLabels, comp.GetLabels()) {
 			matching = append(matching, comp)
 		}
 	}
@@ -642,8 +642,10 @@ func (c *DefaultCompositionClient) isCompositionCompatible(comp *apiextensionsv1
 		comp.Spec.CompositeTypeRef.Kind == xrGVK.Kind
 }
 
-// labelsMatch checks if a resource's labels match a selector.
-func (c *DefaultCompositionClient) labelsMatch(labels, selector map[string]string) bool {
+// LabelsMatch reports whether labels carry every selector entry. An empty
+// selector value also matches labels lacking the key, which compositionsMatching
+// relies on.
+func LabelsMatch(selector, labels map[string]string) bool {
 	// A resource matches a selector if all the selector's labels exist in the resource's labels
 	for k, v := range selector {
 		if labels[k] != v {

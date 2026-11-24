@@ -223,12 +223,21 @@ func (r *DefaultCompDiffRenderer) renderCompositionChanges(comp *dt.CompositionD
 // supplied counts the --resource-file composites rendered regardless; when any were, the message
 // confines its claim to the cluster's composites and says those were rendered.
 func skippedMessage(impact dt.RevisionImpact, supplied int) string {
+	// The sentences both branches share, so the plain and the supplied wording state the same facts.
+	const (
+		specUnchanged = "--analyze-on=spec-change and this composition's spec is unchanged"
+		identical     = "this composition is identical to the cluster's, so applying it creates no new CompositionRevision"
+		checkAnyway   = "Pass --analyze-on=always to evaluate them anyway."
+		checkChange   = "Pass --analyze-on=any-change to check"
+	)
+
+	adopt := fmt.Sprintf("a new CompositionRevision that %d composite%s would adopt", impact.RepointedComposites, pluralize(impact.RepointedComposites))
+
 	if supplied > 0 {
-		reason, remedy := "this composition is identical to the cluster's, so applying it creates no new CompositionRevision", "Pass --analyze-on=always to evaluate them anyway."
+		reason, remedy := identical, checkAnyway
 		if impact.CreatesRevision {
-			reason = fmt.Sprintf("--analyze-on=spec-change and this composition's spec is unchanged, though applying it creates a new CompositionRevision that %d composite%s would adopt",
-				impact.RepointedComposites, pluralize(impact.RepointedComposites))
-			remedy = "Pass --analyze-on=any-change to check them."
+			reason = specUnchanged + ", though applying it creates " + adopt
+			remedy = checkChange + " them."
 		}
 
 		return fmt.Sprintf("Impact analysis skipped for the cluster's composites: %s. %s The %d composite%s from --resource-file %s rendered.\n\n",
@@ -236,11 +245,10 @@ func skippedMessage(impact dt.RevisionImpact, supplied int) string {
 	}
 
 	if impact.CreatesRevision {
-		return fmt.Sprintf("Impact analysis skipped: --analyze-on=spec-change and this composition's spec is unchanged. Applying it still creates a new CompositionRevision that %d composite%s would adopt; whether that changes any rendered output was not evaluated. Pass --analyze-on=any-change to check.\n\n",
-			impact.RepointedComposites, pluralize(impact.RepointedComposites))
+		return "Impact analysis skipped: " + specUnchanged + ". Applying it still creates " + adopt + "; whether that changes any rendered output was not evaluated. " + checkChange + ".\n\n"
 	}
 
-	return "Impact analysis skipped: this composition is identical to the cluster's, so applying it creates no new CompositionRevision and no composite resource could change as a result. Pass --analyze-on=always to evaluate them anyway.\n\n"
+	return "Impact analysis skipped: " + identical + " and no composite resource could change as a result. " + checkAnyway + "\n\n"
 }
 
 // renderFilteredUnderSkip reports the composites ruled out as not adopting the resulting revision, for

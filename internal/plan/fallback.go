@@ -33,12 +33,19 @@ import (
 // can plan the resource, and is honest about its limits: no replacement
 // detection, no computed values, no provider defaults. It diffs desired
 // verbatim, so callers should apply the API server's CRD defaults to desired
-// first when they can. Live-only fields plan as removals only when live's
-// managedFields say a declarative applier owns them: anything else - fields
-// the provider late-initialized, or API server defaults owned by nobody -
-// survives an apply of the manifest. live nil means the resource does not
-// exist and plans as a create.
-func Fallback(desired, live *unstructured.Unstructured, reason string) *ResourcePlan {
+// first when they can. Live-only fields plan as removals only when applying
+// the manifest as a would remove them:
+//
+//   - ApplyServerSide: a.FieldManager owns them and no other manager does.
+//   - ApplyClientSide: live's LastAppliedConfigAnnotation has them and
+//     desired drops them. With no annotation nothing is removed.
+//   - ApplyUndetermined: some declarative applier owns them and no other
+//     manager does, as applierOwned describes.
+//
+// Anything else - fields the provider late-initialized, or API server
+// defaults owned by nobody - survives an apply of the manifest. live nil
+// means the resource does not exist and plans as a create.
+func Fallback(desired, live *unstructured.Unstructured, a Applier, reason string) *ResourcePlan {
 	p := NewResourcePlan(desired)
 	p.Approximate = true
 	p.FallbackReason = reason
@@ -52,11 +59,13 @@ func Fallback(desired, live *unstructured.Unstructured, reason string) *Resource
 		return p
 	}
 
-	// Ownership decisions compare against the set's leaves: a leaf is either a
+	// Removal decisions compare against a set's leaves: a leaf is either a
 	// plainly owned field or a whole atomic subtree, while a partially owned
 	// parent map keeps its children and never matches.
-	owned := applierOwned(live)
-	if owned != nil {
+	var owned *fieldpath.Set
+	if a.Mode == ApplyClientSide {
+		owned = clientSideRemovable(live, desired)
+	} else if owned = applierOwned(live, a); owned != nil {
 		owned = owned.Leaves()
 	}
 
@@ -68,6 +77,42 @@ func Fallback(desired, live *unstructured.Unstructured, reason string) *Resource
 	}
 	p.Action = ActionUpdate
 	return p
+}
+
+// clientSideRemovable returns the fields of live kubectl's client-side apply
+// of desired removes: those under the topmost spec keys live's
+// LastAppliedConfigAnnotation has and desired drops. Its three-way JSON merge
+// patch deletes each such key whole, whoever owns it, and keeps anything the
+// annotation lacks. With no annotation, or one that does not parse (which
+// kubectl's apply rejects), nothing is removed.
+func clientSideRemovable(live, desired *unstructured.Unstructured) *fieldpath.Set {
+	removable := fieldpath.NewSet()
+	var applied map[string]any
+	if err := json.Unmarshal([]byte(live.GetAnnotations()[LastAppliedConfigAnnotation]), &applied); err != nil {
+		return removable
+	}
+	appliedSpec, _, _ := unstructured.NestedMap(applied, "spec")
+	desiredSpec, _, _ := unstructured.NestedMap(desired.Object, "spec")
+	droppedKeys(removable, newCursor("spec"), appliedSpec, desiredSpec)
+	return removable
+}
+
+// droppedKeys inserts into s the path of each key under the cursor that
+// applied has and desired drops, descending into maps both keep. A merge
+// patch replaces lists whole, so it never descends into them.
+func droppedKeys(s *fieldpath.Set, c cursor, applied, desired map[string]any) {
+	for k, av := range applied {
+		dv, ok := desired[k]
+		if !ok {
+			s.Insert(c.field(k).fp)
+			continue
+		}
+		am, aok := av.(map[string]any)
+		dm, dok := dv.(map[string]any)
+		if aok && dok {
+			droppedKeys(s, c.field(k), am, dm)
+		}
+	}
 }
 
 // cursor tracks a position in the diffed object: the crossplane-runtime field
@@ -116,7 +161,7 @@ func (c cursor) index(i int) cursor {
 
 // removable reports whether a removal at the cursor would really happen on
 // apply: with no ownership information every removal counts, otherwise only
-// applier-owned fields do.
+// the fields under one of owned's leaves do.
 func (c cursor) removable(owned *fieldpath.Set) bool {
 	return owned == nil || ownedLeaf(owned, c.fp)
 }

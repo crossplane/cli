@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -58,6 +59,13 @@ func vpc(name, cidr string) *unstructured.Unstructured {
 		"metadata":   map[string]any{"name": name},
 		"spec":       map[string]any{"forProvider": map[string]any{"cidrBlock": cidr}},
 	}}
+}
+
+// fieldsOf is an Apply managedFields entry of manager owning fields.
+func fieldsOf(manager, fields string) metav1.ManagedFieldsEntry {
+	e := metav1.ManagedFieldsEntry{Manager: manager, Operation: metav1.ManagedFieldsOperationApply, FieldsType: "FieldsV1", FieldsV1: &metav1.FieldsV1{}}
+	e.FieldsV1.SetRawString(fields)
+	return e
 }
 
 // fakeRouter routes every resource to the given client, or nowhere.
@@ -229,6 +237,37 @@ func TestPlanner(t *testing.T) {
 
 		if !got.Approximate || got.Action != plan.ActionUpdate {
 			t.Errorf("Plan(...): want an approximate fallback on DIFF_COMPUTATION_NOT_SUPPORTED, got %+v", got)
+		}
+	})
+
+	t.Run("FallbackRemovesAsTheInferredApplier", func(t *testing.T) {
+		// The user server-side applies the VPC as kubectl, and a Crossplane
+		// composition applied enableDnsHostnames to it too.
+		live := vpc("my-vpc", "10.0.0.0/16")
+		_ = unstructured.SetNestedField(live.Object, true, "spec", "forProvider", "enableDnsHostnames")
+		live.SetManagedFields([]metav1.ManagedFieldsEntry{
+			fieldsOf("kubectl", `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`),
+			fieldsOf("apiextensions.crossplane.io/composed/abc", `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{}}}}`),
+		})
+		// The fake client drops managedFields on create, so Get serves live.
+		kube := fake.NewClientBuilder().WithScheme(s).
+			WithInterceptorFuncs(interceptor.Funcs{Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+				live.DeepCopyInto(obj.(*unstructured.Unstructured))
+				return nil
+			}}).Build()
+		planner := NewPlanner(kube, rm, noCRDs(t), "default", &fakeRouter{}, time.Second)
+
+		// The user's apply as kubectl keeps the composition's field.
+		if got := planner.Plan(ctx, vpc("my-vpc", "10.0.0.0/16")); got.Action != plan.ActionNoOp {
+			t.Errorf("Plan(...): want a no-op, since kubectl does not own enableDnsHostnames, got %+v", got)
+		}
+
+		// A composed resource's applier is not the user's, so every applier's
+		// fields count.
+		want := []plan.FieldChange{{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}}}
+		got := planner.PlanWithLive(ctx, vpc("my-vpc", "10.0.0.0/16"), live)
+		if diff := cmp.Diff(want, got.Changes); diff != "" {
+			t.Errorf("PlanWithLive(...): want the composition-owned field removed, -want, +got:\n%s", diff)
 		}
 	})
 

@@ -79,9 +79,11 @@ func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, de
 	}
 }
 
-// Plan plans a single resource: fetch its live counterpart, then plan it
-// with PlanWithLive. Failures become per-resource errors so one resource
-// never fails the whole run.
+// Plan plans a single resource the user supplied: fetch its live
+// counterpart, then plan it as PlanWithLive does, except that the approximate
+// fallback removes only what the applier plan.ResolveApplier infers from live
+// would remove. Failures become per-resource errors so one resource never
+// fails the whole run.
 func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) *plan.ResourcePlan {
 	if desired.GetName() == "" {
 		rp := plan.NewResourcePlan(desired)
@@ -95,15 +97,22 @@ func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) 
 		rp.Error = fmt.Sprintf("cannot fetch live resource: %s", err)
 		return rp
 	}
-	return p.PlanWithLive(ctx, desired, live)
+	return p.planWithLive(ctx, desired, live, plan.ResolveApplier(live, plan.ApplierFlags{}))
 }
 
 // PlanWithLive plans a single resource against an already-fetched live
 // counterpart, or nil when none exists: route it to a diff server, and fall
 // back to the approximate client-side diff when no server can plan it.
 // Failures become per-resource errors so one resource never fails the whole
-// run.
+// run. It is for composed resources, whose applier is not the user's, so the
+// fallback takes removals from every applier live records.
 func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.Unstructured) *plan.ResourcePlan {
+	return p.planWithLive(ctx, desired, live, plan.Applier{Mode: plan.ApplyUndetermined})
+}
+
+// planWithLive is PlanWithLive with the applier the fallback removes fields
+// as.
+func (p *Planner) planWithLive(ctx context.Context, desired, live *unstructured.Unstructured, a plan.Applier) *plan.ResourcePlan {
 	// Crossplane's external tags survive every apply (the provider's
 	// initializer re-adds them), so a preview must never claim they would be
 	// removed.
@@ -119,7 +128,7 @@ func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.
 	gk := desired.GroupVersionKind().GroupKind()
 	planClient, ok := p.router.Route(gk)
 	if !ok {
-		return plan.Fallback(defaulted, live, fmt.Sprintf("no diff server for %s", gk))
+		return plan.Fallback(defaulted, live, a, fmt.Sprintf("no diff server for %s", gk))
 	}
 
 	pctx := ctx
@@ -134,7 +143,7 @@ func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.
 	rp, err := plan.Plan(pctx, planClient, desired, live, store)
 	if err != nil {
 		if plan.IsNotSupported(err) {
-			return plan.Fallback(defaulted, live, "the provider cannot compute a diff for this resource")
+			return plan.Fallback(defaulted, live, a, "the provider cannot compute a diff for this resource")
 		}
 		rp := plan.NewResourcePlan(desired)
 		rp.Error = fmt.Sprintf("diff server cannot plan: %s", err)

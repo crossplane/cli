@@ -52,6 +52,8 @@ func TestFallback(t *testing.T) {
 		desired       *unstructured.Unstructured
 		live          *unstructured.Unstructured
 		managedFields []metav1.ManagedFieldsEntry
+		annotations   map[string]string
+		applier       Applier
 	}
 	type want struct {
 		action  Action
@@ -243,6 +245,101 @@ func TestFallback(t *testing.T) {
 				changes: []FieldChange{{Path: "spec.managementPolicies[0]", Actual: &Value{Value: "Observe"}}},
 			},
 		},
+		"ServerSideApplyRemovesOnlyItsManagersExclusiveFields": {
+			reason: "Server-side apply as one manager removes the fields it alone owns, and keeps those another applier owns or co-owns, which the union of appliers would remove.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{}}),
+				live: mr(map[string]any{"forProvider": map[string]any{
+					"cidrBlock":          "10.0.0.0/16",
+					"enableDnsHostnames": true,
+					"instanceTenancy":    "default",
+				}}),
+				managedFields: []metav1.ManagedFieldsEntry{
+					managedBy("argocd-controller", metav1.ManagedFieldsOperationApply, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{},"f:instanceTenancy":{}}}}`),
+					managedBy("kubectl", metav1.ManagedFieldsOperationApply, `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{},"f:instanceTenancy":{}}}}`),
+				},
+				applier: Applier{Mode: ApplyServerSide, FieldManager: "argocd-controller"},
+			},
+			want: want{
+				action:  ActionUpdate,
+				changes: []FieldChange{{Path: "spec.forProvider.cidrBlock", Actual: &Value{Value: "10.0.0.0/16"}}},
+			},
+		},
+		"ServerSideApplyAsManagerOwningNothingRemovesNothing": {
+			reason: "Server-side apply as a manager live does not record owns nothing, so it removes nothing, even though another applier owns the dropped fields.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{}}),
+				live:    mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}}),
+				managedFields: []metav1.ManagedFieldsEntry{
+					managedBy("kubectl", metav1.ManagedFieldsOperationApply, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`),
+				},
+				applier: Applier{Mode: ApplyServerSide, FieldManager: "argocd-controller"},
+			},
+			want: want{action: ActionNoOp},
+		},
+		"ClientSideApplyRemovesDroppedAnnotatedFields": {
+			reason: "Client-side apply removes the fields the last-applied annotation has and the manifest drops, whoever owns them, and keeps live-only fields the annotation lacks, even ones kubectl's managedFields entry owns.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}}),
+				live: mr(map[string]any{"forProvider": map[string]any{
+					"cidrBlock":          "10.0.0.0/16",
+					"enableDnsHostnames": true,
+					"instanceTenancy":    "default",
+					"securityGroupIds":   []any{"sg-1"},
+				}}),
+				managedFields: []metav1.ManagedFieldsEntry{
+					managedBy("kubectl-client-side-apply", metav1.ManagedFieldsOperationUpdate, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{},"f:instanceTenancy":{}}}}`),
+					managedBy("provider", metav1.ManagedFieldsOperationUpdate, `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{},"f:securityGroupIds":{}}}}`),
+				},
+				annotations: map[string]string{
+					LastAppliedConfigAnnotation: `{"spec":{"forProvider":{"cidrBlock":"10.0.0.0/16","enableDnsHostnames":true,"securityGroupIds":["sg-1"]}}}`,
+				},
+				applier: Applier{Mode: ApplyClientSide},
+			},
+			want: want{
+				action: ActionUpdate,
+				changes: []FieldChange{
+					{Path: "spec.forProvider.enableDnsHostnames", Actual: &Value{Value: true}},
+					{Path: "spec.forProvider.securityGroupIds[0]", Actual: &Value{Value: "sg-1"}},
+				},
+			},
+		},
+		"ClientSideApplyWithoutAnnotationRemovesNothing": {
+			reason: "Client-side apply with no last-applied annotation has nothing to remove fields from, so it removes nothing, even fields kubectl's managedFields entry owns.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{}}),
+				live:    mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}}),
+				managedFields: []metav1.ManagedFieldsEntry{
+					managedBy("kubectl-client-side-apply", metav1.ManagedFieldsOperationUpdate, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`),
+				},
+				applier: Applier{Mode: ApplyClientSide},
+			},
+			want: want{action: ActionNoOp},
+		},
+		"UndeterminedApplierRemovesEveryAppliersExclusiveFields": {
+			reason: "With no telling which applier applies the manifest, removals are every applier's exclusively owned fields, as without an applier.",
+			args: args{
+				desired: mr(map[string]any{"forProvider": map[string]any{}}),
+				live: mr(map[string]any{"forProvider": map[string]any{
+					"cidrBlock":          "10.0.0.0/16",
+					"enableDnsHostnames": true,
+					"instanceTenancy":    "default",
+				}}),
+				managedFields: []metav1.ManagedFieldsEntry{
+					managedBy("argocd-controller", metav1.ManagedFieldsOperationApply, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`),
+					managedBy("kubectl", metav1.ManagedFieldsOperationApply, `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{}}}}`),
+					managedBy("provider", metav1.ManagedFieldsOperationUpdate, `{"f:spec":{"f:forProvider":{"f:instanceTenancy":{}}}}`),
+				},
+				applier: Applier{Mode: ApplyUndetermined, Candidates: []string{"argocd-controller", "kubectl"}},
+			},
+			want: want{
+				action: ActionUpdate,
+				changes: []FieldChange{
+					{Path: "spec.forProvider.cidrBlock", Actual: &Value{Value: "10.0.0.0/16"}},
+					{Path: "spec.forProvider.enableDnsHostnames", Actual: &Value{Value: true}},
+				},
+			},
+		},
 		"ListLengthChange": {
 			reason: "Lists of different lengths diff as one whole-list change.",
 			args: args{
@@ -265,8 +362,11 @@ func TestFallback(t *testing.T) {
 			if len(tc.args.managedFields) > 0 {
 				tc.args.live.SetManagedFields(tc.args.managedFields)
 			}
+			if len(tc.args.annotations) > 0 {
+				tc.args.live.SetAnnotations(tc.args.annotations)
+			}
 
-			got := Fallback(tc.args.desired, tc.args.live, "test")
+			got := Fallback(tc.args.desired, tc.args.live, tc.args.applier, "test")
 
 			if !got.Approximate {
 				t.Errorf("\n%s\nFallback(...): want Approximate, got exact", tc.reason)
@@ -351,7 +451,7 @@ func TestFallbackObjects(t *testing.T) {
 	desiredIn, liveIn := desired.DeepCopy(), live.DeepCopy()
 
 	t.Run("Update", func(t *testing.T) {
-		got := Fallback(desired, live, "test")
+		got := Fallback(desired, live, Applier{}, "test")
 		if diff := cmp.Diff(cleaned(live), got.Before); diff != "" {
 			t.Errorf("Fallback(...).Before: -want cleaned live, +got:\n%s", diff)
 		}
@@ -367,7 +467,7 @@ func TestFallbackObjects(t *testing.T) {
 	})
 
 	t.Run("Create", func(t *testing.T) {
-		if got := Fallback(desired, nil, "test"); got.Before != nil {
+		if got := Fallback(desired, nil, Applier{}, "test"); got.Before != nil {
 			t.Errorf("Fallback(...).Before: want nil for a create, got %v", got.Before)
 		}
 	})

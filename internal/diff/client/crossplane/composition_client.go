@@ -469,6 +469,10 @@ func (c *DefaultCompositionClient) resolveCompositionFromRevisions(
 // from. Only a resource naming its composition resolves a revision: one Crossplane has reconciled always
 // does, because the composite reconciler writes compositionRef. One that selects its composition by label
 // or by type resolves none, so its RevisionName is empty.
+//
+// It applies the order compositionRef, compositionSelector, then the sole Composition of the type. The XRD's
+// enforcedCompositionRef and defaultCompositionRef aren't applied yet. internal/simulate's
+// selectComposition applies the full order to a project's Compositions; keep the two in step.
 func (c *DefaultCompositionClient) FindMatchingComposition(ctx context.Context, res *un.Unstructured) (dtypes.ResolvedComposition, error) {
 	gvk := res.GroupVersionKind()
 	resourceID := fmt.Sprintf("%s/%s", gvk.String(), res.GetName())

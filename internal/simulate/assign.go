@@ -128,6 +128,12 @@ func assignComposites(comps, inputs []*un.Unstructured, xrdFor func(*un.Unstruct
 	return out, nil
 }
 
+// selectComposition returns the name of the project Composition in comps that
+// Crossplane would select for in: the XRD's enforcedCompositionRef, then in's
+// compositionRef, its compositionSelector, the XRD's defaultCompositionRef,
+// then the sole Composition of its type. The cluster path,
+// crossplane.DefaultCompositionClient.FindMatchingComposition, applies the same
+// order without the XRD refs; keep the two in step.
 func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInfo) (string, error) {
 	var typed []*un.Unstructured
 	for _, c := range comps {

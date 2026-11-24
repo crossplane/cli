@@ -445,11 +445,11 @@ func TestSimulateLoadResourceFiles(t *testing.T) {
 			if diff := cmp.Diff(tc.want.err, gotErr); diff != "" {
 				t.Errorf("\n%s\nloadResourceFiles(): -want err, +got err:\n%s", tc.reason, diff)
 			}
-			var names []string
+			names := make([]string, 0, len(got))
 			for _, r := range got {
 				names = append(names, r.GetName())
 			}
-			if diff := cmp.Diff(tc.want.names, names); diff != "" {
+			if diff := cmp.Diff(tc.want.names, names, cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("\n%s\nloadResourceFiles(): -want, +got:\n%s", tc.reason, diff)
 			}
 		})

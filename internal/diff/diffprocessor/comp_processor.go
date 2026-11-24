@@ -201,55 +201,7 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 
 	// Resolve every Composition's affected composites before processing any, so a supplied composite
 	// can replace a live one discovered under another Composition of the run (see mergeSupplied).
-	type resolvedComposition struct {
-		comp         *un.Unstructured
-		affectedXRs  []*un.Unstructured
-		discoveryErr error
-	}
-
-	resolvedComps := make([]resolvedComposition, 0, len(compositions))
-
-	for _, comp := range compositions {
-		// Skip non-Composition objects (e.g., GoTemplate objects extracted from pipeline steps)
-		if comp.GetKind() != "Composition" {
-			p.config.Logger.Debug("Skipping non-Composition object", "kind", comp.GetKind(), "apiVersion", comp.GetAPIVersion())
-			continue
-		}
-
-		compositionID := comp.GetName() // Use actual name from unstructured
-
-		// Resolve the affected XR set up-front. In --resource mode the preflight already produced it;
-		// in default-discovery mode we query the cluster (a net-new composition yields empty; any other failure fails the composition).
-		var (
-			affectedXRs  []*un.Unstructured
-			discoveryErr error
-		)
-
-		switch {
-		case len(resources) > 0:
-			affectedXRs = preflightMatches[compositionID]
-		default:
-			// Default-discovery only needs comp.GetName() — pass the unstructured directly.
-			// FindComposites converts to typed internally only in refs mode (which we're not in here).
-			discovered, findErr := p.compositionClient.FindComposites(ctx, comp, dtypes.FindCompositesOptions{Namespace: namespace})
-
-			switch {
-			case apierrors.IsNotFound(findErr):
-				// Net-new composition (won't exist in cluster) → graceful empty result. Only NotFound
-				// means that: a Forbidden or a timeout must not read as "no impact".
-				p.config.Logger.Debug("Cannot find composites using composition (net-new composition)",
-					"composition", compositionID, "error", findErr)
-
-				affectedXRs = nil
-			case findErr != nil:
-				discoveryErr = findErr
-			default:
-				affectedXRs = discovered
-			}
-		}
-
-		resolvedComps = append(resolvedComps, resolvedComposition{comp: comp, affectedXRs: affectedXRs, discoveryErr: discoveryErr})
-	}
+	resolvedComps := p.resolveCompositions(ctx, compositions, namespace, resources, preflightMatches)
 
 	// live holds the identity of every composite discovered or scoped under any Composition of the run.
 	live := make(map[suppliedIdentity]bool)
@@ -557,12 +509,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// composite pinned to a revision and kept by --include-pinned stays pinned, so it never is.
 	// A supplied composite the cluster lacks would be created, and a new composite takes the latest
 	// revision whatever its update policy, so it is not deferred as Manual (see classifyXR).
-	netNew := make(map[string]bool, len(supplied))
-	for key, live := range supplied {
-		if !live {
-			netNew[key] = true
-		}
-	}
+	netNew := netNewKeys(supplied)
 
 	keptXRs, droppedXRs, repointingXRs, unresolvedXRs, err := p.partitionXRsByUpdatePolicy(ctx, affectedXRs, newComp, pred, netNew)
 	if err != nil {
@@ -619,11 +566,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 
 	// A composite that would be created adopts nothing: it is not counted as re-pointing.
 	if comparison.changed() {
-		for key := range repointingXRs {
-			if !netNew[key] {
-				result.RevisionImpact.RepointedComposites++
-			}
-		}
+		result.RevisionImpact.RepointedComposites = countRepointed(repointingXRs, netNew)
 	}
 
 	counts := countFilterReasons(droppedXRs)
@@ -1926,4 +1869,84 @@ func parentCompositeRef(xr *un.Unstructured, byIdentity map[string]*un.Unstructu
 // xrIdentity keys an XR by apiVersion, kind, and name.
 func xrIdentity(apiVersion, kind, name string) string {
 	return apiVersion + "|" + kind + "|" + name
+}
+
+// netNewKeys returns the keys of the supplied composites the cluster lacks.
+func netNewKeys(supplied map[string]bool) map[string]bool {
+	netNew := make(map[string]bool, len(supplied))
+	for key, live := range supplied {
+		if !live {
+			netNew[key] = true
+		}
+	}
+	return netNew
+}
+
+// countRepointed counts the re-pointing composites that already exist, since a composite that would
+// be created adopts nothing.
+func countRepointed(repointing, netNew map[string]bool) int {
+	n := 0
+	for key := range repointing {
+		if !netNew[key] {
+			n++
+		}
+	}
+	return n
+}
+
+// resolvedComposition is a Composition with its affected composites, or the error discovering them.
+type resolvedComposition struct {
+	comp         *un.Unstructured
+	affectedXRs  []*un.Unstructured
+	discoveryErr error
+}
+
+// resolveCompositions resolves the affected composites of every Composition, skipping other kinds.
+// In --resource mode the preflight matches are used; otherwise the cluster is queried.
+func (p *DefaultCompDiffProcessor) resolveCompositions(ctx context.Context, compositions []*un.Unstructured, namespace string, resources []k8stypes.NamespacedName, preflightMatches map[string][]*un.Unstructured) []resolvedComposition {
+	resolvedComps := make([]resolvedComposition, 0, len(compositions))
+
+	for _, comp := range compositions {
+		// Skip non-Composition objects (e.g., GoTemplate objects extracted from pipeline steps)
+		if comp.GetKind() != "Composition" {
+			p.config.Logger.Debug("Skipping non-Composition object", "kind", comp.GetKind(), "apiVersion", comp.GetAPIVersion())
+			continue
+		}
+
+		compositionID := comp.GetName() // Use actual name from unstructured
+
+		// Resolve the affected XR set up-front. In --resource mode the preflight already produced it;
+		// in default-discovery mode we query the cluster (a net-new composition yields empty; any other failure fails the composition).
+		var (
+			affectedXRs  []*un.Unstructured
+			discoveryErr error
+		)
+
+		switch {
+		case len(resources) > 0:
+			affectedXRs = preflightMatches[compositionID]
+		default:
+			// Default-discovery only needs comp.GetName() — pass the unstructured directly.
+			// FindComposites converts to typed internally only in refs mode (which we're not in here).
+			discovered, findErr := p.compositionClient.FindComposites(ctx, comp, dtypes.FindCompositesOptions{Namespace: namespace})
+
+			switch {
+			case apierrors.IsNotFound(findErr):
+				// Net-new composition (won't exist in cluster) → graceful empty result. Only NotFound
+				// means that: a Forbidden or a timeout must not read as "no impact".
+				p.config.Logger.Debug("Cannot find composites using composition (net-new composition)",
+					"composition", compositionID, "error", findErr)
+
+				affectedXRs = nil
+			case findErr != nil:
+				discoveryErr = findErr
+			default:
+				affectedXRs = discovered
+			}
+		}
+
+		resolvedComps = append(resolvedComps, resolvedComposition{comp: comp, affectedXRs: affectedXRs, discoveryErr: discoveryErr})
+	}
+
+	return resolvedComps
 }

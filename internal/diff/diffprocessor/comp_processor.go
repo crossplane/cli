@@ -207,11 +207,11 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 
 	// suppliedTo maps each named supplied composite's identity to the Composition it is assigned to. One
 	// with only a generateName cannot be a live composite, so it is not matched against them.
-	suppliedTo := make(map[suppliedIdentity]string)
+	suppliedTo := make(map[dt.CompositeKey]string)
 	for name, us := range p.config.SuppliedComposites {
 		for _, u := range us {
 			if u.GetName() != "" {
-				suppliedTo[identityOfSupplied(u)] = name
+				suppliedTo[dt.CompositeKeyOf(u)] = name
 			}
 		}
 	}
@@ -225,12 +225,12 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 		// so the renderer can decide how to present them.
 		scoped := len(resources) > 0
 
-		var supplied map[string]suppliedState
+		var supplied map[dt.CompositeKey]suppliedState
 
 		if discoveryErr == nil {
 			// A live composite supplied under another Composition renders there, once (see mergeSupplied).
 			affectedXRs = slices.DeleteFunc(slices.Clone(affectedXRs), func(u *un.Unstructured) bool {
-				name, ok := suppliedTo[identityOfSupplied(u)]
+				name, ok := suppliedTo[dt.CompositeKeyOf(u)]
 				return ok && name != compositionID
 			})
 			affectedXRs, supplied = mergeSupplied(affectedXRs, p.config.SuppliedComposites[compositionID], live)
@@ -340,14 +340,6 @@ func outputErrorsJoined(errs []dt.OutputError) error {
 	return errors.Join(joined...)
 }
 
-// suppliedIdentity is the identity a supplied composite shares with the live one it replaces.
-type suppliedIdentity struct{ group, kind, namespace, name string }
-
-func identityOfSupplied(u *un.Unstructured) suppliedIdentity {
-	gvk := u.GroupVersionKind()
-	return suppliedIdentity{gvk.Group, gvk.Kind, u.GetNamespace(), u.GetName()}
-}
-
 // suppliedState is whether a supplied composite is live, i.e. the cluster has it, or why that could not
 // be told.
 type suppliedState struct {
@@ -360,17 +352,17 @@ type suppliedState struct {
 // the cluster has. The cluster is asked about each supplied one not discovered, since discovery misses
 // live composites that --resource, --namespace or a Composition outside the run leave out. A composite
 // with only a generateName is new, so it is not looked up.
-func (p *DefaultCompDiffProcessor) suppliedLiveness(ctx context.Context, resolvedComps []resolvedComposition) map[suppliedIdentity]suppliedState {
-	live := make(map[suppliedIdentity]suppliedState)
+func (p *DefaultCompDiffProcessor) suppliedLiveness(ctx context.Context, resolvedComps []resolvedComposition) map[dt.CompositeKey]suppliedState {
+	live := make(map[dt.CompositeKey]suppliedState)
 	for _, r := range resolvedComps {
 		for _, u := range r.affectedXRs {
-			live[identityOfSupplied(u)] = suppliedState{live: true}
+			live[dt.CompositeKeyOf(u)] = suppliedState{live: true}
 		}
 	}
 
 	for _, us := range p.config.SuppliedComposites {
 		for _, u := range us {
-			id := identityOfSupplied(u)
+			id := dt.CompositeKeyOf(u)
 			if _, ok := live[id]; ok || u.GetName() == "" {
 				continue
 			}
@@ -392,25 +384,25 @@ func (p *DefaultCompDiffProcessor) suppliedLiveness(ctx context.Context, resolve
 // with the same group, kind, namespace and name as an affected one replaces it in place: it is the
 // desired state, and still diffs against the live object.
 //
-// It also returns the diff key of every supplied composite, mapped to its state in live (see
+// It also returns the key of every supplied composite, mapped to its state in live (see
 // suppliedLiveness). One that is not live would be created by applying it, so it adopts no revision.
-func mergeSupplied(affected, supplied []*un.Unstructured, live map[suppliedIdentity]suppliedState) ([]*un.Unstructured, map[string]suppliedState) {
+func mergeSupplied(affected, supplied []*un.Unstructured, live map[dt.CompositeKey]suppliedState) ([]*un.Unstructured, map[dt.CompositeKey]suppliedState) {
 	if len(supplied) == 0 {
 		return affected, nil
 	}
 
-	at := make(map[suppliedIdentity]int, len(affected))
+	at := make(map[dt.CompositeKey]int, len(affected))
 	out := make([]*un.Unstructured, 0, len(affected)+len(supplied))
-	keys := make(map[string]suppliedState, len(supplied))
+	keys := make(map[dt.CompositeKey]suppliedState, len(supplied))
 
 	for _, u := range affected {
-		at[identityOfSupplied(u)] = len(out)
+		at[dt.CompositeKeyOf(u)] = len(out)
 		out = append(out, u)
 	}
 
 	for _, u := range supplied {
-		id := identityOfSupplied(u)
-		keys[dt.MakeDiffKeyFromResource(u)] = live[id]
+		id := dt.CompositeKeyOf(u)
+		keys[id] = live[id]
 
 		if u.GetName() == "" {
 			out = append(out, u)
@@ -497,7 +489,7 @@ func (p *DefaultCompDiffProcessor) preflightResourceRefs(ctx context.Context, co
 //
 // It also returns each composite it rendered without error, with its group of diffs and unchanged
 // renderings (which the impact analysis leaves out), for DiffComposition's render-overlap check.
-func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context, newComp *un.Unstructured, affectedXRs []*un.Unstructured, supplied map[string]suppliedState, scoped bool, run map[string]runComposition) (*dt.CompositionDiff, []renderedComposite, error) {
+func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context, newComp *un.Unstructured, affectedXRs []*un.Unstructured, supplied map[dt.CompositeKey]suppliedState, scoped bool, run map[string]runComposition) (*dt.CompositionDiff, []renderedComposite, error) {
 	result := &dt.CompositionDiff{
 		Name:           newComp.GetName(),
 		Scoped:         scoped,
@@ -552,9 +544,9 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 
 	// A supplied composite whose liveness is unknown has no known update policy: it is not classified,
 	// but kept, to be reported with its error.
-	unknown := slices.DeleteFunc(slices.Clone(affectedXRs), func(xr *un.Unstructured) bool { return lookupErr(supplied, xr) == nil })
+	unknown := slices.DeleteFunc(slices.Clone(affectedXRs), func(xr *un.Unstructured) bool { return supplied[dt.CompositeKeyOf(xr)].err == nil })
 
-	keptXRs, droppedXRs, repointingXRs, unresolvedXRs, err := p.partitionXRsByUpdatePolicy(ctx, slices.DeleteFunc(slices.Clone(affectedXRs), func(xr *un.Unstructured) bool { return lookupErr(supplied, xr) != nil }), newComp, pred, netNew)
+	keptXRs, droppedXRs, repointingXRs, unresolvedXRs, err := p.partitionXRsByUpdatePolicy(ctx, slices.DeleteFunc(slices.Clone(affectedXRs), func(xr *un.Unstructured) bool { return supplied[dt.CompositeKeyOf(xr)].err != nil }), newComp, pred, netNew)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -611,7 +603,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 
 	// A composite that would be created adopts nothing: it is not counted as re-pointing.
 	if comparison.changed() {
-		result.RevisionImpact.RepointedComposites = countRepointed(repointingXRs, netNew)
+		result.RevisionImpact.RepointedComposites = countRepointed(keptXRs, repointingXRs, netNew)
 	}
 
 	counts := countFilterReasons(droppedXRs)
@@ -718,10 +710,10 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// Process kept XRs and collect diffs to determine which ones have changes
 	p.config.Logger.Debug("Processing XRs to collect diff information", "count", len(keptXRs))
 
-	xrResults := p.collectXRDiffs(ctx, slices.DeleteFunc(slices.Clone(keptXRs), func(xr *un.Unstructured) bool { return lookupErr(supplied, xr) != nil }), cliComp, revisionName, rc.revisionLabels, pinnedXRs, netNew, run)
+	xrResults := p.collectXRDiffs(ctx, slices.DeleteFunc(slices.Clone(keptXRs), func(xr *un.Unstructured) bool { return supplied[dt.CompositeKeyOf(xr)].err != nil }), cliComp, revisionName, rc.revisionLabels, pinnedXRs, netNew, run)
 	for _, xr := range unknown {
 		key := dt.MakeDiffKeyFromResource(xr)
-		xrResults[key] = &XRDiffResult{Diffs: make(map[string]*dt.ResourceDiff), Error: errors.Wrapf(lookupErr(supplied, xr), "unable to process resource %s", key)}
+		xrResults[key] = &XRDiffResult{Diffs: make(map[string]*dt.ResourceDiff), Error: errors.Wrapf(supplied[dt.CompositeKeyOf(xr)].err, "unable to process resource %s", key)}
 	}
 
 	composites := make([]renderedComposite, 0, len(keptXRs))
@@ -741,7 +733,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	for i, xr := range keptXRs {
 		key := dt.MakeDiffKeyFromResource(xr)
 		_, unresolved := unresolvedXRs[key]
-		keptImpacts[i].Pinned = !repointingXRs[key] && !unresolved && lookupErr(supplied, xr) == nil
+		keptImpacts[i].Pinned = !repointingXRs[key] && !unresolved && supplied[dt.CompositeKeyOf(xr)].err == nil
 		keptImpacts[i].Supplied = isSupplied(supplied, xr)
 
 		if pinned, ok := pinnedXRs[key]; ok && pinned.err == nil {
@@ -760,14 +752,9 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 }
 
 // isSupplied reports whether xr came from --resource-file inputs (see mergeSupplied).
-func isSupplied(supplied map[string]suppliedState, xr *un.Unstructured) bool {
-	_, ok := supplied[dt.MakeDiffKeyFromResource(xr)]
+func isSupplied(supplied map[dt.CompositeKey]suppliedState, xr *un.Unstructured) bool {
+	_, ok := supplied[dt.CompositeKeyOf(xr)]
 	return ok
-}
-
-// lookupErr is the error telling whether supplied composite xr is live, or nil.
-func lookupErr(supplied map[string]suppliedState, xr *un.Unstructured) error {
-	return supplied[dt.MakeDiffKeyFromResource(xr)].err
 }
 
 // renderedComposite is one composite a composition run rendered successfully, for the overlap check:
@@ -858,7 +845,7 @@ func overlapGroups(composites []renderedComposite) []dt.XRDiffGroup {
 //
 // run holds the run's Compositions by name; a nested XR of another type is rendered with its own from
 // there when the run has it (see runCompositionFor).
-func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string, pinned map[string]pinnedResolution, netNew map[string]bool, run map[string]runComposition) map[string]*XRDiffResult {
+func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string, pinned map[string]pinnedResolution, netNew map[dt.CompositeKey]bool, run map[string]runComposition) map[string]*XRDiffResult {
 	// Extract the target GVK from the CLI composition's compositeTypeRef
 	cliCompTargetAPIVersion := cliComp.Spec.CompositeTypeRef.APIVersion
 	cliCompTargetKind := cliComp.Spec.CompositeTypeRef.Kind
@@ -996,18 +983,18 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 
 // withNetNewComposites returns netNew plus the key of the composite the render resolves the composition
 // for, for each net-new root of another kind than xrKind: a claim, rendered through its backing XR.
-func (p *DefaultCompDiffProcessor) withNetNewComposites(ctx context.Context, xrs []*un.Unstructured, netNew map[string]bool, xrKind string) map[string]bool {
-	out := make(map[string]bool, len(netNew))
+func (p *DefaultCompDiffProcessor) withNetNewComposites(ctx context.Context, xrs []*un.Unstructured, netNew map[dt.CompositeKey]bool, xrKind string) map[dt.CompositeKey]bool {
+	out := make(map[dt.CompositeKey]bool, len(netNew))
 	maps.Copy(out, netNew)
 
 	for _, xr := range xrs {
-		if !netNew[dt.MakeDiffKeyFromResource(xr)] || xr.GetKind() == xrKind {
+		if !netNew[dt.CompositeKeyOf(xr)] || xr.GetKind() == xrKind {
 			continue
 		}
 
 		// A failed resolve is the render's to report: it resolves the same composite.
 		if composite, err := p.xrProc.ResolveComposite(ctx, xr); err == nil {
-			out[dt.MakeDiffKeyFromResource(composite)] = true
+			out[dt.CompositeKeyOf(composite)] = true
 		}
 	}
 
@@ -1120,13 +1107,13 @@ func pinnedRevisionCallsChangedFunction(composite *un.Unstructured, resolved dty
 // is left unknown, so it keeps the ref it has: one a Manual policy pins to a revision (#479), being deleted, or whose
 // compositionRevisionSelector rejects that revision. So does every composite when revisionName is
 // empty, i.e. not predictable (#474).
-func (p *DefaultCompDiffProcessor) cliCompositionRevision(ctx context.Context, res *un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string, netNew map[string]bool) (dtypes.ResolvedComposition, error) {
+func (p *DefaultCompDiffProcessor) cliCompositionRevision(ctx context.Context, res *un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string, netNew map[dt.CompositeKey]bool) (dtypes.ResolvedComposition, error) {
 	resolved := dtypes.ResolvedComposition{Composition: cliComp}
 	if revisionName == "" {
 		return resolved, nil
 	}
 
-	disposition, err := p.classifyXR(ctx, res, cliComp.Spec.CompositeTypeRef.Kind, revisionLabels, cliComp.GetLabels(), netNew[dt.MakeDiffKeyFromResource(res)])
+	disposition, err := p.classifyXR(ctx, res, cliComp.Spec.CompositeTypeRef.Kind, revisionLabels, cliComp.GetLabels(), netNew[dt.CompositeKeyOf(res)])
 	if err != nil {
 		return dtypes.ResolvedComposition{}, err
 	}
@@ -1629,7 +1616,7 @@ type filteredXR struct {
 // `unresolved`, keyed the same way, holds the kept Manual claims whose backing XR could not be resolved
 // to tell whether they are pinned (see xrDisposition.unresolved), each with its error: that claim's own
 // result, not the run's.
-func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(ctx context.Context, xrs []*un.Unstructured, newComp *un.Unstructured, pred predictedRevision, netNew map[string]bool) (kept []*un.Unstructured, dropped []filteredXR, repointing map[string]bool, unresolved map[string]pinnedResolution, err error) {
+func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(ctx context.Context, xrs []*un.Unstructured, newComp *un.Unstructured, pred predictedRevision, netNew map[dt.CompositeKey]bool) (kept []*un.Unstructured, dropped []filteredXR, repointing map[string]bool, unresolved map[string]pinnedResolution, err error) {
 	// The selector is matched against the label set the new revision would carry (composition labels
 	// plus the stamped crossplane.io/composition-name and crossplane.io/composition-hash), while
 	// mismatch messages display the user's own composition labels; see predictedRevisionLabels and
@@ -1640,7 +1627,7 @@ func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(ctx context.Contex
 	xrKind, _, _ := un.NestedString(newComp.Object, "spec", "compositeTypeRef", "kind")
 
 	for _, xr := range xrs {
-		disposition, classifyErr := p.classifyXR(ctx, xr, xrKind, targetLabels, compLabels, netNew[dt.MakeDiffKeyFromResource(xr)])
+		disposition, classifyErr := p.classifyXR(ctx, xr, xrKind, targetLabels, compLabels, netNew[dt.CompositeKeyOf(xr)])
 		if classifyErr != nil {
 			return nil, nil, nil, nil, classifyErr
 		}
@@ -1949,8 +1936,8 @@ func xrIdentity(apiVersion, kind, name string) string {
 }
 
 // netNewKeys returns the keys of the supplied composites the cluster lacks.
-func netNewKeys(supplied map[string]suppliedState) map[string]bool {
-	netNew := make(map[string]bool, len(supplied))
+func netNewKeys(supplied map[dt.CompositeKey]suppliedState) map[dt.CompositeKey]bool {
+	netNew := make(map[dt.CompositeKey]bool, len(supplied))
 	for key, state := range supplied {
 		if !state.live && state.err == nil {
 			netNew[key] = true
@@ -1959,12 +1946,12 @@ func netNewKeys(supplied map[string]suppliedState) map[string]bool {
 	return netNew
 }
 
-// countRepointed counts the re-pointing composites that already exist, since a composite that would
-// be created adopts nothing.
-func countRepointed(repointing, netNew map[string]bool) int {
+// countRepointed counts the re-pointing kept composites that already exist, since a composite that
+// would be created adopts nothing.
+func countRepointed(kept []*un.Unstructured, repointing map[string]bool, netNew map[dt.CompositeKey]bool) int {
 	n := 0
-	for key := range repointing {
-		if !netNew[key] {
+	for _, xr := range kept {
+		if repointing[dt.MakeDiffKeyFromResource(xr)] && !netNew[dt.CompositeKeyOf(xr)] {
 			n++
 		}
 	}

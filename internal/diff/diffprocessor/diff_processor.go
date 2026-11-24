@@ -45,7 +45,7 @@ const (
 )
 
 // DiffProcessor interface for processing resources.
-type DiffProcessor interface {
+type DiffProcessor interface { //nolint:interfacebloat // ClusterComposite sits beside ResolveComposite so callers need no optional-interface assertion.
 	// PerformDiff processes resources using a composition provider function, and returns the report
 	// for the caller to render. The report is non-nil whenever resources were processed, even with an
 	// error, so the successful inputs' results and the failures' errors can still be rendered.

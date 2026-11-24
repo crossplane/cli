@@ -403,10 +403,8 @@ type CompositeKey struct {
 
 // CompositeKeyOf returns u's CompositeKey.
 func CompositeKeyOf(u *un.Unstructured) CompositeKey {
-	return CompositeKey{
-		GroupKind:      u.GroupVersionKind().GroupKind(),
-		NamespacedName: k8stypes.NamespacedName{Namespace: u.GetNamespace(), Name: u.GetName()},
-	}
+	gvk := u.GroupVersionKind()
+	return CompositeKey{Group: gvk.Group, Kind: gvk.Kind, Namespace: u.GetNamespace(), Name: u.GetName()}
 }
 
 // MakeDiffKeyFromResource creates a unique key for a resource diff from an Unstructured resource.

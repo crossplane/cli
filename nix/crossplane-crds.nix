@@ -8,8 +8,8 @@
 pkgs.fetchFromGitHub {
   owner = "crossplane";
   repo = "crossplane";
-  rev = "v2.4.3";
+  rev = "v2.5.0";
   sparseCheckout = [ "cluster/crds" ];
-  hash = "sha256-XijnvbGWE+J+tgBSdVeuRMvWH+nW8J2BR23ePyWXQTg=";
+  hash = "sha256-8CGKDh3BxU1LseEvNJwMyDK0XygOuzazAfOylE2hGRU=";
 }
 + "/cluster/crds"

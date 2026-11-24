@@ -1845,7 +1845,7 @@ func (b *CompositionBuilder) WithPipelineStep(step, functionName string, input m
 
 	pipelineStep := xpextv1.PipelineStep{
 		Step:        step,
-		FunctionRef: xpextv1.FunctionReference{Name: functionName},
+		FunctionRef: &xpextv1.FunctionReference{Name: functionName},
 		Input:       rawInput,
 	}
 

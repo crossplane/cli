@@ -230,7 +230,7 @@ func (c *generateCmd) newComposition() (*apiextv1.Composition, string, error) {
 			Pipeline: []apiextv1.PipelineStep{
 				{
 					Step: c.autoReadyName,
-					FunctionRef: apiextv1.FunctionReference{
+					FunctionRef: &apiextv1.FunctionReference{
 						Name: c.autoReadyName,
 					},
 				},

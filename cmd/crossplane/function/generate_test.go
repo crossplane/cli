@@ -590,7 +590,7 @@ func TestAddCompositionStep(t *testing.T) {
 			start: []apiextv1.PipelineStep{
 				{
 					Step:        "existing",
-					FunctionRef: apiextv1.FunctionReference{Name: "existing-fn"},
+					FunctionRef: &apiextv1.FunctionReference{Name: "existing-fn"},
 				},
 			},
 			step:          "my-func",
@@ -603,7 +603,7 @@ func TestAddCompositionStep(t *testing.T) {
 			start: []apiextv1.PipelineStep{
 				{
 					Step:        "my-func",
-					FunctionRef: apiextv1.FunctionReference{Name: "my-fn-ref"},
+					FunctionRef: &apiextv1.FunctionReference{Name: "my-fn-ref"},
 				},
 			},
 			step:          "my-func",
@@ -661,7 +661,7 @@ func TestAddStepToComposition(t *testing.T) {
 					Pipeline: []apiextv1.PipelineStep{
 						{
 							Step:        "auto-ready",
-							FunctionRef: apiextv1.FunctionReference{Name: "crossplane-contrib-function-auto-ready"},
+							FunctionRef: &apiextv1.FunctionReference{Name: "crossplane-contrib-function-auto-ready"},
 						},
 					},
 				},

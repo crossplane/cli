@@ -128,11 +128,11 @@ func TestDefaultFunctionClient_GetFunctionsFromPipeline(t *testing.T) {
 						Pipeline: []apiextensionsv1.PipelineStep{
 							{
 								Step:        "step-a",
-								FunctionRef: apiextensionsv1.FunctionReference{Name: "function-a"},
+								FunctionRef: &apiextensionsv1.FunctionReference{Name: "function-a"},
 							},
 							{
 								Step:        "step-b",
-								FunctionRef: apiextensionsv1.FunctionReference{Name: "function-b"},
+								FunctionRef: &apiextensionsv1.FunctionReference{Name: "function-b"},
 							},
 						},
 					},

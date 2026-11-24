@@ -54,7 +54,7 @@ func addCompositionStep(comp *apiextv1.Composition, stepName, functionRef string
 
 	step := apiextv1.PipelineStep{
 		Step: stepName,
-		FunctionRef: apiextv1.FunctionReference{
+		FunctionRef: &apiextv1.FunctionReference{
 			Name: functionRef,
 		},
 	}

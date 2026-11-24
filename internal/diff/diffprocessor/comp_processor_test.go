@@ -3082,8 +3082,8 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedBackingXROfFilt
 
 func TestCallsChangedFunction(t *testing.T) {
 	steps := []apiextensionsv1.PipelineStep{
-		{Step: "a", FunctionRef: apiextensionsv1.FunctionReference{Name: "fn-a"}},
-		{Step: "b", FunctionRef: apiextensionsv1.FunctionReference{Name: "fn-b"}},
+		{Step: "a", FunctionRef: &apiextensionsv1.FunctionReference{Name: "fn-a"}},
+		{Step: "b", FunctionRef: &apiextensionsv1.FunctionReference{Name: "fn-b"}},
 	}
 
 	tests := map[string]struct {

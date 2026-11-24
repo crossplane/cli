@@ -165,8 +165,10 @@ type CompositionResult struct {
 	RevisionImpact *RevisionImpact  `json:"revisionImpact,omitempty"`
 	// ImpactAnalysisSkipped means the composites that would adopt the
 	// Composition's revision were deliberately not simulated, so no
-	// changed, unchanged or error verdict exists for them. Composites the
-	// revision would not reach are still listed in Result.Composites.
+	// changed, unchanged or error verdict exists for them, except composites
+	// from --resource-file (CompositeResult.Supplied), which are rendered
+	// regardless. Composites the revision would not reach are still listed in
+	// Result.Composites.
 	ImpactAnalysisSkipped bool `json:"impactAnalysisSkipped,omitempty"`
 }
 

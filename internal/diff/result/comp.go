@@ -97,7 +97,8 @@ type CompositionDiff struct {
 	// selector or deletion are identified locally, with no render, so they are reported whether or not
 	// the analysis ran — as XRStatusFiltered entries here, and via the AffectedResources filter
 	// counters (issue #478). What a skip suppresses is the renders, and
-	// therefore any changed/unchanged/errored verdict about the composites that were kept.
+	// therefore any changed/unchanged/errored verdict about the composites that were kept, except
+	// composites from --resource-file (XRImpact.Supplied), which are rendered regardless.
 	//
 	// Why the composites went unevaluated is not recoverable from this field alone — read
 	// RevisionImpact.ChangeScope alongside it. A "none" scope means no CompositionRevision is created

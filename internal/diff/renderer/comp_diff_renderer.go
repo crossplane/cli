@@ -144,7 +144,12 @@ func (r *DefaultCompDiffRenderer) renderSkippedComposition(comp *dt.CompositionD
 	}
 
 	// The supplied composites were rendered, so their verdicts are earned: show them as an analysed
-	// composition would.
+	// composition would. The list names only the rendered ones in default discovery, so the filtered
+	// breakdown is reported first, as the skip must not hide it (#478).
+	if err := r.writeFilteredSummary(comp); err != nil {
+		return err
+	}
+
 	if err := r.renderAffectedResourcesList(comp); err != nil {
 		return err
 	}
@@ -219,14 +224,15 @@ func (r *DefaultCompDiffRenderer) renderCompositionChanges(comp *dt.CompositionD
 // confines its claim to the cluster's composites and says those were rendered.
 func skippedMessage(impact dt.RevisionImpact, supplied int) string {
 	if supplied > 0 {
-		reason := "this composition is identical to the cluster's, so applying it creates no new CompositionRevision"
+		reason, remedy := "this composition is identical to the cluster's, so applying it creates no new CompositionRevision", "Pass --analyze-on=always to evaluate them anyway."
 		if impact.CreatesRevision {
 			reason = fmt.Sprintf("--analyze-on=spec-change and this composition's spec is unchanged, though applying it creates a new CompositionRevision that %d composite%s would adopt",
 				impact.RepointedComposites, pluralize(impact.RepointedComposites))
+			remedy = "Pass --analyze-on=any-change to check them."
 		}
 
-		return fmt.Sprintf("Impact analysis skipped for the cluster's composites: %s. The %d composite%s from --resource-file %s rendered.\n\n",
-			reason, supplied, pluralize(supplied), map[bool]string{true: "was", false: "were"}[supplied == 1])
+		return fmt.Sprintf("Impact analysis skipped for the cluster's composites: %s. %s The %d composite%s from --resource-file %s rendered.\n\n",
+			reason, remedy, supplied, pluralize(supplied), map[bool]string{true: "was", false: "were"}[supplied == 1])
 	}
 
 	if impact.CreatesRevision {
@@ -260,9 +266,8 @@ func (r *DefaultCompDiffRenderer) renderFilteredUnderSkip(comp *dt.CompositionDi
 
 	stdout := r.opts.Stdout
 
-	if _, err := fmt.Fprintf(stdout, "%d of %d XR(s) using composition %s would not adopt this revision: %s\n",
-		filtered, comp.AffectedResources.Total, comp.Name, filteredClauses(comp.AffectedResources)); err != nil {
-		return errors.Wrap(err, "cannot write filtered XRs summary")
+	if err := r.writeFilteredSummary(comp); err != nil {
+		return err
 	}
 
 	if impacts := listedImpacts(comp); len(impacts) > 0 {
@@ -273,6 +278,22 @@ func (r *DefaultCompDiffRenderer) renderFilteredUnderSkip(comp *dt.CompositionDi
 
 	if _, err := fmt.Fprintln(stdout); err != nil {
 		return errors.Wrap(err, "cannot write filtered XRs separator")
+	}
+
+	return nil
+}
+
+// writeFilteredSummary writes the line counting the composites that would not adopt this revision, and
+// nothing when there are none.
+func (r *DefaultCompDiffRenderer) writeFilteredSummary(comp *dt.CompositionDiff) error {
+	filtered := totalFiltered(comp.AffectedResources)
+	if filtered == 0 {
+		return nil
+	}
+
+	if _, err := fmt.Fprintf(r.opts.Stdout, "%d of %d XR(s) using composition %s would not adopt this revision: %s\n",
+		filtered, comp.AffectedResources.Total, comp.Name, filteredClauses(comp.AffectedResources)); err != nil {
+		return errors.Wrap(err, "cannot write filtered XRs summary")
 	}
 
 	return nil

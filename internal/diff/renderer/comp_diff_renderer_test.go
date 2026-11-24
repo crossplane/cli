@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	gcmp "github.com/google/go-cmp/cmp"
+	"github.com/sergi/go-diff/diffmatchpatch"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
@@ -633,8 +634,9 @@ func TestSkippedMessage(t *testing.T) {
 				"Impact analysis skipped for the cluster's composites",
 				"creates no new CompositionRevision",
 				"The 2 composites from --resource-file were rendered.",
+				"Pass --analyze-on=always to evaluate them anyway.",
 			},
-			wantOmits: []string{"no composite resource could change", "--analyze-on=always"},
+			wantOmits: []string{"no composite resource could change"},
 		},
 		"MetadataOnlyWithSuppliedNamesThemRendered": {
 			impact:   dt.RevisionImpact{ChangeScope: "metadata", CreatesRevision: true, RepointedComposites: 3},
@@ -643,6 +645,7 @@ func TestSkippedMessage(t *testing.T) {
 				"Impact analysis skipped for the cluster's composites",
 				"3 composites would adopt",
 				"The 1 composite from --resource-file was rendered.",
+				"Pass --analyze-on=any-change to check them.",
 			},
 			wantOmits: []string{"no composite resource could change"},
 		},
@@ -818,6 +821,51 @@ func TestRenderCompDiff_RevisionImpactLine(t *testing.T) {
 				t.Errorf("RenderCompDiff() leaked the revision hash into human output:\n%s", stdout.String())
 			}
 		})
+	}
+}
+
+// TestRenderCompDiff_SkippedWithSupplied pins that a skipped Composition whose --resource-file
+// composites were rendered still reports the filtered breakdown, which the skip must not hide (#478).
+func TestRenderCompDiff_SkippedWithSupplied(t *testing.T) {
+	comp := dt.CompositionDiff{
+		Name:                  "xbuckets.example.org",
+		RevisionImpact:        dt.RevisionImpact{ChangeScope: "none"},
+		ImpactAnalysisSkipped: true,
+		AffectedResources:     dt.AffectedResourcesSummary{Total: 2, WithChanges: 1, FilteredByPolicy: 1},
+		ImpactAnalysis: []dt.XRImpact{
+			{Kind: "XBucket", Name: "pinned", Status: dt.XRStatusFiltered, FilterReason: dt.FilterReasonManualPolicy},
+			{Kind: "XBucket", Name: "new-xr", Status: dt.XRStatusChanged, Supplied: true, Diffs: map[string]*dt.ResourceDiff{
+				"example.org/v1/Bucket/composed": {
+					Gvk:          schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "Bucket"},
+					ResourceName: "composed",
+					DiffType:     dt.DiffTypeAdded,
+					LineDiffs:    []diffmatchpatch.Diff{{Type: diffmatchpatch.DiffInsert, Text: "apiVersion: example.org/v1\nkind: Bucket\nmetadata:\n  name: composed"}},
+				},
+			}},
+		},
+	}
+
+	var stdout bytes.Buffer
+
+	opts := DefaultDiffOptions()
+	opts.Stdout = &stdout
+	opts.Stderr = &bytes.Buffer{}
+	opts.UseColors = false
+
+	r := NewDefaultCompDiffRenderer(tu.TestLogger(t, false), NewDiffRenderer(tu.TestLogger(t, false), opts), opts)
+	if err := r.RenderCompDiff(&dt.CompDiffOutput{Compositions: []dt.CompositionDiff{comp}}); err != nil {
+		t.Fatalf("RenderCompDiff() unexpected error: %v", err)
+	}
+
+	for _, want := range []string{
+		"Impact analysis skipped for the cluster's composites",
+		"1 of 2 XR(s) using composition xbuckets.example.org would not adopt this revision",
+		"XBucket/new-xr (cluster-scoped) (from --resource-file)",
+		"name: composed",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("RenderCompDiff() missing %q, got:\n%s", want, stdout.String())
+		}
 	}
 }
 

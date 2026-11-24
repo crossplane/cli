@@ -685,8 +685,17 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 	if in.Composites != nil {
 		return c.simulate(sigCtx, logger, clients.Initialize, xrProc, c.diffComposites(k, logger, sp, progress, xrProc, &clients.XpClients, ns, in.Composites))
 	}
-	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
-	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, sp, progress, proc, comps, msg))
+	// The --resource-file inputs are checked and assigned once the clients
+	// initialize, which caches the cluster's XRDs, and before rendering.
+	supplied := map[string][]*un.Unstructured{}
+	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, append(opts, dp.WithSuppliedComposites(supplied))...)
+	diff := c.diffCompositions(k, logger, sp, progress, proc, comps, msg)
+	return c.simulate(sigCtx, logger, clients.Initialize, proc, func(ctx context.Context) (bool, error) {
+		if err := assignInputs(ctx, clients.XpClients.Definition, ns, comps, in.ResourceFile, supplied); err != nil {
+			return false, err
+		}
+		return diff(ctx)
+	})
 }
 
 // build builds in's project, or for file inputs (Compositions or composite
@@ -763,6 +772,11 @@ type Inputs struct {
 	// cluster's Compositions and functions, when Build is nil. When set,
 	// Compositions is unused.
 	Composites []*un.Unstructured
+
+	// ResourceFile are the composite resources or claims to render against
+	// the project's Compositions, alongside the composites each one
+	// discovers, when Build is set (project simulate --resource-file).
+	ResourceFile []*un.Unstructured
 
 	// Selection limits the run to the composite resources it selects. A
 	// command without CompositionFlags leaves it nil, which selects them all.

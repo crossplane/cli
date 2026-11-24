@@ -17,13 +17,68 @@ limitations under the License.
 package simulate
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+
+	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 )
+
+// assignInputs checks the --resource-file inputs against the cluster's XRDs
+// (see checkComposites), then assigns each to one of comps (see
+// assignComposites) into into, keyed by Composition name.
+func assignInputs(ctx context.Context, defs xpclient.DefinitionClient, ns string, comps, inputs []*un.Unstructured, into map[string][]*un.Unstructured) error {
+	if err := checkComposites(ctx, defs, FlagResourceFile, ns, inputs); err != nil {
+		return err
+	}
+	byComp, err := assignComposites(comps, inputs, func(in *un.Unstructured) (xrdInfo, error) {
+		return clusterXRDInfo(ctx, defs, in)
+	})
+	if err != nil {
+		return err
+	}
+	for name, xrs := range byComp {
+		into[name] = xrs
+	}
+	return nil
+}
+
+// clusterXRDInfo returns the xrdInfo of the cluster XRD that defines in, a
+// claim or composite resource checkComposites accepted.
+func clusterXRDInfo(ctx context.Context, defs xpclient.DefinitionClient, in *un.Unstructured) (xrdInfo, error) {
+	gvk := in.GroupVersionKind()
+	if xrd, err := defs.GetXRDForClaim(ctx, gvk); err == nil && xrd != nil {
+		info := xrdInfo{DefaultComposition: defaultComposition(xrd), Legacy: true}
+		info.CompositeGVK.Group, _, _ = un.NestedString(xrd.Object, "spec", "group")
+		info.CompositeGVK.Kind, _, _ = un.NestedString(xrd.Object, "spec", "names", "kind")
+		versions, _, _ := un.NestedSlice(xrd.Object, "spec", "versions")
+		for _, v := range versions {
+			if m, ok := v.(map[string]any); ok && m["referenceable"] == true {
+				info.CompositeGVK.Version, _ = m["name"].(string)
+			}
+		}
+		if info.CompositeGVK.Version == "" {
+			return xrdInfo{}, rejectInput(in, FlagResourceFile, fmt.Sprintf("whose XRD %q has no referenceable version", xrd.GetName()), "")
+		}
+		return info, nil
+	}
+	xrd, err := defs.GetXRDForXR(ctx, gvk)
+	if err != nil {
+		return xrdInfo{}, errors.Wrapf(err, "cannot get the XRD for %s", gvk)
+	}
+	return xrdInfo{CompositeGVK: gvk, DefaultComposition: defaultComposition(xrd), Legacy: xrd.GetAPIVersion() == xpclient.CrossplaneAPIExtGroupV1}, nil
+}
+
+func defaultComposition(xrd *un.Unstructured) string {
+	name, _, _ := un.NestedString(xrd.Object, "spec", "defaultCompositionRef", "name")
+	return name
+}
 
 // xrdInfo is what assignComposites needs from the XRD that defines an input.
 type xrdInfo struct {

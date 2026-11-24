@@ -17,12 +17,15 @@ limitations under the License.
 package simulate
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 
 func testComp(name, kind string, labels map[string]string) *un.Unstructured {
@@ -183,6 +186,100 @@ func TestAssignComposites(t *testing.T) {
 			}
 			if diff := cmp.Diff(want, got); diff != "" {
 				t.Errorf("\n%s\nassignComposites(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestAssignInputs(t *testing.T) {
+	xrd := func(apiVersion, def string, referenceable bool) *un.Unstructured {
+		return &un.Unstructured{Object: map[string]any{
+			"apiVersion": apiVersion, "kind": "CompositeResourceDefinition",
+			"metadata": map[string]any{"name": "xbuckets.example.org"},
+			"spec": map[string]any{
+				"group": "example.org", "scope": "Namespaced",
+				"names":                 map[string]any{"kind": "XBucket"},
+				"defaultCompositionRef": map[string]any{"name": def},
+				"versions":              []any{map[string]any{"name": "v1", "referenceable": referenceable}},
+			},
+		}}
+	}
+	gvk := func(kind string) schema.GroupVersionKind {
+		return schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: kind}
+	}
+	a := testComp("a", "XBucket", nil)
+	b := testComp("b", "XBucket", nil)
+
+	type args struct {
+		xrd   *un.Unstructured
+		input *un.Unstructured
+	}
+	type want struct {
+		assigned map[string][]string // Composition -> namespace/name
+		err      string
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"ClaimUsesCompositeKindAndDefault": {
+			reason: "A claim is matched to Compositions of its XRD's composite kind, the XRD default picking one, and gets the context namespace.",
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", true), input: testInput("Bucket", "c", nil)},
+			want:   want{assigned: map[string][]string{"b": {"ctx-ns/c"}}},
+		},
+		"ClaimNoReferenceableVersion": {
+			reason: "A claim whose XRD has no referenceable version fails, naming the input.",
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", false), input: testInput("Bucket", "c", nil)},
+			want:   want{err: `--resource-file inputs include Bucket "c" (example.org/v1), whose XRD "xbuckets.example.org" has no referenceable version`},
+		},
+		"V1XRDReadsSpecPathOnly": {
+			reason: "An XR of a v1 XRD ignores spec.crossplane.compositionRef, so the XRD default applies.",
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", true), input: testInput("XBucket", "x", map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "a"}}})},
+			want:   want{assigned: map[string][]string{"b": {"ctx-ns/x"}}},
+		},
+		"V2XRDReadsCrossplanePath": {
+			reason: "An XR of a v2 XRD reads spec.crossplane.compositionRef.",
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "b", true), input: testInput("XBucket", "x", map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "a"}}})},
+			want:   want{assigned: map[string][]string{"a": {"ctx-ns/x"}}},
+		},
+		"NoXRDFailsFast": {
+			reason: "An input no cluster XRD defines fails the check, worded for --resource-file.",
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "", true), input: testInput("Other", "o", nil)},
+			want:   want{err: `--resource-file inputs include Other "o" (example.org/v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)`},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			lookup := func(kind string) func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) {
+				return func(_ context.Context, g schema.GroupVersionKind) (*un.Unstructured, error) {
+					if g == gvk(kind) {
+						return tc.args.xrd, nil
+					}
+					return nil, errors.New("no XRD found")
+				}
+			}
+			defs := &testutils.MockDefinitionClient{GetXRDForXRFn: lookup("XBucket"), GetXRDForClaimFn: lookup("Bucket")}
+			into := map[string][]*un.Unstructured{}
+			err := assignInputs(context.Background(), defs, "ctx-ns", []*un.Unstructured{a, b}, []*un.Unstructured{tc.args.input}, into)
+			gotErr := ""
+			if err != nil {
+				gotErr = err.Error()
+			}
+			if diff := cmp.Diff(tc.want.err, gotErr); diff != "" {
+				t.Errorf("\n%s\nassignInputs(...): -want err, +got err:\n%s", tc.reason, diff)
+			}
+			var got map[string][]string
+			for comp, xrs := range into {
+				for _, x := range xrs {
+					if got == nil {
+						got = map[string][]string{}
+					}
+					got[comp] = append(got[comp], x.GetNamespace()+"/"+x.GetName())
+				}
+			}
+			if diff := cmp.Diff(tc.want.assigned, got); diff != "" {
+				t.Errorf("\n%s\nassignInputs(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

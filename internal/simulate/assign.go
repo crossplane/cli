@@ -19,6 +19,7 @@ package simulate
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -52,9 +53,7 @@ func assignInputs(ctx context.Context, defs xpclient.DefinitionClient, ns string
 	if err != nil {
 		return err
 	}
-	for name, xrs := range byComp {
-		into[name] = xrs
-	}
+	maps.Copy(into, byComp)
 	return nil
 }
 

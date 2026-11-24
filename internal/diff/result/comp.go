@@ -255,6 +255,9 @@ type XRImpact struct {
 	// is its own pinned revision rather than the diffed composition: the revision calls a function that
 	// changed. Empty otherwise.
 	RenderedRevision string
+	// Supplied marks a composite from --resource-file inputs rather than discovered from the cluster.
+	// One the cluster lacks would be created, so it is not counted in RevisionImpact.RepointedComposites.
+	Supplied bool
 	// Error is the structured processing error for an XRStatusError impact (nil otherwise), the same
 	// OutputError the command lists in its top-level errors.
 	Error *OutputError

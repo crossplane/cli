@@ -100,25 +100,32 @@ func testBaseImgMap(t *testing.T, platforms []string) map[string]v1.Image {
 	m := make(map[string]v1.Image, len(platforms))
 	for _, p := range platforms {
 		goos, arch, _ := strings.Cut(p, "_")
-		// Use an unlabelled base, like a real provider runtime image, so the
-		// only package-annotated layer is the one batch builds.
-		img, err := random.Image(64, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := img.ConfigFile()
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg = cfg.DeepCopy()
-		cfg.OS = goos
-		cfg.Architecture = arch
-		if img, err = mutate.ConfigFile(img, cfg); err != nil {
-			t.Fatal(err)
-		}
-		m[p] = img
+		m[p] = testBaseImage(t, goos, arch)
 	}
 	return m
+}
+
+// testBaseImage returns a random single-layer image for the given platform
+// with no xpkg labels, like a real provider runtime image, so the only
+// package-annotated layer is the one the build adds.
+func testBaseImage(t *testing.T, goos, arch string) v1.Image {
+	t.Helper()
+	img, err := random.Image(64, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = cfg.DeepCopy()
+	cfg.OS = goos
+	cfg.Architecture = arch
+	img, err = mutate.ConfigFile(img, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
 }
 
 func TestBatchProcessService(t *testing.T) {
@@ -181,9 +188,15 @@ func TestBatchProcessService(t *testing.T) {
 
 			var stored []string
 			for _, p := range platforms {
-				m, _ := filepath.Glob(filepath.Join(c.OutputDir, p, "*.xpkg"))
+				m, err := filepath.Glob(filepath.Join(c.OutputDir, p, "*.xpkg"))
+				if err != nil {
+					t.Fatal(err)
+				}
 				for _, f := range m {
-					rel, _ := filepath.Rel(c.OutputDir, f)
+					rel, err := filepath.Rel(c.OutputDir, f)
+					if err != nil {
+						t.Fatal(err)
+					}
 					stored = append(stored, rel)
 
 					// The stored package must hold only the ec2 CRD and the binary.
@@ -216,7 +229,7 @@ func TestBatchProcessServiceErrors(t *testing.T) {
 	cases := map[string]struct {
 		reason  string
 		service string
-		mutate  func(c *batchCmd)
+		mutate  func(t *testing.T, c *batchCmd)
 		want    string
 	}{
 		"MissingProviderBinary": {
@@ -227,13 +240,14 @@ func TestBatchProcessServiceErrors(t *testing.T) {
 		"InvalidTemplate": {
 			reason:  "A metadata template that can't be read should fail.",
 			service: "ec2",
-			mutate:  func(c *batchCmd) { c.PackageMetadataTemplate = filepath.Join(c.CRDRoot, "missing.tmpl") },
+			mutate:  func(_ *testing.T, c *batchCmd) { c.PackageMetadataTemplate = filepath.Join(c.CRDRoot, "missing.tmpl") },
 			want:    errInvalidTemplate,
 		},
 		"LintFailure": {
-			reason:  "Metadata that isn't a Provider should fail the provider linter.",
+			reason:  "Configuration metadata should make the configuration linter reject the provider's CRDs.",
 			service: "ec2",
-			mutate: func(c *batchCmd) {
+			mutate: func(t *testing.T, c *batchCmd) {
+				t.Helper()
 				if err := os.WriteFile(c.PackageMetadataTemplate, []byte(testConfigurationMeta), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -246,7 +260,7 @@ func TestBatchProcessServiceErrors(t *testing.T) {
 			c := newBatchFixture(t, platforms, "example.org/%s:v1")
 			c.BuildOnly = true
 			if tc.mutate != nil {
-				tc.mutate(c)
+				tc.mutate(t, c)
 			}
 			err := c.processService(t.Context(), logging.NewNopLogger(), testBaseImgMap(t, platforms), tc.service)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -312,6 +326,9 @@ func TestBatchPushWithRetry(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("\n%s\npushWithRetry(...): %v", tc.reason, err)
+			}
+			if got, want := attempts.Load(), tc.args.failures+1; got != want {
+				t.Errorf("\n%s\npushWithRetry(...): want %d attempts, got %d", tc.reason, want, got)
 			}
 			inspectTag(t, host+"/org/provider-test-ec2:v1")
 		})

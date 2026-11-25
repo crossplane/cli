@@ -1678,6 +1678,30 @@ func NewXRD(name, group, kind string) *XRDBuilder {
 	}
 }
 
+// WithAPIVersion sets the apiVersion of the XRD, e.g. apiextensions.crossplane.io/v2.
+func (b *XRDBuilder) WithAPIVersion(apiVersion string) *XRDBuilder {
+	b.xrd.APIVersion = apiVersion
+	return b
+}
+
+// WithScope sets the scope of the XRD's composite resource.
+func (b *XRDBuilder) WithScope(scope xpextv1.CompositeResourceScope) *XRDBuilder {
+	b.xrd.Spec.Scope = &scope
+	return b
+}
+
+// WithDefaultCompositionRef sets the XRD's default Composition.
+func (b *XRDBuilder) WithDefaultCompositionRef(name string) *XRDBuilder {
+	b.xrd.Spec.DefaultCompositionRef = &xpextv1.CompositionReference{Name: name}
+	return b
+}
+
+// WithEnforcedCompositionRef sets the XRD's enforced Composition.
+func (b *XRDBuilder) WithEnforcedCompositionRef(name string) *XRDBuilder {
+	b.xrd.Spec.EnforcedCompositionRef = &xpextv1.CompositionReference{Name: name}
+	return b
+}
+
 // WithPlural sets the plural name for the XRD.
 func (b *XRDBuilder) WithPlural(plural string) *XRDBuilder {
 	b.xrd.Spec.Names.Plural = plural

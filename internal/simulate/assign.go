@@ -156,7 +156,7 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 		return byName(xrd.EnforcedComposition, "XRD enforcedCompositionRef")
 	}
 
-	ref, err := crossplaneField(in, xrd.Legacy, un.NestedString, "compositionRef", "name")
+	ref, err := crossplaneField(in, xrd.Legacy, "a string", un.NestedString, "compositionRef", "name")
 	if err != nil {
 		return "", err
 	}
@@ -166,7 +166,7 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 
 	// A selector that is present, even with no labels, is used and the XRD
 	// default is not, as in Crossplane.
-	selector, err := crossplaneField(in, xrd.Legacy, un.NestedMap, "compositionSelector")
+	selector, err := crossplaneField(in, xrd.Legacy, "an object", un.NestedMap, "compositionSelector")
 	if err != nil {
 		return "", err
 	}
@@ -224,15 +224,16 @@ func sole(in *un.Unstructured, match []*un.Unstructured, none string) (string, e
 
 // crossplaneField reads field at spec.<path> if legacy, otherwise at
 // spec.crossplane.<path> or, if not set there, spec.<path>, as the engine does.
-// A value of the wrong type fails.
-func crossplaneField[T any](in *un.Unstructured, legacy bool, get func(map[string]any, ...string) (T, bool, error), path ...string) (T, error) {
-	apiVersion := xpclient.CrossplaneAPIExtGroupV2
+// A value that is not typeName fails, naming the field to correct.
+func crossplaneField[T any](in *un.Unstructured, legacy bool, typeName string, get func(map[string]any, ...string) (T, bool, error), path ...string) (T, error) {
+	field := strings.Join(path, ".")
+	apiVersion, where := xpclient.CrossplaneAPIExtGroupV2, "spec.crossplane."+field+" or spec."+field
 	if legacy {
-		apiVersion = xpclient.CrossplaneAPIExtGroupV1
+		apiVersion, where = xpclient.CrossplaneAPIExtGroupV1, "spec."+field
 	}
-	v, _, err := xpclient.NestedCrossplaneValue(in.Object, apiVersion, "of the expected type", get, path...)
+	v, _, err := xpclient.NestedCrossplaneValue(in.Object, apiVersion, typeName, get, path...)
 	if err != nil {
-		return v, rejectInput(in, FlagResourceFile, rejectMalformed, fmt.Sprintf("whose %s is malformed: %v", strings.Join(path, "."), errors.Cause(err)), "")
+		return v, rejectInput(in, FlagResourceFile, rejectMalformed, fmt.Sprintf("whose %s is not %s", where, typeName), "correct it in the file")
 	}
 	return v, nil
 }

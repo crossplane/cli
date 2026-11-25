@@ -920,15 +920,17 @@ func (b *MockFunctionClientBuilder) Build() *MockFunctionClient {
 
 // MockDefinitionClientBuilder helps build crossplane.DefinitionClient mocks.
 type MockDefinitionClientBuilder struct {
-	mock   *MockDefinitionClient
-	xrdMap map[schema.GroupVersionKind]*un.Unstructured
+	mock        *MockDefinitionClient
+	xrdMap      map[schema.GroupVersionKind]*un.Unstructured
+	claimXRDMap map[schema.GroupVersionKind]*un.Unstructured
 }
 
 // NewMockDefinitionClient creates a new MockDefinitionClientBuilder.
 func NewMockDefinitionClient() *MockDefinitionClientBuilder {
 	return &MockDefinitionClientBuilder{
-		mock:   &MockDefinitionClient{},
-		xrdMap: make(map[schema.GroupVersionKind]*un.Unstructured),
+		mock:        &MockDefinitionClient{},
+		xrdMap:      make(map[schema.GroupVersionKind]*un.Unstructured),
+		claimXRDMap: make(map[schema.GroupVersionKind]*un.Unstructured),
 	}
 }
 
@@ -981,6 +983,14 @@ func (b *MockDefinitionClientBuilder) WithXRDForXR(unstructured *un.Unstructured
 // When Build() is called, GetXRDForXR will use the accumulated XRD mappings.
 func (b *MockDefinitionClientBuilder) WithXRDForGVK(gvk schema.GroupVersionKind, xrd *un.Unstructured) *MockDefinitionClientBuilder {
 	b.xrdMap[gvk] = xrd
+	return b
+}
+
+// WithXRDForClaimGVK adds an XRD to be returned for a specific claim GVK.
+// This method can be called multiple times to add different XRDs for different GVKs.
+// When Build() is called, GetXRDForClaim will use the accumulated XRD mappings.
+func (b *MockDefinitionClientBuilder) WithXRDForClaimGVK(gvk schema.GroupVersionKind, xrd *un.Unstructured) *MockDefinitionClientBuilder {
+	b.claimXRDMap[gvk] = xrd
 	return b
 }
 
@@ -1056,8 +1066,8 @@ func (b *MockDefinitionClientBuilder) WithXRDForXRError(err error) *MockDefiniti
 }
 
 // Build returns the built mock.
-// If WithXRDForGVK was used to add XRD mappings, this will configure GetXRDForXR
-// to use those mappings.
+// If WithXRDForGVK or WithXRDForClaimGVK was used to add XRD mappings, this will
+// configure GetXRDForXR or GetXRDForClaim respectively to use those mappings.
 func (b *MockDefinitionClientBuilder) Build() *MockDefinitionClient {
 	// If there are XRDs in the map and GetXRDForXR hasn't been explicitly set,
 	// configure it to use the map
@@ -1070,6 +1080,18 @@ func (b *MockDefinitionClientBuilder) Build() *MockDefinitionClient {
 			}
 
 			return nil, errors.Errorf("no XRD found that defines XR type %s", gvk.String())
+		}
+	}
+
+	// Likewise for claim XRDs and GetXRDForClaim
+	if len(b.claimXRDMap) > 0 && b.mock.GetXRDForClaimFn == nil {
+		claimXRDMap := b.claimXRDMap
+		b.mock.GetXRDForClaimFn = func(_ context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
+			if xrd, found := claimXRDMap[gvk]; found {
+				return xrd, nil
+			}
+
+			return nil, errors.Errorf("no XRD found that defines claim type %s", gvk.String())
 		}
 	}
 

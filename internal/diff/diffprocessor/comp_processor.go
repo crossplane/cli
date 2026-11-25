@@ -591,7 +591,8 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// This holds even when the diffed composition itself calls no changed function and matches the
 	// cluster: an XR pinned to an older revision that does is analysed as a metadata-scope change.
 	pinnedXRs, pinnedKept, pinnedDropped := p.pinnedFunctionChangeXRs(ctx, keptXRs, droppedXRs)
-	// A claim not known to be pinned or not carries that error the same way, as its own result.
+	// A Manual claim or live supplied composite not known to be pinned or not carries that error the same
+	// way, as its own result.
 	if len(unresolvedXRs) > 0 {
 		if pinnedXRs == nil {
 			pinnedXRs = make(map[string]pinnedResolution, len(unresolvedXRs))
@@ -609,8 +610,9 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	if analysisScope.triggersAnalysis(p.config.AnalyzeOn) {
 		keptXRs, droppedXRs = pinnedKept, pinnedDropped
 	} else {
-		// Only the unresolved entries stay: the skip keeps just supplied composites (see below), so each
-		// supplied claim whose pin could not be read reports that error, as it does when the analysis runs.
+		// Only the unresolved entries stay, discovered ones included, though only the supplied ones are
+		// rendered below: each supplied composite whose pin could not be read reports that error through
+		// pinnedXRs, as it does when the analysis runs.
 		pinnedXRs = maps.Clone(unresolvedXRs) // Cloned: it is pruned below, and unresolvedXRs is read after.
 	}
 
@@ -698,7 +700,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 		// A kept claim whose pin could not be read is an error the run already earned, not a verdict
 		// the skip withholds, so it is reported as one: without it the claim would vanish from the
 		// report, the error from output.Errors, and RepointedComposites would undercount silently.
-		// A supplied composite is rendered below, so it reports its own error there.
+		// An unresolved supplied composite reports its classify error through pinnedXRs, below.
 		discovered := slices.DeleteFunc(slices.Clone(keptXRs), func(xr *un.Unstructured) bool { return isSupplied(supplied, xr) })
 		impacts, summary := p.unresolvedImpacts(discovered, unresolvedXRs)
 		result.ImpactAnalysis = append(result.ImpactAnalysis, impacts...)
@@ -752,7 +754,8 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// already-appended filtered entries.
 	keptImpacts, keptSummary := p.buildImpactAnalysis(keptXRs, xrResults)
 	// buildImpactAnalysis keeps keptXRs' order. A kept composite that does not re-point is one
-	// --include-pinned kept although its Manual policy pins it, or a claim whose pin could not be read,
+	// --include-pinned kept although its Manual policy pins it, or a Manual claim or live supplied
+	// composite whose pin could not be read,
 	// which is not marked Pinned because whether it is pinned is unknown.
 	for i, xr := range keptXRs {
 		key := dt.MakeDiffKeyFromResource(xr)
@@ -1639,9 +1642,9 @@ type filteredXR struct {
 // re-point at the resulting revision, which is not the same as the kept set: --include-pinned keeps a Manual-policy XR for analysis even though it
 // stays pinned to whatever compositionRevisionRef already names. See classifyXR and issue #479.
 //
-// `unresolved`, keyed the same way, holds the kept Manual claims whose backing XR could not be resolved
-// to tell whether they are pinned (see xrDisposition.unresolved), each with its error: that claim's own
-// result, not the run's.
+// `unresolved`, keyed the same way, holds the kept Manual claims, and live supplied composites, whose
+// effective composite could not be resolved to tell whether they are pinned (see
+// xrDisposition.unresolved), each with its error: that composite's own result, not the run's.
 func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(ctx context.Context, xrs []*un.Unstructured, newComp *un.Unstructured, pred predictedRevision, supplied map[dt.CompositeKey]suppliedState) (kept []*un.Unstructured, dropped []filteredXR, repointing map[string]bool, unresolved map[string]pinnedResolution, err error) {
 	// The selector is matched against the label set the new revision would carry (composition labels
 	// plus the stamped crossplane.io/composition-name and crossplane.io/composition-hash), while
@@ -1694,9 +1697,9 @@ type xrDisposition struct {
 	// re-point. Counting it as re-pointing was issue #479.
 	pinnedToRevision bool
 
-	// unresolved is set, with nothing else, for a Manual claim (or live supplied XR) naming no revision
-	// itself whose effective composite could not be resolved to read the revision it is pinned to. Whether it is pinned is unknown, so
-	// the claim is kept, not re-pointing, and reported as this error.
+	// unresolved is set, with nothing else, for a Manual claim, or a live supplied composite, whose
+	// effective composite could not be resolved to read whether it is pinned. Whether it is pinned is
+	// unknown, so the composite is kept, not re-pointing, and reported as this error.
 	unresolved error
 }
 

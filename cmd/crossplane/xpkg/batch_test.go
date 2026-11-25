@@ -118,8 +118,8 @@ func TestBatchProcessService(t *testing.T) {
 			reason: "With --build-only and --store-packages the package should be written per platform and not pushed.",
 			args:   args{buildOnly: true, store: true},
 			want: want{stored: []string{
-				"linux_amd64/provider-test-ec2-v1.xpkg",
-				"linux_arm64/provider-test-ec2-v1.xpkg",
+				filepath.Join("linux_amd64", "provider-test-ec2-v1.xpkg"),
+				filepath.Join("linux_arm64", "provider-test-ec2-v1.xpkg"),
 			}},
 		},
 	}

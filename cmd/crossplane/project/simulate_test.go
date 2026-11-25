@@ -18,6 +18,7 @@ package project
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
@@ -386,8 +388,8 @@ func TestSimulateLoadResourceFiles(t *testing.T) {
 		stdin bool
 	}
 	type want struct {
-		names []string
-		err   string
+		names    []string
+		rejected *simulate.InputError
 	}
 	cases := map[string]struct {
 		reason string
@@ -407,17 +409,17 @@ func TestSimulateLoadResourceFiles(t *testing.T) {
 		"Composition": {
 			reason: "A Composition is rejected; the project supplies them.",
 			args:   args{yaml: "apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: c\n"},
-			want:   want{err: `--resource-file inputs include Composition "c" (apiextensions.crossplane.io/v1); --resource-file takes composite resource or claim files; the project's Compositions are under its APIs path`},
+			want:   want{rejected: &simulate.InputError{Flag: simulate.FlagResourceFile, GVK: schema.GroupVersionKind{Group: "apiextensions.crossplane.io", Version: "v1", Kind: "Composition"}, Name: "c"}},
 		},
 		"ProjectFile": {
 			reason: "A project file is rejected.",
 			args:   args{yaml: "apiVersion: dev.crossplane.io/v1alpha1\nkind: Project\nmetadata:\n  name: p\n"},
-			want:   want{err: `--resource-file inputs include Project "p" (dev.crossplane.io/v1alpha1); --resource-file takes composite resource or claim files; pass the project file with -f`},
+			want:   want{rejected: &simulate.InputError{Flag: simulate.FlagResourceFile, GVK: schema.GroupVersionKind{Group: "dev.crossplane.io", Version: "v1alpha1", Kind: "Project"}, Name: "p"}},
 		},
 		"List": {
 			reason: "A List is rejected with the hint to split it.",
 			args:   args{yaml: "apiVersion: v1\nkind: List\nmetadata:\n  name: l\nitems: []\n"},
-			want:   want{err: `--resource-file inputs include List "l" (v1); --resource-file takes composite resource or claim files; pass its items as separate YAML documents instead of a List`},
+			want:   want{rejected: &simulate.InputError{Flag: simulate.FlagResourceFile, GVK: schema.GroupVersionKind{Group: "", Version: "v1", Kind: "List"}, Name: "l"}},
 		},
 	}
 	for name, tc := range cases {
@@ -438,12 +440,12 @@ func TestSimulateLoadResourceFiles(t *testing.T) {
 				path = "-"
 			}
 			got, err := (&SimulateCmd{ResourceFile: []string{path}}).loadResourceFiles()
-			gotErr := ""
-			if err != nil {
-				gotErr = err.Error()
+			var gotRejected *simulate.InputError
+			if err != nil && !errors.As(err, &gotRejected) {
+				t.Fatalf("\n%s\nloadResourceFiles(): unexpected error: %v", tc.reason, err)
 			}
-			if diff := cmp.Diff(tc.want.err, gotErr); diff != "" {
-				t.Errorf("\n%s\nloadResourceFiles(): -want err, +got err:\n%s", tc.reason, diff)
+			if diff := cmp.Diff(tc.want.rejected, gotRejected, cmpopts.IgnoreUnexported(simulate.InputError{})); diff != "" {
+				t.Errorf("\n%s\nloadResourceFiles(): -want rejected input, +got rejected input:\n%s", tc.reason, diff)
 			}
 			names := make([]string, 0, len(got))
 			for _, r := range got {

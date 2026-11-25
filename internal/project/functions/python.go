@@ -112,6 +112,10 @@ type pythonBuilder struct {
 	runtimeImage string
 	transport    http.RoundTripper
 	configStore  xpkg.ConfigStore
+
+	// pipCacheVolume is the Docker volume mounted as pip's cache in the
+	// build container.
+	pipCacheVolume string
 }
 
 func (b *pythonBuilder) Name() string {
@@ -243,7 +247,7 @@ func (b *pythonBuilder) buildVenv(ctx context.Context, c BuildContext) (map[stri
 		),
 		docker.StartWithCommand([]string{"sh", "-c", pythonBuildScript}),
 		docker.StartWithWorkingDirectory("/" + filepath.ToSlash(c.FunctionPath)),
-		docker.StartWithVolumeMount(pythonPipCacheVolume, pythonPipCacheDir),
+		docker.StartWithVolumeMount(b.pipCacheVolume, pythonPipCacheDir),
 	}
 	if schemasTar != nil {
 		opts = append(opts, docker.StartWithCopyFiles(schemasTar, "/"))
@@ -322,5 +326,7 @@ func newPythonBuilder(imageConfigs []pkgv1beta1.ImageConfig) *pythonBuilder {
 		runtimeImage: images.Image(images.Python, images.ImageRuntime),
 		transport:    registryTransport,
 		configStore:  clixpkg.NewStaticImageConfigStore(imageConfigs),
+
+		pipCacheVolume: pythonPipCacheVolume,
 	}
 }

@@ -837,8 +837,9 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 		// wantUnresolved maps the name of each kept composite whose pin could not be read to the error it
 		// carries.
 		wantUnresolved map[string]error
-		// wantUnresolvedMsg is the message of each wantUnresolved error, by name; unchecked when nil.
-		wantUnresolvedMsg map[string]string
+		// wantUnresolvedClaim records, by name, whether each wantUnresolved error took the claim wording
+		// (backing XR) rather than the supplied XR's own; unchecked when nil.
+		wantUnresolvedClaim map[string]bool
 		// liveSupplied names each composite supplied by --resource-file that the cluster has.
 		liveSupplied []string
 		wantErr      bool
@@ -945,9 +946,9 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			resolve: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
 				return nil, errBackingXRGone
 			},
-			wantKept:          []string{"my-claim"},
-			wantUnresolved:    map[string]error{"my-claim": errBackingXRGone},
-			wantUnresolvedMsg: map[string]string{"my-claim": `cannot resolve the backing XR of claim "my-claim" to read the revision it is pinned to: ` + errBackingXRGone.Error()},
+			wantKept:            []string{"my-claim"},
+			wantUnresolved:      map[string]error{"my-claim": errBackingXRGone},
+			wantUnresolvedClaim: map[string]bool{"my-claim": true},
 		},
 		"ManualClaimWithoutRevisionRefSlowLookupTimesOutAlone": {
 			reason:    "The backing XR read runs under the claim's own XRTimeout, so a slow one fails that claim alone, as a failed read does.",
@@ -986,9 +987,9 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			resolve: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
 				return nil, errBackingXRGone
 			},
-			wantKept:          []string{"file-xr"},
-			wantUnresolved:    map[string]error{"file-xr": errBackingXRGone},
-			wantUnresolvedMsg: map[string]string{"file-xr": `cannot resolve the effective composite of XResource "file-xr" to read its update policy and pinned revision: ` + errBackingXRGone.Error()},
+			wantKept:            []string{"file-xr"},
+			wantUnresolved:      map[string]error{"file-xr": errBackingXRGone},
+			wantUnresolvedClaim: map[string]bool{"file-xr": false},
 		},
 		"LiveSuppliedAutomaticXRIsNotResolved": {
 			reason:       "A live supplied XR naming Automatic wins over the cluster for policy and ref, so it re-points without a cluster read that could only fail it.",
@@ -1372,9 +1373,10 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 				t.Errorf("%s\nunresolved XRs mismatch (-want +got):\n%s", tt.reason, diff)
 			}
 
-			for name, msg := range tt.wantUnresolvedMsg {
-				if got := gotUnresolved[name]; got == nil || got.Error() != msg {
-					t.Errorf("%s\nunresolved %q message: want %q, got %v", tt.reason, name, msg, got)
+			for name, claim := range tt.wantUnresolvedClaim {
+				re, ok := errors.AsType[*resolveError](gotUnresolved[name])
+				if !ok || re.claim != claim {
+					t.Errorf("%s\nunresolved %q: want *resolveError with claim=%t, got %v", tt.reason, name, claim, gotUnresolved[name])
 				}
 			}
 		})

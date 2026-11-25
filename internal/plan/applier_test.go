@@ -145,6 +145,31 @@ func TestResolveApplier(t *testing.T) {
 			args:   args{live: live(true, update("kubectl-client-side-apply"), update("argocd-controller"), update("crossplane"))},
 			want:   Applier{Mode: ApplyClientSide, ClientSide: true},
 		},
+		"KubectlClientSideApplierWithoutAnnotation": {
+			reason: "With no flags, kubectl-client-side-apply's Update on an object without the annotation is a client-side candidate, not an imperative writer, so client-side apply is inferred.",
+			args:   args{live: live(false, update("kubectl-client-side-apply"), update("crossplane"))},
+			want:   Applier{Mode: ApplyClientSide, ClientSide: true},
+		},
+		"KubectlClientSideApplierWithoutAnnotationAndServerSideApplier": {
+			reason: "kubectl-client-side-apply's Update and a server-side applier are two candidates, so the applier is undetermined.",
+			args:   args{live: live(false, update("kubectl-client-side-apply"), apply("argocd-controller"))},
+			want:   Applier{Mode: ApplyUndetermined, Candidates: []string{"argocd-controller"}, ClientSide: true},
+		},
+		"KubectlClientSideApplierWithoutAnnotationAndImperativeWriter": {
+			reason: "Another manager's Update on an object without the annotation is still an imperative writer, so client-side apply is not inferred.",
+			args:   args{live: live(false, update("kubectl-edit"), update("kubectl-client-side-apply"))},
+			want:   Applier{Mode: ApplyUndetermined, ClientSide: true, ImperativeWriters: []string{"kubectl-edit"}},
+		},
+		"KubectlClientSideApplierSubresourceUpdate": {
+			reason: "kubectl-client-side-apply's Update to a subresource is ignored, like any subresource entry.",
+			args:   args{live: live(false, metav1.ManagedFieldsEntry{Manager: "kubectl-client-side-apply", Operation: metav1.ManagedFieldsOperationUpdate, Subresource: "status"})},
+			want:   Applier{Mode: ApplyUndetermined},
+		},
+		"KubectlClientSideApplierWithoutAnnotationServerSide": {
+			reason: "--server-side alone ignores the client-side candidate, so with no server-side one the applier is undetermined.",
+			args:   args{live: live(false, update("kubectl-client-side-apply")), flags: ApplierFlags{ServerSide: new(true)}},
+			want:   Applier{Mode: ApplyUndetermined, ClientSide: true},
+		},
 		"TwoServerSideAppliers": {
 			reason: "With no flags, two candidates leave the applier undetermined.",
 			args:   args{live: live(false, apply("platform-operator"), apply("argocd-controller"), apply("argocd-controller"))},

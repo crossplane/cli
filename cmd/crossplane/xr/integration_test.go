@@ -2098,10 +2098,10 @@ Summary: 2 modified, 2 removed`,
 			ExpectedExitCode: dp.ExitCodeSuccess,
 		},
 		// As FieldDroppedFromClientSideAppliedXRWithoutAnnotationIsNotReportedRemoved, with no
-		// --field-manager: kubectl-client-side-apply's Update makes it an imperative writer and there is no
-		// candidate applier, so nothing is removed whoever applies it, and nothing warns.
+		// --field-manager: kubectl-client-side-apply's Update makes client-side apply the inferred applier,
+		// which removes nothing without the annotation, and nothing warns.
 		"FieldDroppedFromClientSideCreatedXRWithoutAnnotationOrFlagsIsNotReportedRemoved": {
-			Reason:       "With only an imperative writer and no flags, no field is removed and nothing warns",
+			Reason:       "With only kubectl's client-side apply and no flags, no field is removed and nothing warns",
 			OutputFormat: "json",
 			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
 			SetupFiles: []string{

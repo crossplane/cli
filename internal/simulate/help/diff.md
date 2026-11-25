@@ -18,9 +18,10 @@ These flags tune the diff:
   inferred from each one's `managedFields` and
   `kubectl.kubernetes.io/last-applied-configuration` annotation: the applier
   is its only field manager with an `Apply` entry, other than Crossplane's, or
-  client-side apply if it has only that annotation. With more than one candidate, or a
-  candidate and an imperative writer (a manager, other than Crossplane's,
-  that wrote it with an `Update`, such as `kubectl create` or `edit` or a
+  client-side apply if it has only that annotation or a
+  `kubectl-client-side-apply` `Update` entry. With more than one candidate, or a
+  candidate and an imperative writer (a manager, other than Crossplane's or
+  `kubectl-client-side-apply`, that wrote it with an `Update`, such as `kubectl create` or `edit` or a
   controller, on an object without that annotation), the command warns that
   dropped fields may not be shown removed; with no candidate it doesn't
   warn. `--server-side` alone picks the only server-side applier, unless

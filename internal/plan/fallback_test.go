@@ -619,3 +619,16 @@ func TestSummaryChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestFallbackInfersKubectlClientSideApplyWithoutAnnotation(t *testing.T) {
+	desired := mr(map[string]any{"forProvider": map[string]any{}})
+	live := mr(map[string]any{"forProvider": map[string]any{"cidrBlock": "10.0.0.0/16"}})
+	live.SetManagedFields([]metav1.ManagedFieldsEntry{
+		managedBy("kubectl-client-side-apply", metav1.ManagedFieldsOperationUpdate, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`),
+	})
+
+	got := Fallback(desired, live, ResolveApplier(live, ApplierFlags{}), "test")
+	if got.Action != ActionNoOp || len(got.Changes) != 0 {
+		t.Errorf("kubectl's client-side apply of an object without the last-applied annotation removes nothing: want a no-op, got %q with changes %+v", got.Action, got.Changes)
+	}
+}

@@ -60,12 +60,13 @@ type Applier struct {
 	FieldManager string
 	// Candidates are the server-side appliers the live object records, sorted.
 	Candidates []string
-	// ClientSide reports that the live object records a client-side apply.
+	// ClientSide reports that the live object records a client-side apply:
+	// LastAppliedConfigAnnotation, or an Update by kubectl-client-side-apply.
 	ClientSide bool
 	// ImperativeWriters are the field managers that wrote the live object
 	// with an Update rather than an apply, sorted. Only an object without
 	// LastAppliedConfigAnnotation has them, since client-side apply records
-	// Updates.
+	// Updates, and kubectl-client-side-apply is never one.
 	ImperativeWriters []string
 }
 
@@ -80,7 +81,7 @@ func (a Applier) HasCandidates() bool {
 func (a Applier) DescribeCandidates() string {
 	c := a.Candidates
 	if a.ClientSide {
-		c = append(slices.Clip(c), "client-side apply ("+LastAppliedConfigAnnotation+")")
+		c = append(slices.Clip(c), "client-side apply")
 	}
 	return strings.Join(c, ", ")
 }
@@ -88,15 +89,16 @@ func (a Applier) DescribeCandidates() string {
 // ResolveApplier works out who applies a manifest to live, from flags and
 // live's managedFields. Its candidates are the field managers with an Apply
 // entry, other than Crossplane's own and those of subresources, and a
-// client-side applier when live has LastAppliedConfigAnnotation. That
-// applier's manager name is not recorded as such (Argo CD's client-side sync
-// records an Update as argocd-controller, say), and does not change what it
-// removes.
+// client-side applier when live has LastAppliedConfigAnnotation or an Update
+// entry by kubectl-client-side-apply. That applier's manager name is not
+// otherwise recorded as such (Argo CD's client-side sync records an Update as
+// argocd-controller, say), and does not change what it removes; without the
+// annotation it removes nothing.
 //
-// An imperative writer is a field manager, other than Crossplane's own and
-// those of subresources, with an Update entry on an object without
-// LastAppliedConfigAnnotation: kubectl create or edit, a controller, or an
-// API client. A lone server-side applier on such an object may only have set
+// An imperative writer is a field manager, other than Crossplane's own,
+// kubectl-client-side-apply and those of subresources, with an Update entry on
+// an object without LastAppliedConfigAnnotation: kubectl create or edit, a
+// controller, or an API client. A lone server-side applier on such an object may only have set
 // a few of its fields, so an imperative writer stops the applier being
 // inferred.
 //
@@ -116,7 +118,8 @@ func ResolveApplier(live *unstructured.Unstructured, flags ApplierFlags) Applier
 		return a
 	}
 
-	_, a.ClientSide = live.GetAnnotations()[LastAppliedConfigAnnotation]
+	_, annotated := live.GetAnnotations()[LastAppliedConfigAnnotation]
+	a.ClientSide = annotated
 
 	applies := false
 	for _, e := range live.GetManagedFields() {
@@ -130,7 +133,11 @@ func ResolveApplier(live *unstructured.Unstructured, flags ApplierFlags) Applier
 				a.Candidates = append(a.Candidates, e.Manager)
 			}
 		case metav1.ManagedFieldsOperationUpdate:
-			if !a.ClientSide && !crossplaneManager(e.Manager) && !slices.Contains(a.ImperativeWriters, e.Manager) {
+			if e.Manager == "kubectl-client-side-apply" {
+				a.ClientSide = true
+				continue
+			}
+			if !annotated && !crossplaneManager(e.Manager) && !slices.Contains(a.ImperativeWriters, e.Manager) {
 				a.ImperativeWriters = append(a.ImperativeWriters, e.Manager)
 			}
 		}
@@ -147,7 +154,7 @@ func ResolveApplier(live *unstructured.Unstructured, flags ApplierFlags) Applier
 		a.Mode = ApplyClientSide
 	case len(a.Candidates) == 1 && len(a.ImperativeWriters) == 0 && (flags.ServerSide != nil || !a.ClientSide):
 		a.Mode, a.FieldManager = ApplyServerSide, a.Candidates[0]
-	case len(a.Candidates) == 0 && a.ClientSide && flags.ServerSide == nil:
+	case len(a.Candidates) == 0 && len(a.ImperativeWriters) == 0 && a.ClientSide && flags.ServerSide == nil:
 		a.Mode = ApplyClientSide
 	}
 	return a

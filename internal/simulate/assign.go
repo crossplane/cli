@@ -164,14 +164,20 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 		return byName(ref, "compositionRef")
 	}
 
+	// A selector that is present, even with no labels, is used and the XRD
+	// default is not, as in Crossplane.
+	selector, err := crossplaneField(in, xrd.Legacy, un.NestedMap, "compositionSelector")
+	if err != nil {
+		return "", err
+	}
 	sel, err := crossplaneField(in, xrd.Legacy, un.NestedStringMap, "compositionSelector", "matchLabels")
 	if err != nil {
 		return "", err
 	}
-	if len(sel) > 0 {
+	if selector != nil {
 		var match []*un.Unstructured
 		for _, c := range typed {
-			if xpclient.LabelsMatch(sel, c.GetLabels()) {
+			if labelsSelect(sel, c.GetLabels()) {
 				match = append(match, c)
 			}
 		}
@@ -183,6 +189,19 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 	}
 
 	return sole(in, typed, "but no project Composition composes its type "+xrd.CompositeGVK.String())
+}
+
+// labelsSelect reports whether every label in sel is on labels with the same
+// value, as a Kubernetes equality selector requires: a key with an empty value
+// matches only a label that is present and empty. The cluster path's
+// xpclient.LabelsMatch also matches an absent label.
+func labelsSelect(sel, labels map[string]string) bool {
+	for k, v := range sel {
+		if got, ok := labels[k]; !ok || got != v {
+			return false
+		}
+	}
+	return true
 }
 
 // sole returns the name of the only Composition in match, or an error naming

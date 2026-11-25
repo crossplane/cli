@@ -65,6 +65,7 @@ func TestAssignComposites(t *testing.T) {
 	a := testutils.NewComposition("a").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"tier": "gold", "team": "x"}).BuildAsUnstructured()
 	b := testutils.NewComposition("b").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"tier": "silver", "team": "x"}).BuildAsUnstructured()
 	untiered := testutils.NewComposition("u").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"team": "y"}).BuildAsUnstructured()
+	emptyTier := testutils.NewComposition("e").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"tier": ""}).BuildAsUnstructured()
 	other := testutils.NewComposition("o").WithCompositeTypeRef("example.org/v1", "XOther").WithLabels(map[string]string{"tier": "gold"}).BuildAsUnstructured()
 
 	type args struct {
@@ -128,10 +129,15 @@ func TestAssignComposites(t *testing.T) {
 			args:   args{comps: []*un.Unstructured{other, a, b}, input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"crossplane": map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"tier": "gold"}}}}).Build()},
 			want:   want{comp: "a"},
 		},
-		"SelectorEmptyValue": {
-			reason: "An empty selector value matches a Composition lacking the label, as the cluster path's labelsMatch does.",
+		"SelectorEmptyValueNeedsLabel": {
+			reason: "An empty selector value matches no Composition lacking the label, as Kubernetes label selection requires the key.",
 			args:   args{comps: []*un.Unstructured{a, b, untiered}, input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"tier": ""}}}).Build()},
-			want:   want{comp: "u"},
+			want:   want{rejected: rejected("XBucket", "x", rejectNoMatch)},
+		},
+		"SelectorEmptyValueMatchesEmptyLabel": {
+			reason: "An empty selector value matches a Composition whose label is empty.",
+			args:   args{comps: []*un.Unstructured{a, b, emptyTier}, input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"tier": ""}}}).Build()},
+			want:   want{comp: "e"},
 		},
 		"V1ClaimSelector": {
 			reason: "A claim's spec.compositionSelector matches labels.",
@@ -148,10 +154,15 @@ func TestAssignComposites(t *testing.T) {
 			args:   args{comps: []*un.Unstructured{b, a}, input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"team": "x"}}}).Build()},
 			want:   want{rejected: rejected("XBucket", "x", rejectAmbiguous)},
 		},
-		"EmptySelectorFallsThrough": {
-			reason: "An empty matchLabels selects nothing, so the XRD default picks.",
+		"EmptySelectorMatchesAll": {
+			reason: "An empty matchLabels is still a selector, so Crossplane ignores the XRD default and it matches every Composition of the type: ambiguous.",
 			args:   args{comps: []*un.Unstructured{a, b}, defalt: "b", input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{}}}).Build()},
-			want:   want{comp: "b"},
+			want:   want{rejected: rejected("XBucket", "x", rejectAmbiguous)},
+		},
+		"SelectorWithoutLabelsMatchesAll": {
+			reason: "A compositionSelector with no matchLabels is still a selector, so the XRD default does not apply.",
+			args:   args{comps: []*un.Unstructured{a, b}, defalt: "b", input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{}}).Build()},
+			want:   want{rejected: rejected("XBucket", "x", rejectAmbiguous)},
 		},
 		"EnforcedCompositionRef": {
 			reason: "The XRD's enforcedCompositionRef wins over the input's compositionRef, as in Crossplane.",

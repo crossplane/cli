@@ -33,7 +33,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
@@ -45,6 +44,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/internal/terminal"
+	"github.com/crossplane/cli/v2/internal/testutils/xpkgtest"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
@@ -235,38 +235,6 @@ func newTestRegistry(t *testing.T, middleware func(http.ResponseWriter, *http.Re
 	return strings.TrimPrefix(srv.URL, "http://")
 }
 
-// testPackageImage returns a random image for the given platform whose single
-// layer is labelled as an xpkg package layer in the image config, the way
-// xpkg build does.
-func testPackageImage(t *testing.T, goos, arch string) v1.Image {
-	t.Helper()
-	img, err := random.Image(64, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	layers, err := img.Layers()
-	if err != nil {
-		t.Fatal(err)
-	}
-	d, err := layers[0].Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := img.ConfigFile()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg = cfg.DeepCopy()
-	cfg.OS = goos
-	cfg.Architecture = arch
-	cfg.Config.Labels = map[string]string{xpkg.Label(d.String()): xpkg.PackageAnnotation}
-	img, err = mutate.ConfigFile(img, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return img
-}
-
 // pushed describes what a test found in the registry under a tag.
 type pushed struct {
 	// Annotations on the manifest (or index) the tag points to.
@@ -393,7 +361,7 @@ func TestPushImages(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			imgs := make([]packageImage, 0, len(tc.args.platforms))
 			for _, p := range tc.args.platforms {
-				imgs = append(imgs, packageImage{Image: testPackageImage(t, p[0], p[1]), Path: p[1]})
+				imgs = append(imgs, packageImage{Image: xpkgtest.Image(t, xpkgtest.WithPlatform(p[0], p[1]), xpkgtest.WithPackageLabel()), Path: p[1]})
 			}
 
 			err := pushImages(t.Context(), logging.NewNopLogger(), terminal.NewNopSpinnerPrinter(), imgs, tc.args.url, tc.args.annotations, remote.WithAuth(authn.Anonymous))
@@ -457,7 +425,7 @@ func TestPushImagesRegistryError(t *testing.T) {
 		t.Run(caseName, func(t *testing.T) {
 			imgs := make([]packageImage, 0, len(tc.platforms))
 			for _, p := range tc.platforms {
-				imgs = append(imgs, packageImage{Image: testPackageImage(t, p[0], p[1]), Path: p[1]})
+				imgs = append(imgs, packageImage{Image: xpkgtest.Image(t, xpkgtest.WithPlatform(p[0], p[1]), xpkgtest.WithPackageLabel()), Path: p[1]})
 			}
 			ref := host + "/org/" + tc.repo + ":v1"
 			err := pushImages(t.Context(), logging.NewNopLogger(), nil, imgs, ref, nil, remote.WithAuth(authn.Anonymous))
@@ -546,7 +514,7 @@ func TestPushCmdRun(t *testing.T) {
 			dir := t.TempDir()
 			t.Chdir(dir)
 			for _, arch := range tc.args.files {
-				if err := tarball.WriteToFile(filepath.Join(dir, arch+".xpkg"), nil, testPackageImage(t, "linux", arch)); err != nil {
+				if err := tarball.WriteToFile(filepath.Join(dir, arch+".xpkg"), nil, xpkgtest.Image(t, xpkgtest.WithPlatform("linux", arch), xpkgtest.WithPackageLabel())); err != nil {
 					t.Fatal(err)
 				}
 			}

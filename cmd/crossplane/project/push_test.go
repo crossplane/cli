@@ -33,7 +33,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
@@ -45,6 +44,7 @@ import (
 
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/terminal"
+	"github.com/crossplane/cli/v2/internal/testutils/xpkgtest"
 )
 
 // stalledRegistry returns the host of a server that accepts every request and
@@ -164,36 +164,6 @@ func writeConfigurationPackage(t *testing.T, path, repo string) {
 	}
 }
 
-// testLabelledImage returns a random single-layer image whose layer is
-// labelled as an xpkg package layer in the image config, the way xpkg build
-// does.
-func testLabelledImage(t *testing.T) v1.Image {
-	t.Helper()
-	img, err := random.Image(64, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	layers, err := img.Layers()
-	if err != nil {
-		t.Fatal(err)
-	}
-	d, err := layers[0].Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := img.ConfigFile()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg = cfg.DeepCopy()
-	cfg.Config.Labels = map[string]string{xpkg.Label(d.String()): xpkg.PackageAnnotation}
-	img, err = mutate.ConfigFile(img, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return img
-}
-
 // openErr returns the error os.Open gives for a missing path, so expected
 // errors carry the platform's own message.
 func openErr(path string) error {
@@ -296,7 +266,7 @@ func TestPushCmdRun(t *testing.T) {
 			if len(tc.args.tags) > 0 {
 				refs := make(map[name.Reference]v1.Image, len(tc.args.tags))
 				for _, s := range tc.args.tags {
-					img := testLabelledImage(t)
+					img := xpkgtest.Image(t, xpkgtest.WithPackageLabel())
 					ref, err := name.ParseReference(expand(s))
 					if err != nil {
 						t.Fatal(err)

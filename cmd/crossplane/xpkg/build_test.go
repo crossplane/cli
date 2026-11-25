@@ -35,6 +35,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/internal/terminal"
+	"github.com/crossplane/cli/v2/internal/testutils/xpkgtest"
 )
 
 // packageContents returns the file names in the image's flattened filesystem
@@ -200,7 +201,7 @@ func TestBuildCmdRuntimeImageTarball(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	base := testBaseImage(t, "linux", "arm64")
+	base := xpkgtest.Image(t, xpkgtest.WithPlatform("linux", "arm64"))
 	baseLayers, err := base.Layers()
 	if err != nil {
 		t.Fatal(err)

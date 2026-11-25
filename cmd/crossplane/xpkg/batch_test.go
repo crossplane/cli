@@ -28,14 +28,14 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
-	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/spf13/afero"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
+
+	"github.com/crossplane/cli/v2/internal/testutils/xpkgtest"
 )
 
 // newBatchFixture copies the family provider source tree in
@@ -78,32 +78,9 @@ func testBaseImgMap(t *testing.T, platforms []string) map[string]v1.Image {
 	m := make(map[string]v1.Image, len(platforms))
 	for _, p := range platforms {
 		goos, arch, _ := strings.Cut(p, "_")
-		m[p] = testBaseImage(t, goos, arch)
+		m[p] = xpkgtest.Image(t, xpkgtest.WithPlatform(goos, arch))
 	}
 	return m
-}
-
-// testBaseImage returns a random single-layer image for the given platform
-// with no xpkg labels, like a real provider runtime image, so the only
-// package-annotated layer is the one the build adds.
-func testBaseImage(t *testing.T, goos, arch string) v1.Image {
-	t.Helper()
-	img, err := random.Image(64, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := img.ConfigFile()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg = cfg.DeepCopy()
-	cfg.OS = goos
-	cfg.Architecture = arch
-	img, err = mutate.ConfigFile(img, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return img
 }
 
 func TestBatchProcessService(t *testing.T) {
@@ -326,7 +303,7 @@ func TestBatchPushWithRetry(t *testing.T) {
 			})
 
 			c := &batchCmd{ProviderName: "provider-test", FamilyPackageURLFormat: host + "/org/%s:v1", PushRetry: tc.args.retries}
-			imgs := []packageImage{{Image: testPackageImage(t, "linux", "amd64"), Path: "ec2-linux_amd64"}}
+			imgs := []packageImage{{Image: xpkgtest.Image(t, xpkgtest.WithPlatform("linux", "amd64"), xpkgtest.WithPackageLabel()), Path: "ec2-linux_amd64"}}
 
 			err := c.pushWithRetry(t.Context(), logging.NewNopLogger(), imgs, "ec2")
 			if tc.err != "" {

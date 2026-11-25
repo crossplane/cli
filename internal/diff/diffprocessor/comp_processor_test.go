@@ -837,7 +837,9 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 		// wantUnresolved maps the name of each kept composite whose pin could not be read to the error it
 		// carries.
 		wantUnresolved map[string]error
-		wantErr        bool
+		// wantUnresolvedMsg is the message of each wantUnresolved error, by name; unchecked when nil.
+		wantUnresolvedMsg map[string]string
+		wantErr           bool
 	}{
 		// Crossplane pins a Manual composite only once it names a revision (crossplane v2.4.3
 		// internal/controller/apiextensions/composite/api.go:163); one that names none gets the latest
@@ -941,8 +943,9 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 			resolve: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
 				return nil, errBackingXRGone
 			},
-			wantKept:       []string{"my-claim"},
-			wantUnresolved: map[string]error{"my-claim": errBackingXRGone},
+			wantKept:          []string{"my-claim"},
+			wantUnresolved:    map[string]error{"my-claim": errBackingXRGone},
+			wantUnresolvedMsg: map[string]string{"my-claim": `cannot resolve the backing XR of claim "my-claim" to read the revision it is pinned to: ` + errBackingXRGone.Error()},
 		},
 		"ManualClaimWithoutRevisionRefSlowLookupTimesOutAlone": {
 			reason:    "The backing XR read runs under the claim's own XRTimeout, so a slow one fails that claim alone, as a failed read does.",
@@ -1284,6 +1287,12 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 
 			if diff := gcmp.Diff(tt.wantUnresolved, gotUnresolved, cmpopts.EquateEmpty(), cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("%s\nunresolved XRs mismatch (-want +got):\n%s", tt.reason, diff)
+			}
+
+			for name, msg := range tt.wantUnresolvedMsg {
+				if got := gotUnresolved[name]; got == nil || got.Error() != msg {
+					t.Errorf("%s\nunresolved %q message: want %q, got %v", tt.reason, name, msg, got)
+				}
 			}
 		})
 	}

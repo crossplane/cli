@@ -1834,12 +1834,12 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 func (p *DefaultCompDiffProcessor) pinnedRevision(ctx context.Context, claim *un.Unstructured) (string, error) {
 	composite, err := p.xrProc.ResolveComposite(ctx, claim)
 	if err != nil {
-		return "", errors.Wrapf(err, "cannot resolve the effective composite of %s %q to read the revision it is pinned to", claim.GetKind(), claim.GetName())
+		return "", errors.Wrapf(err, "cannot resolve the backing XR of claim %q to read the revision it is pinned to", claim.GetName())
 	}
 
 	revision, err := xp.XRCompositionRevisionRef(composite.Object, composite.GetAPIVersion())
 
-	return revision, errors.Wrapf(err, "cannot read compositionRevisionRef of the effective composite of %s %q", claim.GetKind(), claim.GetName())
+	return revision, errors.Wrapf(err, "cannot read compositionRevisionRef of the backing XR of claim %q", claim.GetName())
 }
 
 // filterCounts tallies dropped XRs by filter reason. A struct rather than a growing list of

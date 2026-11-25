@@ -232,44 +232,9 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 
 	live := p.suppliedLiveness(ctx, resolvedComps)
 
-	// suppliedTo maps each named supplied composite's identity to the Composition it is assigned to. One
-	// with only a generateName cannot be a live composite, so it is not matched against them.
-	suppliedTo := make(map[dt.CompositeKey]string)
-	// claimsTo maps each Composition to the claims supplied to it, whose backing XRs render through them.
-	claimsTo := make(map[string][]*un.Unstructured)
-	for name, us := range p.config.SuppliedComposites {
-		for _, u := range us {
-			if u.GetName() != "" {
-				suppliedTo[dt.CompositeKeyOf(u)] = name
-			}
-		}
-	}
-
-	for _, r := range resolvedComps {
-		kind, _, _ := un.NestedString(r.comp.Object, "spec", "compositeTypeRef", "kind")
-		for _, u := range p.config.SuppliedComposites[r.comp.GetName()] {
-			if u.GetName() != "" && u.GetKind() != kind {
-				claimsTo[r.comp.GetName()] = append(claimsTo[r.comp.GetName()], u)
-			}
-		}
-	}
-
-	// claimedElsewhere reports whether xr is bound to a claim supplied to a Composition other than
-	// compositionID, which renders it through that claim.
-	claimedElsewhere := func(compositionID string, xr *un.Unstructured) bool {
-		for name, claims := range claimsTo {
-			if name == compositionID {
-				continue
-			}
-			if slices.ContainsFunc(claims, func(claim *un.Unstructured) bool {
-				return managedBy(dt.XRDiffGroup{}, xr, dt.XRDiffGroup{}, claim) == claimedBy
-			}) {
-				return true
-			}
-		}
-
-		return false
-	}
+	// otherwise reports whether a discovered composite renders under another Composition than the one
+	// named, because it, or a claim bound to it, is supplied there.
+	otherwise := p.suppliedElsewhere(resolvedComps)
 
 	for _, r := range resolvedComps {
 		comp, affectedXRs, discoveryErr := r.comp, r.affectedXRs, r.discoveryErr
@@ -286,8 +251,7 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 			// A live composite supplied under another Composition renders there, once (see mergeSupplied),
 			// as does one bound to a claim supplied there.
 			affectedXRs = slices.DeleteFunc(slices.Clone(affectedXRs), func(u *un.Unstructured) bool {
-				name, ok := suppliedTo[dt.CompositeKeyOf(u)]
-				return (ok && name != compositionID) || claimedElsewhere(compositionID, u)
+				return otherwise(compositionID, u)
 			})
 			affectedXRs, supplied = mergeSupplied(affectedXRs, p.config.SuppliedComposites[compositionID], live)
 		}
@@ -390,6 +354,53 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 	errs = append(errs, overlaps...)
 
 	return output, errors.Join(errs...)
+}
+
+// suppliedElsewhere returns whether a discovered composite renders under another Composition of resolved
+// than compositionID: it is supplied there, or bound by spec.claimRef to a claim supplied there, which
+// renders it through its backing XR. A supplied composite with only a generateName cannot be a live one,
+// so it is not matched.
+func (p *DefaultCompDiffProcessor) suppliedElsewhere(resolved []resolvedComposition) func(compositionID string, xr *un.Unstructured) bool {
+	// suppliedTo maps each named supplied composite's identity to the Composition it is assigned to. One
+	// with only a generateName cannot be a live composite, so it is not matched against them.
+	suppliedTo := make(map[dt.CompositeKey]string)
+	// claimsTo maps each Composition to the claims supplied to it, whose backing XRs render through them.
+	claimsTo := make(map[string][]*un.Unstructured)
+	for name, us := range p.config.SuppliedComposites {
+		for _, u := range us {
+			if u.GetName() != "" {
+				suppliedTo[dt.CompositeKeyOf(u)] = name
+			}
+		}
+	}
+
+	for _, r := range resolved {
+		kind, _, _ := un.NestedString(r.comp.Object, "spec", "compositeTypeRef", "kind")
+		for _, u := range p.config.SuppliedComposites[r.comp.GetName()] {
+			if u.GetName() != "" && u.GetKind() != kind {
+				claimsTo[r.comp.GetName()] = append(claimsTo[r.comp.GetName()], u)
+			}
+		}
+	}
+
+	return func(compositionID string, xr *un.Unstructured) bool {
+		if name, ok := suppliedTo[dt.CompositeKeyOf(xr)]; ok && name != compositionID {
+			return true
+		}
+
+		for name, claims := range claimsTo {
+			if name == compositionID {
+				continue
+			}
+			if slices.ContainsFunc(claims, func(claim *un.Unstructured) bool {
+				return managedBy(dt.XRDiffGroup{}, xr, dt.XRDiffGroup{}, claim) == claimedBy
+			}) {
+				return true
+			}
+		}
+
+		return false
+	}
 }
 
 // outputErrorsJoined returns errs as one error that names each one's resource, the way PerformDiff

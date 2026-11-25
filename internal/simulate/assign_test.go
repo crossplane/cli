@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -31,13 +32,32 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 
+var errBoom = errors.New("boom")
+
+// cmpInputError compares InputErrors by everything but their message.
+var cmpInputError = cmp.Options{cmp.AllowUnexported(InputError{}), cmpopts.IgnoreFields(InputError{}, "msg")}
+
+// rejected is the InputError for the --resource-file input of kind and name.
+func rejected(kind, name string, why rejectKind) *InputError {
+	return &InputError{Flag: FlagResourceFile, GVK: schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: kind}, Name: name, kind: why}
+}
+
+// splitRejected returns err as an InputError, or else err itself.
+func splitRejected(err error) (*InputError, error) {
+	var ie *InputError
+	if errors.As(err, &ie) {
+		return ie, nil
+	}
+	return nil, err
+}
+
 func TestAssignComposites(t *testing.T) {
 	xr := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XBucket"}
 	// Claims of kind Bucket compose XBucket; XBucket inputs compose themselves.
 	xrdFor := func(def, enforced string) func(*un.Unstructured) (xrdInfo, error) {
 		return func(in *un.Unstructured) (xrdInfo, error) {
 			if in.GetKind() == "Other" {
-				return xrdInfo{}, errors.New("boom")
+				return xrdInfo{}, errBoom
 			}
 			// Claims, and XRs of kind XLegacy (a v1 XRD), use legacy paths.
 			return xrdInfo{CompositeGVK: xr, DefaultComposition: def, EnforcedComposition: enforced, Legacy: in.GetKind() != "XBucket"}, nil
@@ -55,8 +75,9 @@ func TestAssignComposites(t *testing.T) {
 		enforced string
 	}
 	type want struct {
-		comp string
-		err  string
+		comp     string
+		rejected *InputError
+		err      error
 	}
 	cases := map[string]struct {
 		reason string
@@ -96,12 +117,12 @@ func TestAssignComposites(t *testing.T) {
 		"CompositionRefNotInProject": {
 			reason: "A compositionRef to a Composition the project doesn't build, or of another type, fails.",
 			args:   args{comps: []*un.Unstructured{a, other}, input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionRef": map[string]any{"name": "o"}}).Build()},
-			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose compositionRef "o" is not a project Composition composing XBucket`},
+			want:   want{rejected: rejected("XBucket", "x", rejectNotInProject)},
 		},
 		"CompositionRefMalformed": {
 			reason: "A compositionRef name of the wrong type fails rather than being ignored.",
 			args:   args{comps: []*un.Unstructured{a}, input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionRef": map[string]any{"name": int64(3)}}).Build()},
-			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose compositionRef.name is malformed: .spec.compositionRef.name accessor error: 3 is of the type int64, expected string`},
+			want:   want{rejected: rejected("XBucket", "x", rejectMalformed)},
 		},
 		"V2Selector": {
 			reason: "A v2 compositionSelector matches labels among type-matching Compositions.",
@@ -121,12 +142,12 @@ func TestAssignComposites(t *testing.T) {
 		"SelectorNoMatch": {
 			reason: "A selector matching nothing fails, even if the XRD has a default.",
 			args:   args{comps: []*un.Unstructured{a, b}, defalt: "a", input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"tier": "bronze"}}}).Build()},
-			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose compositionSelector matches no project Composition composing XBucket`},
+			want:   want{rejected: rejected("XBucket", "x", rejectNoMatch)},
 		},
 		"SelectorAmbiguous": {
 			reason: "A selector matching several Compositions fails naming them.",
 			args:   args{comps: []*un.Unstructured{b, a}, input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"team": "x"}}}).Build()},
-			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), which matches several project Compositions (a, b); set its compositionRef to pick one`},
+			want:   want{rejected: rejected("XBucket", "x", rejectAmbiguous)},
 		},
 		"EmptySelectorFallsThrough": {
 			reason: "An empty matchLabels selects nothing, so the XRD default picks.",
@@ -141,7 +162,7 @@ func TestAssignComposites(t *testing.T) {
 		"EnforcedNotInProject": {
 			reason: "An enforcedCompositionRef the project doesn't build fails.",
 			args:   args{comps: []*un.Unstructured{a}, enforced: "z", input: testutils.NewResource("example.org/v1", "XBucket", "x").Build()},
-			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose XRD enforcedCompositionRef "z" is not a project Composition composing XBucket`},
+			want:   want{rejected: rejected("XBucket", "x", rejectNotInProject)},
 		},
 		"DefaultCompositionRef": {
 			reason: "With no ref or selector, the XRD's defaultCompositionRef picks.",
@@ -151,7 +172,7 @@ func TestAssignComposites(t *testing.T) {
 		"DefaultNotInProject": {
 			reason: "A defaultCompositionRef the project doesn't build fails.",
 			args:   args{comps: []*un.Unstructured{a}, defalt: "z", input: testutils.NewResource("example.org/v1", "XBucket", "x").Build()},
-			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), whose XRD defaultCompositionRef "z" is not a project Composition composing XBucket`},
+			want:   want{rejected: rejected("XBucket", "x", rejectNotInProject)},
 		},
 		"SoleTypeMatch": {
 			reason: "Otherwise the only Composition of the composite type picks; a claim matches via its XRD's composite.",
@@ -161,31 +182,31 @@ func TestAssignComposites(t *testing.T) {
 		"NoTypeMatch": {
 			reason: "No Composition of the type fails naming the input.",
 			args:   args{comps: []*un.Unstructured{other}, input: testutils.NewResource("example.org/v1", "XBucket", "x").Build()},
-			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), but no project Composition composes its type example.org/v1, Kind=XBucket`},
+			want:   want{rejected: rejected("XBucket", "x", rejectNoMatch)},
 		},
 		"TypeAmbiguous": {
 			reason: "Several Compositions of the type fail asking for compositionRef.",
 			args:   args{comps: []*un.Unstructured{a, b}, input: testutils.NewResource("example.org/v1", "XBucket", "x").Build()},
-			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), which matches several project Compositions (a, b); set its compositionRef to pick one`},
+			want:   want{rejected: rejected("XBucket", "x", rejectAmbiguous)},
 		},
 		"LookupError": {
 			reason: "An XRD lookup error is returned.",
 			args:   args{comps: []*un.Unstructured{a}, input: testutils.NewResource("example.org/v1", "Other", "x").Build()},
-			want:   want{err: "boom"},
+			want:   want{err: errBoom},
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			got, err := assignComposites(tc.args.comps, []*un.Unstructured{tc.args.input}, xrdFor(tc.args.defalt, tc.args.enforced))
-			gotErr := ""
-			if err != nil {
-				gotErr = err.Error()
+			gotRejected, gotErr := splitRejected(err)
+			if diff := cmp.Diff(tc.want.rejected, gotRejected, cmpInputError); diff != "" {
+				t.Errorf("\n%s\nassignComposites(...): -want rejected input, +got rejected input:\n%s", tc.reason, diff)
 			}
-			if diff := cmp.Diff(tc.want.err, gotErr); diff != "" {
+			if diff := cmp.Diff(tc.want.err, gotErr, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nassignComposites(...): -want err, +got err:\n%s", tc.reason, diff)
 			}
 			var want map[string][]*un.Unstructured
-			if tc.want.err == "" {
+			if tc.want.rejected == nil && tc.want.err == nil {
 				want = map[string][]*un.Unstructured{tc.want.comp: {tc.args.input}}
 			}
 			if diff := cmp.Diff(want, got); diff != "" {
@@ -214,7 +235,7 @@ func TestAssignInputs(t *testing.T) {
 	}
 	type want struct {
 		assigned map[string][]string // Composition -> namespace/name
-		err      string
+		rejected *InputError
 	}
 	cases := map[string]struct {
 		reason string
@@ -229,7 +250,7 @@ func TestAssignInputs(t *testing.T) {
 		"ClaimNoReferenceableVersion": {
 			reason: "A claim whose XRD has no referenceable version fails, naming the input.",
 			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", false).BuildAsUnstructured(), inputs: []*un.Unstructured{testutils.NewResource("example.org/v1", "Bucket", "c").Build()}},
-			want:   want{err: `--resource-file inputs include Bucket "c" (example.org/v1), whose XRD "xbuckets.example.org" gives no composite type: no referenceable version found in XRD`},
+			want:   want{rejected: rejected("Bucket", "c", rejectBadXRD)},
 		},
 		"ClaimFirstReferenceableVersion": {
 			reason: "A claim composes its XRD's first referenceable version, as xr diff resolves it.",
@@ -243,7 +264,7 @@ func TestAssignInputs(t *testing.T) {
 				un.RemoveNestedField(x.Object, "spec", "names", "kind")
 				return x
 			}(), inputs: []*un.Unstructured{testutils.NewResource("example.org/v1", "Bucket", "c").Build()}},
-			want: want{err: `--resource-file inputs include Bucket "c" (example.org/v1), whose XRD "xbuckets.example.org" gives no composite type: could not determine group or kind from XRD`},
+			want: want{rejected: rejected("Bucket", "c", rejectBadXRD)},
 		},
 		"V1XRDReadsSpecPathOnly": {
 			reason: "An XR of a v1 XRD ignores spec.crossplane.compositionRef, so the XRD default applies.",
@@ -263,7 +284,7 @@ func TestAssignInputs(t *testing.T) {
 		"DuplicateIdentity": {
 			reason: "Two inputs of one group, kind, namespace and name fail rather than one silently winning.",
 			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "b", true).BuildAsUnstructured(), inputs: []*un.Unstructured{testutils.NewResource("example.org/v1", "XBucket", "x").Build(), testutils.NewResource("example.org/v1", "XBucket", "x").Build()}},
-			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), which another --resource-file input also names; pass each composite once`},
+			want:   want{rejected: rejected("XBucket", "x", rejectDuplicate)},
 		},
 		"SameNameOtherNamespace": {
 			reason: "Inputs that differ only in namespace are distinct.",
@@ -288,7 +309,7 @@ func TestAssignInputs(t *testing.T) {
 		"NoXRDFailsFast": {
 			reason: "An input no cluster XRD defines fails the check, worded for --resource-file.",
 			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "", true).BuildAsUnstructured(), inputs: []*un.Unstructured{testutils.NewResource("example.org/v1", "Other", "o").Build()}},
-			want:   want{err: `--resource-file inputs include Other "o" (example.org/v1), which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)`},
+			want:   want{rejected: rejected("Other", "o", rejectNoXRD)},
 		},
 	}
 	for name, tc := range cases {
@@ -300,12 +321,12 @@ func TestAssignInputs(t *testing.T) {
 			defs := builder.Build()
 			into := map[string][]*un.Unstructured{}
 			err := assignInputs(context.Background(), defs, cmpstd.Or(tc.args.ns, "ctx-ns"), []*un.Unstructured{a, b}, tc.args.inputs, into)
-			gotErr := ""
-			if err != nil {
-				gotErr = err.Error()
+			gotRejected, gotErr := splitRejected(err)
+			if gotErr != nil {
+				t.Errorf("\n%s\nassignInputs(...): unexpected error: %v", tc.reason, gotErr)
 			}
-			if diff := cmp.Diff(tc.want.err, gotErr); diff != "" {
-				t.Errorf("\n%s\nassignInputs(...): -want err, +got err:\n%s", tc.reason, diff)
+			if diff := cmp.Diff(tc.want.rejected, gotRejected, cmpInputError); diff != "" {
+				t.Errorf("\n%s\nassignInputs(...): -want rejected input, +got rejected input:\n%s", tc.reason, diff)
 			}
 			var got map[string][]string
 			for comp, xrs := range into {

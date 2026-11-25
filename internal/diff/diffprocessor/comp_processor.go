@@ -217,6 +217,9 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 
 	var (
 		compositionErrors int
+		// suppliedFailed are the errors of failed compositions holding supplied composites, whose previews
+		// the failure omits.
+		suppliedFailed []error
 		// composites are the successfully rendered composites of every composition, for the overlap check.
 		composites []renderedComposite
 		// run holds every Composition of the run, so a nested XR of another type renders with its own.
@@ -278,11 +281,16 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 
 			compositionErrors++
 
+			compErr := NewOutputError(fmt.Sprintf("Composition/%s", compositionID), err)
+			if len(p.config.SuppliedComposites[compositionID]) > 0 {
+				suppliedFailed = append(suppliedFailed, errors.Wrapf(err, "unable to process resource Composition/%s", compositionID))
+			}
+
 			// Include failed composition with error instead of skipping
 			output.Compositions = append(output.Compositions, dt.CompositionDiff{
 				Name:   compositionID,
 				Scoped: scoped,
-				Error:  new(NewOutputError(fmt.Sprintf("Composition/%s", compositionID), err)),
+				Error:  &compErr,
 				AffectedResources: dt.AffectedResourcesSummary{
 					Total:       0,
 					WithChanges: 0,
@@ -331,8 +339,8 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 	// Return an error so CI/CD pipelines get a non-zero exit code. The report is returned with it, so
 	// the caller still renders it (structured output stays valid). The renderer does not print errors,
 	// so the returned error names each failing resource. A run in which only some compositions failed
-	// still succeeds: each failure is in the report, under its composition. A render overlap fails the
-	// run.
+	// still succeeds: each failure is in the report, under its composition, unless the composition held
+	// a supplied composite, whose requested preview it omits. A render overlap fails the run.
 	var errs []error
 
 	if totalXRErrors > 0 {
@@ -346,6 +354,8 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 		}
 
 		errs = append(errs, errors.Wrap(outputErrorsJoined(failed), "failed to process all compositions"))
+	} else if len(suppliedFailed) > 0 {
+		errs = append(errs, errors.Wrap(errors.Join(suppliedFailed...), "cannot preview the supplied composites of a failed composition"))
 	}
 
 	errs = append(errs, overlaps...)

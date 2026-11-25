@@ -3505,6 +3505,8 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_ReportsProgress(t *testing.T) {
 // TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites covers WithSuppliedComposites:
 // supplied composites render alongside the discovered or scoped set, once per identity, with the
 // supplied object winning.
+var errListForbidden = errors.New("cannot list composites: forbidden")
+
 func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.T) {
 	newComp := func(name string) *tu.CompositionBuilder {
 		return tu.NewComposition(name).WithCompositeTypeRef("example.org/v1", "XR").WithPipelineMode()
@@ -3597,6 +3599,8 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		errored []string
 		// healthy names each composite whose impact carries its live health; unchecked when nil.
 		healthy []string
+		// err is the error DiffComposition returns, matched with errors.Is; none when nil.
+		err error
 	}
 
 	cases := map[string]struct {
@@ -3789,6 +3793,34 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 				},
 			},
 			want: want{rendered: []string{"/file"}, revisions: map[string]string{"": predicted}},
+		},
+		"DiscoveryFailureWithSuppliedFailsRun": {
+			reason: "A Composition whose discovery fails holding a supplied composite fails the run, though another Composition succeeds, so the preview is not silently omitted.",
+			args: args{
+				find: func(_ context.Context, c *un.Unstructured, _ types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					if c.GetName() == "other-comp" {
+						return nil, errListForbidden
+					}
+					return nil, nil
+				},
+				supplied: map[string][]*un.Unstructured{"other-comp": {xr("a", "file")}},
+				comps:    []*un.Unstructured{comp, other},
+			},
+			want: want{rendered: nil, err: errListForbidden},
+		},
+		"DiscoveryFailureWithoutSuppliedKeepsRun": {
+			reason: "A Composition whose discovery fails holding no supplied composite is reported under it, and the run still succeeds as before.",
+			args: args{
+				find: func(_ context.Context, c *un.Unstructured, _ types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					if c.GetName() == "other-comp" {
+						return nil, errListForbidden
+					}
+					return nil, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file")}},
+				comps:    []*un.Unstructured{comp, other},
+			},
+			want: want{rendered: []string{"a/file"}},
 		},
 		"NetNewManualClaimGetsRevision": {
 			reason: "A supplied net-new Manual claim renders through its backing XR with the predicted revision, as it adopts it.",
@@ -4036,7 +4068,11 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			}
 
 			out, err := proc.DiffComposition(t.Context(), comps, "ns", tt.args.resources)
-			if err != nil && tt.want.errored == nil {
+			if tt.want.err != nil {
+				if !errors.Is(err, tt.want.err) {
+					t.Errorf("\n%s\nDiffComposition(...): want error %v, got %v", tt.reason, tt.want.err, err)
+				}
+			} else if err != nil && tt.want.errored == nil {
 				t.Fatalf("\n%s\nDiffComposition(...): unexpected error: %v", tt.reason, err)
 			}
 

@@ -1098,6 +1098,10 @@ func TestSimulateNewCompositionHint(t *testing.T) {
 			CompositionDiff: &dt.ResourceDiff{ResourceName: "net", DiffType: dtype},
 		}}}
 	}
+	withComposites := func(o *dt.CompDiffOutput, total int) *dt.CompDiffOutput {
+		o.Compositions[0].AffectedResources.Total = total
+		return o
+	}
 	none := dt.RevisionImpact{ChangeScope: "spec", CreatesRevision: true}
 
 	type args struct {
@@ -1132,6 +1136,11 @@ func TestSimulateNewCompositionHint(t *testing.T) {
 		"NotDetermined": {
 			reason: "Without a determined revision impact, whether composites exist is unknown, so no hint.",
 			args:   args{in: &Inputs{Build: build}, output: "json", report: comp(dt.DiffTypeAdded, dt.RevisionImpact{})},
+			want:   want{notes: []string{NoteProviderPlanSkipped}},
+		},
+		"NewWithNonAdoptingComposites": {
+			reason: "Composites found that would not adopt the Composition, such as pinned or rendered ones, exist, so no hint saying none do.",
+			args:   args{in: &Inputs{Build: build}, output: "json", report: withComposites(comp(dt.DiffTypeAdded, none), 1)},
 			want:   want{notes: []string{NoteProviderPlanSkipped}},
 		},
 		"CompositionSimulate": {

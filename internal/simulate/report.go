@@ -48,9 +48,10 @@ const (
 )
 
 // newCompositionNotes returns a note for each Composition in o that is
-// created and that no composite would adopt, saying how to render one. A
-// Composition whose impact was not determined gets none: whether composites
-// exist is unknown.
+// created and that has no composites, saying how to render one. A composite
+// that would not adopt it, filtered or rendered, still exists, so it gets
+// none. A Composition whose impact was not determined gets none: whether
+// composites exist is unknown.
 func newCompositionNotes(o *dt.CompDiffOutput) []string {
 	if o == nil {
 		return nil
@@ -60,7 +61,7 @@ func newCompositionNotes(o *dt.CompDiffOutput) []string {
 		if c.Error != nil || c.CompositionDiff == nil || c.CompositionDiff.DiffType != dt.DiffTypeAdded {
 			continue
 		}
-		if !c.RevisionImpact.Determined() || c.RevisionImpact.RepointedComposites != 0 {
+		if !c.RevisionImpact.Determined() || c.RevisionImpact.RepointedComposites != 0 || c.AffectedResources.Total != 0 {
 			continue
 		}
 		notes = append(notes, fmt.Sprintf("Composition %s is new; no composite resources exist to render. Pass a composite resource or claim file with --resource-file to preview what it would create.", c.Name))

@@ -1108,7 +1108,12 @@ func (p *DefaultCompDiffProcessor) withNetNewComposites(ctx context.Context, xrs
 		// A failed resolve is the render's to report: it resolves the same composite.
 		// ponytail: this resolves the claim once more than the render does, as pinnedFunctionChangeXRs
 		// does for a pin. Extract a shared backingKey helper if a third caller needs the backing key.
-		if composite, err := p.xrProc.ResolveComposite(ctx, xr); err == nil {
+		// The resolve is cluster I/O for this composite alone, so it runs under its own XRTimeout budget.
+		xrCtx, cancel := p.config.xrContext(ctx)
+		composite, err := p.xrProc.ResolveComposite(xrCtx, xr)
+		cancel()
+
+		if err == nil {
 			out[dt.CompositeKeyOf(composite)] = true
 		}
 	}

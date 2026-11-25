@@ -357,15 +357,15 @@ func (p *DefaultCompDiffProcessor) DiffComposition(ctx context.Context, composit
 }
 
 // suppliedElsewhere returns whether a discovered composite renders under another Composition of resolved
-// than compositionID: it is supplied there, or bound by spec.claimRef to a claim supplied there, which
-// renders it through its backing XR. A supplied composite with only a generateName cannot be a live one,
+// than compositionID: it is supplied there, or it is the backing XR of a claim supplied there (see
+// suppliedClaims.backs), which renders it. A supplied composite with only a generateName cannot be a live one,
 // so it is not matched.
 func (p *DefaultCompDiffProcessor) suppliedElsewhere(resolved []resolvedComposition) func(compositionID string, xr *un.Unstructured) bool {
 	// suppliedTo maps each named supplied composite's identity to the Composition it is assigned to. One
 	// with only a generateName cannot be a live composite, so it is not matched against them.
 	suppliedTo := make(map[dt.CompositeKey]string)
 	// claimsTo maps each Composition to the claims supplied to it, whose backing XRs render through them.
-	claimsTo := make(map[string][]*un.Unstructured)
+	claimsTo := make(map[string]suppliedClaims)
 	for name, us := range p.config.SuppliedComposites {
 		for _, u := range us {
 			if u.GetName() != "" {
@@ -375,10 +375,14 @@ func (p *DefaultCompDiffProcessor) suppliedElsewhere(resolved []resolvedComposit
 	}
 
 	for _, r := range resolved {
+		apiVersion, _, _ := un.NestedString(r.comp.Object, "spec", "compositeTypeRef", "apiVersion")
 		kind, _, _ := un.NestedString(r.comp.Object, "spec", "compositeTypeRef", "kind")
 		for _, u := range p.config.SuppliedComposites[r.comp.GetName()] {
 			if u.GetName() != "" && u.GetKind() != kind {
-				claimsTo[r.comp.GetName()] = append(claimsTo[r.comp.GetName()], u)
+				c := claimsTo[r.comp.GetName()]
+				c.apiVersion, c.kind = apiVersion, kind
+				c.claims = append(c.claims, u)
+				claimsTo[r.comp.GetName()] = c
 			}
 		}
 	}
@@ -388,19 +392,42 @@ func (p *DefaultCompDiffProcessor) suppliedElsewhere(resolved []resolvedComposit
 			return true
 		}
 
-		for name, claims := range claimsTo {
-			if name == compositionID {
-				continue
-			}
-			if slices.ContainsFunc(claims, func(claim *un.Unstructured) bool {
-				return managedBy(dt.XRDiffGroup{}, xr, dt.XRDiffGroup{}, claim) == claimedBy
-			}) {
+		for name, c := range claimsTo {
+			if name != compositionID && c.backs(xr) {
 				return true
 			}
 		}
 
 		return false
 	}
+}
+
+// suppliedClaims are the claims supplied to one Composition, and its composite type (apiVersion and
+// kind), which backs them.
+type suppliedClaims struct {
+	apiVersion, kind string
+	claims           []*un.Unstructured
+}
+
+// backs reports whether xr is the backing XR of one of the claims: it is of their backing type, and
+// bound to one by the binding itself, its spec.claimRef or the claim's spec.resourceRef. The
+// claim-name labels are not used: Crossplane copies them onto every composed resource, so a nested XR
+// of another type, rendered for its own Composition, carries them too.
+func (c suppliedClaims) backs(xr *un.Unstructured) bool {
+	if xr.GetKind() != c.kind || xr.GroupVersionKind().Group != groupOf(c.apiVersion) {
+		return false
+	}
+
+	return slices.ContainsFunc(c.claims, func(claim *un.Unstructured) bool {
+		return refIdentity(xr, "spec", "claimRef") == identityOf(claim) ||
+			refIdentity(claim, "spec", "resourceRef") == identityOf(xr)
+	})
+}
+
+// groupOf returns the API group of apiVersion, "" when it does not parse.
+func groupOf(apiVersion string) string {
+	gv, _ := schema.ParseGroupVersion(apiVersion)
+	return gv.Group
 }
 
 // outputErrorsJoined returns errs as one error that names each one's resource, the way PerformDiff

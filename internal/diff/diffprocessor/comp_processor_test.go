@@ -3513,6 +3513,15 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 	}
 	comp := newComp("test-comp").BuildAsUnstructured()
 	other := newComp("other-comp").BuildAsUnstructured()
+	// third is a Composition of another composite type, XC.
+	third := tu.NewComposition("third-comp").WithCompositeTypeRef("example.org/v1", "XC").WithPipelineMode().BuildAsUnstructured()
+	// claimLabelled is an XC carrying the claim-name labels of the claim, as Crossplane stamps them on
+	// every resource composed under it.
+	claimLabelled := func(name string) *un.Unstructured {
+		return tu.NewResource("example.org/v1", "XC", name).InNamespace("ns").
+			WithLabels(map[string]string{LabelClaimName: "claim", LabelClaimNamespace: "ns"}).
+			WithSpecField("marker", "cluster").Build()
+	}
 
 	xrB := func(name, marker string) *tu.ResourceBuilder {
 		return tu.NewResource("example.org/v1", "XR", name).
@@ -3666,6 +3675,52 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 				comps:    []*un.Unstructured{comp, other},
 			},
 			want: want{rendered: []string{"other/cluster", "claim/file"}},
+		},
+		"SuppliedClaimMovedKeepsLabelledNestedXR": {
+			reason: "A supplied claim moved to another Composition drops only its backing XR: a nested XR of another type, carrying the claim's labels under its own Composition, still renders there.",
+			args: args{
+				find: func(_ context.Context, c *un.Unstructured, _ types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					if c.GetName() == "third-comp" {
+						return []*un.Unstructured{claimLabelled("nested")}, nil
+					}
+					return nil, nil
+				},
+				supplied: map[string][]*un.Unstructured{"other-comp": {claim()}},
+				comps:    []*un.Unstructured{comp, other, third},
+			},
+			want: want{rendered: []string{"claim/file", "nested/cluster"}},
+		},
+		"SuppliedClaimInOwnCompositionDropsNothingElsewhere": {
+			reason: "A claim supplied to the Composition its backing XR is discovered under drops nothing under other Compositions.",
+			args: args{
+				find: func(_ context.Context, c *un.Unstructured, _ types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					if c.GetName() == "third-comp" {
+						return []*un.Unstructured{claimLabelled("nested")}, nil
+					}
+					bound := xr("backing", "cluster")
+					_ = un.SetNestedStringMap(bound.Object, map[string]string{"apiVersion": "example.org/v1", "kind": "Claim", "namespace": "ns", "name": "claim"}, "spec", "claimRef")
+					return []*un.Unstructured{bound}, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {claim()}},
+				comps:    []*un.Unstructured{comp, third},
+			},
+			want: want{rendered: []string{"claim/file", "nested/cluster"}},
+		},
+		"SuppliedClaimMovedKeepsXRBoundToOtherClaimKind": {
+			reason: "An XR of another type bound to a claim of another kind with the supplied claim's name and namespace is not the supplied claim's backing XR, so it is kept.",
+			args: args{
+				find: func(_ context.Context, c *un.Unstructured, _ types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					if c.GetName() != "third-comp" {
+						return nil, nil
+					}
+					bound := claimLabelled("unrelated")
+					_ = un.SetNestedStringMap(bound.Object, map[string]string{"apiVersion": "example.org/v1", "kind": "OtherClaim", "namespace": "ns", "name": "claim"}, "spec", "claimRef")
+					return []*un.Unstructured{bound}, nil
+				},
+				supplied: map[string][]*un.Unstructured{"other-comp": {claim()}},
+				comps:    []*un.Unstructured{comp, other, third},
+			},
+			want: want{rendered: []string{"claim/file", "unrelated/cluster"}},
 		},
 		"UnionWithScopedRefs": {
 			reason: "Supplied composites are added to the --resource scoped set.",

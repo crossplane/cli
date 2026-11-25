@@ -38,7 +38,9 @@ import (
 //
 //   - ApplyServerSide: a.FieldManager owns them and no other manager does.
 //   - ApplyClientSide: live's LastAppliedConfigAnnotation has them and
-//     desired drops them. With no annotation nothing is removed.
+//     desired drops them, or they are inside a list live and desired
+//     differ on, which the merge patch replaces whole. With no annotation
+//     nothing is removed.
 //   - ApplyUndetermined: some declarative applier owns them and no other
 //     manager does, as applierOwned describes.
 //
@@ -81,8 +83,10 @@ func Fallback(desired, live *unstructured.Unstructured, a Applier, reason string
 
 // clientSideRemovable returns the fields of live kubectl's client-side apply
 // of desired removes: those under the topmost spec keys live's
-// LastAppliedConfigAnnotation has and desired drops. Its three-way JSON merge
-// patch deletes each such key whole, whoever owns it, and keeps anything the
+// LastAppliedConfigAnnotation has and desired drops, and those inside a list
+// live and desired differ on. Its three-way JSON merge patch deletes each such
+// key whole, whoever owns it, and sets each such list to desired's whole,
+// dropping what only live's has; outside replaced lists it keeps anything the
 // annotation lacks. With no annotation, or one that does not parse (which
 // kubectl's apply rejects), nothing is removed.
 func clientSideRemovable(live, desired *unstructured.Unstructured) *fieldpath.Set {
@@ -94,7 +98,33 @@ func clientSideRemovable(live, desired *unstructured.Unstructured) *fieldpath.Se
 	appliedSpec, _, _ := unstructured.NestedMap(applied, "spec")
 	desiredSpec, _, _ := unstructured.NestedMap(desired.Object, "spec")
 	droppedKeys(removable, newCursor("spec"), appliedSpec, desiredSpec)
+	liveSpec, _, _ := unstructured.NestedMap(live.Object, "spec")
+	replacedLists(removable, newCursor("spec"), liveSpec, desiredSpec)
 	return removable
+}
+
+// replacedLists inserts into s the path of each list under the cursor that
+// live and desired both have and differ on, descending into maps both have.
+// The merge patch sets such a list to desired's, so every live-only field in
+// it goes. A list's set path stands for everything inside it, as the cursor's
+// path freezes at a list.
+func replacedLists(s *fieldpath.Set, c cursor, live, desired map[string]any) {
+	for k, lv := range live {
+		dv, ok := desired[k]
+		if !ok {
+			continue
+		}
+		switch l := lv.(type) {
+		case map[string]any:
+			if dm, ok := dv.(map[string]any); ok {
+				replacedLists(s, c.field(k), l, dm)
+			}
+		case []any:
+			if _, ok := dv.([]any); ok && !equalValues(l, dv) {
+				s.Insert(c.field(k).fp)
+			}
+		}
+	}
 }
 
 // droppedKeys inserts into s the path of each key under the cursor that

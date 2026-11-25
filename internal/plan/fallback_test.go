@@ -329,6 +329,48 @@ func TestFallback(t *testing.T) {
 			},
 			want: want{action: ActionNoOp},
 		},
+		"ClientSideApplyRemovesFieldDroppedFromAnnotatedList": {
+			// CreateThreeWayJSONMergePatch(original, modified, current) here gives
+			// {"spec":{"rules":[{"port":80}]}}: the list is replaced whole.
+			reason: "A merge patch replaces a list whole, so a field the annotation's list element has and desired's drops is removed.",
+			args: args{
+				desired:     mr(map[string]any{"rules": []any{map[string]any{"port": int64(80)}}}),
+				live:        mr(map[string]any{"rules": []any{map[string]any{"port": int64(80), "description": "old"}}}),
+				annotations: map[string]string{LastAppliedConfigAnnotation: `{"spec":{"rules":[{"port":80,"description":"old"}]}}`},
+				applier:     Applier{Mode: ApplyClientSide},
+			},
+			want: want{
+				action:  ActionUpdate,
+				changes: []FieldChange{{Path: "spec.rules[0].description", Actual: &Value{Value: "old"}}},
+			},
+		},
+		"ClientSideApplyRemovesLiveOnlyFieldFromReplacedList": {
+			// CreateThreeWayJSONMergePatch(original, modified, current) here also
+			// gives {"spec":{"rules":[{"port":80}]}}: live's list differs from
+			// desired's, so the patch replaces it even though the annotation's
+			// list equals desired's.
+			reason: "A live-only field inside a list that differs from desired's is removed, since the patch replaces the list, even when the annotation does not track the field.",
+			args: args{
+				desired:     mr(map[string]any{"rules": []any{map[string]any{"port": int64(80)}}}),
+				live:        mr(map[string]any{"rules": []any{map[string]any{"port": int64(80), "description": "old"}}}),
+				annotations: map[string]string{LastAppliedConfigAnnotation: `{"spec":{"rules":[{"port":80}]}}`},
+				applier:     Applier{Mode: ApplyClientSide},
+			},
+			want: want{
+				action:  ActionUpdate,
+				changes: []FieldChange{{Path: "spec.rules[0].description", Actual: &Value{Value: "old"}}},
+			},
+		},
+		"ClientSideApplyKeepsUntrackedFieldBesideUnchangedList": {
+			reason: "With live's list equal to desired's there is no patch for it, and a live-only key the annotation lacks survives.",
+			args: args{
+				desired:     mr(map[string]any{"rules": []any{map[string]any{"port": int64(80)}}}),
+				live:        mr(map[string]any{"rules": []any{map[string]any{"port": int64(80)}}, "region": "eu-west-1"}),
+				annotations: map[string]string{LastAppliedConfigAnnotation: `{"spec":{"rules":[{"port":80}]}}`},
+				applier:     Applier{Mode: ApplyClientSide},
+			},
+			want: want{action: ActionNoOp},
+		},
 		"UndeterminedApplierRemovesEveryAppliersExclusiveFields": {
 			reason: "With no telling which applier applies the manifest, removals are every applier's exclusively owned fields, as without an applier.",
 			args: args{

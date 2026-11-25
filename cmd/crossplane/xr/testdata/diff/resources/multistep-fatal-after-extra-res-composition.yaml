@@ -63,3 +63,4 @@ spec:
         inline:
           template: |
             {{ index .missing.path 0 }}
+  unusedRevisionHistoryLimit: 1

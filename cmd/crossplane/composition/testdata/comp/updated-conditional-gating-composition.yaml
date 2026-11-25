@@ -55,3 +55,4 @@ spec:
     - step: mark-ready-from-observed
       functionRef:
         name: function-auto-ready
+  unusedRevisionHistoryLimit: 1

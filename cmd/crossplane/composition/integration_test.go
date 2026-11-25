@@ -97,6 +97,7 @@ func TestCompDiffIntegration(t *testing.T) {
     - functionRef:
         name: function-auto-ready
       step: automatically-detect-ready-composed-resources
+    unusedRevisionHistoryLimit: 1
 
 ---
 
@@ -770,6 +771,7 @@ Impact analysis skipped: this composition is identical to the cluster's, so appl
     - functionRef:
         name: function-auto-ready
       step: automatically-detect-ready-composed-resources
+    unusedRevisionHistoryLimit: 1
 
 ---
 
@@ -928,6 +930,7 @@ Summary: 1 modified`,
     - functionRef:
         name: function-auto-ready
       step: automatically-detect-ready-composed-resources
+    unusedRevisionHistoryLimit: 1
 
 ---
 
@@ -1058,6 +1061,7 @@ Impact analysis skipped: this composition is identical to the cluster's, so appl
     - functionRef:
         name: function-auto-ready
       step: automatically-detect-ready-composed-resources
+    unusedRevisionHistoryLimit: 1
 
 ---
 
@@ -1168,6 +1172,7 @@ Summary: 1 modified`,
     - functionRef:
         name: function-auto-ready
       step: automatically-detect-ready-composed-resources
+    unusedRevisionHistoryLimit: 1
 
 ---
 
@@ -1248,6 +1253,7 @@ All composite resources are up-to-date. No downstream resource changes detected.
 +   - functionRef:
 +       name: function-auto-ready
 +     step: automatically-detect-ready-composed-resources
++   unusedRevisionHistoryLimit: 1
 
 ---
 
@@ -1319,6 +1325,7 @@ No XRs found using composition xnewresources.diff.example.org`,
     - functionRef:
         name: function-auto-ready
       step: automatically-detect-ready-composed-resources
+    unusedRevisionHistoryLimit: 1
 
 ---
 
@@ -1437,6 +1444,7 @@ All composite resources are up-to-date. No downstream resource changes detected.
     - functionRef:
         name: function-auto-ready
       step: automatically-detect-ready-composed-resources
+    unusedRevisionHistoryLimit: 1
 
 ---
 
@@ -1570,6 +1578,7 @@ Summary: 2 modified
     - functionRef:
         name: function-auto-ready
       step: automatically-detect-ready-composed-resources
+    unusedRevisionHistoryLimit: 1
 
 ---
 
@@ -1754,6 +1763,7 @@ Summary: 2 modified`,
     - functionRef:
         name: function-auto-ready
       step: automatically-detect-ready-composed-resources
+    unusedRevisionHistoryLimit: 1
 
 ---
 
@@ -1845,6 +1855,7 @@ Summary: 1 modified`,
     - functionRef:
         name: function-auto-ready
       step: automatically-detect-ready-composed-resources
+    unusedRevisionHistoryLimit: 1
 
 ---
 

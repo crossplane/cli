@@ -51,3 +51,4 @@ spec:
           - sequence:
               - ^stage0-  # Stage 0 (composition-resource-name starts with stage0-)
               - ^stage1-  # Stage 1 (hidden until stage 0 is ready, unless it already exists)
+  unusedRevisionHistoryLimit: 1

@@ -60,6 +60,7 @@ spec:
     - step: automatically-detect-ready-composed-resources
       functionRef:
         name: function-auto-ready
+  unusedRevisionHistoryLimit: 1
 ---
 apiVersion: apiextensions.crossplane.io/v1
 kind: CompositionRevision

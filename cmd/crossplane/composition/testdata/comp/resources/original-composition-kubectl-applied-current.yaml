@@ -9,7 +9,7 @@ metadata:
     # original-composition-kubectl-applied.yaml, whose value is stale, re-applying that file over this
     # one is a no-op: kubectl recomputes the same annotation, the patch is empty, and nothing is written.
     kubectl.kubernetes.io/last-applied-configuration: |
-      {"apiVersion":"apiextensions.crossplane.io/v1","kind":"Composition","metadata":{"name":"xnopresources.diff.example.org","annotations":{}},"spec":{"compositeTypeRef":{"apiVersion":"ns.diff.example.org/v1alpha1","kind":"XNopResource"},"mode":"Pipeline","pipeline":[{"step":"generate-resources","functionRef":{"name":"function-go-templating"},"input":{"apiVersion":"template.fn.crossplane.io/v1beta1","kind":"GoTemplate","source":"Inline","inline":{"template":"apiVersion: ns.nop.example.org/v1alpha1\nkind: XDownstreamResource\nmetadata:\n  name: {{ .observed.composite.resource.metadata.name }}\n  namespace: {{ .observed.composite.resource.metadata.namespace }}\n  annotations:\n    gotemplating.fn.crossplane.io/composition-resource-name: nop-resource\nspec:\n  forProvider:\n    configData: {{ .observed.composite.resource.spec.coolField }}\n    resourceTier: basic\n"}}},{"step":"automatically-detect-ready-composed-resources","functionRef":{"name":"function-auto-ready"}}]}}
+      {"apiVersion":"apiextensions.crossplane.io/v1","kind":"Composition","metadata":{"name":"xnopresources.diff.example.org","annotations":{}},"spec":{"compositeTypeRef":{"apiVersion":"ns.diff.example.org/v1alpha1","kind":"XNopResource"},"mode":"Pipeline","pipeline":[{"step":"generate-resources","functionRef":{"name":"function-go-templating"},"input":{"apiVersion":"template.fn.crossplane.io/v1beta1","kind":"GoTemplate","source":"Inline","inline":{"template":"apiVersion: ns.nop.example.org/v1alpha1\nkind: XDownstreamResource\nmetadata:\n  name: {{ .observed.composite.resource.metadata.name }}\n  namespace: {{ .observed.composite.resource.metadata.namespace }}\n  annotations:\n    gotemplating.fn.crossplane.io/composition-resource-name: nop-resource\nspec:\n  forProvider:\n    configData: {{ .observed.composite.resource.spec.coolField }}\n    resourceTier: basic\n"}}},{"step":"automatically-detect-ready-composed-resources","functionRef":{"name":"function-auto-ready"}}],"unusedRevisionHistoryLimit":1}}
 spec:
   compositeTypeRef:
     apiVersion: ns.diff.example.org/v1alpha1
@@ -39,3 +39,4 @@ spec:
     - step: automatically-detect-ready-composed-resources
       functionRef:
         name: function-auto-ready
+  unusedRevisionHistoryLimit: 1

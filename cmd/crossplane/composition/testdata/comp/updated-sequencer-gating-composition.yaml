@@ -51,3 +51,4 @@ spec:
           - sequence:
               - ^stage0-
               - ^stage1-
+  unusedRevisionHistoryLimit: 1

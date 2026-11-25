@@ -41,6 +41,7 @@ import (
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/plan"
+	isimulate "github.com/crossplane/cli/v2/internal/simulate"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	"github.com/crossplane/cli/v2/internal/testutils/integration"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -150,6 +151,8 @@ func TestResourceSimulateApplier(t *testing.T) {
 		// warning are substrings of stderr's undetermined-applier warning;
 		// none means stderr must carry no warning.
 		warning []string
+		// exitCode is the status the command exits with: changes, or none.
+		exitCode int
 	}
 	const (
 		removable = "spec.forProvider.removableField"
@@ -165,7 +168,7 @@ func TestResourceSimulateApplier(t *testing.T) {
 			args: args{applies: []integration.FieldManagerApply{
 				{File: "testdata/existing-mr-with-removable-field.yaml", FieldManager: "argocd-controller"},
 			}},
-			want: want{removed: []string{removable}},
+			want: want{removed: []string{removable}, exitCode: isimulate.ExitCodeChanges},
 		},
 		"FieldAnotherManagerAlsoOwnsIsKept": {
 			reason: "A dropped field another manager also owns survives the apply, so is not removed.",
@@ -176,7 +179,7 @@ func TestResourceSimulateApplier(t *testing.T) {
 				},
 				flags: []string{"--field-manager=argocd-controller"},
 			},
-			want: want{kept: []string{removable}},
+			want: want{kept: []string{removable}, exitCode: 0},
 		},
 		"TwoServerSideAppliersWarn": {
 			reason: "With two server-side appliers and no flags, the applier is undetermined: stderr warns naming the resource, its namespace, both candidates and the fix.",
@@ -187,8 +190,9 @@ func TestResourceSimulateApplier(t *testing.T) {
 			want: want{
 				// An undetermined applier keeps the union model, so each applier's
 				// exclusive dropped field still plans removed.
-				removed: []string{removable, roleName},
-				warning: []string{"XDownstreamResource default/test-resource", "candidates: argocd-controller, platform-operator", "--field-manager"},
+				removed:  []string{removable, roleName},
+				warning:  []string{"XDownstreamResource default/test-resource", "candidates: argocd-controller, platform-operator", "--field-manager"},
+				exitCode: isimulate.ExitCodeChanges,
 			},
 		},
 		"TwoServerSideAppliersWithFieldManager": {
@@ -200,14 +204,14 @@ func TestResourceSimulateApplier(t *testing.T) {
 				},
 				flags: []string{"--field-manager=argocd-controller"},
 			},
-			want: want{removed: []string{removable}, kept: []string{roleName}},
+			want: want{removed: []string{removable}, kept: []string{roleName}, exitCode: isimulate.ExitCodeChanges},
 		},
 		"ClientSideAppliedInferred": {
 			reason: "A client-side applied object, inferred from its annotation, has the key the annotation records and the manifest drops removed.",
 			args: args{applies: []integration.FieldManagerApply{
 				{File: "testdata/existing-mr-client-side-applied-with-removable-field.yaml", FieldManager: "kubectl-client-side-apply", Create: true},
 			}},
-			want: want{removed: []string{removable}},
+			want: want{removed: []string{removable}, exitCode: isimulate.ExitCodeChanges},
 		},
 		"ClientSideAppliedExplicit": {
 			reason: "--server-side=false applies client-side: the key the annotation records and the manifest drops is removed.",
@@ -217,7 +221,7 @@ func TestResourceSimulateApplier(t *testing.T) {
 				},
 				flags: []string{"--server-side=false"},
 			},
-			want: want{removed: []string{removable}},
+			want: want{removed: []string{removable}, exitCode: isimulate.ExitCodeChanges},
 		},
 		"ClientSideWithoutAnnotationRemovesNothing": {
 			reason: "Client-side apply of an object with no last-applied-configuration annotation removes nothing.",
@@ -227,7 +231,7 @@ func TestResourceSimulateApplier(t *testing.T) {
 				},
 				flags: []string{"--server-side=false"},
 			},
-			want: want{kept: []string{removable}},
+			want: want{kept: []string{removable}, exitCode: 0},
 		},
 	}
 
@@ -247,6 +251,9 @@ func TestResourceSimulateApplier(t *testing.T) {
 				t.Fatalf("\n%s\nwant one approximate plan, got exit %d: %s", tc.reason, code, stdout.String())
 			}
 			removed := map[string]bool{}
+			if code != tc.want.exitCode {
+				t.Errorf("\n%s\nwant exit %d, got %d\nstderr:\n%s", tc.reason, tc.want.exitCode, code, stderr.String())
+			}
 			for _, c := range res.Plans[0].Changes {
 				if c.Planned == nil {
 					removed[c.Path] = true

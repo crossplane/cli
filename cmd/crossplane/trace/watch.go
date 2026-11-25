@@ -39,6 +39,12 @@ import (
 	"github.com/crossplane/cli/v2/pkg/resource/xpkg"
 )
 
+// The window size watch mode renders at when Hooks.Headless is set.
+const (
+	headlessWidth  = 200
+	headlessHeight = 50
+)
+
 // Bubble Tea messages for watch mode.
 type treeUpdateMsg struct {
 	rendered string
@@ -123,10 +129,11 @@ func (c *Cmd) watchResourceTree(ctx context.Context, k *kong.Context, logger log
 	defer w.Stop()
 
 	// Create Bubble Tea program
-	prog := tea.NewProgram(
-		treeModel{},
-		tea.WithOutput(k.Stdout),
-	)
+	progOpts := []tea.ProgramOption{tea.WithOutput(k.Stdout)}
+	if c.Hooks != nil && c.Hooks.Headless {
+		progOpts = append(progOpts, tea.WithInput(nil), tea.WithWindowSize(headlessWidth, headlessHeight))
+	}
+	prog := tea.NewProgram(treeModel{}, progOpts...)
 
 	// Start producer loop in background
 	go c.watchProducer(ctx, logger, kClient, root, mapping, p, prog, w)

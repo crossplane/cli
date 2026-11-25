@@ -44,8 +44,7 @@ func rejected(kind, name string, why rejectKind) *InputError {
 
 // splitRejected returns err as an InputError, or else err itself.
 func splitRejected(err error) (*InputError, error) {
-	var ie *InputError
-	if errors.As(err, &ie) {
+	if ie, ok := errors.AsType[*InputError](err); ok {
 		return ie, nil
 	}
 	return nil, err

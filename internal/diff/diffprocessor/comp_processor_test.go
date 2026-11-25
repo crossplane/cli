@@ -3702,6 +3702,38 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			},
 			want: want{rendered: nil, skipped: map[string]bool{"test-comp": true}, errored: []string{"claim"}},
 		},
+		"ReplacingSuppliedOmittingPolicyOverLiveManualDeferred": {
+			reason: "A supplied composite naming no update policy over a live Manual pinned one inherits Manual and the pin, as render does, so it is deferred.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return []*un.Unstructured{pinned(manual(xr("a", "cluster")))}, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file")}},
+				// The effective composite inherits the cluster's policy and ref, which the file does not name.
+				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					return pinned(manual(u.DeepCopy())), nil
+				},
+			},
+			want: want{rendered: nil, repointed: map[string]int{"test-comp": 0}, supplied: map[string][]string{"test-comp": {"a"}}},
+		},
+		"ReplacingAutomaticSuppliedOverLiveManualRepoints": {
+			reason: "A supplied composite setting Automatic over a live Manual pinned one keeps its own policy, as render does, so it re-points.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return []*un.Unstructured{pinned(manual(xr("a", "cluster")))}, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {func() *un.Unstructured {
+					u := xr("a", "file")
+					_ = un.SetNestedField(u.Object, "Automatic", "spec", "crossplane", "compositionUpdatePolicy")
+					return u
+				}()}},
+				// The file's policy wins; only the ref, which it does not name, is inherited.
+				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					return pinned(u.DeepCopy()), nil
+				},
+			},
+			want: want{rendered: []string{"a/file"}, repointed: map[string]int{"test-comp": 1}, supplied: map[string][]string{"test-comp": {"a"}}},
+		},
 		"ReplacingManualSuppliedDeferred": {
 			reason: "A supplied Manual composite pinned to a revision that replaces a live one stays pinned, so it is deferred as today.",
 			args: args{

@@ -1725,10 +1725,10 @@ type xrDisposition struct {
 //
 // netNew marks a composite the cluster lacks, from --resource-file: Crossplane gives a new composite
 // the latest revision whatever its policy, so a Manual one is classified as Automatic. liveSupplied marks
-// a --resource-file composite the cluster has: the file rarely names the compositionRevisionRef
-// Crossplane wrote, so a Manual one naming none is pinned to the ref of its effective composite, as a
-// claim is. The render is handed the effective composite, which already carries that ref, so
-// cliCompositionRevision passes false.
+// a --resource-file composite the cluster has: the file rarely names the compositionUpdatePolicy or
+// compositionRevisionRef the cluster holds, so both are read from its effective composite, which keeps
+// the file's value where it names one. The render is handed the effective composite, which already
+// carries them, so cliCompositionRevision passes false.
 func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstructured, xrKind string, targetLabels, compLabels map[string]string, netNew, liveSupplied bool) (xrDisposition, error) {
 	// An XR with a deletionTimestamp is on Crossplane's teardown path: the composite reconciler
 	// deletes its composed resources instead of composing them. It will never adopt the revision
@@ -1753,7 +1753,24 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 		}}, nil
 	}
 
-	policy, err := xp.XRUpdatePolicy(xr.Object, xr.GetAPIVersion())
+	// A live supplied XR is reconciled with the cluster's policy and ref wherever the file names none,
+	// as render is (see inheritClusterFields), so both are read from its effective composite. A claim's
+	// pin is read through pinnedRevision below.
+	source := xr
+	if liveSupplied && xr.GetKind() == xrKind {
+		// Cluster I/O for this composite alone, so it runs under its own XRTimeout budget.
+		xrCtx, cancel := p.config.xrContext(ctx)
+		effective, err := p.xrProc.ResolveComposite(xrCtx, xr)
+		cancel()
+
+		if err != nil {
+			return xrDisposition{unresolved: errors.Wrapf(err, "cannot resolve the effective composite of %s %q to read its update policy and pinned revision", xr.GetKind(), xr.GetName())}, nil
+		}
+
+		source = effective
+	}
+
+	policy, err := xp.XRUpdatePolicy(source.Object, source.GetAPIVersion())
 	if err != nil {
 		return xrDisposition{}, errors.Wrapf(err, "cannot read compositionUpdatePolicy for XR %q", xr.GetName())
 	}
@@ -1767,12 +1784,12 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 	// it for analysis but does not unpin it, so it is marked as not re-pointing. With no revision it
 	// adopts the resulting one, as an Automatic composite does, so it falls through.
 	if policy == compositionUpdatePolicyManual && !netNew {
-		revision, err := xp.XRCompositionRevisionRef(xr.Object, xr.GetAPIVersion())
+		revision, err := xp.XRCompositionRevisionRef(source.Object, source.GetAPIVersion())
 		if err != nil {
 			return xrDisposition{}, errors.Wrapf(err, "cannot read compositionRevisionRef for XR %q", xr.GetName())
 		}
 
-		if revision == "" && (xr.GetKind() != xrKind || liveSupplied) {
+		if revision == "" && xr.GetKind() != xrKind {
 			// The effective composite read is cluster I/O for this composite alone, so it runs under its
 			// own XRTimeout budget: a slow read fails this composite, not the run.
 			xrCtx, cancel := p.config.xrContext(ctx)
@@ -1813,8 +1830,7 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 // DiffProcessor.ResolveComposite): its backing XR with the claim synced in. A Manual claim usually names
 // no revision itself, because Crossplane writes the pin onto the backing XR alone and copies a claim's
 // ref onto it only when the claim sets one (crossplane v2.4.3 internal/controller/apiextensions/claim/
-// syncer_ssa.go:147-152 and :211). A live supplied XR's effective composite carries the cluster's ref
-// (see classifyXR). Empty when the effective composite names none either.
+// syncer_ssa.go:147-152 and :211). Empty when the effective composite names none either.
 func (p *DefaultCompDiffProcessor) pinnedRevision(ctx context.Context, claim *un.Unstructured) (string, error) {
 	composite, err := p.xrProc.ResolveComposite(ctx, claim)
 	if err != nil {

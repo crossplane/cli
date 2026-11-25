@@ -94,15 +94,39 @@ type CompDiffProcessor interface {
 	Cleaner
 }
 
+// CompositeDiffer is what the composition processor needs to simulate each composite it finds.
+type CompositeDiffer interface {
+	// DiffSingleResource processes a single resource and returns its diffs and what its render
+	// produced: the unchanged renderings its diffs leave out (see
+	// DefaultDiffCalculator.CalculateNonRemovalDiffs), which only the render-overlap check consumes,
+	// and the live objects health is read from.
+	DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider dtypes.CompositionProvider) (map[string]*dt.ResourceDiff, dtypes.RenderedResources, error)
+
+	// ResolveComposite returns the composite DiffSingleResource hands its composition provider for res:
+	// the defaulted effective composite (see CompositeResolver), which for a claim is its backing XR.
+	ResolveComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
+
+	// ClusterComposite returns the cluster's copy of the composite res names, or nil when the cluster
+	// has none. Any other lookup error is returned.
+	ClusterComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
+
+	// Initialize prepares the processor's providers before the first diff.
+	Initialize(ctx context.Context) error
+
+	// Cleaner releases any resources held by the processor (e.g., Docker containers).
+	// Should be called when the processor is no longer needed.
+	Cleaner
+}
+
 // DefaultCompDiffProcessor implements CompDiffProcessor.
 type DefaultCompDiffProcessor struct {
 	compositionClient xp.CompositionClient
 	config            ProcessorConfig
-	xrProc            DiffProcessor
+	xrProc            CompositeDiffer
 }
 
 // NewCompDiffProcessor creates a new DefaultCompDiffProcessor.
-func NewCompDiffProcessor(xrProc DiffProcessor, compositionClient xp.CompositionClient, opts ...ProcessorOption) CompDiffProcessor {
+func NewCompDiffProcessor(xrProc CompositeDiffer, compositionClient xp.CompositionClient, opts ...ProcessorOption) CompDiffProcessor {
 	// Create default configuration
 	config := ProcessorConfig{
 		MaxNestedDepth:      DefaultMaxNestedDepth,
@@ -1010,7 +1034,7 @@ type pinnedResolution struct {
 	err      error
 
 	// composite is the dt.MakeDiffKeyFromResource of the composite the render resolves the composition
-	// for: the XR itself or, for a claim, its backing XR (see DiffProcessor.ResolveComposite).
+	// for: the XR itself or, for a claim, its backing XR (see CompositeDiffer.ResolveComposite).
 	composite string
 }
 

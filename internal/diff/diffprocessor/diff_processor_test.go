@@ -2274,7 +2274,7 @@ func TestDefaultDiffProcessor_RenderToStableState(t *testing.T) {
 			processor := NewDiffProcessor(k8.Clients{}, xp.Clients{Definition: tu.NewMockDefinitionClient().Build()}, baseOpts...)
 
 			// Call the method under test
-			output, err := processor.(*DefaultDiffProcessor).RenderToStableState(ctx, tt.xr, tt.composition, tt.functions, tt.resourceID, tt.observedResources, false)
+			output, err := processor.RenderToStableState(ctx, tt.xr, tt.composition, tt.functions, tt.resourceID, tt.observedResources, false)
 
 			// Check error expectations
 			if tt.wantErr {
@@ -2543,7 +2543,7 @@ func TestDefaultDiffProcessor_RenderToStableState_SynthesizeReady(t *testing.T) 
 			}
 
 			// Call with synthesizeReady=true
-			output, err := processor.(*DefaultDiffProcessor).RenderToStableState(ctx, xr, composition, functions, "XR/test-xr", tt.observed, true)
+			output, err := processor.RenderToStableState(ctx, xr, composition, functions, "XR/test-xr", tt.observed, true)
 
 			if diff := gcmp.Diff(observedBefore, tt.observed); diff != "" {
 				t.Errorf("RenderToStableState() modified the observed resources it was given (-before +after):\n%s", diff)
@@ -3285,7 +3285,7 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 			}
 			baseOpts = append(baseOpts, customOpts...)
 			baseOpts = append(baseOpts, tt.extraOpts...)
-			processor := NewDiffProcessor(k8sClients, xpClients, baseOpts...).(*DefaultDiffProcessor)
+			processor := NewDiffProcessor(k8sClients, xpClients, baseOpts...)
 
 			// Initialize if needed
 			if len(tt.composedResources) > 0 {
@@ -3769,7 +3769,7 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 				return xpClients.Composition.FindMatchingComposition(ctx, res)
 			}
 
-			diffs, rendered, err := processor.(*DefaultDiffProcessor).DiffSingleResource(ctx, xr, compositionProvider)
+			diffs, rendered, err := processor.DiffSingleResource(ctx, xr, compositionProvider)
 
 			// Check error expectations
 			if (err != nil) != tt.wantErr {
@@ -4310,7 +4310,7 @@ func TestDefaultDiffProcessor_RenderToStableState_SchemaPlumbing(t *testing.T) {
 			)
 			processor := NewDiffProcessor(k8.Clients{}, xp.Clients{Definition: defClient}, opts...)
 
-			out, err := processor.(*DefaultDiffProcessor).RenderToStableState(
+			out, err := processor.RenderToStableState(
 				ctx, xr, composition, nil, "XR/test-xr", nil, false,
 			)
 			if err != nil {

@@ -2764,7 +2764,7 @@ func TestDefaultCompDiffProcessor_processSingleComposition_PinnedXRWithChangedFu
 	}
 
 	// A Manual claim, whose render resolves the composition for its backing XR (see
-	// DiffProcessor.ResolveComposite): the revision's compositeTypeRef names the XR's kind, not the claim's.
+	// CompositeDiffer.ResolveComposite): the revision's compositeTypeRef names the XR's kind, not the claim's.
 	claim := tu.NewResource("example.org/v1", "Claim", "pinned").InNamespace("ns").
 		WithSpecField("crossplane", map[string]any{
 			"compositionUpdatePolicy": "Manual",

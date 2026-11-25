@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
@@ -40,12 +41,40 @@ const (
 // FlagInput), that the command doesn't take. takes describes what the
 // command does take, e.g. "composition simulate takes Composition files".
 func RejectInput(r *un.Unstructured, flag, takes string) error {
-	return rejectInput(r, flag, "", takes)
+	return rejectInput(r, flag, rejectUnaccepted, "", takes)
 }
+
+// rejectKind is why an input was rejected.
+type rejectKind int
+
+const (
+	rejectUnaccepted   rejectKind = iota // Not a kind the command takes.
+	rejectNoXRD                          // No cluster XRD defines it.
+	rejectBadXRD                         // Its XRD gives no composite type.
+	rejectDuplicate                      // Another input names the same composite.
+	rejectNotInProject                   // A named Composition isn't in the project.
+	rejectMalformed                      // A Composition-selecting field is malformed.
+	rejectNoMatch                        // No project Composition matches.
+	rejectAmbiguous                      // Several project Compositions match.
+)
+
+// An InputError is the error for an input the command rejects.
+type InputError struct {
+	// Flag is the flag that passed the input, e.g. FlagInput.
+	Flag string
+	// GVK and Name identify the input.
+	GVK  schema.GroupVersionKind
+	Name string
+
+	kind rejectKind
+	msg  string
+}
+
+func (e *InputError) Error() string { return e.msg }
 
 // rejectInput is RejectInput with a reason, if not empty, that says why r was
 // rejected and follows the input. takes may be empty if reason says enough.
-func rejectInput(r *un.Unstructured, flag, reason, takes string) error {
+func rejectInput(r *un.Unstructured, flag string, kind rejectKind, reason, takes string) error {
 	gvk := r.GroupVersionKind()
 	msg := fmt.Sprintf("%s inputs include %s %q (%s)", flag, gvk.Kind, r.GetName(), gvk.GroupVersion())
 	if reason != "" {
@@ -57,7 +86,7 @@ func rejectInput(r *un.Unstructured, flag, reason, takes string) error {
 	if r.IsList() || gvk.Kind == "List" {
 		msg += "; pass its items as separate YAML documents instead of a List"
 	}
-	return errors.New(msg)
+	return &InputError{Flag: flag, GVK: gvk, Name: r.GetName(), kind: kind, msg: msg}
 }
 
 // LoadInputs loads the inputs passed with flag (e.g. FlagInput) at paths
@@ -118,7 +147,7 @@ func checkComposites(ctx context.Context, defs xpclient.DefinitionClient, flag, 
 			}
 			continue
 		}
-		return rejectInput(r, flag, "which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)", "")
+		return rejectInput(r, flag, rejectNoXRD, "which no XRD in the cluster defines as a composite resource or claim (if it is one, check the kubeconfig context, its apiVersion and that its XRD is installed)", "")
 	}
 	return nil
 }

@@ -48,7 +48,7 @@ func assignInputs(ctx context.Context, defs xpclient.DefinitionClient, ns string
 		}
 		id := result.CompositeKeyOf(in)
 		if seen[id] {
-			return rejectInput(in, FlagResourceFile, "which another --resource-file input also names", "pass each composite once")
+			return rejectInput(in, FlagResourceFile, rejectDuplicate, "which another --resource-file input also names", "pass each composite once")
 		}
 		seen[id] = true
 	}
@@ -69,7 +69,7 @@ func clusterXRDInfo(ctx context.Context, defs xpclient.DefinitionClient, in *un.
 	if xrd, err := defs.GetXRDForClaim(ctx, gvk); err == nil && xrd != nil {
 		xr, err := xpclient.XRTypeFromXRD(xrd)
 		if err != nil {
-			return xrdInfo{}, rejectInput(in, FlagResourceFile, fmt.Sprintf("whose XRD %q gives no composite type: %v", xrd.GetName(), err), "")
+			return xrdInfo{}, rejectInput(in, FlagResourceFile, rejectBadXRD, fmt.Sprintf("whose XRD %q gives no composite type: %v", xrd.GetName(), err), "")
 		}
 		return xrdInfo{CompositeGVK: xr, DefaultComposition: defaultComposition(xrd), EnforcedComposition: enforcedComposition(xrd), Legacy: true}, nil
 	}
@@ -148,7 +148,7 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 				return name, nil
 			}
 		}
-		return "", rejectInput(in, FlagResourceFile, fmt.Sprintf("whose %s %q is not a project Composition composing %s", field, name, xrd.CompositeGVK.Kind), "")
+		return "", rejectInput(in, FlagResourceFile, rejectNotInProject, fmt.Sprintf("whose %s %q is not a project Composition composing %s", field, name, xrd.CompositeGVK.Kind), "")
 	}
 
 	if xrd.EnforcedComposition != "" {
@@ -189,7 +189,7 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 func sole(in *un.Unstructured, match []*un.Unstructured, none string) (string, error) {
 	switch len(match) {
 	case 0:
-		return "", rejectInput(in, FlagResourceFile, none, "")
+		return "", rejectInput(in, FlagResourceFile, rejectNoMatch, none, "")
 	case 1:
 		return match[0].GetName(), nil
 	}
@@ -198,7 +198,7 @@ func sole(in *un.Unstructured, match []*un.Unstructured, none string) (string, e
 		names = append(names, c.GetName())
 	}
 	slices.Sort(names)
-	return "", rejectInput(in, FlagResourceFile, "which matches several project Compositions ("+strings.Join(names, ", ")+")", "set its compositionRef to pick one")
+	return "", rejectInput(in, FlagResourceFile, rejectAmbiguous, "which matches several project Compositions ("+strings.Join(names, ", ")+")", "set its compositionRef to pick one")
 }
 
 // crossplaneField reads field at spec.<path> if legacy, otherwise at
@@ -211,7 +211,7 @@ func crossplaneField[T any](in *un.Unstructured, legacy bool, get func(map[strin
 	}
 	v, _, err := xpclient.NestedCrossplaneValue(in.Object, apiVersion, "of the expected type", get, path...)
 	if err != nil {
-		return v, rejectInput(in, FlagResourceFile, fmt.Sprintf("whose %s is malformed: %v", strings.Join(path, "."), errors.Cause(err)), "")
+		return v, rejectInput(in, FlagResourceFile, rejectMalformed, fmt.Sprintf("whose %s is malformed: %v", strings.Join(path, "."), errors.Cause(err)), "")
 	}
 	return v, nil
 }

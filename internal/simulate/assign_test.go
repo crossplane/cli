@@ -367,3 +367,48 @@ func TestAssignInputs(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectCompositionNotInProjectMessage(t *testing.T) {
+	xr := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XBucket"}
+	b := testutils.NewComposition("b").WithCompositeTypeRef("example.org/v1", "XBucket").BuildAsUnstructured()
+	a := testutils.NewComposition("a").WithCompositeTypeRef("example.org/v1", "XBucket").BuildAsUnstructured()
+	in := testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionRef": map[string]any{"name": "z"}}).Build()
+
+	type args struct {
+		comps []*un.Unstructured
+		xrd   xrdInfo
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   string
+	}{
+		"InputRef": {
+			reason: "An input's compositionRef names the candidates to correct it to.",
+			args:   args{comps: []*un.Unstructured{b, a}, xrd: xrdInfo{CompositeGVK: xr}},
+			want:   `--resource-file inputs include XBucket "x" (example.org/v1), whose compositionRef "z" is not a project Composition composing XBucket; correct its compositionRef to one of a, b`,
+		},
+		"EnforcedRef": {
+			reason: "An XRD's enforcedCompositionRef says the XRD holds the reference.",
+			args:   args{comps: []*un.Unstructured{a}, xrd: xrdInfo{CompositeGVK: xr, EnforcedComposition: "z"}},
+			want:   `--resource-file inputs include XBucket "x" (example.org/v1), whose XRD enforcedCompositionRef "z" is not a project Composition composing XBucket; correct the XRD's enforcedCompositionRef to one of a`,
+		},
+		"NoCandidates": {
+			reason: "With no Composition of the type there are no candidates to name.",
+			args:   args{xrd: xrdInfo{CompositeGVK: xr, DefaultComposition: "z"}},
+			want:   `--resource-file inputs include XBucket "x" (example.org/v1), whose compositionRef "z" is not a project Composition composing XBucket; correct its compositionRef`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := selectComposition(tc.args.comps, in, tc.args.xrd)
+			got := ""
+			if err != nil {
+				got = err.Error()
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("\n%s\nselectComposition(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

@@ -149,7 +149,14 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 				return name, nil
 			}
 		}
-		return "", rejectInput(in, FlagResourceFile, rejectNotInProject, fmt.Sprintf("whose %s %q is not a project Composition composing %s", field, name, xrd.CompositeGVK.Kind), "")
+		fix := "correct its compositionRef"
+		if strings.HasPrefix(field, "XRD ") {
+			fix = "correct the XRD's " + strings.TrimPrefix(field, "XRD ")
+		}
+		if len(typed) > 0 {
+			fix += " to one of " + strings.Join(names(typed), ", ")
+		}
+		return "", rejectInput(in, FlagResourceFile, rejectNotInProject, fmt.Sprintf("whose %s %q is not a project Composition composing %s", field, name, xrd.CompositeGVK.Kind), fix)
 	}
 
 	if xrd.EnforcedComposition != "" {
@@ -214,12 +221,17 @@ func sole(in *un.Unstructured, match []*un.Unstructured, none string) (string, e
 	case 1:
 		return match[0].GetName(), nil
 	}
-	names := make([]string, 0, len(match))
-	for _, c := range match {
-		names = append(names, c.GetName())
+	return "", rejectInput(in, FlagResourceFile, rejectAmbiguous, "which matches several project Compositions ("+strings.Join(names(match), ", ")+")", "set its compositionRef to pick one")
+}
+
+// names returns the sorted names of comps.
+func names(comps []*un.Unstructured) []string {
+	out := make([]string, 0, len(comps))
+	for _, c := range comps {
+		out = append(out, c.GetName())
 	}
-	slices.Sort(names)
-	return "", rejectInput(in, FlagResourceFile, rejectAmbiguous, "which matches several project Compositions ("+strings.Join(names, ", ")+")", "set its compositionRef to pick one")
+	slices.Sort(out)
+	return out
 }
 
 // crossplaneField reads field at spec.<path> if legacy, otherwise at

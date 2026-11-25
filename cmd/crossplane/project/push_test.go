@@ -18,7 +18,6 @@ package project
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -39,7 +38,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/internal/project"
@@ -193,6 +194,13 @@ func testLabelledImage(t *testing.T) v1.Image {
 	return img
 }
 
+// openErr returns the error os.Open gives for a missing path, so expected
+// errors carry the platform's own message.
+func openErr(path string) error {
+	_, err := os.Open(path)
+	return err
+}
+
 func TestPushCmdRun(t *testing.T) {
 	// Use an empty Docker config so the default keychain doesn't consult the
 	// host's credential helpers.
@@ -214,8 +222,11 @@ func TestPushCmdRun(t *testing.T) {
 		// refs that must exist in the registry after the push, mapped to
 		// whether each is an index.
 		refs map[string]bool
-		err  string
+		// err builds the expected error from the per-test directory.
+		err func(dir string) error
 	}
+
+	_, errBadRepo := name.NewRepository("Not A Repo")
 
 	cases := map[string]struct {
 		reason string
@@ -243,16 +254,18 @@ func TestPushCmdRun(t *testing.T) {
 		"MissingConfiguration": {
 			reason: "A package file without a configuration image should fail to push.",
 			args:   args{tags: []string{"REPO_fn:amd64"}, tag: "v1.0.0"},
-			want:   want{err: "failed to find configuration image"},
+			want:   want{err: func(string) error { return errors.New("failed to find configuration image") }},
 		},
 		"InvalidRepository": {
 			reason: "An invalid --repository should be rejected.",
 			args:   args{tags: []string{"REPO:" + project.ConfigurationTag}, repository: "Not A Repo"},
-			want:   want{err: "failed to parse repository"},
+			want:   want{err: func(string) error { return errors.Wrap(errBadRepo, "failed to parse repository") }},
 		},
 		"MissingPackageFile": {
 			reason: "A missing package file should fail to load.",
-			want:   want{err: "failed to read package file manifest"},
+			want: want{err: func(dir string) error {
+				return errors.Wrap(openErr(filepath.Join(dir, "_output", "demo.xpkg")), "failed to read package file manifest")
+			}},
 		},
 	}
 
@@ -315,14 +328,15 @@ func TestPushCmdRun(t *testing.T) {
 			}
 
 			err = c.Run(t.Context(), logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
-			if tc.want.err != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
-					t.Fatalf("\n%s\nRun(...): want error containing %q, got %v", tc.reason, tc.want.err, err)
-				}
-				return
+			var wantErr error
+			if tc.want.err != nil {
+				wantErr = tc.want.err(dir)
 			}
-			if err != nil {
-				t.Fatalf("\n%s\nRun(...): %v", tc.reason, err)
+			if diff := cmp.Diff(wantErr, err, test.EquateErrors()); diff != "" {
+				t.Fatalf("\n%s\nRun(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+			if wantErr != nil {
+				return
 			}
 
 			got := make(map[string]bool, len(tc.want.refs))

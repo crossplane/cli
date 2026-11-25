@@ -29,7 +29,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -83,7 +85,9 @@ func TestBuildCmdRun(t *testing.T) {
 		output string
 		files  []string
 		hasXRD bool
-		err    string
+		err    error
+		// errPrefix is our own wrap of a cause we don't control.
+		errPrefix string
 	}
 
 	cases := map[string]struct {
@@ -116,12 +120,13 @@ func TestBuildCmdRun(t *testing.T) {
 		"MissingMetadata": {
 			reason: "A package root without crossplane.yaml should fail to build.",
 			args:   args{fixture: "testdata/package/configuration", remove: []string{"crossplane.yaml"}},
-			want:   want{err: errBuildPackage + ": not exactly one package meta type"},
+			want:   want{err: errors.Wrap(errors.New("not exactly one package meta type"), errBuildPackage)},
 		},
 		"InvalidResource": {
 			reason: "A configuration containing a CRD should fail the configuration linter.",
 			args:   args{fixture: "testdata/package/invalid-configuration"},
-			want:   want{err: errBuildPackage + ": failed to lint package"},
+			// The cause lists crossplane-runtime's linter messages.
+			want: want{errPrefix: errBuildPackage + ": failed to lint package: "},
 		},
 	}
 
@@ -151,14 +156,18 @@ func TestBuildCmdRun(t *testing.T) {
 			}
 
 			err := c.Run(logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
-			if tc.want.err != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
-					t.Fatalf("\n%s\nRun(...): want error containing %q, got %v", tc.reason, tc.want.err, err)
+			if tc.want.errPrefix != "" {
+				// Only our wrap prefix is ours; see the case for the cause.
+				if err == nil || !strings.HasPrefix(err.Error(), tc.want.errPrefix) {
+					t.Fatalf("\n%s\nRun(...): want error starting %q, got %v", tc.reason, tc.want.errPrefix, err)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("\n%s\nRun(...): %v", tc.reason, err)
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Fatalf("\n%s\nRun(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+			if tc.want.err != nil {
+				return
 			}
 
 			matches, err := filepath.Glob(filepath.Join(root, "*.xpkg"))
@@ -201,37 +210,44 @@ func TestBuildCmdRuntimeImageTarball(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cases := map[string]struct {
-		reason  string
+	missing := filepath.Join(root, "missing.tar")
+
+	type args struct {
 		tarball string
-		err     string
+	}
+	type want struct {
+		err error
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
 	}{
 		"EmbedsBase": {
-			reason:  "The runtime tarball's layers and platform should be the base of the package.",
-			tarball: tb,
+			reason: "The runtime tarball's layers and platform should be the base of the package.",
+			args:   args{tarball: tb},
 		},
 		"MissingTarball": {
-			reason:  "An unreadable runtime tarball should fail before building.",
-			tarball: filepath.Join(root, "missing.tar"),
-			err:     errLoadRuntimeTarball,
+			reason: "An unreadable runtime tarball should fail before building.",
+			args:   args{tarball: missing},
+			want: want{err: errors.Wrap(
+				errors.Wrap(openErr(missing), errLoadRuntimeTarball),
+				errGetRuntimeBaseImageOpts)},
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "pkg.xpkg")
-			c := &buildCmd{PackageRoot: root, ExamplesRoot: filepath.Join(root, "examples"), PackageFile: out, EmbedRuntimeImageTarball: tc.tarball}
+			c := &buildCmd{PackageRoot: root, ExamplesRoot: filepath.Join(root, "examples"), PackageFile: out, EmbedRuntimeImageTarball: tc.args.tarball}
 			if err := c.AfterApply(); err != nil {
 				t.Fatal(err)
 			}
 			err := c.Run(logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
-			if tc.err != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.err) {
-					t.Fatalf("\n%s\nRun(...): want error containing %q, got %v", tc.reason, tc.err, err)
-				}
-				return
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Fatalf("\n%s\nRun(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
-			if err != nil {
-				t.Fatalf("\n%s\nRun(...): %v", tc.reason, err)
+			if tc.want.err != nil {
+				return
 			}
 			img, err := tarball.ImageFromPath(out, nil)
 			if err != nil {

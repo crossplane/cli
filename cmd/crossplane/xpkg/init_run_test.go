@@ -28,8 +28,12 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/google/go-cmp/cmp"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 )
 
 // writeFiles writes the given files (path relative to dir: content) to dir.
@@ -90,7 +94,9 @@ func TestInitCmdRun(t *testing.T) {
 	type want struct {
 		files  []string
 		stdout []string
-		err    string
+		// err builds the expected error from the per-test directory and
+		// template paths.
+		err func(dir, template string) error
 	}
 
 	cases := map[string]struct {
@@ -128,16 +134,20 @@ func TestInitCmdRun(t *testing.T) {
 				repo:     map[string]string{"crossplane.yaml": "x"},
 				existing: map[string]string{"stale.yaml": "x"},
 			},
-			want: want{err: "is not empty, contains existing files/directories: stale.yaml"},
+			want: want{err: func(dir, _ string) error {
+				return errors.Errorf("directory %s is not empty, contains existing files/directories: %s", dir, "stale.yaml")
+			}},
 		},
 		"DirectoryIsFile": {
 			reason: "A --directory that is a file should be rejected.",
 			args:   args{repo: map[string]string{"crossplane.yaml": "x"}, directoryFile: true},
-			want:   want{err: "is not a directory"},
+			want:   want{err: func(dir, _ string) error { return errors.Errorf("path %s is not a directory", dir) }},
 		},
 		"CloneFails": {
 			reason: "A template that isn't a repository should fail to clone.",
-			want:   want{err: "failed to clone repository"},
+			want: want{err: func(_, template string) error {
+				return errors.Wrapf(transport.ErrRepositoryNotFound, "failed to clone repository from %q", "file://"+template)
+			}},
 		},
 	}
 
@@ -160,14 +170,15 @@ func TestInitCmdRun(t *testing.T) {
 			c := &initCmd{Name: "pkg", Template: "file://" + template, Directory: dir, RunInitScript: tc.args.runInitScript}
 
 			err := c.Run(k, logging.NewNopLogger())
-			if tc.want.err != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
-					t.Fatalf("\n%s\nRun(...): want error containing %q, got %v", tc.reason, tc.want.err, err)
-				}
-				return
+			var wantErr error
+			if tc.want.err != nil {
+				wantErr = tc.want.err(dir, template)
 			}
-			if err != nil {
-				t.Fatalf("\n%s\nRun(...): %v", tc.reason, err)
+			if diff := cmp.Diff(wantErr, err, test.EquateErrors()); diff != "" {
+				t.Fatalf("\n%s\nRun(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+			if wantErr != nil {
+				return
 			}
 
 			for _, f := range tc.want.files {

@@ -17,7 +17,7 @@ limitations under the License.
 package xpkg
 
 import (
-	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -32,7 +32,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/spf13/afero"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 )
 
@@ -62,6 +64,13 @@ func newBatchFixture(t *testing.T, platforms []string, urlFormat string) *batchC
 		ExamplesRoot:            filepath.Join(root, "examples"),
 		OutputDir:               filepath.Join(root, "out"),
 	}
+}
+
+// openErr returns the error os.Open gives for a missing path, so expected
+// errors carry the platform's own message.
+func openErr(path string) error {
+	_, err := os.Open(path)
+	return err
 }
 
 func testBaseImgMap(t *testing.T, platforms []string) map[string]v1.Image {
@@ -195,49 +204,81 @@ func TestBatchProcessService(t *testing.T) {
 func TestBatchProcessServiceErrors(t *testing.T) {
 	platforms := []string{"linux_amd64"}
 
-	cases := map[string]struct {
-		reason  string
+	type args struct {
 		service string
 		mutate  func(t *testing.T, c *batchCmd)
-		want    string
+	}
+	type want struct {
+		// err builds the expected error from the fixture's batchCmd, whose
+		// paths are under a per-test temp dir.
+		err func(c *batchCmd) error
+		// errPrefix is our own wrap of a cause we don't control.
+		errPrefix string
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
 	}{
 		"MissingProviderBinary": {
-			reason:  "A service without a provider binary for the platform should fail.",
-			service: "s3",
-			want:    `failed to read "s3" provider binary for linux_amd64 platform`,
+			reason: "A service without a provider binary for the platform should fail.",
+			args:   args{service: "s3"},
+			want: want{err: func(c *batchCmd) error {
+				p := filepath.Join(c.ProviderBinRoot, "linux_amd64", "s3")
+				return errors.Wrapf(openErr(p), errReadProviderBinFmt, "s3", "linux_amd64", p)
+			}},
 		},
 		"InvalidTemplate": {
-			reason:  "A metadata template that can't be read should fail.",
-			service: "ec2",
-			mutate:  func(_ *testing.T, c *batchCmd) { c.PackageMetadataTemplate = filepath.Join(c.CRDRoot, "missing.tmpl") },
-			want:    errInvalidTemplate,
+			reason: "A metadata template that can't be read should fail.",
+			args: args{
+				service: "ec2",
+				mutate:  func(_ *testing.T, c *batchCmd) { c.PackageMetadataTemplate = filepath.Join(c.CRDRoot, "missing.tmpl") },
+			},
+			want: want{err: func(c *batchCmd) error {
+				return errors.Wrap(openErr(c.PackageMetadataTemplate), errInvalidTemplate)
+			}},
 		},
 		"LintFailure": {
-			reason:  "Configuration metadata should make the configuration linter reject the provider's CRDs.",
-			service: "ec2",
-			mutate: func(t *testing.T, c *batchCmd) {
-				t.Helper()
-				meta, err := os.ReadFile("testdata/package/configuration/crossplane.yaml")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(c.PackageMetadataTemplate, meta, 0o600); err != nil {
-					t.Fatal(err)
-				}
+			reason: "Configuration metadata should make the configuration linter reject the provider's CRDs.",
+			args: args{
+				service: "ec2",
+				mutate: func(t *testing.T, c *batchCmd) {
+					t.Helper()
+					meta, err := os.ReadFile("testdata/package/configuration/crossplane.yaml")
+					if err != nil {
+						t.Fatal(err)
+					}
+					// The backend appends the CRDs with no separator, so end the document.
+					meta = append(meta, "---\n"...)
+					if err := os.WriteFile(c.PackageMetadataTemplate, meta, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				},
 			},
-			want: "failed to build smaller provider package: ec2",
+			// The cause lists crossplane-runtime's linter messages.
+			want: want{errPrefix: "failed to build smaller provider package: ec2: failed to lint package: "},
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			c := newBatchFixture(t, platforms, "example.org/%s:v1")
 			c.BuildOnly = true
-			if tc.mutate != nil {
-				tc.mutate(t, c)
+			if tc.args.mutate != nil {
+				tc.args.mutate(t, c)
 			}
-			err := c.processService(t.Context(), logging.NewNopLogger(), testBaseImgMap(t, platforms), tc.service)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("\n%s\nprocessService(...): want error containing %q, got %v", tc.reason, tc.want, err)
+			err := c.processService(t.Context(), logging.NewNopLogger(), testBaseImgMap(t, platforms), tc.args.service)
+			if tc.want.err != nil {
+				if diff := cmp.Diff(tc.want.err(c), err, test.EquateErrors()); diff != "" {
+					t.Errorf("\n%s\nprocessService(...): -want error, +got error:\n%s", tc.reason, diff)
+				}
+				if !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("\n%s\nprocessService(...): want errors.Is(err, fs.ErrNotExist), got %v", tc.reason, err)
+				}
+				return
+			}
+			// Only our wrap prefix is ours; see the case for the cause.
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want.errPrefix) {
+				t.Errorf("\n%s\nprocessService(...): want error starting %q, got %v", tc.reason, tc.want.errPrefix, err)
 			}
 		})
 	}
@@ -289,8 +330,10 @@ func TestBatchPushWithRetry(t *testing.T) {
 
 			err := c.pushWithRetry(t.Context(), logging.NewNopLogger(), imgs, "ec2")
 			if tc.err != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.err) {
-					t.Fatalf("\n%s\npushWithRetry(...): want error containing %q, got %v", tc.reason, tc.err, err)
+				// The cause is ggcr's 403 transport error, which embeds the
+				// registry's random port; match only our wrap.
+				if err == nil || !strings.HasPrefix(err.Error(), tc.err) {
+					t.Fatalf("\n%s\npushWithRetry(...): want error starting %q, got %v", tc.reason, tc.err, err)
 				}
 				if got, want := attempts.Load(), int32(tc.args.retries+1); got != want {
 					t.Errorf("\n%s\npushWithRetry(...): want %d attempts, got %d", tc.reason, want, got)
@@ -416,8 +459,8 @@ func TestMakeBaseImgMapInvalidPlatform(t *testing.T) {
 	// Valid platforms resolve images from the Docker daemon, so only the
 	// validation path is tested here.
 	_, err := makeBaseImgMap(t.Context(), []string{"linux-amd64"}, "example.org/base")
-	want := fmt.Sprintf(errInvalidPlatformFmt, "linux-amd64")
-	if err == nil || err.Error() != want {
-		t.Errorf("makeBaseImgMap(...): want error %q, got %v", want, err)
+	want := errors.Errorf(errInvalidPlatformFmt, "linux-amd64")
+	if diff := cmp.Diff(want, err, test.EquateErrors()); diff != "" {
+		t.Errorf("makeBaseImgMap(...): -want error, +got error:\n%s", diff)
 	}
 }

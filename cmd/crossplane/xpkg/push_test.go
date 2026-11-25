@@ -18,7 +18,6 @@ package xpkg
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -40,7 +39,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/spf13/afero"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
 	"github.com/crossplane/cli/v2/internal/terminal"
@@ -343,8 +344,10 @@ func TestPushImages(t *testing.T) {
 	}
 	type want struct {
 		pushed pushed
-		err    string
+		err    error
 	}
+
+	_, errBadTag := name.NewTag("not a tag", name.StrictValidation)
 
 	cases := map[string]struct {
 		reason string
@@ -382,7 +385,7 @@ func TestPushImages(t *testing.T) {
 				platforms: [][2]string{{"linux", "amd64"}},
 				url:       "not a tag",
 			},
-			want: want{err: `failed to parse package tag "not a tag"`},
+			want: want{err: errors.Wrapf(errBadTag, errFmtNewTag, "not a tag")},
 		},
 	}
 
@@ -394,14 +397,11 @@ func TestPushImages(t *testing.T) {
 			}
 
 			err := pushImages(t.Context(), logging.NewNopLogger(), terminal.NewNopSpinnerPrinter(), imgs, tc.args.url, tc.args.annotations, remote.WithAuth(authn.Anonymous))
-			if tc.want.err != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
-					t.Fatalf("\n%s\npushImages(...): want error containing %q, got %v", tc.reason, tc.want.err, err)
-				}
-				return
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Fatalf("\n%s\npushImages(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
-			if err != nil {
-				t.Fatalf("\n%s\npushImages(...): %v", tc.reason, err)
+			if tc.want.err != nil {
+				return
 			}
 			if diff := cmp.Diff(tc.want.pushed, inspectTag(t, tc.args.url)); diff != "" {
 				t.Errorf("\n%s\npushImages(...): -want, +got:\n%s", tc.reason, diff)
@@ -461,6 +461,8 @@ func TestPushImagesRegistryError(t *testing.T) {
 			}
 			ref := host + "/org/" + tc.repo + ":v1"
 			err := pushImages(t.Context(), logging.NewNopLogger(), nil, imgs, ref, nil, remote.WithAuth(authn.Anonymous))
+			// The cause is ggcr's transport error, which embeds the registry's
+			// random port and, for multi-platform, the manifest digest.
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("\n%s\npushImages(...): want error containing %q, got %v", tc.reason, tc.want, err)
 			}
@@ -490,7 +492,7 @@ func TestPushCmdRun(t *testing.T) {
 	}
 	type want struct {
 		pushed pushed
-		err    string
+		err    error
 	}
 
 	cases := map[string]struct {
@@ -526,16 +528,16 @@ func TestPushCmdRun(t *testing.T) {
 		"InvalidAnnotation": {
 			reason: "A malformed --oci-annotation should fail before anything is read.",
 			args:   args{annotations: []string{"novalue"}},
-			want:   want{err: errParseAnnotations},
+			want:   want{err: errors.Wrap(errors.New(`invalid annotation "novalue": must be in key=value format`), errParseAnnotations)},
 		},
 		"NoPackageInWorkingDir": {
 			reason: "With no --package-files and no xpkg in the working directory the command should fail.",
-			want:   want{err: errFindPackageinWd},
+			want:   want{err: errors.Wrap(errors.New("directory does not contain a compiled crossplane package"), errFindPackageinWd)},
 		},
 		"UnreadablePackageFile": {
 			reason: "A package file that isn't an image tarball should fail to read, naming the file.",
 			args:   args{packageArgs: []string{"crossplane.yaml"}},
-			want:   want{err: "failed to read package file crossplane.yaml"},
+			want:   want{err: errors.Wrapf(io.ErrUnexpectedEOF, errFmtReadPackage, "crossplane.yaml")},
 		},
 	}
 
@@ -559,14 +561,11 @@ func TestPushCmdRun(t *testing.T) {
 			}
 
 			err := c.Run(t.Context(), logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
-			if tc.want.err != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
-					t.Fatalf("\n%s\nRun(...): want error containing %q, got %v", tc.reason, tc.want.err, err)
-				}
-				return
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Fatalf("\n%s\nRun(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
-			if err != nil {
-				t.Fatalf("\n%s\nRun(...): %v", tc.reason, err)
+			if tc.want.err != nil {
+				return
 			}
 			if diff := cmp.Diff(tc.want.pushed, inspectTag(t, ref)); diff != "" {
 				t.Errorf("\n%s\nRun(...): -want, +got:\n%s", tc.reason, diff)

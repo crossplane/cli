@@ -26,6 +26,12 @@ func (p *Project) Default() {
 	if len(p.Spec.Architectures) == 0 {
 		p.Spec.Architectures = []string{"amd64", "arm64"}
 	}
+
+	if p.Spec.Runtime == nil {
+		p.Spec.Runtime = &Runtime{}
+	}
+
+	p.Spec.Runtime.Default()
 }
 
 // Default sets default values for ProjectPaths.
@@ -47,5 +53,12 @@ func (p *ProjectPaths) Default() {
 	}
 	if p.Schemas == "" {
 		p.Schemas = "schemas"
+	}
+}
+
+// Default sets default values for the project Runtime config.
+func (r *Runtime) Default() {
+	if r.Registry.Storage.Type == "" {
+		r.Registry.Storage.Type = string(StorageTypeBindMount)
 	}
 }

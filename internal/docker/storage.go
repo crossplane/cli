@@ -3,37 +3,16 @@ package docker
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+
+	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 )
-
-// StorageType identifies the storage backend used by a container.
-type StorageType string
-
-// Supported container storage backends.
-const (
-	StorageTypeBindMount StorageType = "bind"
-	StorageTypeVolume    StorageType = "volume"
-)
-
-// ValidStorageTypes lists the supported container storage backend names.
-func ValidStorageTypes() []string {
-	return []string{
-		string(StorageTypeBindMount),
-		string(StorageTypeVolume),
-	}
-}
-
-// IsValidStorageType returns true if the supplied storageType string is one of the supported storagetypes.
-func IsValidStorageType(storageType string) bool {
-	return slices.Contains(ValidStorageTypes(), storageType)
-}
 
 // Storage configures container storage and synchronizes files to it.
 type Storage interface {
 	// Type identifies the storage backend.
-	Type() StorageType
+	Type() v1alpha1.StorageType
 
 	// ContainerOptions returns the required docker start options for its storage type.
 	ContainerOptions() []StartContainerOption
@@ -65,8 +44,8 @@ func NewBindMountStorage(sourceDir, destDir string) *BindMountStorage {
 }
 
 // Type returns the bind-mount storage type.
-func (s BindMountStorage) Type() StorageType {
-	return StorageTypeBindMount
+func (s BindMountStorage) Type() v1alpha1.StorageType {
+	return v1alpha1.StorageTypeBindMount
 }
 
 // ContainerOptions returns the options for bind-mounting the source directory.
@@ -105,8 +84,8 @@ func NewVolumeStorage(sourceDir, destDir string, initFiles []byte) *VolumeStorag
 }
 
 // Type returns the volume storage type.
-func (s VolumeStorage) Type() StorageType {
-	return StorageTypeVolume
+func (s VolumeStorage) Type() v1alpha1.StorageType {
+	return v1alpha1.StorageTypeVolume
 }
 
 // ContainerOptions returns the options for mounting and initializing the volume.

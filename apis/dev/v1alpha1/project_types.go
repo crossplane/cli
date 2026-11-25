@@ -45,6 +45,24 @@ const (
 	FunctionSourceTarball = "Tarball"
 )
 
+// StorageType identifies the storage backend used by a container.
+type StorageType string
+
+// Supported container storage backends.
+const (
+	StorageTypeBindMount StorageType = "bind"
+	StorageTypeVolume    StorageType = "volume"
+)
+
+// SupportedStorageTypes returns the set of supported storage types accepted in
+// RegistryConfig.Storage.Type.
+func SupportedStorageTypes() []string {
+	return []string{
+		string(StorageTypeBindMount),
+		string(StorageTypeVolume),
+	}
+}
+
 // Schema language constants. These are the values accepted in
 // ProjectSchemas.Languages. Each corresponds to a schema generator in
 // internal/schemas/generator.

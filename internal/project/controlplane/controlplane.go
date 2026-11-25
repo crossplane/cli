@@ -51,6 +51,7 @@ import (
 
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
+	"github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/certs"
@@ -225,7 +226,7 @@ type config struct {
 	kindConfig        *v1alpha4.Cluster
 	internal          bool
 	attachContainers  []string
-	storageType       docker.StorageType
+	storageType       v1alpha1.StorageType
 }
 
 // WithName sets the name of the local dev control plane.
@@ -296,7 +297,7 @@ func WithAttachContainers(attachContainers []string) Option {
 }
 
 // WithStorageType configures which kind of storage type to use in the local registry.
-func WithStorageType(storageType docker.StorageType) Option {
+func WithStorageType(storageType v1alpha1.StorageType) Option {
 	return func(c *config) {
 		c.storageType = storageType
 	}
@@ -313,7 +314,7 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 		clusterAdmin: true,
 		defaultMRAP:  true,
 		log:          logging.NewNopLogger(),
-		storageType:  docker.StorageTypeBindMount,
+		storageType:  v1alpha1.StorageTypeBindMount,
 	}
 	for _, opt := range opts {
 		opt(cfg)
@@ -416,9 +417,9 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	destDir := "/registry-data"
 	var storage docker.Storage
 	switch cfg.storageType {
-	case docker.StorageTypeBindMount:
+	case v1alpha1.StorageTypeBindMount:
 		storage = docker.NewBindMountStorage(registryDir, destDir)
-	case docker.StorageTypeVolume:
+	case v1alpha1.StorageTypeVolume:
 		certTarball, err := docker.TarDirectory(registryDir, archive.TarOptions{
 			IncludeFiles: []string{certDirName},
 		})
@@ -653,9 +654,9 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.S
 
 		var mountType string
 		switch storage.Type() {
-		case docker.StorageTypeBindMount:
+		case v1alpha1.StorageTypeBindMount:
 			mountType = "bind"
-		case docker.StorageTypeVolume:
+		case v1alpha1.StorageTypeVolume:
 			mountType = "volume"
 		default:
 			return "", errors.Errorf("unknown registry storage type %q", storage.Type())

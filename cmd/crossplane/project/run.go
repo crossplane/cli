@@ -45,7 +45,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
-	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/controlplane"
 	"github.com/crossplane/cli/v2/internal/project/functions"
@@ -87,7 +86,6 @@ type RunCmd struct {
 	initResources  []runtime.RawExtension
 	extraResources []runtime.RawExtension
 	kindConfig     *v1alpha4.Cluster
-	storageType    docker.StorageType
 }
 
 // Help returns help for the run command.
@@ -138,10 +136,6 @@ func (c *RunCmd) AfterApply() error {
 		}
 	}
 
-	if c.proj.Spec.Runtime == nil {
-		c.proj.Spec.Runtime = &devv1alpha1.Runtime{}
-	}
-
 	if len(strings.TrimSpace(c.KindConfig)) == 0 {
 		c.KindConfig = c.proj.Spec.Runtime.Kind.Config.Path
 	}
@@ -181,21 +175,8 @@ func (c *RunCmd) resolveRunOptions() error {
 		c.ControlPlaneName = "crossplane-" + c.proj.Name
 	}
 
-	if c.proj.Spec.Runtime == nil {
-		c.proj.Spec.Runtime = &devv1alpha1.Runtime{}
-	}
-
 	if c.Internal == nil {
 		c.Internal = &c.proj.Spec.Runtime.Kind.Internal
-	}
-
-	c.storageType = docker.StorageTypeBindMount
-	storageType := c.proj.Spec.Runtime.Registry.Storage.Type
-	if len(strings.TrimSpace(storageType)) > 0 {
-		if !docker.IsValidStorageType(storageType) {
-			return errors.Errorf("%q is an invalid storage type. Supported storage types: %v", storageType, docker.ValidStorageTypes())
-		}
-		c.storageType = docker.StorageType(storageType)
 	}
 
 	return nil
@@ -272,7 +253,7 @@ func (c *RunCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 				controlplane.WithAttachContainers(c.proj.Spec.Runtime.Kind.Network.AttachContainers),
 				controlplane.WithInternal(*c.Internal),
 				controlplane.WithKindConfig(c.kindConfig),
-				controlplane.WithStorageType(c.storageType),
+				controlplane.WithStorageType(devv1alpha1.StorageType(c.proj.Spec.Runtime.Registry.Storage.Type)),
 			)
 			if ctpErr != nil {
 				ch.SendEvent("Setting up control plane", async.EventStatusFailure)

@@ -243,7 +243,9 @@ ask the providers what the delta means".
 A project is one source of those local inputs, not a requirement.
 Not everyone uses projects, and a changed Composition is worth previewing
 either way, so `crossplane composition simulate -f` takes Composition files
-and `crossplane xr simulate -f` takes XR or claim files. The
+and `crossplane xr simulate -f` takes XR or claim files, each rendered
+with the cluster Composition Crossplane would select for it, in the order
+step 1 gives (the XRD's enforced and default Compositions included). The
 flow stays the same with the inputs swapped: the changed Composition
 comes from the file, the XRs it matches are discovered on the cluster
 exactly as in step 1, the functions its pipeline calls run from the

@@ -18,8 +18,10 @@ package project
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -31,6 +33,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
 func TestPusherPush(t *testing.T) {
@@ -159,4 +162,46 @@ func mustRandomImage(t *testing.T, arch, os string) v1.Image {
 		t.Fatalf("failed to set config file: %v", err)
 	}
 	return img
+}
+
+func TestNewPusherTransport(t *testing.T) {
+	t.Parallel()
+
+	type want struct {
+		responseHeaderTimeout time.Duration
+		sendPingTimeout       time.Duration
+	}
+	cases := map[string]struct {
+		reason string
+		want   want
+	}{
+		"Default": {
+			reason: "NewPusher should default to a transport with the registry header timeout and HTTP/2 ping check, not http.DefaultTransport.",
+			want: want{
+				responseHeaderTimeout: clixpkg.RegistryResponseHeaderTimeout,
+				sendPingTimeout:       clixpkg.RegistrySendPingTimeout,
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			p, ok := NewPusher().(*realPusher)
+			if !ok {
+				t.Fatalf("NewPusher(): want *realPusher")
+			}
+			tr, ok := p.transport.(*http.Transport)
+			if !ok {
+				t.Fatalf("\n%s\nNewPusher(): want *http.Transport, got %T", tc.reason, p.transport)
+			}
+			if tr.ResponseHeaderTimeout != tc.want.responseHeaderTimeout {
+				t.Errorf("\n%s\nResponseHeaderTimeout: want %s, got %s", tc.reason, tc.want.responseHeaderTimeout, tr.ResponseHeaderTimeout)
+			}
+			if tr.HTTP2 == nil || tr.HTTP2.SendPingTimeout != tc.want.sendPingTimeout {
+				t.Errorf("\n%s\nHTTP2: want SendPingTimeout %s, got %+v", tc.reason, tc.want.sendPingTimeout, tr.HTTP2)
+			}
+		})
+	}
 }

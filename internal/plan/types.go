@@ -27,6 +27,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	xpfieldpath "github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
+
+	"github.com/crossplane/cli/v2/internal/health"
 )
 
 // Action is what applying a resource would do.
@@ -126,6 +128,11 @@ type ResourcePlan struct {
 	// paths the provider marks sensitive, are redacted (see RedactSecret).
 	Before *unstructured.Unstructured `json:"before,omitempty"`
 	After  *unstructured.Unstructured `json:"after,omitempty"`
+
+	// Health is the live object's health, read from its Synced and Ready
+	// conditions and paused annotation before apply; nil when there is no
+	// live object, as for a create.
+	Health *health.Health `json:"health,omitempty"`
 }
 
 // ResourceRef identifies a resource.

@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -209,7 +210,8 @@ func TestRenderJSONProjectFields(t *testing.T) {
 	}
 
 	// The top-level keys keep summary, composites and compositions ahead of
-	// the plans, and summary carries the deferred count.
+	// the plans, and summary carries the deferred count. Summary is not a flat
+	// map of counts: the health counts nest under summary.health.
 	dec := json.NewDecoder(&buf)
 	var keys []string
 	if _, err := dec.Token(); err != nil {
@@ -226,12 +228,16 @@ func TestRenderJSONProjectFields(t *testing.T) {
 			t.Fatalf("Render(json): cannot read value of %q: %v", k, err)
 		}
 		if k == "summary" {
-			var sum map[string]int
-			if err := json.Unmarshal(v, &sum); err != nil {
-				t.Fatalf("Render(json): summary is not a map of counts: %v", err)
+			var sum struct {
+				Destroy  int            `json:"destroy"`
+				Deferred int            `json:"deferred"`
+				Health   map[string]int `json:"health"`
 			}
-			if sum["deferred"] != 1 || sum["destroy"] != 1 {
-				t.Errorf("Render(json): summary: want destroy 1 and deferred 1, got %v", sum)
+			if err := json.Unmarshal(v, &sum); err != nil {
+				t.Fatalf("Render(json): summary does not hold counts: %v", err)
+			}
+			if sum.Deferred != 1 || sum.Destroy != 1 || sum.Health == nil {
+				t.Errorf("Render(json): summary: want destroy 1, deferred 1 and health counts, got %+v", sum)
 			}
 		}
 	}
@@ -294,6 +300,90 @@ func TestNewResult(t *testing.T) {
 			}
 			if got.FormatVersion != plan.ResultFormatVersion {
 				t.Errorf("\n%s\nNewResult(...).FormatVersion: want %q, got %q", tc.reason, plan.ResultFormatVersion, got.FormatVersion)
+			}
+		})
+	}
+}
+
+func TestRenderJSONHealth(t *testing.T) {
+	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod"}
+	nested := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XSubnet", Name: "a"}
+	failing := &health.Health{State: health.Failing, Synced: &health.Condition{Status: "False", Reason: "ReconcileError", Message: "boom"}}
+
+	type want struct {
+		composites string
+		plans      string
+		summary    string
+	}
+	type args struct {
+		in Result
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"NoLiveObjects": {
+			reason: "Without live objects no health or unhealthy key is written, and every health count is zero.",
+			args: args{in: NewResult(
+				[]*plan.ResourcePlan{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionCreate, Composite: &xr}},
+				[]CompositeResult{{Ref: xr, Status: CompositeChanged}}, nil)},
+			want: want{
+				composites: `[{"ref":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"},"status":"changed"}]`,
+				plans:      `[{"apiVersion":"v1","kind":"ConfigMap","name":"cm","action":"create","composite":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"}}]`,
+				summary:    `{"create":1,"update":0,"destroy":0,"replace":0,"noop":0,"approximate":0,"errored":0,"health":{"unhealthyComposites":0,"failing":0,"notReady":0,"paused":0},"deferred":0}`,
+			},
+		},
+		"Unhealthy": {
+			reason: "Composite and plan health, and the unhealthy list with each entry's via, are written under their keys with the conditions they came from.",
+			args: args{in: NewResult(
+				[]*plan.ResourcePlan{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", Action: plan.ActionNoOp, Composite: &xr, Health: &health.Health{State: health.Paused}}},
+				[]CompositeResult{{
+					Ref: xr, Status: CompositeUnchanged, Health: failing,
+					Unhealthy: []UnhealthyResource{
+						{Ref: plan.ResourceRef{APIVersion: "v1", Kind: "Secret", Name: "s"}, Health: &health.Health{State: health.NotReady, Ready: &health.Condition{Status: "False"}}},
+						{Ref: plan.ResourceRef{APIVersion: "v1", Kind: "Secret", Name: "t"}, Via: &nested, Health: &health.Health{State: health.Paused}},
+					},
+				}}, nil)},
+			want: want{
+				composites: `[{"ref":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"},"status":"unchanged",` +
+					`"health":{"state":"failing","synced":{"status":"False","reason":"ReconcileError","message":"boom"}},` +
+					`"unhealthy":[{"ref":{"apiVersion":"v1","kind":"Secret","name":"s"},"health":{"state":"notReady","ready":{"status":"False"}}},` +
+					`{"ref":{"apiVersion":"v1","kind":"Secret","name":"t"},"via":{"apiVersion":"example.org/v1","kind":"XSubnet","name":"a"},"health":{"state":"paused"}}]}]`,
+				plans:   `[{"apiVersion":"v1","kind":"ConfigMap","name":"cm","action":"no-op","composite":{"apiVersion":"example.org/v1","kind":"XNetwork","name":"prod"},"health":{"state":"paused"}}]`,
+				summary: `{"create":0,"update":0,"destroy":0,"replace":0,"noop":1,"approximate":0,"errored":0,"health":{"unhealthyComposites":1,"failing":0,"notReady":1,"paused":2},"deferred":0}`,
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			r, _ := NewRenderer(plan.FormatJSON)
+			if err := r.Render(&buf, tc.args.in); err != nil {
+				t.Fatalf("%s\nRender(json): unexpected error: %v", tc.reason, err)
+			}
+			var top map[string]json.RawMessage
+			if err := json.Unmarshal(buf.Bytes(), &top); err != nil {
+				t.Fatalf("%s\nRender(json): output is not valid JSON: %v", tc.reason, err)
+			}
+			compact := func(raw json.RawMessage) string {
+				var b bytes.Buffer
+				_ = json.Compact(&b, raw)
+				return b.String()
+			}
+			got := want{composites: compact(top["composites"]), plans: compact(top["plans"]), summary: compact(top["summary"])}
+			if diff := cmp.Diff(tc.want, got, cmp.AllowUnexported(want{})); diff != "" {
+				t.Errorf("%s\nRender(json): -want, +got:\n%s", tc.reason, diff)
+			}
+
+			// What is written decodes back to what was rendered.
+			var back Result
+			if err := json.Unmarshal(buf.Bytes(), &back); err != nil {
+				t.Fatalf("%s\nRender(json): cannot decode: %v", tc.reason, err)
+			}
+			if diff := cmp.Diff(tc.args.in, back); diff != "" {
+				t.Errorf("%s\nRender(json) round trip: -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

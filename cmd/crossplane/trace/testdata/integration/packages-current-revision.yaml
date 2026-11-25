@@ -1,0 +1,19 @@
+# The Configuration's current revision. The test creates it a second after
+# packages.yaml's inactive one: revisions sort by creationTimestamp, which has
+# one-second resolution.
+apiVersion: pkg.crossplane.io/v1
+kind: ConfigurationRevision
+metadata:
+  name: platform-2222
+  labels:
+    pkg.crossplane.io/package: platform
+spec:
+  desiredState: Active
+  image: xpkg.example.org/acme/platform:v1.0.0
+  revision: 2
+status:
+  conditions:
+    - type: Healthy
+      status: "True"
+      reason: HealthyPackageRevision
+      lastTransitionTime: "2026-01-01T00:00:00Z"

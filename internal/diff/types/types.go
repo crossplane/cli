@@ -19,6 +19,8 @@ package types
 
 import (
 	"context"
+	"maps"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -27,6 +29,7 @@ import (
 	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
+	"github.com/crossplane/cli/v2/internal/health"
 )
 
 // Verb is a Kubernetes API verb, as it appears in a SelfSubjectAccessReview's
@@ -142,10 +145,71 @@ type CredentialFetchResult struct {
 //
 // It also holds, by diff key, the diff of each unchanged rendering the calculator did not keep among
 // the diffs it returns, so input validation sees every rendering whether or not equal diffs are kept.
+//
+// Finally it holds, for health reporting, the health of the live objects the render already fetched,
+// classified as they are recorded so the objects themselves are not retained: the composite's own, and
+// by diff key that of every composed resource observed beneath it, with the nested composite that
+// directly composes each.
 type RenderedResources struct {
 	keys      map[string]bool
 	desired   map[string]map[string]bool // composite identity -> composition resource names it desired
 	unchanged map[string]*dt.ResourceDiff
+	composite *dt.ResourceHealth
+	composed  map[string]dt.ResourceHealth
+}
+
+// SetComposite records the cluster object of the composite rendered: the XR itself or, for a claim, its
+// backing XR. A nil object, for a composite the cluster does not have yet, records nothing.
+func (r *RenderedResources) SetComposite(live *un.Unstructured) {
+	if live == nil {
+		return
+	}
+
+	h := resourceHealth(live)
+	r.composite = &h
+}
+
+// AddObserved records a composed resource's cluster copy, which the composite rendered composes
+// directly. A resource recorded twice keeps its first record.
+func (r *RenderedResources) AddObserved(res *un.Unstructured) {
+	r.addComposed(resourceHealth(res))
+}
+
+func (r *RenderedResources) addComposed(h dt.ResourceHealth) {
+	key := dt.MakeDiffKey(h.APIVersion, h.Kind, h.Namespace, h.Name)
+	if _, ok := r.composed[key]; ok {
+		return
+	}
+
+	if r.composed == nil {
+		r.composed = make(map[string]dt.ResourceHealth)
+	}
+
+	r.composed[key] = h
+}
+
+// Health returns the health SetComposite and AddObserved recorded, and Merge carried.
+func (r *RenderedResources) Health() dt.CompositeHealth {
+	var h dt.CompositeHealth
+	if r.composite != nil {
+		h.XR = r.composite.Health
+	}
+
+	for _, key := range slices.Sorted(maps.Keys(r.composed)) {
+		h.Composed = append(h.Composed, r.composed[key])
+	}
+
+	return h
+}
+
+func resourceHealth(u *un.Unstructured) dt.ResourceHealth {
+	return dt.ResourceHealth{
+		APIVersion: u.GetAPIVersion(),
+		Kind:       u.GetKind(),
+		Name:       u.GetName(),
+		Namespace:  u.GetNamespace(),
+		Health:     health.Of(u),
+	}
 }
 
 // AddUnchanged records the diff of an unchanged rendering that is not among the returned diffs.
@@ -200,6 +264,22 @@ func (r *RenderedResources) Merge(other RenderedResources) {
 
 	for key, d := range other.unchanged {
 		r.AddUnchanged(key, d)
+	}
+
+	// What other's composite composed directly, it composed via that composite; and the composite
+	// itself is composed by r's, which records it already when it observed it (but not when the
+	// composite was found by name instead).
+	for _, h := range other.composed {
+		if h.Via == nil && other.composite != nil {
+			via := other.composite.ObjectReference
+			h.Via = &via
+		}
+
+		r.addComposed(h)
+	}
+
+	if other.composite != nil {
+		r.addComposed(*other.composite)
 	}
 }
 

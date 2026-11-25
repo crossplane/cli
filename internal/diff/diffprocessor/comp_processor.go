@@ -55,6 +55,9 @@ type XRDiffResult struct {
 	Error error
 	// unchanged holds the unchanged renderings Diffs leaves out, for the overlap check only.
 	unchanged map[string]*dt.ResourceDiff
+	// health is the live health the render read, computed as the XR is diffed so that the live objects
+	// are not retained until impact analysis.
+	health dt.CompositeHealth
 }
 
 // HasChanges returns true if this XR has downstream resource changes.
@@ -459,8 +462,8 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// revision are exactly the ones that would re-point at it, and the ones that would not are a
 	// consequence of applying this composition in their own right. The same classification decides, in
 	// cliCompositionRevision, which composites are rendered with the new revision's name: a Manual
-	// composite kept by --include-pinned stays pinned, so it never is.
-	keptXRs, droppedXRs, repointingXRs, err := p.partitionXRsByUpdatePolicy(affectedXRs, newComp, pred)
+	// composite pinned to a revision and kept by --include-pinned stays pinned, so it never is.
+	keptXRs, droppedXRs, repointingXRs, unresolvedXRs, err := p.partitionXRsByUpdatePolicy(ctx, affectedXRs, newComp, pred)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -478,6 +481,14 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// This holds even when the diffed composition itself calls no changed function and matches the
 	// cluster: an XR pinned to an older revision that does is analysed as a metadata-scope change.
 	pinnedXRs, pinnedKept, pinnedDropped := p.pinnedFunctionChangeXRs(ctx, keptXRs, droppedXRs)
+	// A claim not known to be pinned or not carries that error the same way, as its own result.
+	if len(unresolvedXRs) > 0 {
+		if pinnedXRs == nil {
+			pinnedXRs = make(map[string]pinnedResolution, len(unresolvedXRs))
+		}
+
+		maps.Copy(pinnedXRs, unresolvedXRs)
+	}
 	// A failed lookup does not raise the scope: it says nothing about whether the revision calls a
 	// changed function, and raising it would report unrelated drift as this composition's impact. The
 	// XR still carries its error when the analysis runs for another reason.
@@ -563,6 +574,13 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 
 		result.ImpactAnalysisSkipped = true
 
+		// A kept claim whose pin could not be read is an error the run already earned, not a verdict
+		// the skip withholds, so it is reported as one: without it the claim would vanish from the
+		// report, the error from output.Errors, and RepointedComposites would undercount silently.
+		impacts, summary := p.unresolvedImpacts(keptXRs, unresolvedXRs)
+		result.ImpactAnalysis = append(result.ImpactAnalysis, impacts...)
+		result.AffectedResources.WithErrors = summary.WithErrors
+
 		return result, nil, nil
 	}
 
@@ -606,10 +624,12 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// already-appended filtered entries.
 	keptImpacts, keptSummary := p.buildImpactAnalysis(keptXRs, xrResults)
 	// buildImpactAnalysis keeps keptXRs' order. A kept composite that does not re-point is one
-	// --include-pinned kept although its Manual policy pins it.
+	// --include-pinned kept although its Manual policy pins it, or a claim whose pin could not be read,
+	// which is not marked Pinned because whether it is pinned is unknown.
 	for i, xr := range keptXRs {
 		key := dt.MakeDiffKeyFromResource(xr)
-		keptImpacts[i].Pinned = !repointingXRs[key]
+		_, unknown := unresolvedXRs[key]
+		keptImpacts[i].Pinned = !repointingXRs[key] && !unknown
 
 		if pinned, ok := pinnedXRs[key]; ok && pinned.err == nil {
 			keptImpacts[i].RenderedRevision = pinned.resolved.RevisionName
@@ -718,6 +738,11 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 	cliCompTargetAPIVersion := cliComp.Spec.CompositeTypeRef.APIVersion
 	cliCompTargetKind := cliComp.Spec.CompositeTypeRef.Kind
 
+	// Only the group is compared: an XR may use a served version that is not the referenceable one the
+	// compositeTypeRef names, and Crossplane still composes it with this composition. A malformed
+	// apiVersion matches nothing, as in pinnedRevisionCallsChangedFunction.
+	cliCompTargetGV, cliCompTargetGVErr := schema.ParseGroupVersion(cliCompTargetAPIVersion)
+
 	p.config.Logger.Debug("CLI composition targets",
 		"apiVersion", cliCompTargetAPIVersion,
 		"kind", cliCompTargetKind)
@@ -774,17 +799,18 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 				"resource", resourceID,
 				"composition", cliComp.GetName())
 
-			return p.cliCompositionRevision(res, cliComp, revisionName, revisionLabels)
+			return p.cliCompositionRevision(ctx, res, cliComp, revisionName, revisionLabels)
 		}
 
 		// Check 2: Does this resource's type match the CLI composition's target type?
-		// This handles XRs encountered during rendering that match the composition's type.
-		if resAPIVersion == cliCompTargetAPIVersion && resKind == cliCompTargetKind {
+		// This handles XRs encountered during rendering that match the composition's type, whichever
+		// served version they use.
+		if cliCompTargetGVErr == nil && resGVK.Group == cliCompTargetGV.Group && resKind == cliCompTargetKind {
 			p.config.Logger.Debug("Resource matches CLI composition type, using CLI composition",
 				"resource", resourceID,
 				"composition", cliComp.GetName())
 
-			return p.cliCompositionRevision(res, cliComp, revisionName, revisionLabels)
+			return p.cliCompositionRevision(ctx, res, cliComp, revisionName, revisionLabels)
 		}
 
 		// This is a nested XR with a different type: its Composition comes from the run, or the cluster.
@@ -816,7 +842,7 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 		}
 
 		xrCtx, cancel := p.config.xrContext(ctx)
-		diffs, unchanged, err := p.xrProc.DiffSingleResource(xrCtx, xr, compositionProvider)
+		diffs, rendered, err := p.xrProc.DiffSingleResource(xrCtx, xr, compositionProvider)
 		err = p.config.afterXR(ctx, xrCtx, diffs, err)
 		cancel()
 		if err != nil {
@@ -831,7 +857,8 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 			// Store successful result with diffs
 			results[resourceID] = &XRDiffResult{
 				Diffs:     diffs,
-				unchanged: unchanged,
+				unchanged: rendered.Unchanged(),
+				health:    rendered.Health(),
 			}
 		}
 	}
@@ -942,21 +969,21 @@ func pinnedRevisionCallsChangedFunction(composite *un.Unstructured, resolved dty
 // Its revision is the one applying that composition leaves it on, named revisionName, for a composite
 // that would re-point at it as classifyXR decides; revisionLabels is the label set that revision would
 // carry, which a compositionRevisionSelector is matched against. For any other composite the revision
-// is left unknown, so it keeps the ref it has: one that is Manual (#479), being deleted, or whose
+// is left unknown, so it keeps the ref it has: one a Manual policy pins to a revision (#479), being deleted, or whose
 // compositionRevisionSelector rejects that revision. So does every composite when revisionName is
 // empty, i.e. not predictable (#474).
-func (p *DefaultCompDiffProcessor) cliCompositionRevision(res *un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string) (dtypes.ResolvedComposition, error) {
+func (p *DefaultCompDiffProcessor) cliCompositionRevision(ctx context.Context, res *un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string) (dtypes.ResolvedComposition, error) {
 	resolved := dtypes.ResolvedComposition{Composition: cliComp}
 	if revisionName == "" {
 		return resolved, nil
 	}
 
-	disposition, err := p.classifyXR(res, revisionLabels, cliComp.GetLabels())
+	disposition, err := p.classifyXR(ctx, res, cliComp.Spec.CompositeTypeRef.Kind, revisionLabels, cliComp.GetLabels())
 	if err != nil {
 		return dtypes.ResolvedComposition{}, err
 	}
 
-	if disposition.filtered == nil && !disposition.pinnedToRevision {
+	if disposition.filtered == nil && !disposition.pinnedToRevision && disposition.unresolved == nil {
 		resolved.RevisionName = revisionName
 	}
 
@@ -1053,7 +1080,7 @@ func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *u
 
 	rc, inRun := run[name]
 	if inRun {
-		if inRun, err = p.adoptsRunRevision(res, name, rc); err != nil {
+		if inRun, err = p.adoptsRunRevision(ctx, res, name, rc); err != nil {
 			return dtypes.ResolvedComposition{}, err
 		}
 	}
@@ -1079,7 +1106,7 @@ func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *u
 // compositionRevisionRef does not, and nothing about rc matters to it, so a run entry that cannot be used
 // does not fail it. For any other res, an rc that cannot be read, or composes another type than res, is
 // an error.
-func (p *DefaultCompDiffProcessor) adoptsRunRevision(res *un.Unstructured, name string, rc runComposition) (bool, error) {
+func (p *DefaultCompDiffProcessor) adoptsRunRevision(ctx context.Context, res *un.Unstructured, name string, rc runComposition) (bool, error) {
 	policy, err := xp.XRUpdatePolicy(res.Object, res.GetAPIVersion())
 	if err != nil {
 		return false, errors.Wrapf(err, "cannot read compositionUpdatePolicy for XR %q", res.GetName())
@@ -1104,7 +1131,7 @@ func (p *DefaultCompDiffProcessor) adoptsRunRevision(res *un.Unstructured, name 
 		return false, errors.Errorf("composition %q in the run composes %s %s, but nested XR %q is a %s %s", rc.comp.GetName(), ref.APIVersion, ref.Kind, res.GetName(), res.GetAPIVersion(), res.GetKind())
 	}
 
-	disposition, err := p.classifyXR(res, rc.revisionLabels, rc.comp.GetLabels())
+	disposition, err := p.classifyXR(ctx, res, rc.comp.Spec.CompositeTypeRef.Kind, rc.revisionLabels, rc.comp.GetLabels())
 	if err != nil {
 		return false, err
 	}
@@ -1450,7 +1477,11 @@ type filteredXR struct {
 // `repointing` is the set of kept XRs (keyed by dt.MakeDiffKeyFromResource) that would genuinely
 // re-point at the resulting revision, which is not the same as the kept set: --include-pinned keeps a Manual-policy XR for analysis even though it
 // stays pinned to whatever compositionRevisionRef already names. See classifyXR and issue #479.
-func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(xrs []*un.Unstructured, newComp *un.Unstructured, pred predictedRevision) (kept []*un.Unstructured, dropped []filteredXR, repointing map[string]bool, err error) {
+//
+// `unresolved`, keyed the same way, holds the kept Manual claims whose backing XR could not be resolved
+// to tell whether they are pinned (see xrDisposition.unresolved), each with its error: that claim's own
+// result, not the run's.
+func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(ctx context.Context, xrs []*un.Unstructured, newComp *un.Unstructured, pred predictedRevision) (kept []*un.Unstructured, dropped []filteredXR, repointing map[string]bool, unresolved map[string]pinnedResolution, err error) {
 	// The selector is matched against the label set the new revision would carry (composition labels
 	// plus the stamped crossplane.io/composition-name and crossplane.io/composition-hash), while
 	// mismatch messages display the user's own composition labels; see predictedRevisionLabels and
@@ -1458,11 +1489,12 @@ func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(xrs []*un.Unstruct
 	targetLabels := predictedRevisionLabels(newComp, pred)
 	repointing = make(map[string]bool, len(xrs))
 	compLabels := newComp.GetLabels()
+	xrKind, _, _ := un.NestedString(newComp.Object, "spec", "compositeTypeRef", "kind")
 
 	for _, xr := range xrs {
-		disposition, classifyErr := p.classifyXR(xr, targetLabels, compLabels)
+		disposition, classifyErr := p.classifyXR(ctx, xr, xrKind, targetLabels, compLabels)
 		if classifyErr != nil {
-			return nil, nil, nil, classifyErr
+			return nil, nil, nil, nil, classifyErr
 		}
 
 		if disposition.filtered != nil {
@@ -1471,13 +1503,21 @@ func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(xrs []*un.Unstruct
 		}
 
 		kept = append(kept, xr)
+		key := dt.MakeDiffKeyFromResource(xr)
 
-		if !disposition.pinnedToRevision {
-			repointing[dt.MakeDiffKeyFromResource(xr)] = true
+		switch {
+		case disposition.unresolved != nil:
+			if unresolved == nil {
+				unresolved = make(map[string]pinnedResolution)
+			}
+
+			unresolved[key] = pinnedResolution{err: disposition.unresolved}
+		case !disposition.pinnedToRevision:
+			repointing[key] = true
 		}
 	}
 
-	return kept, dropped, repointing, nil
+	return kept, dropped, repointing, unresolved, nil
 }
 
 // xrDisposition is what classifyXR decided about one XR.
@@ -1491,24 +1531,36 @@ type xrDisposition struct {
 	// XR so its would-be rendered output can be inspected — without changing the fact that it does not
 	// re-point. Counting it as re-pointing was issue #479.
 	pinnedToRevision bool
+
+	// unresolved is set, with nothing else, for a Manual claim naming no revision itself whose backing
+	// XR could not be resolved to read the revision it is pinned to. Whether it is pinned is unknown, so
+	// the claim is kept, not re-pointing, and reported as this error.
+	unresolved error
 }
 
 // classifyXR decides whether a single XR should be kept for impact analysis or dropped (and why),
 // based on whether it would adopt the CompositionRevision resulting from the diffed composition.
+// xrKind is the diffed composition's compositeTypeRef kind: a composite of another kind is a claim.
 // targetLabels is the predicted revision label set (used for selector matching); compLabels is the
 // composition's own metadata.labels (used for the user-facing mismatch detail).
 //
 // Rules:
 //   - Being deleted (metadata.deletionTimestamp set): dropped (reason deleting). Checked first,
 //     and NOT overridden by IncludeManual, because deletion supersedes the policy rules entirely.
-//   - Manual compositionUpdatePolicy: dropped (reason manual_policy) — pinned via
-//     compositionRevisionRef — unless IncludeManual is set, in which case it is kept but marked
-//     pinnedToRevision: opting into analysing it does not make it adopt the new revision.
+//   - Manual compositionUpdatePolicy with a compositionRevisionRef: dropped (reason manual_policy),
+//     pinned to that revision, unless IncludeManual is set, in which case it is kept but marked
+//     pinnedToRevision: opting into analysing it does not make it adopt the new revision. A claim
+//     that names no revision itself is pinned to the one its backing XR names (see pinnedRevision).
+//   - Manual policy with no compositionRevisionRef: kept, and re-points. Crossplane pins only a
+//     composite that already names a revision; one that names none gets the latest revision, the
+//     one the diffed composition produces, and is pinned to it from then on (crossplane v2.4.3
+//     internal/controller/apiextensions/composite/api.go:163-189). Its compositionRevisionSelector
+//     is ignored, as Crossplane ignores it under Manual (api.go:203).
 //   - Automatic policy with a compositionRevisionSelector that does not match: dropped (reason
 //     revision_selector_mismatch). NOT overridden by IncludeManual, since the XR genuinely would
 //     not select the resulting revision.
 //   - Automatic policy with no selector, or a matching selector: kept, and re-points.
-func (p *DefaultCompDiffProcessor) classifyXR(xr *un.Unstructured, targetLabels, compLabels map[string]string) (xrDisposition, error) {
+func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstructured, xrKind string, targetLabels, compLabels map[string]string) (xrDisposition, error) {
 	// An XR with a deletionTimestamp is on Crossplane's teardown path: the composite reconciler
 	// deletes its composed resources instead of composing them. It will never adopt the revision
 	// this composition would produce, and rendering it yields no composed resources to diff — so
@@ -1542,28 +1594,38 @@ func (p *DefaultCompDiffProcessor) classifyXR(xr *un.Unstructured, targetLabels,
 		"kind", xr.GetKind(),
 		"policy", policy)
 
-	// Manual policy: pinned to a specific revision; excluded unless the user opts in. Opting in keeps
-	// it for analysis but does not unpin it, so it is marked as not re-pointing.
+	// Manual policy with a revision: pinned to it; excluded unless the user opts in. Opting in keeps
+	// it for analysis but does not unpin it, so it is marked as not re-pointing. With no revision it
+	// adopts the resulting one, as an Automatic composite does, so it falls through.
 	if policy == compositionUpdatePolicyManual {
-		if p.config.IncludeManual {
-			return xrDisposition{pinnedToRevision: true}, nil
-		}
-
-		// Name the revision it stays pinned to, when it names one.
 		revision, err := xp.XRCompositionRevisionRef(xr.Object, xr.GetAPIVersion())
 		if err != nil {
 			return xrDisposition{}, errors.Wrapf(err, "cannot read compositionRevisionRef for XR %q", xr.GetName())
 		}
 
-		detail := ""
-		if revision != "" {
-			detail = "compositionRevisionRef: " + revision
+		if revision == "" && xr.GetKind() != xrKind {
+			// The backing XR read is cluster I/O for this claim alone, so it runs under the claim's own
+			// XRTimeout budget: a slow read fails this claim, not the run.
+			xrCtx, cancel := p.config.xrContext(ctx)
+			revision, err = p.pinnedRevision(xrCtx, xr)
+			cancel()
+
+			if err != nil {
+				return xrDisposition{unresolved: err}, nil //nolint:nilerr // The claim's own error, not the run's.
+			}
 		}
 
-		return xrDisposition{filtered: &filteredXR{xr: xr, reason: dt.FilterReasonManualPolicy, detail: detail}}, nil
+		if revision != "" {
+			if p.config.IncludeManual {
+				return xrDisposition{pinnedToRevision: true}, nil
+			}
+
+			return xrDisposition{filtered: &filteredXR{xr: xr, reason: dt.FilterReasonManualPolicy, detail: "compositionRevisionRef: " + revision}}, nil
+		}
 	}
 
-	// Automatic (or default) policy: honor compositionRevisionSelector. An XR whose selector does not
+	// Automatic (or default) policy, or Manual with no revision: honor compositionRevisionSelector,
+	// which only an Automatic policy has (see xp.XRRevisionSelectorMatch). An XR whose selector does not
 	// match the predicted revision labels would not select the resulting revision, so it is excluded —
 	// regardless of IncludeManual.
 	matches, detail, err := xp.XRRevisionSelectorMatch(xr, targetLabels, compLabels)
@@ -1576,6 +1638,22 @@ func (p *DefaultCompDiffProcessor) classifyXR(xr *un.Unstructured, targetLabels,
 	}
 
 	return xrDisposition{}, nil
+}
+
+// pinnedRevision returns the compositionRevisionRef of claim's effective composite (see
+// DiffProcessor.ResolveComposite): its backing XR with the claim synced in. A Manual claim usually names
+// no revision itself, because Crossplane writes the pin onto the backing XR alone and copies a claim's
+// ref onto it only when the claim sets one (crossplane v2.4.3 internal/controller/apiextensions/claim/
+// syncer_ssa.go:147-152 and :211). Empty when the backing XR names none either.
+func (p *DefaultCompDiffProcessor) pinnedRevision(ctx context.Context, claim *un.Unstructured) (string, error) {
+	composite, err := p.xrProc.ResolveComposite(ctx, claim)
+	if err != nil {
+		return "", errors.Wrapf(err, "cannot resolve the backing XR of claim %q to read the revision it is pinned to", claim.GetName())
+	}
+
+	revision, err := xp.XRCompositionRevisionRef(composite.Object, composite.GetAPIVersion())
+
+	return revision, errors.Wrapf(err, "cannot read compositionRevisionRef of the backing XR of claim %q", claim.GetName())
 }
 
 // filterCounts tallies dropped XRs by filter reason. A struct rather than a growing list of
@@ -1612,6 +1690,24 @@ func (c filterCounts) applyTo(summary *dt.AffectedResourcesSummary) {
 	summary.FilteredByDeletion = c.byDeletion
 }
 
+// unresolvedImpacts builds the XRStatusError impacts, in xrs' order, of the composites in xrs that
+// unresolved holds (see partitionXRsByUpdatePolicy), without rendering anything.
+func (p *DefaultCompDiffProcessor) unresolvedImpacts(xrs []*un.Unstructured, unresolved map[string]pinnedResolution) ([]dt.XRImpact, dt.AffectedResourcesSummary) {
+	var errored []*un.Unstructured
+
+	results := make(map[string]*XRDiffResult, len(unresolved))
+
+	for _, xr := range xrs {
+		key := dt.MakeDiffKeyFromResource(xr)
+		if u, ok := unresolved[key]; ok {
+			errored = append(errored, xr)
+			results[key] = &XRDiffResult{Error: u.err}
+		}
+	}
+
+	return p.buildImpactAnalysis(errored, results)
+}
+
 // buildImpactAnalysis builds the impact analysis and summary from XR results.
 func (p *DefaultCompDiffProcessor) buildImpactAnalysis(xrs []*un.Unstructured, results map[string]*XRDiffResult) ([]dt.XRImpact, dt.AffectedResourcesSummary) {
 	impacts := make([]dt.XRImpact, 0, len(xrs))
@@ -1643,6 +1739,7 @@ func (p *DefaultCompDiffProcessor) buildImpactAnalysis(xrs []*un.Unstructured, r
 		case result != nil && result.HasChanges():
 			impact.Status = dt.XRStatusChanged
 			impact.Diffs = result.Diffs
+			impact.Health = result.health
 			summary.WithChanges++
 		default:
 			impact.Status = dt.XRStatusUnchanged
@@ -1650,6 +1747,9 @@ func (p *DefaultCompDiffProcessor) buildImpactAnalysis(xrs []*un.Unstructured, r
 			// equal diffs to refine them.
 			if result != nil && p.config.KeepEqualDiffs != nil {
 				impact.Diffs = result.Diffs
+			}
+			if result != nil {
+				impact.Health = result.health
 			}
 			summary.Unchanged++
 		}

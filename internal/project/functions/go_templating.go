@@ -39,6 +39,7 @@ import (
 
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/images"
 )
 
 // goTemplatingBuilder builds "functions" written in go templating by injecting
@@ -111,7 +112,7 @@ func (b *goTemplatingBuilder) Build(ctx context.Context, c BuildContext) ([]v1.I
 	eg, _ := errgroup.WithContext(ctx)
 	for i, arch := range c.Architectures {
 		eg.Go(func() error {
-			baseImg, err := baseImageForArch(baseRef, arch, b.transport, c.BaseImageCacheDir)
+			baseImg, err := baseImageForArch(ctx, baseRef, arch, b.transport, c.BaseImageCacheDir)
 			if err != nil {
 				return errors.Wrap(err, "failed to fetch go-templating base image")
 			}
@@ -152,8 +153,8 @@ func (b *goTemplatingBuilder) Build(ctx context.Context, c BuildContext) ([]v1.I
 
 func newGoTemplatingBuilder(imageConfigs []pkgv1beta1.ImageConfig) *goTemplatingBuilder {
 	return &goTemplatingBuilder{
-		transport:   http.DefaultTransport,
-		baseImage:   "xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.12.0",
+		transport:   registryTransport,
+		baseImage:   images.Image(images.GoTemplating, images.ImageBase),
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

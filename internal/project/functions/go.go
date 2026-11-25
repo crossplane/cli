@@ -35,6 +35,7 @@ import (
 	pkgv1beta1 "github.com/crossplane/crossplane/apis/v2/pkg/v1beta1"
 
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/images"
 )
 
 // goBuilder builds functions written in Go using ko.
@@ -79,8 +80,12 @@ func (b *goBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, erro
 			if err != nil {
 				return nil, nil, err
 			}
-			img, err := remote.Index(ref, remote.WithTransport(b.transport), remote.WithAuthFromKeychain(authn.DefaultKeychain))
-			return ref, img, err
+			// The index's images and layers are read lazily, after this
+			// returns; see fetchContext.
+			fetchCtx, detach := fetchContext(ctx)
+			defer detach()
+			img, err := remote.Index(ref, remote.WithContext(fetchCtx), remote.WithTransport(b.transport), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+			return ref, img, fetchError(fetchCtx, err)
 		}),
 		build.WithPlatforms(platforms...),
 	)
@@ -131,8 +136,8 @@ func (b *goBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, erro
 
 func newGoBuilder(imageConfigs []pkgv1beta1.ImageConfig) *goBuilder {
 	return &goBuilder{
-		baseImage:   "gcr.io/distroless/static-debian12@sha256:a9329520abc449e3b14d5bc3a6ffae065bdde0f02667fa10880c49b35c109fd1",
-		transport:   http.DefaultTransport,
+		baseImage:   images.Image(images.Go, images.ImageBase),
+		transport:   registryTransport,
 		configStore: clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

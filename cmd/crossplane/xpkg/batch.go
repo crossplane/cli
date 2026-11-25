@@ -116,12 +116,11 @@ type batchCmd struct {
 }
 
 // Run executes the batch command.
-func (c *batchCmd) Run(logger logging.Logger) error {
+func (c *batchCmd) Run(ctx context.Context, logger logging.Logger) error {
 	if err := c.loadServiceMetadata(); err != nil {
 		return err
 	}
 
-	ctx := context.Background()
 	baseImgMap, err := makeBaseImgMap(ctx, c.Platform, c.FamilyBaseImage)
 	if err != nil {
 		return err
@@ -143,7 +142,7 @@ func (c *batchCmd) Run(logger logging.Logger) error {
 					concurrency <- struct{}{}
 				}()
 			}
-			err := c.processService(logger, baseImgMap, s)
+			err := c.processService(ctx, logger, baseImgMap, s)
 			if err != nil {
 				logger.Info("Publishing of smaller provider package has failed for service", "service", s, "error", err)
 			}
@@ -196,7 +195,7 @@ func makeBaseImgMap(ctx context.Context, platforms []string, familyBaseImage str
 // the smaller provider controller binary (which is platform specific) on top
 // of the addendum layers and then pushes the built multi-arch package
 // (if `len(c.Platforms) > 1`) to the specified package repository.
-func (c *batchCmd) processService(logger logging.Logger, baseImgMap map[string]v1.Image, s string) error {
+func (c *batchCmd) processService(ctx context.Context, logger logging.Logger, baseImgMap map[string]v1.Image, s string) error {
 	imgs := make([]packageImage, 0, len(c.Platform))
 	// image layers added on top of the base image by xpkg push to be reused
 	// across the platforms so that they are computed only once.
@@ -217,7 +216,7 @@ func (c *batchCmd) processService(logger logging.Logger, baseImgMap map[string]v
 			}
 		// then we need to compute the provider metadata "base" layer and the extensions layer.
 		default:
-			img, err = c.buildImage(baseImgMap, p, s)
+			img, err = c.buildImage(ctx, baseImgMap, p, s)
 			if err != nil {
 				return err
 			}
@@ -236,7 +235,7 @@ func (c *batchCmd) processService(logger logging.Logger, baseImgMap map[string]v
 		return nil
 	}
 	// now try to push the package with the specified retry configuration.
-	return c.pushWithRetry(logger, imgs, s)
+	return c.pushWithRetry(ctx, logger, imgs, s)
 }
 
 // Optionally stores the provider package under the configured directory,
@@ -277,13 +276,13 @@ func (c *batchCmd) writePackage(logger logging.Logger, service, platform string,
 
 // pushWithRetry attempts to push the given package images up to the configured
 // retry count. If all retries fail then an error is returned.
-func (c *batchCmd) pushWithRetry(logger logging.Logger, imgs []packageImage, s string) error {
+func (c *batchCmd) pushWithRetry(ctx context.Context, logger logging.Logger, imgs []packageImage, s string) error {
 	t := c.getPackageURL(s)
 	tries := c.PushRetry + 1
 	retryMsg := ""
 	for i := range tries {
 		logger.Info(fmt.Sprintf("Pushing xpkg to %s.%s", t, retryMsg))
-		err := pushImages(logger, terminal.NewNopSpinnerPrinter(), imgs, t, nil)
+		err := pushImages(ctx, logger, terminal.NewNopSpinnerPrinter(), imgs, t, nil)
 		if err == nil {
 			break
 		}
@@ -400,12 +399,12 @@ func (c *batchCmd) appendAddendumLayers(img v1.Image, addendumLayers []v1.Layer,
 	return c.addProviderBinaryLayer(img, p, s)
 }
 
-func (c *batchCmd) buildImage(baseImgMap map[string]v1.Image, p, s string) (v1.Image, error) {
+func (c *batchCmd) buildImage(ctx context.Context, baseImgMap map[string]v1.Image, p, s string) (v1.Image, error) {
 	builder, err := c.getBuilder(s)
 	if err != nil {
 		return nil, err
 	}
-	img, _, err := builder.Build(context.Background(), xpkg.WithBase(baseImgMap[p]))
+	img, _, err := builder.Build(ctx, xpkg.WithBase(baseImgMap[p]))
 	if err != nil {
 		return nil, errors.Wrapf(err, errBuildPackageFmt, s)
 	}

@@ -40,16 +40,14 @@ import (
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
+	"github.com/crossplane/cli/v2/pkg/images"
 )
 
 const (
-	// rustBuildImage is the image in which we build the function. Its Debian
-	// release must match rustRuntimeImage's: the binary links dynamically
-	// against the build image's glibc, and only runs on that version or newer.
-	rustBuildImage = "docker.io/library/rust:1-trixie"
-	// rustRuntimeImage is the distroless base used at runtime. The cc flavor
-	// carries glibc and libgcc, which is all a Rust binary links against.
-	rustRuntimeImage = "gcr.io/distroless/cc-debian13:nonroot"
+	// The build image's Debian release must match the runtime image's: the
+	// binary links dynamically against the build image's glibc, and only runs
+	// on that version or newer. The runtime's cc flavor carries glibc and
+	// libgcc, which is all a Rust binary links against.
 
 	// rustBinaryPath is where the function's binary lives in the runtime image.
 	rustBinaryPath = "/function"
@@ -198,7 +196,7 @@ func (b *rustBuilder) Build(ctx context.Context, c BuildContext) ([]v1.Image, er
 	eg, _ := errgroup.WithContext(ctx)
 	for i, arch := range c.Architectures {
 		eg.Go(func() error {
-			baseImg, err := baseImageForArch(runtimeRef, arch, b.transport, c.BaseImageCacheDir)
+			baseImg, err := baseImageForArch(ctx, runtimeRef, arch, b.transport, c.BaseImageCacheDir)
 			if err != nil {
 				return errors.Wrap(err, "failed to fetch rust runtime base image")
 			}
@@ -294,9 +292,15 @@ func (b *rustBuilder) buildBinaries(ctx context.Context, buildImage string, c Bu
 		// Copying a single file out of a container yields a tar holding just
 		// that file, under its base name. Appended to the runtime image as a
 		// layer, that puts the binary at rustBinaryPath.
-		ret[arch], err = docker.TarFromContainer(ctx, cid, path.Join(rustBuildOutput, arch, path.Base(rustBinaryPath)))
+		raw, err := docker.TarFromContainer(ctx, cid, path.Join(rustBuildOutput, arch, path.Base(rustBinaryPath)))
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to retrieve built function for architecture %s", arch)
+		}
+		// The container tar carries the build's wall-clock times; normalized,
+		// the layer digest depends only on the binary's contents.
+		ret[arch], err = filesystem.NormalizeTar(raw)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to normalize built function for architecture %s", arch)
 		}
 	}
 
@@ -366,9 +370,9 @@ func configureRustImage(img v1.Image) (v1.Image, error) {
 
 func newRustBuilder(imageConfigs []pkgv1beta1.ImageConfig) *rustBuilder {
 	return &rustBuilder{
-		buildImage:   rustBuildImage,
-		runtimeImage: rustRuntimeImage,
-		transport:    http.DefaultTransport,
+		buildImage:   images.Image(images.Rust, images.ImageBuild),
+		runtimeImage: images.Image(images.Rust, images.ImageRuntime),
+		transport:    registryTransport,
 		configStore:  clixpkg.NewStaticImageConfigStore(imageConfigs),
 	}
 }

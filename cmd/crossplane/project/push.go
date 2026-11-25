@@ -17,12 +17,14 @@ limitations under the License.
 package project
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -37,6 +39,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
 	"github.com/crossplane/cli/v2/internal/terminal"
+	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
 	_ "embed"
 )
@@ -58,6 +61,10 @@ type PushCmd struct {
 	projFS    afero.Fs
 	packageFS afero.Fs
 	transport http.RoundTripper
+
+	// responseHeaderTimeout overrides the registry transport's response
+	// header timeout when non-zero. Tests shorten it.
+	responseHeaderTimeout time.Duration
 }
 
 // Help returns help for the push command.
@@ -91,7 +98,7 @@ func (c *PushCmd) AfterApply() error {
 		c.packageFS = afero.NewOsFs()
 	}
 
-	t := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // http.DefaultTransport is always *http.Transport
+	t := clixpkg.NewRegistryTransport(cmp.Or(c.responseHeaderTimeout, clixpkg.RegistryResponseHeaderTimeout), clixpkg.RegistrySendPingTimeout)
 	if c.InsecureSkipTLSVerify {
 		t.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // we need to support insecure connections if requested
@@ -103,9 +110,7 @@ func (c *PushCmd) AfterApply() error {
 }
 
 // Run executes the push command.
-func (c *PushCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) error {
-	ctx := context.Background()
-
+func (c *PushCmd) Run(ctx context.Context, logger logging.Logger, sp terminal.SpinnerPrinter) error {
 	if c.Repository != "" {
 		ref, err := name.NewRepository(c.Repository)
 		if err != nil {

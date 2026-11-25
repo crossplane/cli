@@ -35,6 +35,7 @@ import (
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/diff/types"
+	"github.com/crossplane/cli/v2/internal/health"
 	"github.com/crossplane/cli/v2/pkg/render"
 	"github.com/crossplane/cli/v2/pkg/resource"
 )
@@ -1102,6 +1103,238 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 
 			if diff := gcmp.Diff(tt.want, result); diff != "" {
 				t.Errorf("PerformDiff(...) group handoff: -want, +got:\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestDefaultDiffProcessor_PerformDiff_Health covers the health each group carries, end to end through
+// composite resolution, the observed-resource fetch, the nested XR merge and the input validator. The
+// composite reports the cluster XR's own health (for a claim, its backing XR's), and every composed
+// resource is listed once, nested composites' own included, each with the nested composite that
+// directly composes it.
+func TestDefaultDiffProcessor_PerformDiff_Health(t *testing.T) {
+	ctx := t.Context()
+
+	const apiVersion = testGroup + "/" + testAPIVersion
+
+	parentCluster := tu.NewResource(apiVersion, testKind, "parent").WithUID("parent-uid").
+		WithCondition("Synced", "False", "ReconcileError").
+		Build()
+	childCluster := tu.NewResource(apiVersion, "XChild", "child").WithUID("child-uid").
+		WithCompositionResourceName("child").
+		ControlledBy(parentCluster).
+		WithCondition("Ready", "False", "Creating").
+		Build()
+	bucketA := tu.NewResource(apiVersion, "Bucket", "bucket-a").
+		WithCompositionResourceName("bucket-a").
+		ControlledBy(parentCluster).
+		WithCondition("Ready", "False", "Creating").
+		Build()
+	bucketB := tu.NewResource(apiVersion, "Bucket", "bucket-b").
+		WithCompositionResourceName("bucket-b").
+		ControlledBy(childCluster).
+		WithCondition("Synced", "False", "ReconcileError").
+		Build()
+	// The claim is healthy, so only its backing XR (parent) can make the composite failing.
+	claimCluster := tu.NewResource(apiVersion, "Claim", "my-claim").InNamespace("ns").
+		WithSpecField("resourceRef", map[string]any{"apiVersion": apiVersion, "kind": testKind, "name": "parent"}).
+		WithCondition("Synced", "True", "ReconcileSuccess").
+		WithCondition("Ready", "True", "Available").
+		Build()
+
+	parentInput := tu.NewResource(apiVersion, testKind, "parent").WithSpecField("coolField", "value").Build()
+	claimInput := tu.NewResource(apiVersion, "Claim", "my-claim").InNamespace("ns").WithSpecField("coolField", "value").Build()
+
+	fullTree := tu.NewTreeNode(parentCluster).WithChildren(
+		tu.NewTreeNode(childCluster).WithChildren(tu.NewTreeNode(bucketB)),
+		tu.NewTreeNode(bucketA),
+	).Build()
+	// The tree without the nested XR, as when the tree client cannot walk to it: the nested XR is then
+	// found by name instead.
+	treeWithoutChild := tu.NewTreeNode(parentCluster).WithChildren(tu.NewTreeNode(bucketA)).Build()
+	childTree := tu.NewTreeNode(childCluster).WithChildren(tu.NewTreeNode(bucketB)).Build()
+
+	xrds := map[string]*un.Unstructured{
+		testKind: tu.NewXRD(testCRDName, testGroup, testKind).WithPlural(testPlural).WithSingular(testSingular).BuildAsUnstructured(),
+		"XChild": tu.NewXRD("xchilds."+testGroup, testGroup, "XChild").WithPlural("xchilds").WithSingular("xchild").BuildAsUnstructured(),
+	}
+	crds := map[string]*extv1.CustomResourceDefinition{
+		testCRDName:            makeTestCRD(testCRDName, testKind, testGroup, testAPIVersion),
+		"xchilds." + testGroup: makeTestCRD("xchilds."+testGroup, "XChild", testGroup, testAPIVersion),
+	}
+	compositions := map[string]*apiextensionsv1.Composition{
+		testKind: tu.NewComposition("parent-comp").WithCompositeTypeRef(apiVersion, testKind).
+			WithPipelineMode().WithPipelineStep("step1", "function-test", nil).Build(),
+		"XChild": tu.NewComposition("child-comp").WithCompositeTypeRef(apiVersion, "XChild").
+			WithPipelineMode().WithPipelineStep("step1", "function-test", nil).Build(),
+	}
+	// rendered is what each composite's composition renders, by the composite's kind.
+	rendered := map[string][]cpd.Unstructured{
+		testKind: {
+			*tu.NewResource(apiVersion, "XChild", "child").WithCompositionResourceName("child").BuildUComposed(),
+			*tu.NewResource(apiVersion, "Bucket", "bucket-a").WithCompositionResourceName("bucket-a").BuildUComposed(),
+		},
+		"XChild": {*tu.NewResource(apiVersion, "Bucket", "bucket-b").WithCompositionResourceName("bucket-b").BuildUComposed()},
+	}
+	cluster := map[string]*un.Unstructured{}
+	for _, u := range []*un.Unstructured{parentCluster, childCluster, claimCluster} {
+		cluster[dt.MakeDiffKeyFromResource(u)] = u
+	}
+
+	ref := func(kind, name string) corev1.ObjectReference {
+		return corev1.ObjectReference{APIVersion: apiVersion, Kind: kind, Name: name}
+	}
+	via := ref("XChild", "child")
+	failing := &health.Health{State: health.Failing, Synced: &health.Condition{Status: corev1.ConditionFalse, Reason: "ReconcileError"}}
+	notReady := &health.Health{State: health.NotReady, Ready: &health.Condition{Status: corev1.ConditionFalse, Reason: "Creating"}}
+	nested := dt.CompositeHealth{
+		XR: failing,
+		Composed: []dt.ResourceHealth{
+			{ObjectReference: ref("Bucket", "bucket-a"), Health: notReady},
+			{ObjectReference: ref("Bucket", "bucket-b"), Via: &via, Health: failing},
+			{ObjectReference: ref("XChild", "child"), Health: notReady},
+		},
+	}
+
+	type args struct {
+		input         *un.Unstructured
+		parentTree    *resource.Resource
+		eventualState bool
+		verdict       error
+	}
+
+	tests := map[string]struct {
+		reason string
+		args   args
+		want   dt.CompositeHealth
+	}{
+		"NestedXRResourcesListedOnceWithVia": {
+			reason: "The nested XR is a resource of its parent, and what it composes is listed once with it as via.",
+			args:   args{input: parentInput, parentTree: fullTree},
+			want:   nested,
+		},
+		"NestedXRFoundByNameKeepsItsHealth": {
+			reason: "A nested XR absent from the parent's observed set, found by name instead, is still listed.",
+			args:   args{input: parentInput, parentTree: treeWithoutChild},
+			want:   nested,
+		},
+		"ClaimReportsItsBackingXR": {
+			reason: "A claim's health is its backing XR's, which here is failing while the claim is healthy.",
+			args:   args{input: claimInput, parentTree: fullTree},
+			want:   nested,
+		},
+		"EventualStateLeavesHealthAsObserved": {
+			reason: "--eventual-state synthesizes Ready only for the next render; bucket-a stays notReady.",
+			args:   args{input: parentInput, parentTree: fullTree, eventualState: true},
+			want:   nested,
+		},
+		"VerdictErrorClearsHealth": {
+			reason: "A group the validator fails reports no health, as it reports no diffs.",
+			args:   args{input: parentInput, parentTree: fullTree, verdict: errors.New("rejected")},
+			want:   dt.CompositeHealth{},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			trees := map[string]*resource.Resource{"parent": tc.args.parentTree, "child": childTree}
+
+			k8sClients := k8.Clients{
+				Apply:    tu.NewMockApplyClient().WithSuccessfulDryRun().Build(),
+				Resource: tu.NewMockResourceClient().WithResourcesExist(parentCluster, childCluster, claimCluster).Build(),
+				Schema: tu.NewMockSchemaClient().
+					WithNoResourcesRequiringCRDs().
+					WithGetCRDByName(func(name string) (*extv1.CustomResourceDefinition, error) {
+						if crd, ok := crds[name]; ok {
+							return crd, nil
+						}
+						return nil, errors.Errorf("CRD %s not found", name)
+					}).
+					Build(),
+				Type: tu.NewMockTypeConverter().Build(),
+			}
+			xpClients := xp.Clients{
+				Credential: &tu.MockCredentialClient{},
+				Definition: tu.NewMockDefinitionClient().
+					WithGetXRDForXR(func(_ context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
+						if xrd, ok := xrds[gvk.Kind]; ok {
+							return xrd, nil
+						}
+						return nil, errors.Errorf("no XRD for %s", gvk)
+					}).
+					WithIsClaimResource(func(_ context.Context, res *un.Unstructured) bool { return res.GetKind() == "Claim" }).
+					Build(),
+				Function: tu.NewMockFunctionClient().
+					WithSuccessfulFunctionsFetch([]pkgv1.Function{{Name: "function-test"}}).
+					Build(),
+				ResourceTree: tu.NewMockResourceTreeClient().
+					WithGetResourceTree(func(_ context.Context, xr *un.Unstructured) (*resource.Resource, error) {
+						if tree, ok := trees[xr.GetName()]; ok {
+							return tree, nil
+						}
+						return nil, errors.Errorf("no tree for %s", xr.GetName())
+					}).
+					Build(),
+			}
+
+			opts := append(testProcessorOptions(t),
+				WithEventualState(tc.args.eventualState),
+				WithRenderFunc(func(_ context.Context, _ logging.Logger, in RenderInputs) (render.CompositionOutputs, error) {
+					return render.CompositionOutputs{CompositeResource: in.CompositeResource, ComposedResources: rendered[in.CompositeResource.GetKind()]}, nil
+				}),
+				WithSchemaValidatorFactory(func(k8.SchemaClient, k8.ResourceClient, xp.DefinitionClient, logging.Logger) SchemaValidator {
+					return &tu.MockSchemaValidator{
+						ValidateResourcesFn: func(context.Context, *un.Unstructured, []cpd.Unstructured) error { return nil },
+					}
+				}),
+				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter, func(*un.Unstructured) bool) DiffCalculator {
+					return &tu.MockDiffCalculator{
+						// An unchanged diff of the composite against its cluster copy, which is what
+						// nested processing and removal detection read the cluster XR from.
+						CalculateNonRemovalDiffsFn: func(_ context.Context, xr *cmp.Unstructured, _ render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+							key := dt.MakeDiffKeyFromResource(xr.GetUnstructured())
+							return map[string]*dt.ResourceDiff{key: {
+								Gvk:          xr.GroupVersionKind(),
+								Namespace:    xr.GetNamespace(),
+								ResourceName: xr.GetName(),
+								DiffType:     dt.DiffTypeEqual,
+								Current:      dt.ResourceViews{Raw: cluster[key]},
+							}}, types.RenderedResources{}, nil
+						},
+					}
+				}),
+			)
+
+			if tc.args.verdict != nil {
+				opts = append(opts, WithInputValidatorFactory(func(dt.Advisories, []*un.Unstructured) InputValidator {
+					return &tu.MockInputValidator{
+						ToRenderFn:       func() []types.ValidatedInput { return []types.ValidatedInput{{Resource: tc.args.input}} },
+						RecordRenderFn:   func(int, map[string]bool, error) {},
+						VerdictsFn:       func([]dt.XRDiffGroup) []error { return []error{tc.args.verdict} },
+						RenderOverlapsFn: func([]dt.XRDiffGroup) []error { return nil },
+					}
+				}))
+			}
+
+			processor := NewDiffProcessor(k8sClients, xpClients, opts...)
+
+			report, err := processor.PerformDiff(ctx, []*un.Unstructured{tc.args.input}, func(_ context.Context, res *un.Unstructured) (types.ResolvedComposition, error) {
+				if comp, ok := compositions[res.GetKind()]; ok {
+					return types.ResolvedComposition{Composition: comp}, nil
+				}
+				return types.ResolvedComposition{}, xp.ErrNoMatchingComposition
+			})
+			if err != nil && tc.args.verdict == nil {
+				t.Fatalf("\n%s\nPerformDiff(...): unexpected error: %v", tc.reason, err)
+			}
+
+			if len(report.Groups) != 1 {
+				t.Fatalf("\n%s\nPerformDiff(...): got %d groups, want 1", tc.reason, len(report.Groups))
+			}
+
+			if diff := gcmp.Diff(tc.want, report.Groups[0].Health); diff != "" {
+				t.Errorf("\n%s\nPerformDiff(...) group health: -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}
@@ -3092,8 +3325,10 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testing.T) {
 	ctx := t.Context()
 
-	// Create test XR
-	xr := tu.NewResource("example.org/v1", "XR", "test-xr").Build()
+	// Create test XR. Its conditions, and the bucket's, are what the reported health is read from.
+	xr := tu.NewResource("example.org/v1", "XR", "test-xr").
+		WithCondition("Synced", "False", "ReconcileError").
+		Build()
 
 	// Create test observed composed resources
 	observedBucket := tu.NewResource("s3.aws.crossplane.io/v1", "Bucket", "observed-bucket").
@@ -3101,6 +3336,7 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 			"crossplane.io/composition-resource-name": "bucket",
 		}).
 		WithSpecField("bucketName", "my-bucket").
+		WithCondition("Ready", "False", "Creating").
 		Build()
 
 	observedUser := tu.NewResource("iam.aws.crossplane.io/v1", "User", "observed-user").
@@ -3131,6 +3367,7 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 		wantErr              bool
 		wantErrContain       string
 		verifyObservedPassed bool
+		wantHealth           dt.CompositeHealth
 	}{
 		"ObservedResourcesFetchedAndPassedToRender": {
 			setupMocks: func() (k8.Clients, xp.Clients) {
@@ -3229,6 +3466,21 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 			wantObservedCount:    2,
 			verifyObservedPassed: true,
 			wantErr:              false,
+			// Health is read from the cluster XR and the observed resources the render already
+			// fetched, unchanged ones included.
+			wantHealth: dt.CompositeHealth{
+				XR: &health.Health{State: health.Failing, Synced: &health.Condition{Status: corev1.ConditionFalse, Reason: "ReconcileError"}},
+				Composed: []dt.ResourceHealth{
+					{
+						APIVersion: "iam.aws.crossplane.io/v1", Kind: "User", Name: "observed-user",
+						Health: &health.Health{State: health.Healthy},
+					},
+					{
+						APIVersion: "s3.aws.crossplane.io/v1", Kind: "Bucket", Name: "observed-bucket",
+						Health: &health.Health{State: health.NotReady, Ready: &health.Condition{Status: corev1.ConditionFalse, Reason: "Creating"}},
+					},
+				},
+			},
 		},
 		"EmptyObservedResourcesWhenTreeEmpty": {
 			setupMocks: func() (k8.Clients, xp.Clients) {
@@ -3303,6 +3555,9 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 			wantObservedCount:    0,
 			verifyObservedPassed: true,
 			wantErr:              false,
+			wantHealth: dt.CompositeHealth{
+				XR: &health.Health{State: health.Failing, Synced: &health.Condition{Status: corev1.ConditionFalse, Reason: "ReconcileError"}},
+			},
 		},
 		"FailedObservedResourceFetchIsFatal": {
 			setupMocks: func() (k8.Clients, xp.Clients) {
@@ -3514,7 +3769,7 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 				return xpClients.Composition.FindMatchingComposition(ctx, res)
 			}
 
-			diffs, _, err := processor.(*DefaultDiffProcessor).DiffSingleResource(ctx, xr, compositionProvider)
+			diffs, rendered, err := processor.(*DefaultDiffProcessor).DiffSingleResource(ctx, xr, compositionProvider)
 
 			// Check error expectations
 			if (err != nil) != tt.wantErr {
@@ -3551,6 +3806,10 @@ func TestDefaultDiffProcessor_DiffSingleResource_WithObservedResources(t *testin
 			// Verify diffs were returned (even if empty)
 			if diffs == nil {
 				t.Errorf("DiffSingleResource() returned nil diffs, expected non-nil map")
+			}
+
+			if diff := gcmp.Diff(tt.wantHealth, rendered.Health()); diff != "" {
+				t.Errorf("DiffSingleResource() health: -want, +got:\n%s", diff)
 			}
 		})
 	}

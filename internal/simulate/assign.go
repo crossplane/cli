@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	ucomposite "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
 	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	"github.com/crossplane/cli/v2/internal/diff/result"
@@ -77,7 +78,7 @@ func clusterXRDInfo(ctx context.Context, defs xpclient.DefinitionClient, in *un.
 	if err != nil {
 		return xrdInfo{}, errors.Wrapf(err, "cannot get the XRD for %s", gvk)
 	}
-	return xrdInfo{CompositeGVK: gvk, DefaultComposition: defaultComposition(xrd), EnforcedComposition: enforcedComposition(xrd), Legacy: xrd.GetAPIVersion() == xpclient.CrossplaneAPIExtGroupV1}, nil
+	return xrdInfo{CompositeGVK: gvk, DefaultComposition: defaultComposition(xrd), EnforcedComposition: enforcedComposition(xrd), Legacy: xpclient.SchemaFromXRD(xrd) == ucomposite.SchemaLegacy}, nil
 }
 
 func defaultComposition(xrd *un.Unstructured) string {
@@ -99,9 +100,9 @@ type xrdInfo struct {
 	DefaultComposition string
 	// EnforcedComposition is spec.enforcedCompositionRef.name, if set.
 	EnforcedComposition string
-	// Legacy is true for a claim or an XR whose XRD is
-	// apiextensions.crossplane.io/v1: its Composition fields are under spec
-	// only, not spec.crossplane.
+	// Legacy is true for a claim or an XR whose XRD is LegacyCluster
+	// scoped, as a v1 XRD is (see xpclient.SchemaFromXRD): its Composition
+	// fields are under spec only, not spec.crossplane.
 	Legacy bool
 }
 

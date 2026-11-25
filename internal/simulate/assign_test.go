@@ -216,10 +216,14 @@ func TestAssignComposites(t *testing.T) {
 }
 
 func TestAssignInputs(t *testing.T) {
+	// A v2 XRD is Namespaced; a v1 XRD has no scope, so it is LegacyCluster and its XRs get no namespace.
 	xrd := func(apiVersion, def string, referenceable bool) *testutils.XRDBuilder {
-		return testutils.NewXRD("xbuckets.example.org", "example.org", "XBucket").
-			WithAPIVersion(apiVersion).WithScope(xpextv1.CompositeResourceScopeNamespaced).
-			WithDefaultCompositionRef(def).WithVersion("v1", false, referenceable)
+		b := testutils.NewXRD("xbuckets.example.org", "example.org", "XBucket").
+			WithAPIVersion(apiVersion).WithDefaultCompositionRef(def).WithVersion("v1", false, referenceable)
+		if apiVersion == "apiextensions.crossplane.io/v2" {
+			b = b.WithScope(xpextv1.CompositeResourceScopeNamespaced)
+		}
+		return b
 	}
 	gvk := func(kind string) schema.GroupVersionKind {
 		return schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: kind}
@@ -268,7 +272,12 @@ func TestAssignInputs(t *testing.T) {
 		"V1XRDReadsSpecPathOnly": {
 			reason: "An XR of a v1 XRD ignores spec.crossplane.compositionRef, so the XRD default applies.",
 			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", true).BuildAsUnstructured(), inputs: []*un.Unstructured{testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "a"}}}).Build()}},
-			want:   want{assigned: map[string][]string{"b": {"ctx-ns/x"}}},
+			want:   want{assigned: map[string][]string{"b": {"/x"}}},
+		},
+		"V2LegacyClusterXRDReadsSpecPathOnly": {
+			reason: "An XR of a LegacyCluster XRD read through the v2 API ignores spec.crossplane.compositionRef, as rendering does.",
+			args:   args{xrd: xrd("apiextensions.crossplane.io/v2", "b", true).WithScope(xpextv1.CompositeResourceScopeLegacyCluster).BuildAsUnstructured(), inputs: []*un.Unstructured{testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"crossplane": map[string]any{"compositionRef": map[string]any{"name": "a"}}}).Build()}},
+			want:   want{assigned: map[string][]string{"b": {"/x"}}},
 		},
 		"V2XRDReadsCrossplanePath": {
 			reason: "An XR of a v2 XRD reads spec.crossplane.compositionRef.",
@@ -298,7 +307,7 @@ func TestAssignInputs(t *testing.T) {
 		"V1XRDEnforcedComposition": {
 			reason: "A v1 XRD's spec.enforcedCompositionRef is read, and wins over the input's compositionRef.",
 			args:   args{xrd: xrd("apiextensions.crossplane.io/v1", "b", true).WithEnforcedCompositionRef("b").BuildAsUnstructured(), inputs: []*un.Unstructured{testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionRef": map[string]any{"name": "a"}}).Build()}},
-			want:   want{assigned: map[string][]string{"b": {"ctx-ns/x"}}},
+			want:   want{assigned: map[string][]string{"b": {"/x"}}},
 		},
 		"V2XRDEnforcedComposition": {
 			reason: "A v2 XRD's spec.enforcedCompositionRef is read, and wins over the input's compositionRef.",

@@ -3756,6 +3756,23 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			},
 			want: want{rendered: []string{"/one", "/two"}, repointed: map[string]int{"test-comp": 0}},
 		},
+		"GenerateNameOnlySuppliedKeepOwnResults": {
+			reason: "Supplied composites with only a generateName each keep their own result: one failing does not fail the other.",
+			args: args{
+				find: notFound,
+				supplied: map[string][]*un.Unstructured{"test-comp": {
+					xrB("", "one").WithGenerateName("x-").Build(),
+					xrB("", "two").WithGenerateName("x-").Build(),
+				}},
+				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					if marker, _, _ := un.NestedString(u.Object, "spec", "marker"); marker == "two" {
+						return nil, errors.New("boom")
+					}
+					return u, nil
+				},
+			},
+			want: want{rendered: []string{"/one", "/two"}, errored: []string{""}},
+		},
 		"NetNewManualClaimGetsRevision": {
 			reason: "A supplied net-new Manual claim renders through its backing XR with the predicted revision, as it adopts it.",
 			args: args{

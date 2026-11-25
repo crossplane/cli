@@ -744,12 +744,12 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	xrResults := p.collectXRDiffs(ctx, slices.DeleteFunc(slices.Clone(keptXRs), func(xr *un.Unstructured) bool { return supplied[dt.CompositeKeyOf(xr)].err != nil }), cliComp, revisionName, rc.revisionLabels, pinnedXRs, netNew, run)
 	for _, xr := range unknown {
 		key := dt.MakeDiffKeyFromResource(xr)
-		xrResults[key] = &XRDiffResult{Diffs: make(map[string]*dt.ResourceDiff), Error: errors.Wrapf(supplied[dt.CompositeKeyOf(xr)].err, "unable to process resource %s", key)}
+		xrResults[resultKey(xr)] = &XRDiffResult{Diffs: make(map[string]*dt.ResourceDiff), Error: errors.Wrapf(supplied[dt.CompositeKeyOf(xr)].err, "unable to process resource %s", key)}
 	}
 
 	composites := make([]renderedComposite, 0, len(keptXRs))
 	for _, xr := range keptXRs {
-		if r := xrResults[dt.MakeDiffKeyFromResource(xr)]; r != nil && !r.HasError() {
+		if r := xrResults[resultKey(xr)]; r != nil && !r.HasError() {
 			group := dt.XRDiffGroup{XR: objectRef(xr), Diffs: r.Diffs}
 			composites = append(composites, renderedComposite{xr: xr, group: withUnchanged([]dt.XRDiffGroup{group}, []map[string]*dt.ResourceDiff{r.unchanged})[0]})
 		}
@@ -877,6 +877,8 @@ func overlapGroups(composites []renderedComposite) []dt.XRDiffGroup {
 //
 // run holds the run's Compositions by name; a nested XR of another type is rendered with its own from
 // there when the run has it (see runCompositionFor).
+//
+// The results are keyed by resultKey.
 func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un.Unstructured, cliComp *apiextensionsv1.Composition, revisionName string, revisionLabels map[string]string, pinned map[string]pinnedResolution, netNew map[dt.CompositeKey]bool, run map[string]runComposition) map[string]*XRDiffResult {
 	// Extract the target GVK from the CLI composition's compositeTypeRef
 	cliCompTargetAPIVersion := cliComp.Spec.CompositeTypeRef.APIVersion
@@ -980,7 +982,7 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 		p.config.Progress.Report(i, len(xrs), cliComp.GetName()+": "+resourceID)
 
 		if pin, ok := pinned[resourceID]; ok && pin.err != nil {
-			results[resourceID] = &XRDiffResult{
+			results[resultKey(xr)] = &XRDiffResult{
 				Diffs: make(map[string]*dt.ResourceDiff),
 				Error: errors.Wrapf(pin.err, "unable to process resource %s", resourceID),
 			}
@@ -996,13 +998,13 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 			p.config.Logger.Debug("Failed to process resource", "resource", resourceID, "error", err)
 
 			// Store the error in the result
-			results[resourceID] = &XRDiffResult{
+			results[resultKey(xr)] = &XRDiffResult{
 				Diffs: make(map[string]*dt.ResourceDiff),
 				Error: errors.Wrapf(err, "unable to process resource %s", resourceID),
 			}
 		} else {
 			// Store successful result with diffs
-			results[resourceID] = &XRDiffResult{
+			results[resultKey(xr)] = &XRDiffResult{
 				Diffs:     diffs,
 				unchanged: rendered.Unchanged(),
 				health:    rendered.Health(),
@@ -1998,11 +2000,23 @@ func (p *DefaultCompDiffProcessor) unresolvedImpacts(xrs []*un.Unstructured, unr
 		key := dt.MakeDiffKeyFromResource(xr)
 		if u, ok := unresolved[key]; ok {
 			errored = append(errored, xr)
-			results[key] = &XRDiffResult{Error: u.err}
+			results[resultKey(xr)] = &XRDiffResult{Error: u.err}
 		}
 	}
 
 	return p.buildImpactAnalysis(errored, results)
+}
+
+// resultKey is the key of xr's entry in a map of XRDiffResults: its diff key or, for a composite with
+// only a generateName, which several inputs can share, that key and the object's address, so each
+// keeps its own result. Callers key and look up results with the same objects.
+func resultKey(xr *un.Unstructured) string {
+	key := dt.MakeDiffKeyFromResource(xr)
+	if xr.GetName() == "" {
+		return fmt.Sprintf("%s@%p", key, xr)
+	}
+
+	return key
 }
 
 // buildImpactAnalysis builds the impact analysis and summary from XR results.
@@ -2021,8 +2035,7 @@ func (p *DefaultCompDiffProcessor) buildImpactAnalysis(xrs []*un.Unstructured, r
 	}
 
 	for _, xr := range xrs {
-		resourceID := dt.MakeDiffKeyFromResource(xr)
-		result := results[resourceID]
+		result := results[resultKey(xr)]
 
 		impact := dt.XRImpact{ObjectReference: objectRef(xr), ComposedBy: parentCompositeRef(xr, byIdentity)}
 

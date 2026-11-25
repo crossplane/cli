@@ -159,6 +159,11 @@ func TestAssignComposites(t *testing.T) {
 			args:   args{comps: []*un.Unstructured{a, b}, defalt: "b", input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{}}}).Build()},
 			want:   want{rejected: rejected("XBucket", "x", rejectAmbiguous)},
 		},
+		"SelectorLabelsMalformed": {
+			reason: "A matchLabels that is not a map of strings fails rather than being ignored.",
+			args:   args{comps: []*un.Unstructured{a}, input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": "tier"}}).Build()},
+			want:   want{rejected: rejected("XBucket", "x", rejectMalformed)},
+		},
 		"SelectorWithoutLabelsMatchesAll": {
 			reason: "A compositionSelector with no matchLabels is still a selector, so the XRD default does not apply.",
 			args:   args{comps: []*un.Unstructured{a, b}, defalt: "b", input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{}}).Build()},

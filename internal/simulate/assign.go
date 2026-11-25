@@ -170,11 +170,12 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 	if err != nil {
 		return "", err
 	}
-	sel, err := crossplaneField(in, xrd.Legacy, un.NestedStringMap, "compositionSelector", "matchLabels")
-	if err != nil {
-		return "", err
-	}
 	if selector != nil {
+		// Read from the selector found, so its labels come from the same path.
+		sel, _, err := un.NestedStringMap(selector, "matchLabels")
+		if err != nil {
+			return "", rejectInput(in, FlagResourceFile, rejectMalformed, "whose compositionSelector.matchLabels is not a map of strings", "correct it in the file")
+		}
 		var match []*un.Unstructured
 		for _, c := range typed {
 			if labelsSelect(sel, c.GetLabels()) {

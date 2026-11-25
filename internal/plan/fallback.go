@@ -40,7 +40,7 @@ import (
 //   - ApplyClientSide: live's LastAppliedConfigAnnotation has them and
 //     desired drops them, or they are inside a list live and desired
 //     differ on, which the merge patch replaces whole. With no annotation
-//     nothing is removed.
+//     only those list replacements remove anything.
 //   - ApplyUndetermined: some declarative applier owns them and no other
 //     manager does, as applierOwned describes.
 //
@@ -87,17 +87,20 @@ func Fallback(desired, live *unstructured.Unstructured, a Applier, reason string
 // live and desired differ on. Its three-way JSON merge patch deletes each such
 // key whole, whoever owns it, and sets each such list to desired's whole,
 // dropping what only live's has; outside replaced lists it keeps anything the
-// annotation lacks. With no annotation, or one that does not parse (which
-// kubectl's apply rejects), nothing is removed.
+// annotation lacks. With no annotation there is no original, so only the list
+// replacements remove anything; with one that does not parse (which kubectl's
+// apply rejects), nothing is removed.
 func clientSideRemovable(live, desired *unstructured.Unstructured) *fieldpath.Set {
 	removable := fieldpath.NewSet()
-	var applied map[string]any
-	if err := json.Unmarshal([]byte(live.GetAnnotations()[LastAppliedConfigAnnotation]), &applied); err != nil {
-		return removable
-	}
-	appliedSpec, _, _ := unstructured.NestedMap(applied, "spec")
 	desiredSpec, _, _ := unstructured.NestedMap(desired.Object, "spec")
-	droppedKeys(removable, newCursor("spec"), appliedSpec, desiredSpec)
+	if annotation, ok := live.GetAnnotations()[LastAppliedConfigAnnotation]; ok {
+		var applied map[string]any
+		if err := json.Unmarshal([]byte(annotation), &applied); err != nil {
+			return removable
+		}
+		appliedSpec, _, _ := unstructured.NestedMap(applied, "spec")
+		droppedKeys(removable, newCursor("spec"), appliedSpec, desiredSpec)
+	}
 	liveSpec, _, _ := unstructured.NestedMap(live.Object, "spec")
 	replacedLists(removable, newCursor("spec"), liveSpec, desiredSpec)
 	return removable

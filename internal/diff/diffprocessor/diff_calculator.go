@@ -224,7 +224,8 @@ func (c *DefaultDiffCalculator) userApplierFieldOwner(ctx context.Context, fallb
 // k8s.io/kubectl/pkg/cmd/apply): a three-way JSON merge patch from the last-applied-configuration
 // annotation (original), desired with that annotation set to desired itself (modified), and current,
 // sent as a dry-run merge patch. It removes what the annotation has and desired drops, whoever owns
-// it; with no annotation there is no original, so it removes nothing, as kubectl does.
+// it; with no annotation there is no original, so, as kubectl's, it removes only what replacing the
+// lists desired changes drops.
 //
 // desired is the sanitized dry-run payload, not the manifest as kubectl would send it, so modified
 // lacks what sanitizeForDryRun strips (ownerReferences, uid, resourceVersion and the like) and has

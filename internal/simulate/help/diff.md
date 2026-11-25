@@ -31,8 +31,9 @@ These flags tune the diff:
   entry, otherwise client-side. An explicit `--field-manager` is used even
   when an imperative writer wrote the resource. Client-side apply is
   modelled as kubectl's: it removes the fields the annotation has and the
-  manifest drops, whoever set them, and nothing on a resource without the
-  annotation.
+  manifest drops, whoever set them, and anything inside a list the manifest
+  changes, which it replaces whole. On a resource without the annotation only
+  those list replacements remove anything.
   They only affect the composite resources and claims `xr simulate` takes as
   input, never composed resources; other runs ignore them with a warning.
 - `--eventual-state` shows the state after all reconciliation cycles complete.

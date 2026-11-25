@@ -93,7 +93,7 @@ func (a Applier) DescribeCandidates() string {
 // entry by kubectl-client-side-apply. That applier's manager name is not
 // otherwise recorded as such (Argo CD's client-side sync records an Update as
 // argocd-controller, say), and does not change what it removes; without the
-// annotation it removes nothing.
+// annotation it removes only what replacing the lists it changes drops.
 //
 // An imperative writer is a field manager, other than Crossplane's own,
 // kubectl-client-side-apply and those of subresources, with an Update entry on

@@ -361,6 +361,21 @@ func TestFallback(t *testing.T) {
 				changes: []FieldChange{{Path: "spec.rules[0].description", Actual: &Value{Value: "old"}}},
 			},
 		},
+		"ClientSideApplyWithoutAnnotationStillReplacesLists": {
+			// CreateThreeWayJSONMergePatch(nil, modified, current) here gives
+			// {"spec":{"rules":[{"port":80}]}}: with no original nothing is
+			// deleted, but the list live differs on is still replaced.
+			reason: "Client-side apply with no last-applied annotation removes no key, but still replaces a list live differs on, dropping its live-only fields.",
+			args: args{
+				desired: mr(map[string]any{"rules": []any{map[string]any{"port": int64(80)}}}),
+				live:    mr(map[string]any{"rules": []any{map[string]any{"port": int64(80), "description": "old"}}, "region": "eu-west-1"}),
+				applier: Applier{Mode: ApplyClientSide},
+			},
+			want: want{
+				action:  ActionUpdate,
+				changes: []FieldChange{{Path: "spec.rules[0].description", Actual: &Value{Value: "old"}}},
+			},
+		},
 		"ClientSideApplyKeepsUntrackedFieldBesideUnchangedList": {
 			reason: "With live's list equal to desired's there is no patch for it, and a live-only key the annotation lacks survives.",
 			args: args{

@@ -501,12 +501,30 @@ func (r *DefaultCompDiffRenderer) renderImpactAnalysis(comp *dt.CompositionDiff)
 			return errors.Wrap(err, "failed to render diffs")
 		}
 	} else {
-		if _, err := fmt.Fprint(stdout, "All composite resources are up-to-date. No downstream resource changes detected.\n\n"); err != nil {
+		// A composite that failed was not evaluated, so none can be called up-to-date.
+		msg := "All composite resources are up-to-date. No downstream resource changes detected.\n\n"
+		if failed := countErrored(comp.ImpactAnalysis); failed > 0 {
+			msg = fmt.Sprintf("No downstream resource changes detected, but %d XR(s) could not be evaluated.\n\n", failed)
+		}
+
+		if _, err := fmt.Fprint(stdout, msg); err != nil {
 			return errors.Wrap(err, "cannot write empty impact message")
 		}
 	}
 
 	return nil
+}
+
+// countErrored returns how many impacts are errors.
+func countErrored(impacts []dt.XRImpact) int {
+	n := 0
+	for _, i := range impacts {
+		if i.Status == dt.XRStatusError {
+			n++
+		}
+	}
+
+	return n
 }
 
 // totalFiltered sums the per-reason filter counters. Kept in one place so adding a reason cannot

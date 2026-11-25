@@ -917,3 +917,45 @@ func TestBuildXRStatusListSuppliedLabel(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderImpactAnalysisEmpty(t *testing.T) {
+	type want struct {
+		message string
+		absent  string
+	}
+	cases := map[string]struct {
+		reason  string
+		impacts []dt.XRImpact
+		want    want
+	}{
+		"AllUnchanged": {
+			reason:  "Composites evaluated with no diffs are up-to-date.",
+			impacts: []dt.XRImpact{{Status: dt.XRStatusUnchanged}},
+			want:    want{message: "All composite resources are up-to-date."},
+		},
+		"SomeErrored": {
+			reason:  "A composite that failed was not evaluated, so the composites are not called up-to-date.",
+			impacts: []dt.XRImpact{{Status: dt.XRStatusUnchanged}, {Status: dt.XRStatusError}},
+			want:    want{message: "No downstream resource changes detected, but 1 XR(s) could not be evaluated.", absent: "up-to-date"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			opts := DefaultDiffOptions()
+			opts.Stdout = &stdout
+			opts.Stderr = &bytes.Buffer{}
+			opts.UseColors = false
+			r := NewDefaultCompDiffRenderer(tu.TestLogger(t, false), NewDiffRenderer(tu.TestLogger(t, false), opts), opts)
+			if err := r.(*DefaultCompDiffRenderer).renderImpactAnalysis(&dt.CompositionDiff{ImpactAnalysis: tc.impacts}); err != nil {
+				t.Fatalf("\n%s\nrenderImpactAnalysis(...): unexpected error: %v", tc.reason, err)
+			}
+			if !strings.Contains(stdout.String(), tc.want.message) {
+				t.Errorf("\n%s\nrenderImpactAnalysis(...): missing %q, got:\n%s", tc.reason, tc.want.message, stdout.String())
+			}
+			if tc.want.absent != "" && strings.Contains(stdout.String(), tc.want.absent) {
+				t.Errorf("\n%s\nrenderImpactAnalysis(...): unexpected %q, got:\n%s", tc.reason, tc.want.absent, stdout.String())
+			}
+		})
+	}
+}

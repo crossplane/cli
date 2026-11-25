@@ -1763,21 +1763,13 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 	// ref, wins over the cluster for both fields, so the cluster read could not change the outcome.
 	source, resolved := xr, false
 	if liveSupplied {
-		open, err := leavesPinOpen(xr)
-		if err != nil {
-			return xrDisposition{}, errors.Wrapf(err, "cannot read compositionUpdatePolicy for XR %q", xr.GetName())
-		}
-
-		if open {
-			// Cluster I/O for this composite alone, so it runs under its own XRTimeout budget.
-			xrCtx, cancel := p.config.xrContext(ctx)
-			effective, err := p.effectiveComposite(xrCtx, xr, xrKind)
-			cancel()
-
-			if err != nil {
-				return xrDisposition{unresolved: err}, nil //nolint:nilerr // The composite's own error, not the run's.
-			}
-
+		effective, unresolved, err := p.openEffectiveComposite(ctx, xr, xrKind)
+		switch {
+		case err != nil:
+			return xrDisposition{}, err
+		case unresolved != nil:
+			return xrDisposition{unresolved: unresolved}, nil //nolint:nilerr // The composite's own error, not the run's.
+		case effective != nil:
 			source, resolved = effective, true
 		}
 	}
@@ -1868,6 +1860,28 @@ func backingRevision(claim, composite *un.Unstructured) (string, error) {
 	revision, err := xp.XRCompositionRevisionRef(composite.Object, composite.GetAPIVersion())
 
 	return revision, errors.Wrapf(err, "cannot read compositionRevisionRef of the backing XR of claim %q", claim.GetName())
+}
+
+// openEffectiveComposite returns the effective composite of the live supplied composite xr when its file
+// leaves the pin open (see leavesPinOpen), or nil when the file settles it. unresolved is that
+// composite's own resolve error; err is a malformed policy or ref.
+func (p *DefaultCompDiffProcessor) openEffectiveComposite(ctx context.Context, xr *un.Unstructured, xrKind string) (effective *un.Unstructured, unresolved, err error) {
+	open, err := leavesPinOpen(xr)
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "cannot read compositionUpdatePolicy for XR %q", xr.GetName())
+	}
+
+	if !open {
+		return nil, nil, nil
+	}
+
+	// Cluster I/O for this composite alone, so it runs under its own XRTimeout budget.
+	xrCtx, cancel := p.config.xrContext(ctx)
+	defer cancel()
+
+	effective, unresolved = p.effectiveComposite(xrCtx, xr, xrKind)
+
+	return effective, unresolved, nil
 }
 
 // effectiveComposite returns the effective composite of a live supplied composite: an XR's own, or a

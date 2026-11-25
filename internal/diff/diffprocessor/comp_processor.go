@@ -914,7 +914,8 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 		}
 	}
 
-	// Likewise a net-new root claim reaches the provider as its backing XR, so that XR is net-new too.
+	// Likewise a net-new root claim reaches the provider as its backing XR, and one with only a
+	// generateName under the name the render gives it, so those are net-new too.
 	netNew = p.withNetNewComposites(ctx, xrs, netNew, cliCompTargetKind)
 
 	// Composition provider that returns CLI composition for:
@@ -1016,13 +1017,14 @@ func (p *DefaultCompDiffProcessor) collectXRDiffs(ctx context.Context, xrs []*un
 }
 
 // withNetNewComposites returns netNew plus the key of the composite the render resolves the composition
-// for, for each net-new root of another kind than xrKind: a claim, rendered through its backing XR.
+// for, for each net-new root of another kind than xrKind, a claim, rendered through its backing XR, and
+// each with only a generateName, which the render names first.
 func (p *DefaultCompDiffProcessor) withNetNewComposites(ctx context.Context, xrs []*un.Unstructured, netNew map[dt.CompositeKey]bool, xrKind string) map[dt.CompositeKey]bool {
 	out := make(map[dt.CompositeKey]bool, len(netNew))
 	maps.Copy(out, netNew)
 
 	for _, xr := range xrs {
-		if !netNew[dt.CompositeKeyOf(xr)] || xr.GetKind() == xrKind {
+		if !netNew[dt.CompositeKeyOf(xr)] || (xr.GetKind() == xrKind && xr.GetName() != "") {
 			continue
 		}
 

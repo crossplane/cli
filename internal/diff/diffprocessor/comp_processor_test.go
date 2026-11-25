@@ -3773,6 +3773,23 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			},
 			want: want{rendered: []string{"/one", "/two"}, errored: []string{""}},
 		},
+		"NetNewGenerateNameManualPinnedGetsRevision": {
+			reason: "A net-new Manual composite with only a generateName and a revision ref adopts the predicted revision, though the render names it first.",
+			args: args{
+				find:     notFound,
+				supplied: map[string][]*un.Unstructured{"test-comp": {pinned(manual(xrB("", "file").WithGenerateName("x-").Build()))}},
+				// Like the real renderer, the composite is named before the provider is asked.
+				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					if u.GetName() != "" {
+						return u, nil
+					}
+					named := u.DeepCopy()
+					named.SetName(dt.SynthesizeGeneratedName(u.GetGenerateName()))
+					return named, nil
+				},
+			},
+			want: want{rendered: []string{"/file"}, revisions: map[string]string{"": predicted}},
+		},
 		"NetNewManualClaimGetsRevision": {
 			reason: "A supplied net-new Manual claim renders through its backing XR with the predicted revision, as it adopts it.",
 			args: args{

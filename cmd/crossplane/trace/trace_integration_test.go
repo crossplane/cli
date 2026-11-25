@@ -20,6 +20,7 @@ package trace
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -296,7 +297,7 @@ func runTrace(t *testing.T, args []string) (string, error) {
 	var stdout bytes.Buffer
 	kongCtx.Stdout = &stdout
 
-	err = c.Run(kongCtx, logging.NewNopLogger())
+	err = c.Run(t.Context(), kongCtx, logging.NewNopLogger())
 
 	return stdout.String(), err
 }
@@ -628,24 +629,29 @@ func TestTraceWatchIntegration(t *testing.T) {
 			kongCtx.Stdout = stdout
 			c.Hooks = &Hooks{Headless: true}
 
+			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan error, 1)
-			go func() { done <- c.Run(kongCtx, logging.NewNopLogger()) }()
+			go func() { done <- c.Run(ctx, kongCtx, logging.NewNopLogger()) }()
 
-			// Run can't be cancelled, so deleting the XR is what ends the watch if the case failed before it did.
+			// Cancelling ends the watch if the case failed before it did. The XR is deleted too, so it can't
+			// show up in another case.
 			exited := false
 			t.Cleanup(func() {
-				if exited {
-					return
-				}
+				cancel()
 
+				// The subtest's t.Context() is done once cleanup runs; the cluster's is the parent test's.
 				if err := cluster.Client.Delete(cluster.Context, xr.DeepCopy()); client.IgnoreNotFound(err) != nil {
 					t.Errorf("cannot delete the XR: %v", err)
+				}
+
+				if exited {
+					return
 				}
 
 				select {
 				case <-done:
 				case <-time.After(30 * time.Second):
-					t.Errorf("watch didn't end after the XR was deleted")
+					t.Errorf("watch didn't end after its context was cancelled")
 				}
 			})
 

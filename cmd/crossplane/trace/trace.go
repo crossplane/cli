@@ -152,8 +152,7 @@ func (c *Cmd) setupKubeClient(logger logging.Logger) (clientcmd.ClientConfig, cl
 }
 
 // Run runs the trace command.
-func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
-	ctx := context.Background()
+func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger) error {
 	logger = logger.WithValues("Resource", c.Resource, "Name", c.Name)
 
 	// Init new printer

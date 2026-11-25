@@ -3651,6 +3651,22 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			},
 			want: want{rendered: []string{"other/cluster", "claim/file"}},
 		},
+		"SuppliedClaimMovedDropsBoundXRUnderOldComposition": {
+			reason: "A supplied claim assigned to another Composition renders once there: its backing XR, bound by spec.claimRef and discovered under the old Composition, is not rendered too.",
+			args: args{
+				find: func(_ context.Context, c *un.Unstructured, _ types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					if c.GetName() != "test-comp" {
+						return nil, nil
+					}
+					bound := xr("backing", "cluster")
+					_ = un.SetNestedStringMap(bound.Object, map[string]string{"apiVersion": "example.org/v1", "kind": "Claim", "namespace": "ns", "name": "claim"}, "spec", "claimRef")
+					return []*un.Unstructured{bound, xr("other", "cluster")}, nil
+				},
+				supplied: map[string][]*un.Unstructured{"other-comp": {claim()}},
+				comps:    []*un.Unstructured{comp, other},
+			},
+			want: want{rendered: []string{"other/cluster", "claim/file"}},
+		},
 		"UnionWithScopedRefs": {
 			reason: "Supplied composites are added to the --resource scoped set.",
 			args: args{

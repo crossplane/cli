@@ -27,7 +27,10 @@ current context's namespace, as `kubectl apply` would.
 Each one is rendered with the Composition Crossplane would select for it: its
 XRD's `enforcedCompositionRef`, then its `compositionRef`, its
 `compositionSelector`, its XRD's `defaultCompositionRef`, then the only
-Composition of its type.
+Composition of its type. A `compositionSelector` with no labels skips the
+`defaultCompositionRef`, as in Crossplane; Crossplane then picks any Composition
+of the type at random, so the simulation needs it to be the only one.
+
 Functions come from the cluster. `--cache-dir` sets where provider package
 contents are cached.
 

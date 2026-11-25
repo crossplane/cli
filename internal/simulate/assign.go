@@ -150,8 +150,8 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 			}
 		}
 		fix := "correct its compositionRef"
-		if strings.HasPrefix(field, "XRD ") {
-			fix = "correct the XRD's " + strings.TrimPrefix(field, "XRD ")
+		if xrdField, ok := strings.CutPrefix(field, "XRD "); ok {
+			fix = "correct the XRD's " + xrdField
 		}
 		if len(typed) > 0 {
 			fix += " to one of " + strings.Join(names(typed), ", ")

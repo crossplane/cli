@@ -3676,6 +3676,32 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			},
 			want: want{rendered: []string{"a/file"}, healthy: []string{"a"}},
 		},
+		"SkippedUnresolvedSuppliedClaimErrors": {
+			reason: "Under a skipped analysis, a supplied live Manual claim whose pin cannot be read reports that error, as a discovered one does, rather than rendering when a later resolve succeeds.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return nil, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {manual(tu.NewResource("example.org/v1", "Claim", "claim").
+					InNamespace("ns").
+					WithSpecField("marker", "file").
+					Build())}},
+				cluster:          []*apiextensionsv1.Composition{newComp("test-comp").Build()},
+				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) { return u, nil },
+				// The first resolve, the pin lookup, fails transiently; later ones succeed.
+				resolve: func() func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+					calls := 0
+					return func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+						calls++
+						if calls == 1 {
+							return nil, errors.New("timeout")
+						}
+						return u, nil
+					}
+				}(),
+			},
+			want: want{rendered: nil, skipped: map[string]bool{"test-comp": true}, errored: []string{"claim"}},
+		},
 		"ReplacingManualSuppliedDeferred": {
 			reason: "A supplied Manual composite pinned to a revision that replaces a live one stays pinned, so it is deferred as today.",
 			args: args{

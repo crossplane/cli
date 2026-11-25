@@ -609,7 +609,9 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	if analysisScope.triggersAnalysis(p.config.AnalyzeOn) {
 		keptXRs, droppedXRs = pinnedKept, pinnedDropped
 	} else {
-		pinnedXRs = nil
+		// Only the unresolved entries stay: the skip keeps just supplied composites (see below), so each
+		// supplied claim whose pin could not be read reports that error, as it does when the analysis runs.
+		pinnedXRs = maps.Clone(unresolvedXRs) // Cloned: it is pruned below, and unresolvedXRs is read after.
 	}
 
 	// A claim renders through its backing XR, so the claim's entry carries the XR's changes. When both

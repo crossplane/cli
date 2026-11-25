@@ -593,6 +593,17 @@ func (c *ProcessorConfig) afterXR(ctx, xrCtx context.Context, diffs map[string]*
 	return err
 }
 
+// timedOut returns err, from cluster I/O for one composite under xrCtx, a child of ctx, as a timeout
+// matching ErrXRTimedOut when the composite ran out of XRTimeout, as afterXR names a render's: a
+// cancelled read alone says only "context canceled".
+func (c *ProcessorConfig) timedOut(ctx, xrCtx context.Context, err error) error {
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(xrCtx), ErrXRTimedOut) {
+		return errors.Errorf("%w after %s: %w", ErrXRTimedOut, c.XRTimeout, err)
+	}
+
+	return err
+}
+
 // GetCompareOptions returns the compare.Options based on the ProcessorConfig.
 func (c *ProcessorConfig) GetCompareOptions() compare.Options {
 	return compare.Options{IgnorePaths: c.IgnorePaths}

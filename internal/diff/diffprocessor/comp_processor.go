@@ -472,6 +472,7 @@ func (p *DefaultCompDiffProcessor) suppliedLiveness(ctx context.Context, resolve
 			// Cluster I/O for this composite alone, so it runs under its own XRTimeout budget.
 			xrCtx, cancel := p.config.xrContext(ctx)
 			cluster, err := p.xrProc.ClusterComposite(xrCtx, u)
+			err = p.config.timedOut(ctx, xrCtx, err)
 			cancel()
 
 			switch {
@@ -1905,6 +1906,7 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 			// own XRTimeout budget: a slow read fails this composite, not the run.
 			xrCtx, cancel := p.config.xrContext(ctx)
 			revision, err = p.pinnedRevision(xrCtx, xr)
+			err = p.config.timedOut(ctx, xrCtx, err)
 			cancel()
 
 			if err != nil {
@@ -2004,6 +2006,7 @@ func (p *DefaultCompDiffProcessor) openEffectiveComposite(ctx context.Context, x
 	defer cancel()
 
 	effective, unresolved = p.effectiveComposite(xrCtx, xr, xrKind)
+	unresolved = p.config.timedOut(ctx, xrCtx, unresolved)
 
 	return effective, unresolved, nil
 }

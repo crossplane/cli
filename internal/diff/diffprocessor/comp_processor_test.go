@@ -4213,3 +4213,58 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		})
 	}
 }
+
+func TestDefaultCompDiffProcessor_SuppliedLiveness_Timeout(t *testing.T) {
+	errForbidden := errors.New("forbidden")
+	slow := func(ctx context.Context, _ *un.Unstructured) (*un.Unstructured, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(5 * time.Second):
+			return nil, nil
+		}
+	}
+
+	type args struct {
+		clusterComposite func(context.Context, *un.Unstructured) (*un.Unstructured, error)
+	}
+
+	type want struct {
+		err error // matched with errors.Is
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"BudgetExpiredIsTimeout": {
+			reason: "A lookup the XRTimeout budget cancels reports a timeout, not only a cancellation.",
+			args:   args{clusterComposite: slow},
+			want:   want{err: ErrXRTimedOut},
+		},
+		"OtherErrorKept": {
+			reason: "A lookup that fails before the budget runs out keeps its own error.",
+			args: args{clusterComposite: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+				return nil, errForbidden
+			}},
+			want: want{err: errForbidden},
+		},
+	}
+
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := tu.NewResource("example.org/v1", "XR", "a").InNamespace("ns").Build()
+
+			proc := newCompProcessorForTest(t, tu.NewMockCompositionClient().Build(), false)
+			WithSuppliedComposites(map[string][]*un.Unstructured{"test-comp": {a}})(&proc.config)
+			proc.config.XRTimeout = 50 * time.Millisecond
+			proc.xrProc = &tu.MockDiffProcessor{ClusterCompositeFn: tt.args.clusterComposite}
+
+			got := proc.suppliedLiveness(t.Context(), nil)[dt.CompositeKeyOf(a)].err
+			if !errors.Is(got, tt.want.err) {
+				t.Errorf("\n%s\nsuppliedLiveness(...): want error %v, got %v", tt.reason, tt.want.err, got)
+			}
+		})
+	}
+}

@@ -251,6 +251,62 @@ func TestDefaultCompositionClient_FindMatchingComposition(t *testing.T) {
 				err: errors.Errorf("composition non-existent-comp referenced in example.org/v1, Kind=XR1/my-xr not found"),
 			},
 		},
+		"MalformedCompositionRef": {
+			reason: "Should fail, naming the field, on a compositionRef name that is not a string",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithEmptyListResources().
+				Build(),
+			mockDef: *tu.NewMockDefinitionClient().
+				WithSuccessfulInitialize().
+				WithV1XRDForXR().
+				Build(),
+			fields: fields{
+				compositions: map[string]*apiextensionsv1.Composition{
+					"existing-comp": matchingComp,
+				},
+			},
+			args: args{
+				ctx: t.Context(),
+				res: func() *un.Unstructured {
+					xr := tu.NewResource("example.org/v1", "XR1", "my-xr").Build()
+					_ = un.SetNestedField(xr.Object, int64(3), "spec", "compositionRef", "name")
+
+					return xr
+				}(),
+			},
+			want: want{
+				err: errors.New(`cannot read compositionRef for example.org/v1, Kind=XR1/my-xr: field "compositionRef.name" is not a string: .spec.compositionRef.name accessor error: 3 is of the type int64, expected string`),
+			},
+		},
+		"MalformedSelectorLabel": {
+			reason: "Should fail, naming the field, on a compositionSelector label that is not a string",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithEmptyListResources().
+				Build(),
+			mockDef: *tu.NewMockDefinitionClient().
+				WithSuccessfulInitialize().
+				WithV1XRDForXR().
+				Build(),
+			fields: fields{
+				compositions: map[string]*apiextensionsv1.Composition{
+					"existing-comp": matchingComp,
+				},
+			},
+			args: args{
+				ctx: t.Context(),
+				res: func() *un.Unstructured {
+					xr := tu.NewResource("example.org/v1", "XR1", "my-xr").Build()
+					_ = un.SetNestedField(xr.Object, int64(3), "spec", "compositionSelector", "matchLabels", "tier")
+
+					return xr
+				}(),
+			},
+			want: want{
+				err: errors.New(`cannot read compositionSelector for example.org/v1, Kind=XR1/my-xr: field "compositionSelector.matchLabels" is not an object: .spec.compositionSelector.matchLabels accessor error: contains non-string value in the map under key "tier": 3 is of the type int64, expected string`),
+			},
+		},
 		"EnforcedCompositionRef": {
 			reason: "Should return the XRD's enforcedCompositionRef over the resource's compositionRef",
 			mockResource: *tu.NewMockResourceClient().

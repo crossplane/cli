@@ -32,6 +32,20 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 )
 
+// writeFiles writes the given files (path relative to dir: content) to dir.
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for p, content := range files {
+		full := filepath.Join(dir, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // newTemplateRepo commits the given files to a new Git repository and returns
 // its path.
 func newTemplateRepo(t *testing.T, files map[string]string) string {

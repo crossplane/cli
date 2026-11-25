@@ -36,47 +36,16 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 )
 
-// The batch backend concatenates the rendered template and the CRD files with no
-// separator, so the template must end its own YAML document.
-const testProviderMetaTmpl = `apiVersion: meta.pkg.crossplane.io/v1
-kind: Provider
-metadata:
-  name: {{ .Name }}
----
-`
-
-func testCRDYAML(group string) string {
-	return fmt.Sprintf(`apiVersion: apiextensions.k8s.io/v1
-kind: CustomResourceDefinition
-metadata:
-  name: things.%[1]s
-spec:
-  group: %[1]s
-  names:
-    kind: Thing
-    plural: things
-  scope: Cluster
-  versions:
-  - name: v1
-    served: true
-    storage: true
-    schema:
-      openAPIV3Schema:
-        type: object
-`, group)
-}
-
-// newBatchFixture lays out a family provider source tree in a temp dir: a
-// metadata template, CRDs for the ec2 and s3 services, and provider binaries
-// for each platform. It returns a batchCmd rooted there.
+// newBatchFixture copies the family provider source tree in
+// testdata/batch/provider to a temp dir: a metadata template and CRDs for the
+// ec2 and s3 services. It adds an ec2 provider binary for each platform. It returns a batchCmd rooted there.
 func newBatchFixture(t *testing.T, platforms []string, urlFormat string) *batchCmd {
 	t.Helper()
 	root := t.TempDir()
-	files := map[string]string{
-		"package/crossplane.yaml.tmpl":             testProviderMetaTmpl,
-		"package/crds/ec2.example.org_things.yaml": testCRDYAML("ec2.example.org"),
-		"package/crds/s3.example.org_things.yaml":  testCRDYAML("s3.example.org"),
+	if err := os.CopyFS(root, os.DirFS("testdata/batch/provider")); err != nil {
+		t.Fatal(err)
 	}
+	files := map[string]string{}
 	for _, p := range platforms {
 		files[filepath.Join("bin", p, "ec2")] = "ec2-binary-" + p
 	}
@@ -248,7 +217,11 @@ func TestBatchProcessServiceErrors(t *testing.T) {
 			service: "ec2",
 			mutate: func(t *testing.T, c *batchCmd) {
 				t.Helper()
-				if err := os.WriteFile(c.PackageMetadataTemplate, []byte(testConfigurationMeta), 0o600); err != nil {
+				meta, err := os.ReadFile("testdata/package/configuration/crossplane.yaml")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(c.PackageMetadataTemplate, meta, 0o600); err != nil {
 					t.Fatal(err)
 				}
 			},

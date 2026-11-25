@@ -267,13 +267,12 @@ func TestPushCmdRun(t *testing.T) {
 				// The project file points elsewhere; the flag must win.
 				projRepo = "xpkg.example.org/wrong/repo"
 			}
-			if err := os.WriteFile(filepath.Join(dir, "crossplane-project.yaml"), fmt.Appendf(nil, `apiVersion: dev.crossplane.io/v1alpha1
-kind: Project
-metadata:
-  name: demo
-spec:
-  repository: %s
-`, projRepo), 0o600); err != nil {
+			proj, err := os.ReadFile("testdata/push/crossplane-project.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			proj = []byte(strings.ReplaceAll(string(proj), "REPO", projRepo))
+			if err := os.WriteFile(filepath.Join(dir, "crossplane-project.yaml"), proj, 0o600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -315,7 +314,7 @@ spec:
 				t.Fatal(err)
 			}
 
-			err := c.Run(t.Context(), logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
+			err = c.Run(t.Context(), logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
 			if tc.want.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
 					t.Fatalf("\n%s\nRun(...): want error containing %q, got %v", tc.reason, tc.want.err, err)

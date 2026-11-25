@@ -35,50 +35,6 @@ import (
 	"github.com/crossplane/cli/v2/internal/terminal"
 )
 
-const testConfigurationMeta = `apiVersion: meta.pkg.crossplane.io/v1
-kind: Configuration
-metadata:
-  name: test-config
-`
-
-const testXRD = `apiVersion: apiextensions.crossplane.io/v1
-kind: CompositeResourceDefinition
-metadata:
-  name: xwidgets.example.org
-spec:
-  group: example.org
-  names:
-    kind: XWidget
-    plural: xwidgets
-  versions:
-  - name: v1
-    served: true
-    referenceable: true
-    schema:
-      openAPIV3Schema:
-        type: object
-`
-
-const testExample = `apiVersion: example.org/v1
-kind: XWidget
-metadata:
-  name: example
-`
-
-// writeFiles writes the given files (path relative to dir: content) to dir.
-func writeFiles(t *testing.T, dir string, files map[string]string) {
-	t.Helper()
-	for p, content := range files {
-		full := filepath.Join(dir, p)
-		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
 // packageContents returns the file names in the image's flattened filesystem
 // and the content of its package.yaml.
 func packageContents(t *testing.T, path string) ([]string, string) {
@@ -115,7 +71,10 @@ func packageContents(t *testing.T, path string) ([]string, string) {
 
 func TestBuildCmdRun(t *testing.T) {
 	type args struct {
-		files       map[string]string
+		// fixture is the testdata tree copied into the package root.
+		fixture string
+		// remove lists paths deleted from the copied fixture.
+		remove      []string
 		packageFile string
 		ignore      []string
 	}
@@ -134,12 +93,7 @@ func TestBuildCmdRun(t *testing.T) {
 	}{
 		"DefaultOutputName": {
 			reason: "A package should be written to <root>/<name>-<digest>.xpkg with its resources and examples.",
-			args: args{files: map[string]string{
-				"crossplane.yaml":      testConfigurationMeta,
-				"apis/xrd.yaml":        testXRD,
-				"examples/widget.yaml": testExample,
-				"README.md":            "not yaml, skipped",
-			}},
+			args:   args{fixture: "testdata/package/configuration"},
 			want: want{
 				output: "test-config-",
 				files:  []string{xpkg.XpkgExamplesFile, xpkg.StreamFile},
@@ -149,10 +103,8 @@ func TestBuildCmdRun(t *testing.T) {
 		"ExplicitOutputAndIgnore": {
 			reason: "--package-file should set the output path, and --ignore should drop matching files from the package.",
 			args: args{
-				files: map[string]string{
-					"crossplane.yaml": testConfigurationMeta,
-					"apis/xrd.yaml":   testXRD,
-				},
+				fixture:     "testdata/package/configuration",
+				remove:      []string{"examples"},
 				packageFile: "out.xpkg",
 				ignore:      []string{"apis/xrd.yaml"},
 			},
@@ -163,23 +115,28 @@ func TestBuildCmdRun(t *testing.T) {
 		},
 		"MissingMetadata": {
 			reason: "A package root without crossplane.yaml should fail to build.",
-			args:   args{files: map[string]string{"apis/xrd.yaml": testXRD}},
+			args:   args{fixture: "testdata/package/configuration", remove: []string{"crossplane.yaml"}},
 			want:   want{err: errBuildPackage + ": not exactly one package meta type"},
 		},
 		"InvalidResource": {
 			reason: "A configuration containing a CRD should fail the configuration linter.",
-			args: args{files: map[string]string{
-				"crossplane.yaml": testConfigurationMeta,
-				"crd.yaml":        testCRDYAML("example.org"),
-			}},
-			want: want{err: errBuildPackage + ": failed to lint package"},
+			args:   args{fixture: "testdata/package/invalid-configuration"},
+			want:   want{err: errBuildPackage + ": failed to lint package"},
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
-			writeFiles(t, root, tc.args.files)
+			if err := os.CopyFS(root, os.DirFS(tc.args.fixture)); err != nil {
+				t.Fatal(err)
+			}
+			// Some cases build from part of the fixture.
+			for _, p := range tc.args.remove {
+				if err := os.RemoveAll(filepath.Join(root, p)); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			c := &buildCmd{
 				PackageRoot:  root,
@@ -225,7 +182,14 @@ func TestBuildCmdRun(t *testing.T) {
 
 func TestBuildCmdRuntimeImageTarball(t *testing.T) {
 	root := t.TempDir()
-	writeFiles(t, root, map[string]string{"crossplane.yaml": testConfigurationMeta})
+	// Only the metadata: examples would add a layer.
+	meta, err := os.ReadFile("testdata/package/configuration/crossplane.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "crossplane.yaml"), meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	base := testBaseImage(t, "linux", "arm64")
 	baseLayers, err := base.Layers()

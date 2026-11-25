@@ -3509,13 +3509,25 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 	comp := newComp("test-comp").BuildAsUnstructured()
 	other := newComp("other-comp").BuildAsUnstructured()
 
-	xr := func(name, marker string) *un.Unstructured {
+	xrB := func(name, marker string) *tu.ResourceBuilder {
 		return tu.NewResource("example.org/v1", "XR", name).
 			InNamespace("ns").
 			WithSpecField("compositionRef", map[string]any{"name": "test-comp"}).
-			WithSpecField("marker", marker).
-			Build()
+			WithSpecField("marker", marker)
 	}
+	xr := func(name, marker string) *un.Unstructured { return xrB(name, marker).Build() }
+	claim := func() *un.Unstructured {
+		return tu.NewResource("example.org/v1", "Claim", "claim").InNamespace("ns").WithSpecField("marker", "file").Build()
+	}
+	// found discovers the given composites under every Composition.
+	found := func(xrs ...*un.Unstructured) func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+		return func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+			return xrs, nil
+		}
+	}
+	// self returns the composite itself, as the cluster's copy or the effective composite.
+	self := func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) { return u, nil }
+
 	manual := func(u *un.Unstructured) *un.Unstructured {
 		_ = un.SetNestedField(u.Object, "Manual", "spec", "crossplane", "compositionUpdatePolicy")
 		return u
@@ -3583,9 +3595,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"NoneSuppliedUnchanged": {
 			reason: "Without supplied composites only the discovered ones render.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{xr("live", "cluster")}, nil
-				},
+				find: found(xr("live", "cluster")),
 			},
 			want: want{rendered: []string{"live/cluster"}},
 		},
@@ -3608,9 +3618,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"DedupeAgainstDiscoveredKeepsSupplied": {
 			reason: "A supplied composite with a discovered one's identity replaces it and renders once.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{xr("a", "cluster"), xr("b", "cluster")}, nil
-				},
+				find:     found(xr("a", "cluster"), xr("b", "cluster")),
 				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file"), xr("c", "file")}},
 			},
 			want: want{rendered: []string{"a/file", "b/cluster", "c/file"}},
@@ -3623,19 +3631,14 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 					_ = un.SetNestedStringMap(bound.Object, map[string]string{"apiVersion": "example.org/v1", "kind": "Claim", "namespace": "ns", "name": "claim"}, "spec", "claimRef")
 					return []*un.Unstructured{bound, xr("other", "cluster")}, nil
 				},
-				supplied: map[string][]*un.Unstructured{"test-comp": {tu.NewResource("example.org/v1", "Claim", "claim").
-					InNamespace("ns").
-					WithSpecField("marker", "file").
-					Build()}},
+				supplied: map[string][]*un.Unstructured{"test-comp": {claim()}},
 			},
 			want: want{rendered: []string{"other/cluster", "claim/file"}},
 		},
 		"UnionWithScopedRefs": {
 			reason: "Supplied composites are added to the --resource scoped set.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{xr("scoped", "cluster")}, nil
-				},
+				find:      found(xr("scoped", "cluster")),
 				resources: []k8stypes.NamespacedName{{Namespace: "ns", Name: "scoped"}},
 				supplied:  map[string][]*un.Unstructured{"test-comp": {xr("new", "file")}},
 			},
@@ -3652,9 +3655,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"ReplacingSuppliedRepoints": {
 			reason: "A supplied composite that replaces a live one re-points, and is marked Supplied.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{xr("a", "cluster")}, nil
-				},
+				find:     found(xr("a", "cluster")),
 				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file"), xr("c", "file")}},
 			},
 			want: want{rendered: []string{"a/file", "c/file"}, repointed: map[string]int{"test-comp": 1}, supplied: map[string][]string{"test-comp": {"a", "c"}}},
@@ -3662,9 +3663,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"UnchangedCompositionRendersSupplied": {
 			reason: "A Composition identical to the cluster's skips its discovered composites but still renders a supplied one.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{xr("live", "cluster")}, nil
-				},
+				find:     found(xr("live", "cluster")),
 				supplied: map[string][]*un.Unstructured{"test-comp": {xr("new", "file")}},
 				cluster:  []*apiextensionsv1.Composition{newComp("test-comp").Build()},
 			},
@@ -3695,9 +3694,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"ScopedOutLiveManualDeferred": {
 			reason: "A live Manual composite pinned to a revision that --resource leaves out is still live, so its supplied counterpart stays pinned and is deferred.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{xr("db", "cluster")}, nil
-				},
+				find:      found(xr("db", "cluster")),
 				resources: []k8stypes.NamespacedName{{Namespace: "ns", Name: "db"}},
 				supplied:  map[string][]*un.Unstructured{"test-comp": {manual(xr("a", "file"))}},
 				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
@@ -3716,15 +3713,9 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"OtherNamespaceLiveRepoints": {
 			reason: "A live composite in a namespace discovery did not list re-points, since the cluster has it.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return nil, nil
-				},
-				supplied: map[string][]*un.Unstructured{"test-comp": {func() *un.Unstructured {
-					u := xr("b", "file")
-					u.SetNamespace("team-b")
-					return u
-				}()}},
-				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) { return u, nil },
+				find:             found(),
+				supplied:         map[string][]*un.Unstructured{"test-comp": {xrB("b", "file").InNamespace("team-b").Build()}},
+				clusterComposite: self,
 			},
 			want: want{rendered: []string{"b/file"}, repointed: map[string]int{"test-comp": 1}, supplied: map[string][]string{"test-comp": {"b"}}},
 		},
@@ -3744,8 +3735,8 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			args: args{
 				find: notFound,
 				supplied: map[string][]*un.Unstructured{"test-comp": {
-					func() *un.Unstructured { u := xr("", "one"); u.SetGenerateName("x-"); return u }(),
-					func() *un.Unstructured { u := xr("", "two"); u.SetGenerateName("x-"); return u }(),
+					xrB("", "one").WithGenerateName("x-").Build(),
+					xrB("", "two").WithGenerateName("x-").Build(),
 				}},
 				clusterComposite: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
 					return nil, errors.New("unexpected lookup")
@@ -3756,11 +3747,8 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"NetNewManualClaimGetsRevision": {
 			reason: "A supplied net-new Manual claim renders through its backing XR with the predicted revision, as it adopts it.",
 			args: args{
-				find: notFound,
-				supplied: map[string][]*un.Unstructured{"test-comp": {manual(tu.NewResource("example.org/v1", "Claim", "claim").
-					InNamespace("ns").
-					WithSpecField("marker", "file").
-					Build())}},
+				find:     notFound,
+				supplied: map[string][]*un.Unstructured{"test-comp": {manual(claim())}},
 				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
 					if u.GetKind() != "Claim" {
 						return u, nil
@@ -3773,9 +3761,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"ReplacingSuppliedKeepsLiveHealth": {
 			reason: "A supplied composite that replaces a live one carries the live health its render read.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{xr("a", "cluster")}, nil
-				},
+				find:     found(xr("a", "cluster")),
 				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file")}},
 			},
 			want: want{rendered: []string{"a/file"}, healthy: []string{"a"}},
@@ -3783,35 +3769,19 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"SkippedUnresolvedSuppliedClaimErrors": {
 			reason: "Under a skipped analysis, a supplied live Manual claim whose pin cannot be read reports that error, as a discovered one does, rather than rendering when a later resolve succeeds.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return nil, nil
-				},
-				supplied: map[string][]*un.Unstructured{"test-comp": {manual(tu.NewResource("example.org/v1", "Claim", "claim").
-					InNamespace("ns").
-					WithSpecField("marker", "file").
-					Build())}},
+				find:             found(),
+				supplied:         map[string][]*un.Unstructured{"test-comp": {manual(claim())}},
 				cluster:          []*apiextensionsv1.Composition{newComp("test-comp").Build()},
-				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) { return u, nil },
+				clusterComposite: self,
 				// The first resolve, the pin lookup, fails transiently; later ones succeed.
-				resolve: func() func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
-					calls := 0
-					return func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
-						calls++
-						if calls == 1 {
-							return nil, errors.New("timeout")
-						}
-						return u, nil
-					}
-				}(),
+				resolve: failFirstResolve(),
 			},
 			want: want{rendered: nil, skipped: map[string]bool{"test-comp": true}, errored: []string{"claim"}},
 		},
 		"ReplacingSuppliedOmittingPolicyOverLiveManualDeferred": {
 			reason: "A supplied composite naming no update policy over a live Manual pinned one inherits Manual and the pin, as render does, so it is deferred.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{pinned(manual(xr("a", "cluster")))}, nil
-				},
+				find:     found(pinned(manual(xr("a", "cluster")))),
 				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file")}},
 				// The effective composite inherits the cluster's policy and ref, which the file does not name.
 				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
@@ -3823,14 +3793,8 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"ReplacingAutomaticSuppliedOverLiveManualRepoints": {
 			reason: "A supplied composite setting Automatic over a live Manual pinned one keeps its own policy, as render does, so it re-points.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{pinned(manual(xr("a", "cluster")))}, nil
-				},
-				supplied: map[string][]*un.Unstructured{"test-comp": {func() *un.Unstructured {
-					u := xr("a", "file")
-					_ = un.SetNestedField(u.Object, "Automatic", "spec", "crossplane", "compositionUpdatePolicy")
-					return u
-				}()}},
+				find:     found(pinned(manual(xr("a", "cluster")))),
+				supplied: map[string][]*un.Unstructured{"test-comp": {xrB("a", "file").WithNestedField("Automatic", "spec", "crossplane", "compositionUpdatePolicy").Build()}},
 				// The file's policy wins; only the ref, which it does not name, is inherited.
 				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
 					return pinned(u.DeepCopy()), nil
@@ -3841,14 +3805,8 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"ReplacingSuppliedSelectorOverLiveManualUnpinnedRepoints": {
 			reason: "A supplied composite naming no policy, with a selector rejecting the new revision, over a live Manual one naming no ref is Manual, so the selector is ignored, as render does, and it re-points.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{manual(xr("a", "cluster"))}, nil
-				},
-				supplied: map[string][]*un.Unstructured{"test-comp": {func() *un.Unstructured {
-					u := xr("a", "file")
-					_ = un.SetNestedStringMap(u.Object, map[string]string{"version": "never"}, "spec", "crossplane", "compositionRevisionSelector", "matchLabels")
-					return u
-				}()}},
+				find:     found(manual(xr("a", "cluster"))),
+				supplied: map[string][]*un.Unstructured{"test-comp": {xrB("a", "file").WithCompositionRevisionSelector(xp.CrossplaneAPIExtGroupV2, map[string]string{"version": "never"}, nil).Build()}},
 				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
 					return manual(u.DeepCopy()), nil
 				},
@@ -3858,14 +3816,9 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"ReplacingSuppliedClaimOmittingPolicyOverManualPinnedBackingXRDeferred": {
 			reason: "A supplied claim naming no policy whose backing XR is Manual and pinned inherits both, as render does, so it is deferred.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return nil, nil
-				},
-				supplied: map[string][]*un.Unstructured{"test-comp": {tu.NewResource("example.org/v1", "Claim", "claim").
-					InNamespace("ns").
-					WithSpecField("marker", "file").
-					Build()}},
-				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) { return u, nil },
+				find:             found(),
+				supplied:         map[string][]*un.Unstructured{"test-comp": {claim()}},
+				clusterComposite: self,
 				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
 					if u.GetKind() != "Claim" {
 						return u, nil
@@ -3878,9 +3831,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"UnresolvedSuppliedXRErrors": {
 			reason: "A live supplied XR naming no policy whose effective composite cannot be resolved reports that error, is not rendered, and is not counted as re-pointing.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{xr("a", "cluster")}, nil
-				},
+				find:     found(xr("a", "cluster")),
 				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file")}},
 				resolve:  failFirstResolve(),
 			},
@@ -3889,12 +3840,10 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"SkippedUnresolvedSuppliedXRErrors": {
 			reason: "Under a skipped analysis, a live supplied XR whose effective composite cannot be resolved reports that error rather than rendering when a later resolve succeeds.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return nil, nil
-				},
+				find:             found(),
 				supplied:         map[string][]*un.Unstructured{"test-comp": {xr("a", "file")}},
 				cluster:          []*apiextensionsv1.Composition{newComp("test-comp").Build()},
-				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) { return u, nil },
+				clusterComposite: self,
 				resolve:          failFirstResolve(),
 			},
 			want: want{rendered: nil, skipped: map[string]bool{"test-comp": true}, errored: []string{"a"}},
@@ -3902,9 +3851,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		"ReplacingManualSuppliedDeferred": {
 			reason: "A supplied Manual composite pinned to a revision that replaces a live one stays pinned, so it is deferred as today.",
 			args: args{
-				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{pinned(manual(xr("a", "cluster")))}, nil
-				},
+				find:     found(pinned(manual(xr("a", "cluster")))),
 				supplied: map[string][]*un.Unstructured{"test-comp": {manual(xr("a", "file"))}},
 				// The effective composite inherits the cluster's ref, which the file does not name.
 				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
@@ -3919,8 +3866,8 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		t.Run(name, func(t *testing.T) {
 			client := tu.NewMockCompositionClient().
 				WithSuccessfulCompositionFetches(tt.args.cluster).
+				WithFindComposites(tt.args.find).
 				Build()
-			client.FindCompositesFn = tt.args.find
 
 			comps := tt.args.comps
 			if len(comps) == 0 {
@@ -3935,7 +3882,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			revisions := map[string]string{}
 			resolve := tt.args.resolve
 			if resolve == nil {
-				resolve = func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) { return u, nil }
+				resolve = self
 			}
 
 			proc.xrProc = &tu.MockDiffProcessor{

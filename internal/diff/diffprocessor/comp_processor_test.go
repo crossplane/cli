@@ -32,6 +32,7 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -3856,6 +3857,31 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 				resolve:          failFirstResolve(),
 			},
 			want: want{rendered: nil, skipped: map[string]bool{"test-comp": true}, errored: []string{"a"}},
+		},
+		"ReplacingSuppliedOverDeletingLiveDropped": {
+			reason: "A supplied composite replacing a live one being deleted is on the deletion path, so it is dropped, not rendered.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					live := xr("a", "cluster")
+					live.SetDeletionTimestamp(&metav1.Time{Time: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)})
+					return []*un.Unstructured{live}, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file")}},
+			},
+			want: want{rendered: nil, repointed: map[string]int{"test-comp": 0}, supplied: map[string][]string{"test-comp": {"a"}}},
+		},
+		"ScopedOutDeletingLiveDropped": {
+			reason: "A supplied composite whose live copy, outside discovery, is being deleted is dropped too.",
+			args: args{
+				find:     found(),
+				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file")}},
+				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					live := xr(u.GetName(), "cluster")
+					live.SetDeletionTimestamp(&metav1.Time{Time: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)})
+					return live, nil
+				},
+			},
+			want: want{rendered: nil, repointed: map[string]int{"test-comp": 0}, supplied: map[string][]string{"test-comp": {"a"}}},
 		},
 		"ReplacingManualSuppliedDeferred": {
 			reason: "A supplied Manual composite pinned to a revision that replaces a live one stays pinned, so it is deferred as today.",

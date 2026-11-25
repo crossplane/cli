@@ -365,10 +365,11 @@ func outputErrorsJoined(errs []dt.OutputError) error {
 }
 
 // suppliedState is whether a supplied composite is live, i.e. the cluster has it, or why that could not
-// be told.
+// be told. deleting is the live composite's deletionTimestamp, which the file does not carry.
 type suppliedState struct {
-	live bool
-	err  error
+	live     bool
+	deleting *metav1.Time
+	err      error
 }
 
 // suppliedLiveness returns the state of every composite known to be live, or whose liveness could not
@@ -380,7 +381,7 @@ func (p *DefaultCompDiffProcessor) suppliedLiveness(ctx context.Context, resolve
 	live := make(map[dt.CompositeKey]suppliedState)
 	for _, r := range resolvedComps {
 		for _, u := range r.affectedXRs {
-			live[dt.CompositeKeyOf(u)] = suppliedState{live: true}
+			live[dt.CompositeKeyOf(u)] = suppliedState{live: true, deleting: u.GetDeletionTimestamp()}
 		}
 	}
 
@@ -396,7 +397,7 @@ func (p *DefaultCompDiffProcessor) suppliedLiveness(ctx context.Context, resolve
 			case err != nil:
 				live[id] = suppliedState{err: errors.Wrapf(err, "cannot get %s %q from the cluster", u.GetKind(), u.GetName())}
 			case cluster != nil:
-				live[id] = suppliedState{live: true}
+				live[id] = suppliedState{live: true, deleting: cluster.GetDeletionTimestamp()}
 			}
 		}
 	}
@@ -1657,12 +1658,22 @@ func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(ctx context.Contex
 
 	for _, xr := range xrs {
 		state, isSupplied := supplied[dt.CompositeKeyOf(xr)]
-		disposition, classifyErr := p.classifyXR(ctx, xr, xrKind, targetLabels, compLabels, isSupplied && !state.live, isSupplied && state.live)
+
+		// A supplied composite replacing a live one being deleted is on its deletion path. The file is
+		// rendered as written, so only the copy classified carries the live deletionTimestamp.
+		classified := xr
+		if state.deleting != nil && xr.GetDeletionTimestamp() == nil {
+			classified = xr.DeepCopy()
+			classified.SetDeletionTimestamp(state.deleting)
+		}
+
+		disposition, classifyErr := p.classifyXR(ctx, classified, xrKind, targetLabels, compLabels, isSupplied && !state.live, isSupplied && state.live)
 		if classifyErr != nil {
 			return nil, nil, nil, nil, classifyErr
 		}
 
 		if disposition.filtered != nil {
+			disposition.filtered.xr = xr
 			dropped = append(dropped, *disposition.filtered)
 			continue
 		}

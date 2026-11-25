@@ -260,8 +260,8 @@ func Key(apiVersion, kind, namespace, name string) string {
 
 // Tally counts a run's health: the composites it lists, and the other
 // resources by state, each once. Resources are matched by Key, and the first
-// health a resource is added with wins. A composite added as a resource is
-// counted only as a composite, whichever was added first.
+// health a resource is added with wins. A resource that is also added as a
+// composite counts only as a composite, whatever the order they were added in.
 type Tally struct {
 	composites map[string]bool
 	resources  map[string]State

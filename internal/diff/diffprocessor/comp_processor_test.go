@@ -839,7 +839,9 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 		wantUnresolved map[string]error
 		// wantUnresolvedMsg is the message of each wantUnresolved error, by name; unchecked when nil.
 		wantUnresolvedMsg map[string]string
-		wantErr           bool
+		// liveSupplied names each composite supplied by --resource-file that the cluster has.
+		liveSupplied []string
+		wantErr      bool
 	}{
 		// Crossplane pins a Manual composite only once it names a revision (crossplane v2.4.3
 		// internal/controller/apiextensions/composite/api.go:163); one that names none gets the latest
@@ -974,6 +976,75 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 				return nil, errors.New("resolved a claim that names its revision")
 			},
 			wantDropped: []droppedWant{{name: "my-claim", reason: dt.FilterReasonManualPolicy}},
+		},
+		"LiveSuppliedXRResolveFailureIsKeptAsError": {
+			reason:       "Whether a live supplied XR naming no policy is pinned is unknown when its effective composite cannot be resolved, so it is kept as its own error, not re-pointing.",
+			liveSupplied: []string{"file-xr"},
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "XResource", "file-xr").WithNamespace("default").Build(),
+			},
+			resolve: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+				return nil, errBackingXRGone
+			},
+			wantKept:          []string{"file-xr"},
+			wantUnresolved:    map[string]error{"file-xr": errBackingXRGone},
+			wantUnresolvedMsg: map[string]string{"file-xr": `cannot resolve the effective composite of XResource "file-xr" to read its update policy and pinned revision: ` + errBackingXRGone.Error()},
+		},
+		"LiveSuppliedAutomaticXRIsNotResolved": {
+			reason:       "A live supplied XR naming Automatic wins over the cluster for policy and ref, so it re-points without a cluster read that could only fail it.",
+			liveSupplied: []string{"file-xr"},
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "XResource", "file-xr").WithNamespace("default").
+					WithNestedField("Automatic", "spec", "crossplane", "compositionUpdatePolicy").Build(),
+			},
+			resolve: func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+				return nil, errBackingXRGone
+			},
+			wantKept:       []string{"file-xr"},
+			wantRepointing: []string{"file-xr"},
+		},
+		"LiveSuppliedManualXROverLiveAutomaticPinnedIsDropped": {
+			reason:       "A live supplied XR switching to Manual with no ref inherits the live ref, so it is pinned to the current revision and dropped.",
+			liveSupplied: []string{"file-xr"},
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "XResource", "file-xr").WithNamespace("default").
+					WithNestedField("Manual", "spec", "crossplane", "compositionUpdatePolicy").Build(),
+			},
+			resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+				e := u.DeepCopy()
+				_ = un.SetNestedField(e.Object, "test-comp-0ld0001", "spec", "crossplane", "compositionRevisionRef", "name")
+				return e, nil
+			},
+			wantDropped: []droppedWant{{name: "file-xr", reason: dt.FilterReasonManualPolicy}},
+		},
+		"LiveSuppliedXROmittingPolicyOverLiveManualUnpinnedRepoints": {
+			reason:       "A live supplied XR naming no policy over a live Manual XR naming no ref is Manual with no ref, so it re-points.",
+			liveSupplied: []string{"file-xr"},
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "XResource", "file-xr").WithNamespace("default").Build(),
+			},
+			resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+				e := u.DeepCopy()
+				_ = un.SetNestedField(e.Object, "Manual", "spec", "crossplane", "compositionUpdatePolicy")
+				return e, nil
+			},
+			wantKept:       []string{"file-xr"},
+			wantRepointing: []string{"file-xr"},
+		},
+		"LiveSuppliedPinnedXRUnderIncludeManualIsKeptPinned": {
+			reason:        "--include-pinned keeps a live supplied XR pinned by its effective composite, but it does not re-point.",
+			includeManual: true,
+			liveSupplied:  []string{"file-xr"},
+			xrs: []*un.Unstructured{
+				tu.NewResource("example.org/v1", "XResource", "file-xr").WithNamespace("default").Build(),
+			},
+			resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+				e := u.DeepCopy()
+				_ = un.SetNestedField(e.Object, "Manual", "spec", "crossplane", "compositionUpdatePolicy")
+				_ = un.SetNestedField(e.Object, "test-comp-0ld0001", "spec", "crossplane", "compositionRevisionRef", "name")
+				return e, nil
+			},
+			wantKept: []string{"file-xr"},
 		},
 		// Manual side: --include-pinned keeps Manual XRs...
 		"IncludeManualTrue_KeepsManualXRs": {
@@ -1233,7 +1304,19 @@ func TestDefaultCompDiffProcessor_partitionXRsByUpdatePolicy(t *testing.T) {
 
 			pred := predictRevision(typedComposition(t, newComp))
 
-			kept, dropped, repointing, unresolved, err := processor.partitionXRsByUpdatePolicy(t.Context(), tt.xrs, newComp, pred, nil)
+			var supplied map[dt.CompositeKey]suppliedState
+
+			for _, xr := range tt.xrs {
+				if slices.Contains(tt.liveSupplied, xr.GetName()) {
+					if supplied == nil {
+						supplied = make(map[dt.CompositeKey]suppliedState)
+					}
+
+					supplied[dt.CompositeKeyOf(xr)] = suppliedState{live: true}
+				}
+			}
+
+			kept, dropped, repointing, unresolved, err := processor.partitionXRsByUpdatePolicy(t.Context(), tt.xrs, newComp, pred, supplied)
 
 			if tt.wantErr {
 				if err == nil {
@@ -3449,6 +3532,18 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 
 	const predicted = "<predicted>"
 
+	// failFirstResolve fails the first resolve, the classify one, transiently; later ones succeed.
+	failFirstResolve := func() func(context.Context, *un.Unstructured) (*un.Unstructured, error) {
+		calls := 0
+		return func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+			calls++
+			if calls == 1 {
+				return nil, errors.New("timeout")
+			}
+			return u, nil
+		}
+	}
+
 	type args struct {
 		find      func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error)
 		resources []k8stypes.NamespacedName
@@ -3742,6 +3837,67 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 				},
 			},
 			want: want{rendered: []string{"a/file"}, repointed: map[string]int{"test-comp": 1}, supplied: map[string][]string{"test-comp": {"a"}}},
+		},
+		"ReplacingSuppliedSelectorOverLiveManualUnpinnedRepoints": {
+			reason: "A supplied composite naming no policy, with a selector rejecting the new revision, over a live Manual one naming no ref is Manual, so the selector is ignored, as render does, and it re-points.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return []*un.Unstructured{manual(xr("a", "cluster"))}, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {func() *un.Unstructured {
+					u := xr("a", "file")
+					_ = un.SetNestedStringMap(u.Object, map[string]string{"version": "never"}, "spec", "crossplane", "compositionRevisionSelector", "matchLabels")
+					return u
+				}()}},
+				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					return manual(u.DeepCopy()), nil
+				},
+			},
+			want: want{rendered: []string{"a/file"}, repointed: map[string]int{"test-comp": 1}, supplied: map[string][]string{"test-comp": {"a"}}},
+		},
+		"ReplacingSuppliedClaimOmittingPolicyOverManualPinnedBackingXRDeferred": {
+			reason: "A supplied claim naming no policy whose backing XR is Manual and pinned inherits both, as render does, so it is deferred.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return nil, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {tu.NewResource("example.org/v1", "Claim", "claim").
+					InNamespace("ns").
+					WithSpecField("marker", "file").
+					Build()}},
+				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) { return u, nil },
+				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					if u.GetKind() != "Claim" {
+						return u, nil
+					}
+					return pinned(manual(xr("claim-xyz", "file"))), nil
+				},
+			},
+			want: want{rendered: nil, repointed: map[string]int{"test-comp": 0}, supplied: map[string][]string{"test-comp": {"claim"}}},
+		},
+		"UnresolvedSuppliedXRErrors": {
+			reason: "A live supplied XR naming no policy whose effective composite cannot be resolved reports that error, is not rendered, and is not counted as re-pointing.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return []*un.Unstructured{xr("a", "cluster")}, nil
+				},
+				supplied: map[string][]*un.Unstructured{"test-comp": {xr("a", "file")}},
+				resolve:  failFirstResolve(),
+			},
+			want: want{rendered: nil, repointed: map[string]int{"test-comp": 0}, errored: []string{"a"}},
+		},
+		"SkippedUnresolvedSuppliedXRErrors": {
+			reason: "Under a skipped analysis, a live supplied XR whose effective composite cannot be resolved reports that error rather than rendering when a later resolve succeeds.",
+			args: args{
+				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
+					return nil, nil
+				},
+				supplied:         map[string][]*un.Unstructured{"test-comp": {xr("a", "file")}},
+				cluster:          []*apiextensionsv1.Composition{newComp("test-comp").Build()},
+				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) { return u, nil },
+				resolve:          failFirstResolve(),
+			},
+			want: want{rendered: nil, skipped: map[string]bool{"test-comp": true}, errored: []string{"a"}},
 		},
 		"ReplacingManualSuppliedDeferred": {
 			reason: "A supplied Manual composite pinned to a revision that replaces a live one stays pinned, so it is deferred as today.",

@@ -1753,21 +1753,30 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 		}}, nil
 	}
 
-	// A live supplied XR is reconciled with the cluster's policy and ref wherever the file names none,
-	// as render is (see inheritClusterFields), so both are read from its effective composite. A claim's
-	// pin is read through pinnedRevision below.
-	source := xr
-	if liveSupplied && xr.GetKind() == xrKind {
-		// Cluster I/O for this composite alone, so it runs under its own XRTimeout budget.
-		xrCtx, cancel := p.config.xrContext(ctx)
-		effective, err := p.xrProc.ResolveComposite(xrCtx, xr)
-		cancel()
-
+	// A live supplied composite is reconciled with the cluster's policy and ref wherever the file names
+	// none, as render is (see inheritClusterFields and syncClaimSpec), so both are read from its effective
+	// composite: the XR itself, or a claim's backing XR. It is resolved only when the file leaves the
+	// outcome open, naming no policy, or Manual with no ref: a file naming Automatic, or Manual with a
+	// ref, wins over the cluster for both fields, so the cluster read could not change the outcome.
+	source, resolved := xr, false
+	if liveSupplied {
+		open, err := leavesPinOpen(xr)
 		if err != nil {
-			return xrDisposition{unresolved: errors.Wrapf(err, "cannot resolve the effective composite of %s %q to read its update policy and pinned revision", xr.GetKind(), xr.GetName())}, nil
+			return xrDisposition{}, errors.Wrapf(err, "cannot read compositionUpdatePolicy for XR %q", xr.GetName())
 		}
 
-		source = effective
+		if open {
+			// Cluster I/O for this composite alone, so it runs under its own XRTimeout budget.
+			xrCtx, cancel := p.config.xrContext(ctx)
+			effective, err := p.effectiveComposite(xrCtx, xr, xrKind)
+			cancel()
+
+			if err != nil {
+				return xrDisposition{unresolved: err}, nil //nolint:nilerr // The composite's own error, not the run's.
+			}
+
+			source, resolved = effective, true
+		}
 	}
 
 	policy, err := xp.XRUpdatePolicy(source.Object, source.GetAPIVersion())
@@ -1784,12 +1793,17 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 	// it for analysis but does not unpin it, so it is marked as not re-pointing. With no revision it
 	// adopts the resulting one, as an Automatic composite does, so it falls through.
 	if policy == compositionUpdatePolicyManual && !netNew {
-		revision, err := xp.XRCompositionRevisionRef(source.Object, source.GetAPIVersion())
-		if err != nil {
+		var revision string
+		if resolved && xr.GetKind() != xrKind {
+			// A live supplied claim's backing XR, already resolved: read its pin as pinnedRevision does.
+			if revision, err = backingRevision(xr, source); err != nil {
+				return xrDisposition{unresolved: err}, nil //nolint:nilerr // The claim's own error, not the run's.
+			}
+		} else if revision, err = xp.XRCompositionRevisionRef(source.Object, source.GetAPIVersion()); err != nil {
 			return xrDisposition{}, errors.Wrapf(err, "cannot read compositionRevisionRef for XR %q", xr.GetName())
 		}
 
-		if revision == "" && xr.GetKind() != xrKind {
+		if revision == "" && xr.GetKind() != xrKind && !resolved {
 			// The effective composite read is cluster I/O for this composite alone, so it runs under its
 			// own XRTimeout budget: a slow read fails this composite, not the run.
 			xrCtx, cancel := p.config.xrContext(ctx)
@@ -1814,7 +1828,7 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 	// which only an Automatic policy has (see xp.XRRevisionSelectorMatch). An XR whose selector does not
 	// match the predicted revision labels would not select the resulting revision, so it is excluded —
 	// regardless of IncludeManual.
-	matches, detail, err := xp.XRRevisionSelectorMatch(xr, targetLabels, compLabels)
+	matches, detail, err := xp.XRRevisionSelectorMatch(source, targetLabels, compLabels)
 	if err != nil {
 		return xrDisposition{}, errors.Wrapf(err, "cannot evaluate compositionRevisionSelector for XR %q", xr.GetName())
 	}
@@ -1832,14 +1846,54 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 // ref onto it only when the claim sets one (crossplane v2.4.3 internal/controller/apiextensions/claim/
 // syncer_ssa.go:147-152 and :211). Empty when the effective composite names none either.
 func (p *DefaultCompDiffProcessor) pinnedRevision(ctx context.Context, claim *un.Unstructured) (string, error) {
-	composite, err := p.xrProc.ResolveComposite(ctx, claim)
+	composite, err := p.backingXR(ctx, claim)
 	if err != nil {
-		return "", errors.Wrapf(err, "cannot resolve the backing XR of claim %q to read the revision it is pinned to", claim.GetName())
+		return "", err
 	}
 
+	return backingRevision(claim, composite)
+}
+
+// backingXR returns claim's effective composite (see pinnedRevision).
+func (p *DefaultCompDiffProcessor) backingXR(ctx context.Context, claim *un.Unstructured) (*un.Unstructured, error) {
+	composite, err := p.xrProc.ResolveComposite(ctx, claim)
+	return composite, errors.Wrapf(err, "cannot resolve the backing XR of claim %q to read the revision it is pinned to", claim.GetName())
+}
+
+// backingRevision returns the compositionRevisionRef of composite, claim's effective composite.
+func backingRevision(claim, composite *un.Unstructured) (string, error) {
 	revision, err := xp.XRCompositionRevisionRef(composite.Object, composite.GetAPIVersion())
 
 	return revision, errors.Wrapf(err, "cannot read compositionRevisionRef of the backing XR of claim %q", claim.GetName())
+}
+
+// effectiveComposite returns the effective composite of a live supplied composite: an XR's own, or a
+// claim's backing XR (see backingXR), keeping main's wording for a claim.
+func (p *DefaultCompDiffProcessor) effectiveComposite(ctx context.Context, xr *un.Unstructured, xrKind string) (*un.Unstructured, error) {
+	if xr.GetKind() != xrKind {
+		return p.backingXR(ctx, xr)
+	}
+
+	effective, err := p.xrProc.ResolveComposite(ctx, xr)
+
+	return effective, errors.Wrapf(err, "cannot resolve the effective composite of %s %q to read its update policy and pinned revision", xr.GetKind(), xr.GetName())
+}
+
+// leavesPinOpen reports whether xr leaves its pin to the cluster: it names no compositionUpdatePolicy,
+// or names Manual with no compositionRevisionRef.
+func leavesPinOpen(xr *un.Unstructured) (bool, error) {
+	policy, found, err := xp.NestedCrossplaneValue(xr.Object, xr.GetAPIVersion(), "a string", un.NestedString, "compositionUpdatePolicy")
+	if err != nil || !found || policy == "" {
+		return err == nil, err
+	}
+
+	if policy != compositionUpdatePolicyManual {
+		return false, nil
+	}
+
+	revision, err := xp.XRCompositionRevisionRef(xr.Object, xr.GetAPIVersion())
+
+	return revision == "", err
 }
 
 // filterCounts tallies dropped XRs by filter reason. A struct rather than a growing list of

@@ -1852,8 +1852,30 @@ func (p *DefaultCompDiffProcessor) pinnedRevision(ctx context.Context, claim *un
 // backingXR returns claim's effective composite (see pinnedRevision).
 func (p *DefaultCompDiffProcessor) backingXR(ctx context.Context, claim *un.Unstructured) (*un.Unstructured, error) {
 	composite, err := p.xrProc.ResolveComposite(ctx, claim)
-	return composite, errors.Wrapf(err, "cannot resolve the backing XR of claim %q to read the revision it is pinned to", claim.GetName())
+	if err != nil {
+		return composite, &resolveError{claim: true, kind: claim.GetKind(), name: claim.GetName(), err: err}
+	}
+
+	return composite, nil
 }
+
+// resolveError is a failure to resolve a composite's effective composite. claim records which wording
+// applies: a claim's backing XR, or a supplied XR's own effective composite.
+type resolveError struct {
+	claim      bool
+	kind, name string
+	err        error
+}
+
+func (e *resolveError) Error() string {
+	if e.claim {
+		return fmt.Sprintf("cannot resolve the backing XR of claim %q to read the revision it is pinned to: %v", e.name, e.err)
+	}
+
+	return fmt.Sprintf("cannot resolve the effective composite of %s %q to read its update policy and pinned revision: %v", e.kind, e.name, e.err)
+}
+
+func (e *resolveError) Unwrap() error { return e.err }
 
 // backingRevision returns the compositionRevisionRef of composite, claim's effective composite.
 func backingRevision(claim, composite *un.Unstructured) (string, error) {
@@ -1892,8 +1914,11 @@ func (p *DefaultCompDiffProcessor) effectiveComposite(ctx context.Context, xr *u
 	}
 
 	effective, err := p.xrProc.ResolveComposite(ctx, xr)
+	if err != nil {
+		return effective, &resolveError{kind: xr.GetKind(), name: xr.GetName(), err: err}
+	}
 
-	return effective, errors.Wrapf(err, "cannot resolve the effective composite of %s %q to read its update policy and pinned revision", xr.GetKind(), xr.GetName())
+	return effective, nil
 }
 
 // leavesPinOpen reports whether xr leaves its pin to the cluster: it names no compositionUpdatePolicy,

@@ -72,6 +72,24 @@ func TestValidate(t *testing.T) {
 						Tests:      "tests/",
 						Operations: "operations/",
 					},
+					Runtime: &Runtime{
+						Registry: RegistryConfig{
+							Storage: StorageConfig{
+								Type: "bind",
+							},
+						},
+						Kind: RuntimeKind{
+							Config: RuntimeConfig{
+								Path: "kind.yaml",
+							},
+							Internal: false,
+							Network: RuntimeNetwork{
+								AttachContainers: []string{
+									"container-1",
+								},
+							},
+						},
+					},
 					Architectures: []string{"arch1"},
 				},
 			},

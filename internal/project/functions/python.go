@@ -88,6 +88,16 @@ for arch in $ARCHS ; do
     /fn_$arch/lib/python$PY_VERSION/site-packages
 done
 `
+
+	// pythonPipCacheVolume is a Docker volume holding pip's HTTP cache. It's
+	// mounted into every python build container so that wheel downloads are
+	// shared across builds, functions, and projects rather than re-fetched
+	// each time. pip manages the contents; `docker volume rm` clears it.
+	pythonPipCacheVolume = "crossplane-python-pip-cache"
+
+	// pythonPipCacheDir is pip's default cache location for root, which is
+	// the user the build container runs as.
+	pythonPipCacheDir = "/root/.cache/pip"
 )
 
 // pythonBuilder builds Python composition functions.
@@ -102,6 +112,10 @@ type pythonBuilder struct {
 	runtimeImage string
 	transport    http.RoundTripper
 	configStore  xpkg.ConfigStore
+
+	// pipCacheVolume is the Docker volume mounted as pip's cache in the
+	// build container.
+	pipCacheVolume string
 }
 
 func (b *pythonBuilder) Name() string {
@@ -233,6 +247,7 @@ func (b *pythonBuilder) buildVenv(ctx context.Context, c BuildContext) (map[stri
 		),
 		docker.StartWithCommand([]string{"sh", "-c", pythonBuildScript}),
 		docker.StartWithWorkingDirectory("/" + filepath.ToSlash(c.FunctionPath)),
+		docker.StartWithVolumeMount(b.pipCacheVolume, pythonPipCacheDir),
 	}
 	if schemasTar != nil {
 		opts = append(opts, docker.StartWithCopyFiles(schemasTar, "/"))
@@ -311,5 +326,7 @@ func newPythonBuilder(imageConfigs []pkgv1beta1.ImageConfig) *pythonBuilder {
 		runtimeImage: images.Image(images.Python, images.ImageRuntime),
 		transport:    registryTransport,
 		configStore:  clixpkg.NewStaticImageConfigStore(imageConfigs),
+
+		pipCacheVolume: pythonPipCacheVolume,
 	}
 }

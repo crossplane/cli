@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -73,13 +72,8 @@ func TestTraceIntegration(t *testing.T) {
 	createFromFile(t, cluster, "testdata/integration/packages-current-revision.yaml")
 	setPackageStatus(t, cluster, "testdata/integration/packages.yaml", "testdata/integration/packages-current-revision.yaml")
 
-	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-	if err := os.WriteFile(kubeconfig, cluster.Kubeconfig, 0o600); err != nil {
-		t.Fatalf("cannot write kubeconfig: %v", err)
-	}
-
 	// trace loads its kubeconfig the way kubectl does.
-	t.Setenv("KUBECONFIG", kubeconfig)
+	cluster.UseKubeconfig(t)
 
 	// The resources trace finds, as parseTree reads them from its json or yaml output. No controller runs under
 	// envtest, so the claim and XRs have no conditions.
@@ -514,12 +508,7 @@ func TestTraceWatchIntegration(t *testing.T) {
 		XRDAPIVersion: integration.XRDV1,
 	})
 
-	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-	if err := os.WriteFile(kubeconfig, cluster.Kubeconfig, 0o600); err != nil {
-		t.Fatalf("cannot write kubeconfig: %v", err)
-	}
-
-	t.Setenv("KUBECONFIG", kubeconfig)
+	cluster.UseKubeconfig(t)
 
 	type want struct {
 		// output is what stdout should come to contain after the change.

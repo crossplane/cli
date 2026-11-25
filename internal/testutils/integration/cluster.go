@@ -109,6 +109,20 @@ type Cluster struct {
 	Context context.Context //nolint:containedctx // Handed to the test with the cluster it bounds.
 }
 
+// UseKubeconfig writes the cluster admin's kubeconfig to a temporary file and points KUBECONFIG at it for the rest
+// of the test, for a command that loads its kubeconfig the way kubectl does. The test can't run in parallel, as
+// t.Setenv forbids it.
+func (c *Cluster) UseKubeconfig(t *testing.T) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(path, c.Kubeconfig, 0o600); err != nil {
+		t.Fatalf("cannot write kubeconfig: %v", err)
+	}
+
+	t.Setenv("KUBECONFIG", path)
+}
+
 // Start starts an envtest cluster and puts s in place. It serves Crossplane's own CRDs, at the version go.mod
 // pins (PinnedCrossplaneCRDsDir), s.CRDDirs' CRDs, and the CRDs CRDsForXRD generates from the XRDs in
 // s.SetupFiles.

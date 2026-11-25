@@ -21,7 +21,6 @@ package version
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -135,13 +134,8 @@ func TestFetchCrossplaneVersionIntegration(t *testing.T) {
 				}
 			}
 
-			kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-			if err := os.WriteFile(kubeconfig, cluster.Kubeconfig, 0o600); err != nil {
-				t.Fatalf("cannot write kubeconfig: %v", err)
-			}
-
 			// FetchCrossplaneVersion loads its config via ctrl.GetConfig.
-			t.Setenv("KUBECONFIG", kubeconfig)
+			cluster.UseKubeconfig(t)
 
 			got, err := FetchCrossplaneVersion(cluster.Context, kube.ImpersonationFlags{})
 

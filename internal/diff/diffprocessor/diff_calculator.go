@@ -28,12 +28,12 @@ import (
 // DiffCalculator calculates differences between resources.
 type DiffCalculator interface {
 	// CalculateDiff computes the diff for a single resource
-	CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured) (*dt.ResourceDiff, error)
+	CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured, applier *plan.Applier) (*dt.ResourceDiff, error)
 
 	// CalculateNonRemovalDiffs computes diffs for modified/added resources and returns
 	// what was rendered. This is used by nested XR processing.
 	// Returns: (diffs map, rendered resources, error)
-	CalculateNonRemovalDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs) (map[string]*dt.ResourceDiff, dtypes.RenderedResources, error)
+	CalculateNonRemovalDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs, applier *plan.Applier) (map[string]*dt.ResourceDiff, dtypes.RenderedResources, error)
 
 	// CalculateRemovedResourceDiffs identifies the composed resources in the cluster that Crossplane
 	// would garbage collect, given what was rendered. This is called after nested XR processing is
@@ -72,7 +72,7 @@ func NewDiffCalculator(apply k8.ApplyClient, access k8.AccessChecker, tree xp.Re
 }
 
 // CalculateDiff calculates the diff for a single resource.
-func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured) (*dt.ResourceDiff, error) {
+func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured, applier *plan.Applier) (*dt.ResourceDiff, error) {
 	// Get resource identification information
 	name := desired.GetName()
 	generateName := desired.GetGenerateName()
@@ -142,7 +142,7 @@ func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un
 		// it is dry-run applied as that applier: the apiserver then removes the fields it would.
 		clientSide := false
 		if composite == nil {
-			fieldOwner, clientSide = c.userApplierFieldOwner(ctx, fieldOwner, resourceID)
+			fieldOwner, clientSide = c.userApplierFieldOwner(applier, fieldOwner, resourceID)
 		}
 
 		applyDesired := sanitizeForDryRun(desired)
@@ -196,12 +196,11 @@ func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un
 }
 
 // userApplierFieldOwner returns the field manager to dry-run apply a user-supplied XR or claim as,
-// from the applier withApplier put on ctx: its manager under server-side apply, otherwise fallback,
-// today's owner. Without an applier on ctx (a nested XR) it is fallback. clientSide reports a
+// from its applier a (see resolveApplier): its manager under server-side apply, otherwise fallback,
+// today's owner. Without an applier (nil, as for a nested XR) it is fallback. clientSide reports a
 // client-side applier, which dryRunClientSideApply models instead of any apply.
-func (c *DefaultDiffCalculator) userApplierFieldOwner(ctx context.Context, fallback, resourceID string) (fieldOwner string, clientSide bool) {
-	a, ok := applierFrom(ctx)
-	if !ok {
+func (c *DefaultDiffCalculator) userApplierFieldOwner(a *plan.Applier, fallback, resourceID string) (fieldOwner string, clientSide bool) {
+	if a == nil {
 		return fallback, false
 	}
 
@@ -213,7 +212,7 @@ func (c *DefaultDiffCalculator) userApplierFieldOwner(ctx context.Context, fallb
 	case plan.ApplyClientSide:
 		return fallback, true
 	case plan.ApplyUndetermined:
-		// withApplier warned, if the object records any applier.
+		// resolveApplier warned, if the object records any applier.
 	}
 
 	return fallback, false
@@ -331,7 +330,7 @@ func lastAppliedModified(obj *un.Unstructured) ([]byte, error) {
 // An equal composed diff left out of the diffs (see KeepEqualDiffs) is recorded as unchanged instead.
 //
 // Returns: (diffs map, rendered resources, error).
-func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs) (map[string]*dt.ResourceDiff, dtypes.RenderedResources, error) {
+func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs, applier *plan.Applier) (map[string]*dt.ResourceDiff, dtypes.RenderedResources, error) {
 	xrName := xr.GetName()
 	c.logger.Debug("Calculating diffs",
 		"xr", xrName,
@@ -352,7 +351,7 @@ func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr
 
 	// Calculate diff for the XR. It is diffed as the caller passed it, never as rendered, nested or
 	// not: render adds nothing to an XR that belongs in its payload (see diffSingleResourceInternal).
-	xrDiff, err := c.CalculateDiff(ctx, nil, xr.GetUnstructured())
+	xrDiff, err := c.CalculateDiff(ctx, nil, xr.GetUnstructured(), applier)
 	if err != nil || xrDiff == nil {
 		return nil, rendered, errors.Wrap(err, "cannot calculate diff for XR")
 	}
@@ -430,7 +429,7 @@ func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr
 			composite = xr.GetUnstructured()
 		}
 
-		diff, err := c.CalculateDiff(ctx, composite, un)
+		diff, err := c.CalculateDiff(ctx, composite, un, nil)
 		if err != nil {
 			c.logger.Debug("Error calculating diff for composed resource", "resource", resourceID, "error", err)
 			errs = append(errs, errors.Wrapf(err, "cannot calculate diff for %s", resourceID))

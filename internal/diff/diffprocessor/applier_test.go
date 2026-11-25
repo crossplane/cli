@@ -85,23 +85,23 @@ func TestWithApplierWarning(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			p := &DefaultDiffProcessor{config: ProcessorConfig{Advisories: NewAdvisoryCollector(nil)}}
-			p.withApplier(withUserSupplied(t.Context()), tc.live, tc.depth, "XR/x")
+			p.resolveApplier(tc.live, tc.depth, "XR/x", true)
 
 			got := p.config.Advisories.Advisories()
 			if tc.want.noWarnings {
 				if len(got) != 0 {
-					t.Errorf("%s\nwithApplier(...): want no warnings, got %v", tc.reason, got)
+					t.Errorf("%s\nresolveApplier(...): want no warnings, got %v", tc.reason, got)
 				}
 				return
 			}
 			if len(got) != 1 {
-				t.Fatalf("%s\nwithApplier(...): want 1 warning, got %v", tc.reason, got)
+				t.Fatalf("%s\nresolveApplier(...): want 1 warning, got %v", tc.reason, got)
 			}
 			if diff := gcmp.Diff(tc.want.context, got[0].Context); diff != "" {
-				t.Errorf("%s\nwithApplier(...) warning context: -want, +got:\n%s", tc.reason, diff)
+				t.Errorf("%s\nresolveApplier(...) warning context: -want, +got:\n%s", tc.reason, diff)
 			}
 			if mentions := strings.Contains(got[0].Message, "imperative writers"); mentions != tc.want.imperative {
-				t.Errorf("%s\nwithApplier(...) warning %q: mentions imperative writers = %t, want %t", tc.reason, got[0].Message, mentions, tc.want.imperative)
+				t.Errorf("%s\nresolveApplier(...) warning %q: mentions imperative writers = %t, want %t", tc.reason, got[0].Message, mentions, tc.want.imperative)
 			}
 		})
 	}
@@ -173,9 +173,9 @@ func TestCalculateDiffClientSideApply(t *testing.T) {
 				tu.TestLogger(t, false), compare.Options{}, DryRunOnAll, &tu.MockDefaulter{}, nil)
 
 			p := &DefaultDiffProcessor{config: ProcessorConfig{Advisories: advisories, Applier: plan.ApplierFlags{ServerSide: new(false)}}}
-			ctx := p.withApplier(withUserSupplied(t.Context()), tc.live, 0, "XR/x")
+			applier := p.resolveApplier(tc.live, 0, "XR/x", true)
 
-			if _, err := calculator.CalculateDiff(ctx, nil, desired); err != nil {
+			if _, err := calculator.CalculateDiff(t.Context(), nil, desired, applier); err != nil {
 				t.Fatalf("%s\nCalculateDiff(...): unexpected error: %v", tc.reason, err)
 			}
 
@@ -248,9 +248,9 @@ func TestCalculateDiffServerSideFieldOwner(t *testing.T) {
 				tu.TestLogger(t, false), compare.Options{}, DryRunOnAll, &tu.MockDefaulter{}, nil)
 
 			p := &DefaultDiffProcessor{config: ProcessorConfig{Advisories: advisories, Applier: plan.ApplierFlags{FieldManager: "platform-operator", ServerSide: new(true)}}}
-			ctx := p.withApplier(withUserSupplied(t.Context()), live, 0, "XR/x")
+			applier := p.resolveApplier(live, 0, "XR/x", true)
 
-			if _, err := calculator.CalculateDiff(ctx, tc.args.composite, live.DeepCopy()); err != nil {
+			if _, err := calculator.CalculateDiff(t.Context(), tc.args.composite, live.DeepCopy(), applier); err != nil {
 				t.Fatalf("%s\nCalculateDiff(...): unexpected error: %v", tc.reason, err)
 			}
 			if diff := gcmp.Diff(tc.want.fieldOwner, got); diff != "" {

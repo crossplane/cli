@@ -37,6 +37,7 @@ import (
 	tu "github.com/crossplane/cli/v2/internal/diff/testutils"
 	"github.com/crossplane/cli/v2/internal/diff/types"
 	"github.com/crossplane/cli/v2/internal/health"
+	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/pkg/render"
 	"github.com/crossplane/cli/v2/pkg/resource"
 )
@@ -544,7 +545,7 @@ func TestDefaultDiffProcessor_PerformDiff(t *testing.T) {
 				// Override the diff calculator factory to return actual diffs
 				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter, func(*un.Unstructured) bool) DiffCalculator {
 					return &tu.MockDiffCalculator{
-						CalculateNonRemovalDiffsFn: func(context.Context, *cmp.Unstructured, render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+						CalculateNonRemovalDiffsFn: func(context.Context, *cmp.Unstructured, render.CompositionOutputs, *plan.Applier) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 							diffs := make(map[string]*dt.ResourceDiff)
 
 							var rendered types.RenderedResources
@@ -1011,7 +1012,7 @@ func TestDefaultDiffProcessor_PerformDiff_Groups(t *testing.T) {
 				}),
 				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter, func(*un.Unstructured) bool) DiffCalculator {
 					return &tu.MockDiffCalculator{
-						CalculateNonRemovalDiffsFn: func(ctx context.Context, rendered *cmp.Unstructured, _ render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+						CalculateNonRemovalDiffsFn: func(ctx context.Context, rendered *cmp.Unstructured, _ render.CompositionOutputs, _ *plan.Applier) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 							if rendered.GetName() == tt.failRender {
 								return nil, types.RenderedResources{}, errors.New("render failed")
 							}
@@ -1293,7 +1294,7 @@ func TestDefaultDiffProcessor_PerformDiff_Health(t *testing.T) {
 					return &tu.MockDiffCalculator{
 						// An unchanged diff of the composite against its cluster copy, which is what
 						// nested processing and removal detection read the cluster XR from.
-						CalculateNonRemovalDiffsFn: func(_ context.Context, xr *cmp.Unstructured, _ render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+						CalculateNonRemovalDiffsFn: func(_ context.Context, xr *cmp.Unstructured, _ render.CompositionOutputs, _ *plan.Applier) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 							key := dt.MakeDiffKeyFromResource(xr.GetUnstructured())
 							return map[string]*dt.ResourceDiff{key: {
 								Gvk:          xr.GroupVersionKind(),
@@ -2892,9 +2893,7 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 		wantDiffCount     int
 		wantErr           bool
 		wantErrContain    string
-		// userSupplied marks the context as PerformDiff does for the user's input.
-		userSupplied   bool
-		wantNoWarnings bool
+		wantNoWarnings    bool
 	}{
 		"NoComposedResourcesReturnsEmpty": {
 			setupMocks: func() (xp.Clients, k8.Clients) {
@@ -3002,7 +3001,6 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 		"NestedXROfNewParentTakesNoUserApplier": {
 			// A nested XR whose parent is new has no parent cluster copy, but Crossplane composes it, so
 			// it never takes the user's applier: two appliers on it raise no warning.
-			userSupplied:   true,
 			wantNoWarnings: true,
 			setupMocks: func() (xp.Clients, k8.Clients) {
 				live := childXR.DeepCopy()
@@ -3344,7 +3342,7 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 				}),
 				WithDiffCalculatorFactory(func(k8.ApplyClient, k8.AccessChecker, xp.ResourceTreeClient, ResourceManager, logging.Logger, compare.Options, DryRunOn, Defaulter, func(*un.Unstructured) bool) DiffCalculator {
 					return &tu.MockDiffCalculator{
-						CalculateNonRemovalDiffsFn: func(_ context.Context, xr *cmp.Unstructured, _ render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+						CalculateNonRemovalDiffsFn: func(_ context.Context, xr *cmp.Unstructured, _ render.CompositionOutputs, _ *plan.Applier) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 							// Return a simple diff for the XR to make the test pass
 							diffs := make(map[string]*dt.ResourceDiff)
 
@@ -3380,12 +3378,7 @@ func TestDefaultDiffProcessor_ProcessNestedXRs(t *testing.T) {
 				// Call the method under test
 				var observedResources []cpd.Unstructured
 
-				pctx := ctx
-				if tt.userSupplied {
-					pctx = withUserSupplied(ctx)
-				}
-
-				diffs, _, err := processor.ProcessNestedXRs(pctx, tt.composedResources, compositionProvider, tt.parentResourceID, parentXR, observedResources, tt.depth)
+				diffs, _, err := processor.ProcessNestedXRs(ctx, tt.composedResources, compositionProvider, tt.parentResourceID, parentXR, observedResources, tt.depth)
 
 				// Check error
 				if (err != nil) != tt.wantErr {

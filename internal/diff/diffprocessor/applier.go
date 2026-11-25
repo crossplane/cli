@@ -17,7 +17,6 @@ limitations under the License.
 package diffprocessor
 
 import (
-	"context"
 	"strings"
 
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -29,40 +28,16 @@ import (
 // warningContextResource is the context key of an advisory that names the resource it is about.
 const warningContextResource = "resource"
 
-// userSuppliedKey marks a context whose top-level composite resources and claims the user supplied
-// as input, so they are dry-run applied as whoever applies them. PerformDiff sets it; the composite
-// resources DiffSingleResource is handed come from the cluster, so it does not.
-type userSuppliedKey struct{}
-
-// applierKey carries the plan.Applier of the user-supplied composite resource or claim being diffed,
-// for CalculateDiff's XR call. It is absent for composed resources' diffs, nested XRs included.
-type applierKey struct{}
-
-// withUserSupplied marks ctx's top-level composite resources and claims as the user's input.
-func withUserSupplied(ctx context.Context) context.Context {
-	return context.WithValue(ctx, userSuppliedKey{}, true)
-}
-
-// applierFrom returns the applier withApplier put on ctx, if any.
-func applierFrom(ctx context.Context) (plan.Applier, bool) {
-	a, ok := ctx.Value(applierKey{}).(*plan.Applier)
-	if !ok || a == nil {
-		return plan.Applier{}, false
-	}
-
-	return *a, true
-}
-
-// withApplier returns ctx carrying the applier of the composite resource or claim resourceID names,
-// whose cluster copy is live, when it is user-supplied: a top-level input of a context
-// withUserSupplied marked, with a cluster copy to apply to. A nested XR (depth above 0) is composed, so
-// its context carries no applier, even when its parent's does, whether or not its parent exists yet. When the applier cannot be told and
+// resolveApplier returns the applier of the composite resource or claim resourceID names, whose
+// cluster copy is live, when it is user-supplied: a top-level input PerformDiff was handed
+// (userSupplied), with a cluster copy to apply to; otherwise nil. The composite resources
+// DiffSingleResource is handed come from the cluster, so they are not user-supplied. A nested XR
+// (depth above 0) is composed, so it takes no applier, even when its parent does, whether or not its parent exists yet. When the applier cannot be told and
 // live records one, a warning names the appliers and imperative writers it records: the diff then may
 // not show fields the manifest drops.
-func (p *DefaultDiffProcessor) withApplier(ctx context.Context, live *un.Unstructured, depth int, resourceID string) context.Context {
-	supplied, _ := ctx.Value(userSuppliedKey{}).(bool)
-	if depth > 0 || !supplied || live == nil {
-		return context.WithValue(ctx, applierKey{}, (*plan.Applier)(nil))
+func (p *DefaultDiffProcessor) resolveApplier(live *un.Unstructured, depth int, resourceID string, userSupplied bool) *plan.Applier {
+	if depth > 0 || !userSupplied || live == nil {
+		return nil
 	}
 
 	a := plan.ResolveApplier(live, p.config.Applier)
@@ -87,5 +62,5 @@ func (p *DefaultDiffProcessor) withApplier(ctx context.Context, live *un.Unstruc
 		})
 	}
 
-	return context.WithValue(ctx, applierKey{}, &a)
+	return &a
 }

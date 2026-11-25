@@ -988,7 +988,7 @@ func TestDefaultDiffCalculator_CalculateDiff(t *testing.T) {
 			)
 
 			// Call the function under test
-			diff, err := calculator.CalculateDiff(ctx, tt.composite, tt.desired)
+			diff, err := calculator.CalculateDiff(ctx, tt.composite, tt.desired, nil)
 
 			// Check error condition
 			if tt.wantErr {
@@ -1507,7 +1507,7 @@ func TestDefaultDiffCalculator_CalculateDiffs(t *testing.T) {
 
 			// Call the function under test
 			// Removal detection is the second step, after the non-removal diffs.
-			diffs, rendered, err := calculator.CalculateNonRemovalDiffs(ctx, tt.inputXR, tt.renderedOut)
+			diffs, rendered, err := calculator.CalculateNonRemovalDiffs(ctx, tt.inputXR, tt.renderedOut, nil)
 			if err == nil {
 				var removed map[string]*dt.ResourceDiff
 
@@ -2323,7 +2323,7 @@ func TestDefaultDiffCalculator_DegradedDryRunDetail(t *testing.T) {
 			gotDetails := make([]string, 0, len(tc.desired))
 
 			for _, d := range tc.desired {
-				diff, err := calculator.CalculateDiff(t.Context(), nil, d)
+				diff, err := calculator.CalculateDiff(t.Context(), nil, d, nil)
 				if err != nil {
 					t.Fatalf("\n%s\nCalculateDiff(%s/%s) unexpected error: %v", tc.reason, d.GetKind(), d.GetName(), err)
 				}
@@ -2366,6 +2366,7 @@ func TestCalculateNonRemovalDiffs_NilCompositeResource(t *testing.T) {
 		t.Context(),
 		xr,
 		render.CompositionOutputs{CompositeResource: nil},
+		nil,
 	)
 	if err == nil {
 		t.Fatal("expected error when CompositeResource is nil, got nil")
@@ -2471,7 +2472,7 @@ func TestDefaultDiffCalculator_CalculateNonRemovalDiffsRendered(t *testing.T) {
 				nil,
 			)
 
-			_, got, err := calculator.CalculateNonRemovalDiffs(t.Context(), asComposite(tt.payload), tt.desired)
+			_, got, err := calculator.CalculateNonRemovalDiffs(t.Context(), asComposite(tt.payload), tt.desired, nil)
 			if err != nil {
 				t.Fatalf("%s\nCalculateNonRemovalDiffs(): unexpected error: %v", tt.reason, err)
 			}
@@ -2554,7 +2555,7 @@ func TestDefaultDiffCalculator_KeepEqualDiffs(t *testing.T) {
 			diffs, renderedResources, err := calculator.CalculateNonRemovalDiffs(t.Context(), xr, render.CompositionOutputs{
 				CompositeResource: xr,
 				ComposedResources: []cpd.Unstructured{*rendered},
-			})
+			}, nil)
 			if err != nil {
 				t.Fatalf("%s\nCalculateNonRemovalDiffs(): unexpected error: %v", tt.reason, err)
 			}

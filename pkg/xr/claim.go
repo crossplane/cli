@@ -127,6 +127,11 @@ func ConvertClaimToXR(claim *unstructured.Unstructured, opts Options) (*composit
 	xrName := claimName
 
 	if !opts.Direct {
+		// Crossplane creates the XR of a Claim with generateName set to "<claim name>-".
+		if err := xrPaved.SetString("metadata.generateName", claimName+"-"); err != nil {
+			return nil, errors.Wrap(err, "cannot set generateName")
+		}
+
 		xrName = names.SimpleNameGenerator.GenerateName(claimName + "-")
 		labels[labelClaimName] = claim.GetName()
 

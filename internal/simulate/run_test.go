@@ -1091,7 +1091,7 @@ func TestSimulateWithProgress(t *testing.T) {
 func TestSimulateNewCompositionHint(t *testing.T) {
 	const note = "Composition net is new; no composite resources exist to render. Pass a composite resource or claim file with --resource-file to preview what it would create."
 	build := func(context.Context) (*Built, error) { return nil, nil }
-	xr := &un.Unstructured{Object: map[string]any{"apiVersion": "example.org/v1", "kind": "XNetwork"}}
+	xr := testutils.NewResource("example.org/v1", "XNetwork", "").Build()
 	comp := func(dtype dt.DiffType, ri dt.RevisionImpact) *dt.CompDiffOutput {
 		return &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
 			Name: "net", RevisionImpact: ri,

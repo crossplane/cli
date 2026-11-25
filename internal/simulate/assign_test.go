@@ -20,6 +20,7 @@ import (
 	cmpstd "cmp"
 	"context"
 	"errors"
+	"maps"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -28,6 +29,7 @@ import (
 
 	xpextv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
+	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
 	"github.com/crossplane/cli/v2/internal/diff/testutils"
 )
 
@@ -40,7 +42,7 @@ func TestAssignComposites(t *testing.T) {
 				return xrdInfo{}, errors.New("boom")
 			}
 			// Claims, and XRs of kind XLegacy (a v1 XRD), use legacy paths.
-			return xrdInfo{CompositeGVK: xr, DefaultComposition: def, EnforcedComposition: enforced, Legacy: in.GetKind() != "XBucket"}, nil
+			return xrdInfo{CompositeGVK: xr, Refs: xpclient.SelectionRefs{Enforced: enforced, Default: def}, Legacy: in.GetKind() != "XBucket"}, nil
 		}
 	}
 	a := testutils.NewComposition("a").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"tier": "gold", "team": "x"}).BuildAsUnstructured()
@@ -176,7 +178,7 @@ func TestAssignComposites(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := assignComposites(tc.args.comps, []*un.Unstructured{tc.args.input}, xrdFor(tc.args.defalt, tc.args.enforced))
+			got, err := assignComposites(t.Context(), tc.args.comps, []*un.Unstructured{tc.args.input}, xrdFor(tc.args.defalt, tc.args.enforced))
 			gotErr := ""
 			if err != nil {
 				gotErr = err.Error()
@@ -322,6 +324,126 @@ func TestAssignInputs(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.want.assigned, got); diff != "" {
 				t.Errorf("\n%s\nassignInputs(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+// TestSelectionMatchesCluster runs the same composites and XRD against the
+// cluster's selection (xpclient.DefaultCompositionClient.FindMatchingComposition,
+// over mocked cluster Compositions) and the project's (assignInputs, over the
+// same Compositions as project ones), and checks both pick the same one.
+func TestSelectionMatchesCluster(t *testing.T) {
+	comps := []*un.Unstructured{
+		testutils.NewComposition("a").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"tier": "gold"}).BuildAsUnstructured(),
+		testutils.NewComposition("b").WithCompositeTypeRef("example.org/v1", "XBucket").WithLabels(map[string]string{"tier": "silver"}).BuildAsUnstructured(),
+		testutils.NewComposition("o").WithCompositeTypeRef("example.org/v1", "XOther").WithLabels(map[string]string{"tier": "gold"}).BuildAsUnstructured(),
+	}
+	ref := func(name string) map[string]any { return map[string]any{"name": name} }
+	selector := func(labels map[string]any) map[string]any { return map[string]any{"matchLabels": labels} }
+
+	type args struct {
+		xrdAPIVersion     string
+		enforced, defalt  string
+		compositionFields map[string]any
+	}
+	type want struct {
+		// comp is the Composition both pick; empty when both fail.
+		comp string
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"EnforcedOverCompositionRef": {
+			reason: "Both apply the XRD's enforcedCompositionRef over the composite's compositionRef.",
+			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV2, enforced: "b", compositionFields: map[string]any{"compositionRef": ref("a")}},
+			want:   want{comp: "b"},
+		},
+		"EnforcedNotOfTheType": {
+			reason: "Both fail an enforcedCompositionRef to a Composition of another type.",
+			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV1, enforced: "o"},
+		},
+		"CompositionRef": {
+			reason: "Both pick the composite's compositionRef over its selector and the XRD's default.",
+			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV1, defalt: "a", compositionFields: map[string]any{"compositionRef": ref("b"), "compositionSelector": selector(map[string]any{"tier": "gold"})}},
+			want:   want{comp: "b"},
+		},
+		"CompositionRefMissing": {
+			reason: "Both fail a compositionRef to a Composition that does not exist.",
+			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV2, compositionFields: map[string]any{"compositionRef": ref("z")}},
+		},
+		"SelectorOverDefault": {
+			reason: "Both pick the Composition of the type the selector matches over the XRD's default.",
+			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV2, defalt: "b", compositionFields: map[string]any{"compositionSelector": selector(map[string]any{"tier": "gold"})}},
+			want:   want{comp: "a"},
+		},
+		"SelectorNoMatch": {
+			reason: "Both fail a selector no Composition of the type matches, even with an XRD default.",
+			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV1, defalt: "a", compositionFields: map[string]any{"compositionSelector": selector(map[string]any{"tier": "bronze"})}},
+		},
+		"EmptySelectorFallsThroughToDefault": {
+			reason: "Both treat a selector with no labels as none, so the XRD's default picks.",
+			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV2, defalt: "b", compositionFields: map[string]any{"compositionSelector": selector(map[string]any{})}},
+			want:   want{comp: "b"},
+		},
+		"DefaultOverType": {
+			reason: "Both pick the XRD's default when the composite names and selects none.",
+			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV1, defalt: "a"},
+			want:   want{comp: "a"},
+		},
+		"TypeAmbiguous": {
+			reason: "Both fail when several Compositions are of the type and nothing else picks one.",
+			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV2},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			spec := map[string]any{}
+			if tc.args.xrdAPIVersion == xpclient.CrossplaneAPIExtGroupV2 {
+				spec["crossplane"] = tc.args.compositionFields
+			} else {
+				maps.Copy(spec, tc.args.compositionFields)
+			}
+			in := testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(spec).Build()
+			b := testutils.NewXRD("xbuckets.example.org", "example.org", "XBucket").
+				WithAPIVersion(tc.args.xrdAPIVersion).WithScope(xpextv1.CompositeResourceScopeCluster).
+				WithVersion("v1", false, true)
+			if tc.args.enforced != "" {
+				b = b.WithEnforcedCompositionRef(tc.args.enforced)
+			}
+			if tc.args.defalt != "" {
+				b = b.WithDefaultCompositionRef(tc.args.defalt)
+			}
+			xrd := b.BuildAsUnstructured()
+			defs := &testutils.MockDefinitionClient{
+				GetXRDForXRFn: func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) { return xrd, nil },
+				GetXRDForClaimFn: func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) {
+					return nil, errors.New("not a claim")
+				},
+			}
+
+			resources := testutils.NewMockResourceClient().WithListableResources(comps...).WithResourcesExist(comps...).Build()
+			cluster, err := xpclient.NewCompositionClient(resources, defs, testutils.TestLogger(t, false)).FindMatchingComposition(t.Context(), in.DeepCopy())
+			gotCluster := ""
+			if err == nil {
+				gotCluster = cluster.Composition.GetName()
+			}
+
+			into := map[string][]*un.Unstructured{}
+			gotProject := ""
+			if err := assignInputs(t.Context(), defs, "", comps, []*un.Unstructured{in.DeepCopy()}, into); err == nil {
+				for comp := range into {
+					gotProject = comp
+				}
+			}
+
+			if diff := cmp.Diff(tc.want.comp, gotCluster); diff != "" {
+				t.Errorf("\n%s\nFindMatchingComposition(...): -want, +got (empty when failed):\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(tc.want.comp, gotProject); diff != "" {
+				t.Errorf("\n%s\nassignInputs(...): -want, +got (empty when failed):\n%s", tc.reason, diff)
 			}
 		})
 	}

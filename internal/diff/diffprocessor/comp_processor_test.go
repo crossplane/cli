@@ -3595,9 +3595,16 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 					return []*un.Unstructured{xr("db", "cluster")}, nil
 				},
 				resources: []k8stypes.NamespacedName{{Namespace: "ns", Name: "db"}},
-				supplied:  map[string][]*un.Unstructured{"test-comp": {pinned(manual(xr("a", "file")))}},
+				supplied:  map[string][]*un.Unstructured{"test-comp": {manual(xr("a", "file"))}},
 				clusterComposite: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
-					return xr(u.GetName(), "cluster"), nil
+					return pinned(manual(xr(u.GetName(), "cluster"))), nil
+				},
+				// The effective composite inherits the cluster's ref, which the file does not name.
+				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					if u.GetName() != "a" {
+						return u, nil
+					}
+					return pinned(u.DeepCopy()), nil
 				},
 			},
 			want: want{rendered: []string{"db/cluster"}, repointed: map[string]int{"test-comp": 1}, supplied: map[string][]string{"test-comp": {"a"}}},
@@ -3673,9 +3680,13 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			reason: "A supplied Manual composite pinned to a revision that replaces a live one stays pinned, so it is deferred as today.",
 			args: args{
 				find: func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-					return []*un.Unstructured{xr("a", "cluster")}, nil
+					return []*un.Unstructured{pinned(manual(xr("a", "cluster")))}, nil
 				},
-				supplied: map[string][]*un.Unstructured{"test-comp": {pinned(manual(xr("a", "file")))}},
+				supplied: map[string][]*un.Unstructured{"test-comp": {manual(xr("a", "file"))}},
+				// The effective composite inherits the cluster's ref, which the file does not name.
+				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					return pinned(u.DeepCopy()), nil
+				},
 			},
 			want: want{rendered: nil, repointed: map[string]int{"test-comp": 0}, supplied: map[string][]string{"test-comp": {"a"}}},
 		},

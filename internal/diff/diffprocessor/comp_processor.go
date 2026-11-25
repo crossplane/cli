@@ -571,7 +571,7 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 	// but kept, to be reported with its error.
 	unknown := slices.DeleteFunc(slices.Clone(affectedXRs), func(xr *un.Unstructured) bool { return supplied[dt.CompositeKeyOf(xr)].err == nil })
 
-	keptXRs, droppedXRs, repointingXRs, unresolvedXRs, err := p.partitionXRsByUpdatePolicy(ctx, slices.DeleteFunc(slices.Clone(affectedXRs), func(xr *un.Unstructured) bool { return supplied[dt.CompositeKeyOf(xr)].err != nil }), newComp, pred, netNew)
+	keptXRs, droppedXRs, repointingXRs, unresolvedXRs, err := p.partitionXRsByUpdatePolicy(ctx, slices.DeleteFunc(slices.Clone(affectedXRs), func(xr *un.Unstructured) bool { return supplied[dt.CompositeKeyOf(xr)].err != nil }), newComp, pred, supplied)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1137,7 +1137,7 @@ func (p *DefaultCompDiffProcessor) cliCompositionRevision(ctx context.Context, r
 		return resolved, nil
 	}
 
-	disposition, err := p.classifyXR(ctx, res, cliComp.Spec.CompositeTypeRef.Kind, revisionLabels, cliComp.GetLabels(), netNew[dt.CompositeKeyOf(res)])
+	disposition, err := p.classifyXR(ctx, res, cliComp.Spec.CompositeTypeRef.Kind, revisionLabels, cliComp.GetLabels(), netNew[dt.CompositeKeyOf(res)], false)
 	if err != nil {
 		return dtypes.ResolvedComposition{}, err
 	}
@@ -1290,7 +1290,7 @@ func (p *DefaultCompDiffProcessor) adoptsRunRevision(ctx context.Context, res *u
 		return false, errors.Errorf("composition %q in the run composes %s %s, but nested XR %q is a %s %s", rc.comp.GetName(), ref.APIVersion, ref.Kind, res.GetName(), res.GetAPIVersion(), res.GetKind())
 	}
 
-	disposition, err := p.classifyXR(ctx, res, rc.comp.Spec.CompositeTypeRef.Kind, rc.revisionLabels, rc.comp.GetLabels(), false)
+	disposition, err := p.classifyXR(ctx, res, rc.comp.Spec.CompositeTypeRef.Kind, rc.revisionLabels, rc.comp.GetLabels(), false, false)
 	if err != nil {
 		return false, err
 	}
@@ -1640,7 +1640,7 @@ type filteredXR struct {
 // `unresolved`, keyed the same way, holds the kept Manual claims whose backing XR could not be resolved
 // to tell whether they are pinned (see xrDisposition.unresolved), each with its error: that claim's own
 // result, not the run's.
-func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(ctx context.Context, xrs []*un.Unstructured, newComp *un.Unstructured, pred predictedRevision, netNew map[dt.CompositeKey]bool) (kept []*un.Unstructured, dropped []filteredXR, repointing map[string]bool, unresolved map[string]pinnedResolution, err error) {
+func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(ctx context.Context, xrs []*un.Unstructured, newComp *un.Unstructured, pred predictedRevision, supplied map[dt.CompositeKey]suppliedState) (kept []*un.Unstructured, dropped []filteredXR, repointing map[string]bool, unresolved map[string]pinnedResolution, err error) {
 	// The selector is matched against the label set the new revision would carry (composition labels
 	// plus the stamped crossplane.io/composition-name and crossplane.io/composition-hash), while
 	// mismatch messages display the user's own composition labels; see predictedRevisionLabels and
@@ -1651,7 +1651,8 @@ func (p *DefaultCompDiffProcessor) partitionXRsByUpdatePolicy(ctx context.Contex
 	xrKind, _, _ := un.NestedString(newComp.Object, "spec", "compositeTypeRef", "kind")
 
 	for _, xr := range xrs {
-		disposition, classifyErr := p.classifyXR(ctx, xr, xrKind, targetLabels, compLabels, netNew[dt.CompositeKeyOf(xr)])
+		state, isSupplied := supplied[dt.CompositeKeyOf(xr)]
+		disposition, classifyErr := p.classifyXR(ctx, xr, xrKind, targetLabels, compLabels, isSupplied && !state.live, isSupplied && state.live)
 		if classifyErr != nil {
 			return nil, nil, nil, nil, classifyErr
 		}
@@ -1691,8 +1692,8 @@ type xrDisposition struct {
 	// re-point. Counting it as re-pointing was issue #479.
 	pinnedToRevision bool
 
-	// unresolved is set, with nothing else, for a Manual claim naming no revision itself whose backing
-	// XR could not be resolved to read the revision it is pinned to. Whether it is pinned is unknown, so
+	// unresolved is set, with nothing else, for a Manual claim (or live supplied XR) naming no revision
+	// itself whose effective composite could not be resolved to read the revision it is pinned to. Whether it is pinned is unknown, so
 	// the claim is kept, not re-pointing, and reported as this error.
 	unresolved error
 }
@@ -1721,8 +1722,12 @@ type xrDisposition struct {
 //   - Automatic policy with no selector, or a matching selector: kept, and re-points.
 //
 // netNew marks a composite the cluster lacks, from --resource-file: Crossplane gives a new composite
-// the latest revision whatever its policy, so a Manual one is classified as Automatic.
-func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstructured, xrKind string, targetLabels, compLabels map[string]string, netNew bool) (xrDisposition, error) {
+// the latest revision whatever its policy, so a Manual one is classified as Automatic. liveSupplied marks
+// a --resource-file composite the cluster has: the file rarely names the compositionRevisionRef
+// Crossplane wrote, so a Manual one naming none is pinned to the ref of its effective composite, as a
+// claim is. The render is handed the effective composite, which already carries that ref, so
+// cliCompositionRevision passes false.
+func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstructured, xrKind string, targetLabels, compLabels map[string]string, netNew, liveSupplied bool) (xrDisposition, error) {
 	// An XR with a deletionTimestamp is on Crossplane's teardown path: the composite reconciler
 	// deletes its composed resources instead of composing them. It will never adopt the revision
 	// this composition would produce, and rendering it yields no composed resources to diff — so
@@ -1765,9 +1770,9 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 			return xrDisposition{}, errors.Wrapf(err, "cannot read compositionRevisionRef for XR %q", xr.GetName())
 		}
 
-		if revision == "" && xr.GetKind() != xrKind {
-			// The backing XR read is cluster I/O for this claim alone, so it runs under the claim's own
-			// XRTimeout budget: a slow read fails this claim, not the run.
+		if revision == "" && (xr.GetKind() != xrKind || liveSupplied) {
+			// The effective composite read is cluster I/O for this composite alone, so it runs under its
+			// own XRTimeout budget: a slow read fails this composite, not the run.
 			xrCtx, cancel := p.config.xrContext(ctx)
 			revision, err = p.pinnedRevision(xrCtx, xr)
 			cancel()
@@ -1806,16 +1811,17 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 // DiffProcessor.ResolveComposite): its backing XR with the claim synced in. A Manual claim usually names
 // no revision itself, because Crossplane writes the pin onto the backing XR alone and copies a claim's
 // ref onto it only when the claim sets one (crossplane v2.4.3 internal/controller/apiextensions/claim/
-// syncer_ssa.go:147-152 and :211). Empty when the backing XR names none either.
+// syncer_ssa.go:147-152 and :211). A live supplied XR's effective composite carries the cluster's ref
+// (see classifyXR). Empty when the effective composite names none either.
 func (p *DefaultCompDiffProcessor) pinnedRevision(ctx context.Context, claim *un.Unstructured) (string, error) {
 	composite, err := p.xrProc.ResolveComposite(ctx, claim)
 	if err != nil {
-		return "", errors.Wrapf(err, "cannot resolve the backing XR of claim %q to read the revision it is pinned to", claim.GetName())
+		return "", errors.Wrapf(err, "cannot resolve the effective composite of %s %q to read the revision it is pinned to", claim.GetKind(), claim.GetName())
 	}
 
 	revision, err := xp.XRCompositionRevisionRef(composite.Object, composite.GetAPIVersion())
 
-	return revision, errors.Wrapf(err, "cannot read compositionRevisionRef of the backing XR of claim %q", claim.GetName())
+	return revision, errors.Wrapf(err, "cannot read compositionRevisionRef of the effective composite of %s %q", claim.GetKind(), claim.GetName())
 }
 
 // filterCounts tallies dropped XRs by filter reason. A struct rather than a growing list of

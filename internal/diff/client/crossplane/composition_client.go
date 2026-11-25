@@ -543,8 +543,8 @@ func (l clusterLookup) ByType(ctx context.Context) (dtypes.ResolvedComposition, 
 	return dtypes.ResolvedComposition{Composition: comp}, err
 }
 
-func (l clusterLookup) Malformed(err error, path ...string) error {
-	return errors.Wrapf(err, "cannot read %s for %s", path[0], l.resourceID)
+func (l clusterLookup) Malformed(err error, field string, _ ...string) error {
+	return errors.Wrapf(err, "cannot read %s for %s", field, l.resourceID)
 }
 
 // XRTypeFromXRD returns the composite GroupVersionKind an XRD defines, at its first referenceable

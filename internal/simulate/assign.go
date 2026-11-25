@@ -161,8 +161,8 @@ func (l projectLookup) ByType(context.Context) (string, error) {
 	return sole(l.in, l.typed, "but no project Composition composes its type "+l.gvk.String())
 }
 
-func (l projectLookup) Malformed(err error, path ...string) error {
-	return rejectInput(l.in, FlagResourceFile, fmt.Sprintf("whose %s is malformed: %v", strings.Join(path, "."), errors.Cause(err)), "")
+func (l projectLookup) Malformed(err error, field string, subpath ...string) error {
+	return rejectInput(l.in, FlagResourceFile, fmt.Sprintf("whose %s is malformed: %v", strings.Join(append([]string{field}, subpath...), "."), errors.Cause(err)), "")
 }
 
 // sole returns the name of the only Composition in match, or an error naming

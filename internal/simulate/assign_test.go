@@ -130,10 +130,10 @@ func TestAssignComposites(t *testing.T) {
 			args:   args{comps: []*un.Unstructured{b, a}, input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{"team": "x"}}}).Build()},
 			want:   want{err: `--resource-file inputs include XBucket "x" (example.org/v1), which matches several project Compositions (a, b); set its compositionRef to pick one`},
 		},
-		"EmptySelectorFallsThrough": {
-			reason: "An empty matchLabels selects nothing, so the XRD default picks.",
-			args:   args{comps: []*un.Unstructured{a, b}, defalt: "b", input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{}}}).Build()},
-			want:   want{comp: "b"},
+		"EmptySelectorSkipsDefault": {
+			reason: "An empty matchLabels skips the XRD default, as in Crossplane, so the only Composition of the type picks.",
+			args:   args{comps: []*un.Unstructured{a}, defalt: "z", input: testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": map[string]any{}}}).Build()},
+			want:   want{comp: "a"},
 		},
 		"EnforcedCompositionRef": {
 			reason: "The XRD's enforcedCompositionRef wins over the input's compositionRef, as in Crossplane.",
@@ -383,10 +383,13 @@ func TestSelectionMatchesCluster(t *testing.T) {
 			reason: "Both fail a selector no Composition of the type matches, even with an XRD default.",
 			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV1, defalt: "a", compositionFields: map[string]any{"compositionSelector": selector(map[string]any{"tier": "bronze"})}},
 		},
-		"EmptySelectorFallsThroughToDefault": {
-			reason: "Both treat a selector with no labels as none, so the XRD's default picks.",
+		"EmptySelectorSkipsDefaultV2": {
+			reason: "Both skip the XRD's default for a present selector with no labels, and fail as several Compositions are of the type.",
 			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV2, defalt: "b", compositionFields: map[string]any{"compositionSelector": selector(map[string]any{})}},
-			want:   want{comp: "b"},
+		},
+		"EmptySelectorSkipsDefaultV1": {
+			reason: "Both skip the XRD's default for a present selector with no labels on a v1 XRD.",
+			args:   args{xrdAPIVersion: xpclient.CrossplaneAPIExtGroupV1, defalt: "b", compositionFields: map[string]any{"compositionSelector": selector(map[string]any{})}},
 		},
 		"DefaultOverType": {
 			reason: "Both pick the XRD's default when the composite names and selects none.",

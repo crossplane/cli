@@ -33,7 +33,8 @@ func (r *recordingLookup) ByType(context.Context) (string, error) {
 	return "typed", nil
 }
 
-func (r *recordingLookup) Malformed(_ error, path ...string) error {
+func (r *recordingLookup) Malformed(_ error, field string, subpath ...string) error {
+	path := append([]string{field}, subpath...)
 	r.calls = append(r.calls, "Malformed "+strings.Join(path, "."))
 	return errors.New("malformed " + strings.Join(path, "."))
 }
@@ -94,9 +95,19 @@ func TestSelectComposition(t *testing.T) {
 			args:   args{refs: SelectionRefs{Default: "d"}, fields: map[string]any{"compositionSelector": selector(map[string]any{"tier": "gold"})}},
 			want:   want{calls: []string{"ByLabels map[tier:gold]"}, comp: "selected"},
 		},
-		"EmptySelectorFallsThrough": {
-			reason: "A selector with no labels selects nothing, so the XRD's default is used.",
+		"EmptySelectorSkipsDefault": {
+			reason: "A present selector with no labels skips the XRD's default, as Crossplane does, and selects by type.",
 			args:   args{refs: SelectionRefs{Default: "d"}, fields: map[string]any{"compositionSelector": selector(map[string]any{})}},
+			want:   want{calls: []string{"ByType"}, comp: "typed"},
+		},
+		"SelectorWithoutMatchLabelsSkipsDefault": {
+			reason: "A present selector with no matchLabels at all also skips the XRD's default.",
+			args:   args{refs: SelectionRefs{Default: "d"}, fields: map[string]any{"compositionSelector": map[string]any{}}},
+			want:   want{calls: []string{"ByType"}, comp: "typed"},
+		},
+		"NullSelectorUsesDefault": {
+			reason: "A null selector is no selector, so the XRD's default is used.",
+			args:   args{refs: SelectionRefs{Default: "d"}, fields: map[string]any{"compositionSelector": nil}},
 			want:   want{calls: []string{"ByName XRD defaultCompositionRef d"}, comp: "d"},
 		},
 		"DefaultOverType": {

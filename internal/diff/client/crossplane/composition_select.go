@@ -23,9 +23,9 @@ type CompositionLookup[C any] interface {
 	ByLabels(ctx context.Context, sel map[string]string) (C, error)
 	// ByType returns the only Composition.
 	ByType(ctx context.Context) (C, error)
-	// Malformed returns the error for the composite's field at path being of the wrong type; err is
-	// the read's error.
-	Malformed(err error, path ...string) error
+	// Malformed returns the error for the composite's field, at subpath below it, being of the wrong
+	// type; err is the read's error.
+	Malformed(err error, field string, subpath ...string) error
 }
 
 // SelectionRefs are the Compositions an XRD names for its composites.
@@ -47,8 +47,10 @@ func XRDSelectionRefs(xrd *un.Unstructured) SelectionRefs {
 
 // SelectComposition returns the Composition Crossplane would select for res, in Crossplane's order:
 // the XRD's enforcedCompositionRef, res's compositionRef, its compositionSelector's matchLabels (if it
-// selects any), the XRD's defaultCompositionRef, then the only Composition of the type. The first
-// step that applies decides; its lookup's error is returned as is. res's fields are read at the
+// selects any), the XRD's defaultCompositionRef, then the only Composition of the type. A
+// compositionSelector that is present but selects no labels skips the default, as Crossplane's does:
+// Crossplane then picks any Composition of the type at random, which can't be previewed, so the only
+// Composition of the type is used and several fail through l.ByType. The first step that applies decides; its lookup's error is returned as is. res's fields are read at the
 // paths xrdAPIVersion gives (see NestedCrossplaneValue), and one of the wrong type fails through
 // l.Malformed before any later step is tried.
 func SelectComposition[C any](ctx context.Context, res *un.Unstructured, xrdAPIVersion string, refs SelectionRefs, l CompositionLookup[C]) (C, error) {
@@ -74,6 +76,11 @@ func SelectComposition[C any](ctx context.Context, res *un.Unstructured, xrdAPIV
 
 	if len(sel) > 0 {
 		return l.ByLabels(ctx, sel)
+	}
+
+	// Crossplane applies the default only to a composite with no selector at all.
+	if s, found, _ := NestedCrossplaneValue(res.Object, xrdAPIVersion, "an object", un.NestedFieldNoCopy, "compositionSelector"); found && s != nil {
+		return l.ByType(ctx)
 	}
 
 	if refs.Default != "" {

@@ -293,15 +293,11 @@ func TestAssignInputs(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			lookup := func(kind string) func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) {
-				return func(_ context.Context, g schema.GroupVersionKind) (*un.Unstructured, error) {
-					if g == gvk(kind) {
-						return tc.args.xrd, nil
-					}
-					return nil, errors.New("no XRD found")
-				}
+			builder := testutils.NewMockDefinitionClient()
+			if tc.args.xrd != nil {
+				builder = builder.WithXRDForGVK(gvk("XBucket"), tc.args.xrd).WithXRDForClaimGVK(gvk("Bucket"), tc.args.xrd)
 			}
-			defs := &testutils.MockDefinitionClient{GetXRDForXRFn: lookup("XBucket"), GetXRDForClaimFn: lookup("Bucket")}
+			defs := builder.Build()
 			into := map[string][]*un.Unstructured{}
 			err := assignInputs(context.Background(), defs, cmpstd.Or(tc.args.ns, "ctx-ns"), []*un.Unstructured{a, b}, tc.args.inputs, into)
 			gotErr := ""

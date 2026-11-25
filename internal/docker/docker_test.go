@@ -23,6 +23,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -165,5 +166,20 @@ func TestRunWithLabels(t *testing.T) {
 				t.Errorf("\n%s\nRunWithLabels(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
+	}
+}
+
+func TestStartWithVolumeMount(t *testing.T) {
+	cfg := &startContainerConfig{}
+	StartWithVolumeMount("cache", "/root/.cache/pip")(cfg)
+
+	want := []mount.Mount{{
+		Type:          mount.TypeVolume,
+		Source:        "cache",
+		Target:        "/root/.cache/pip",
+		VolumeOptions: &mount.VolumeOptions{NoCopy: true},
+	}}
+	if diff := cmp.Diff(want, cfg.hostConfig.Mounts); diff != "" {
+		t.Errorf("\nStartWithVolumeMount(...): a named volume must be mounted with NoCopy, or concurrent containers race to seed it from the image: -want, +got:\n%s", diff)
 	}
 }

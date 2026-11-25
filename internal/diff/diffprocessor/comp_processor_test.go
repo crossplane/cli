@@ -3578,6 +3578,8 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 		clusterComposite func(context.Context, *un.Unstructured) (*un.Unstructured, error)
 		// resolve is a composite's effective composite; the composite itself when nil.
 		resolve func(context.Context, *un.Unstructured) (*un.Unstructured, error)
+		// xrTimeout is the per-composite budget; none when zero.
+		xrTimeout time.Duration
 	}
 
 	type want struct {
@@ -3858,6 +3860,23 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			},
 			want: want{rendered: nil, skipped: map[string]bool{"test-comp": true}, errored: []string{"a"}},
 		},
+		"LivenessLookupTimesOut": {
+			reason: "A supplied composite's cluster lookup runs under its own XRTimeout, so a slow one fails that composite alone.",
+			args: args{
+				find:      notFound,
+				supplied:  map[string][]*un.Unstructured{"test-comp": {xr("a", "file"), xrB("", "new").WithGenerateName("n-").Build()}},
+				xrTimeout: 50 * time.Millisecond,
+				clusterComposite: func(ctx context.Context, _ *un.Unstructured) (*un.Unstructured, error) {
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(5 * time.Second):
+						return nil, nil
+					}
+				},
+			},
+			want: want{rendered: []string{"/new"}, errored: []string{"a"}},
+		},
 		"ReplacingSuppliedOverDeletingLiveDropped": {
 			reason: "A supplied composite replacing a live one being deleted is on the deletion path, so it is dropped, not rendered.",
 			args: args{
@@ -3911,6 +3930,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 
 			proc := newCompProcessorForTest(t, client, false)
 			WithSuppliedComposites(tt.args.supplied)(&proc.config)
+			proc.config.XRTimeout = tt.args.xrTimeout
 
 			var got []string
 

@@ -392,7 +392,11 @@ func (p *DefaultCompDiffProcessor) suppliedLiveness(ctx context.Context, resolve
 				continue
 			}
 
-			cluster, err := p.xrProc.ClusterComposite(ctx, u)
+			// Cluster I/O for this composite alone, so it runs under its own XRTimeout budget.
+			xrCtx, cancel := p.config.xrContext(ctx)
+			cluster, err := p.xrProc.ClusterComposite(xrCtx, u)
+			cancel()
+
 			switch {
 			case err != nil:
 				live[id] = suppliedState{err: errors.Wrapf(err, "cannot get %s %q from the cluster", u.GetKind(), u.GetName())}

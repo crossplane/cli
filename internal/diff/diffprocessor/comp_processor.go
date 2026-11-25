@@ -704,9 +704,6 @@ func (p *DefaultCompDiffProcessor) processSingleComposition(ctx context.Context,
 		skippedErrors = summary.WithErrors
 
 		keptXRs = slices.DeleteFunc(keptXRs, func(xr *un.Unstructured) bool { return !isSupplied(supplied, xr) })
-		if len(keptXRs) == 0 {
-			return result, nil, nil
-		}
 	}
 
 	p.config.Logger.Debug("Processing affected XRs", "composition", newComp.GetName(), "count", len(affectedXRs), "scoped", scoped)

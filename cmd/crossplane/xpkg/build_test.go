@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
@@ -260,6 +261,25 @@ func TestBuildCmdRuntimeImageTarball(t *testing.T) {
 			}
 			if len(layers) != len(baseLayers)+1 {
 				t.Errorf("\n%s\nRun(...): want %d layers (base + package), got %d", tc.reason, len(baseLayers)+1, len(layers))
+			}
+			wantDigests := make([]v1.Hash, 0, len(baseLayers))
+			for _, l := range baseLayers {
+				d, err := l.Digest()
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantDigests = append(wantDigests, d)
+			}
+			gotDigests := make([]v1.Hash, 0, len(baseLayers))
+			for _, l := range layers[:min(len(baseLayers), len(layers))] {
+				d, err := l.Digest()
+				if err != nil {
+					t.Fatal(err)
+				}
+				gotDigests = append(gotDigests, d)
+			}
+			if diff := cmp.Diff(wantDigests, gotDigests); diff != "" {
+				t.Errorf("\n%s\nRun(...): -want base layer digests, +got first layer digests:\n%s", tc.reason, diff)
 			}
 			cfg, err := img.ConfigFile()
 			if err != nil {

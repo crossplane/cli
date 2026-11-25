@@ -652,18 +652,9 @@ func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.S
 			return "", errors.Wrap(err, "failed to inspect existing registry container")
 		}
 
-		var mountType string
-		switch storage.Type() {
-		case v1alpha1.StorageTypeBindMount:
-			mountType = "bind"
-		case v1alpha1.StorageTypeVolume:
-			mountType = "volume"
-		default:
-			return "", errors.Errorf("unknown registry storage type %q", storage.Type())
-		}
 		storageMatches := false
 		for _, mount := range inspect.Container.Mounts {
-			if mount.Destination == storage.DestDir() && string(mount.Type) == mountType {
+			if mount.Destination == storage.DestDir() && string(mount.Type) == string(storage.Type()) {
 				storageMatches = true
 				break
 			}

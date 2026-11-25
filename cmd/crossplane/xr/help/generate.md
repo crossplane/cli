@@ -31,6 +31,12 @@ Generate an XR with a specific kind:
 crossplane xr generate claim.yaml --kind MyCompositeResource
 ```
 
+Generate an XR with the kind resolved from its XRD:
+
+```shell
+crossplane xr generate claim.yaml --xrd xrd.yaml
+```
+
 Generate a directly linked XR (no Claim reference, no name suffix):
 
 ```shell

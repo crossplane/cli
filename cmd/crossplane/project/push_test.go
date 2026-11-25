@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -192,6 +193,8 @@ func TestPushCmdRun(t *testing.T) {
 		// refs that must exist in the registry after the push, mapped to
 		// whether each is an index.
 		refs map[string]bool
+		// manifests is the number of manifests each pushed index must hold.
+		manifests map[string]int
 		// err builds the expected error from the per-test directory.
 		err func(dir string) error
 	}
@@ -209,7 +212,10 @@ func TestPushCmdRun(t *testing.T) {
 				tags: []string{"REPO:" + project.ConfigurationTag, "REPO_fn:amd64"},
 				tag:  "v1.0.0",
 			},
-			want: want{refs: map[string]bool{"REPO:v1.0.0": false, "REPO_fn:v1.0.0": true}},
+			want: want{
+				refs:      map[string]bool{"REPO:v1.0.0": false, "REPO_fn:v1.0.0": true},
+				manifests: map[string]int{"REPO_fn:v1.0.0": 1},
+			},
 		},
 		"RepositoryOverride": {
 			reason: "--repository should replace the project's repository, and an explicit package file path should be read.",
@@ -310,6 +316,7 @@ func TestPushCmdRun(t *testing.T) {
 			}
 
 			got := make(map[string]bool, len(tc.want.refs))
+			gotManifests := map[string]int{}
 			for r := range tc.want.refs {
 				ref, err := name.ParseReference(expand(r))
 				if err != nil {
@@ -333,6 +340,7 @@ func TestPushCmdRun(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					gotManifests[r] = len(im.Manifests)
 					for _, d := range im.Manifests {
 						img, err := idx.Image(d.Digest)
 						if err != nil {
@@ -359,6 +367,9 @@ func TestPushCmdRun(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.want.refs, got); diff != "" {
 				t.Errorf("\n%s\nRun(...): refs in registry -want, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(tc.want.manifests, gotManifests, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nRun(...): manifests per pushed index -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

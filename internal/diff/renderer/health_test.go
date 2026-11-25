@@ -123,6 +123,33 @@ Total: 1 modified across 2 XRs (1 unchanged)
 Health: 1 of 1 XR unhealthy before apply; 1 resource not ready.
 `,
 		},
+		"GroupedNestedListsItsOwn": {
+			reason: "A nested XR given as an input with health of its own lists what it composes; its parent lists neither, so each resource is listed once, as in plan output.",
+			args: args{groups: []dt.XRDiffGroup{
+				group("a", nil, []dt.ResourceHealth{
+					{ObjectReference: ref("XNetwork", "b"), Health: notReady},
+					{ObjectReference: ref("RouteTable", "rt"), Via: new(ref("XNetwork", "b")), Health: failing},
+				}),
+				group("b", notReady, []dt.ResourceHealth{{ObjectReference: ref("RouteTable", "rt"), Health: failing}}),
+			}},
+			want: `=== XNetwork/a ===
+
+No changes.
+
+=== XNetwork/b ===
+
+⚠ not ready (Ready=False, Creating)
+
+No changes.
+
+Unhealthy resources without changes:
+  RouteTable/rt ⚠ failing (Synced=False, ReconcileError): vpc does not exist
+
+================================================================================
+Total: no changes across 2 XRs (2 unchanged)
+Health: 1 of 1 XR unhealthy before apply; 1 resource failing (Synced=False).
+`,
+		},
 		"FullMessages": {
 			reason: "With full messages, a message prints in full beneath its line.",
 			args:   args{full: true, groups: []dt.XRDiffGroup{group("net", nil, nil, liveWith(modifiedDiffFor("Bucket", "b"), "line one\nline two"))}},

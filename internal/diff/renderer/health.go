@@ -122,3 +122,19 @@ func writeHealthLine(w io.Writer, t *health.Tally) error {
 
 	return errors.Wrap(err, "cannot write health summary")
 }
+
+// groupsOwnedElsewhere returns, by group index, the keys each group's
+// unhealthy block skips: a nested XR given as an input with health of its own
+// lists what it composes, so its parent lists neither, as in plan output.
+func groupsOwnedElsewhere(groups []dt.XRDiffGroup) []map[string]bool {
+	entries := make([]health.Entry, len(groups))
+
+	for i, g := range groups {
+		entries[i] = health.Entry{Key: refKey(g.XR), HasHealth: g.Health.XR != nil}
+		for _, c := range g.Health.Composed {
+			entries[i].Composes = append(entries[i].Composes, refKey(c.ObjectReference))
+		}
+	}
+
+	return health.OwnedElsewhere(entries)
+}

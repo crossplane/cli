@@ -379,7 +379,9 @@ func (r *DefaultDiffRenderer) renderGrouped(groups []dt.XRDiffGroup) error {
 		t           health.Tally
 	)
 
-	for _, g := range groups {
+	ownedElsewhere := groupsOwnedElsewhere(groups)
+
+	for i, g := range groups {
 		// An identity-less group (should not normally be mixed in here) has no
 		// owning XR to head a section, so fold its diffs into the aggregate
 		// without a header or per-section summary.
@@ -398,7 +400,7 @@ func (r *DefaultDiffRenderer) renderGrouped(groups []dt.XRDiffGroup) error {
 
 		tallyComposite(&t, g.XR, g.Health, g.Diffs)
 
-		counts, err := r.renderSection(g)
+		counts, err := r.renderSection(g, ownedElsewhere[i])
 		if err != nil {
 			return err
 		}
@@ -423,8 +425,9 @@ func (r *DefaultDiffRenderer) renderGrouped(groups []dt.XRDiffGroup) error {
 // renderSection renders one input XR's section: its header and health, then
 // its error, or its diffs, unhealthy resources without changes and summary,
 // or "No changes." with those resources. It returns the section's counts,
-// zero for an errored XR.
-func (r *DefaultDiffRenderer) renderSection(g dt.XRDiffGroup) (diffCounts, error) {
+// zero for an errored XR. Its unhealthy resources skip the keys in skip,
+// which another section lists.
+func (r *DefaultDiffRenderer) renderSection(g dt.XRDiffGroup, skip map[string]bool) (diffCounts, error) {
 	stdout := r.diffOpts.Stdout
 
 	if _, err := fmt.Fprintf(stdout, "=== %s ===\n\n", groupTitle(g)); err != nil {
@@ -453,7 +456,7 @@ func (r *DefaultDiffRenderer) renderSection(g dt.XRDiffGroup) (diffCounts, error
 		return counts, err
 	}
 
-	block := joinLines(unhealthyBlock(g.Health, g.Diffs, nil, r.diffOpts.FullMessages))
+	block := joinLines(unhealthyBlock(g.Health, g.Diffs, skip, r.diffOpts.FullMessages))
 
 	if counts.output == 0 {
 		if _, err := fmt.Fprintf(stdout, "No changes.\n\n"); err != nil {

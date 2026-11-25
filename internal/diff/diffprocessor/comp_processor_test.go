@@ -3519,10 +3519,17 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 	claim := func() *un.Unstructured {
 		return tu.NewResource("example.org/v1", "Claim", "claim").InNamespace("ns").WithSpecField("marker", "file").Build()
 	}
-	// found discovers the given composites under every Composition.
+	// found discovers copies of the given composites under every Composition, fresh on each call.
 	found := func(xrs ...*un.Unstructured) func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
 		return func(context.Context, *un.Unstructured, types.FindCompositesOptions) ([]*un.Unstructured, error) {
-			return xrs, nil
+			if len(xrs) == 0 {
+				return nil, nil
+			}
+			out := make([]*un.Unstructured, len(xrs))
+			for i, u := range xrs {
+				out[i] = u.DeepCopy()
+			}
+			return out, nil
 		}
 	}
 	// self returns the composite itself, as the cluster's copy or the effective composite.

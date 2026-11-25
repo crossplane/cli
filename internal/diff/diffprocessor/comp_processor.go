@@ -1778,8 +1778,9 @@ func (p *DefaultCompDiffProcessor) classifyXR(ctx context.Context, xr *un.Unstru
 	// A live supplied composite is reconciled with the cluster's policy and ref wherever the file names
 	// none, as render is (see inheritClusterFields and syncClaimSpec), so both are read from its effective
 	// composite: the XR itself, or a claim's backing XR. It is resolved only when the file leaves the
-	// outcome open, naming no policy, or Manual with no ref: a file naming Automatic, or Manual with a
-	// ref, wins over the cluster for both fields, so the cluster read could not change the outcome.
+	// outcome open (see leavesPinOpen): a file naming Automatic, or an XR's naming Manual with a ref, wins
+	// over the cluster for both fields, so the cluster read could not change the outcome. A claim's ref
+	// reaches its backing XR only when that XR is already Manual, so a Manual claim is always resolved.
 	source, resolved := xr, false
 	if liveSupplied {
 		effective, unresolved, err := p.openEffectiveComposite(ctx, xr, xrKind)
@@ -1907,7 +1908,7 @@ func backingRevision(claim, composite *un.Unstructured) (string, error) {
 // leaves the pin open (see leavesPinOpen), or nil when the file settles it. unresolved is that
 // composite's own resolve error; err is a malformed policy or ref.
 func (p *DefaultCompDiffProcessor) openEffectiveComposite(ctx context.Context, xr *un.Unstructured, xrKind string) (effective *un.Unstructured, unresolved, err error) {
-	open, err := leavesPinOpen(xr)
+	open, err := leavesPinOpen(xr, xr.GetKind() != xrKind)
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "cannot read compositionUpdatePolicy for XR %q", xr.GetName())
 	}
@@ -1941,8 +1942,9 @@ func (p *DefaultCompDiffProcessor) effectiveComposite(ctx context.Context, xr *u
 }
 
 // leavesPinOpen reports whether xr leaves its pin to the cluster: it names no compositionUpdatePolicy,
-// or names Manual with no compositionRevisionRef.
-func leavesPinOpen(xr *un.Unstructured) (bool, error) {
+// or names Manual with no compositionRevisionRef. A claim naming Manual always does: the syncer copies
+// its compositionRevisionRef onto the backing XR only when that XR is already Manual (see syncClaimSpec).
+func leavesPinOpen(xr *un.Unstructured, claim bool) (bool, error) {
 	policy, found, err := xp.NestedCrossplaneValue(xr.Object, xr.GetAPIVersion(), "a string", un.NestedString, "compositionUpdatePolicy")
 	if err != nil || !found || policy == "" {
 		return err == nil, err
@@ -1950,6 +1952,10 @@ func leavesPinOpen(xr *un.Unstructured) (bool, error) {
 
 	if policy != compositionUpdatePolicyManual {
 		return false, nil
+	}
+
+	if claim {
+		return true, nil
 	}
 
 	revision, err := xp.XRCompositionRevisionRef(xr.Object, xr.GetAPIVersion())

@@ -3874,6 +3874,37 @@ func TestDefaultCompDiffProcessor_DiffComposition_SuppliedComposites(t *testing.
 			},
 			want: want{rendered: nil, repointed: map[string]int{"test-comp": 0}, supplied: map[string][]string{"test-comp": {"claim"}}},
 		},
+		"ReplacingSuppliedPinnedClaimOverAutomaticBackingXRRepoints": {
+			reason: "A supplied Manual claim naming a revision whose backing XR is Automatic has the ref stripped by the claim syncer, so the effective XR is unpinned and re-points.",
+			args: args{
+				find:             found(),
+				supplied:         map[string][]*un.Unstructured{"test-comp": {pinned(manual(claim()))}},
+				clusterComposite: self,
+				// The syncer propagates Manual but not the ref onto an Automatic backing XR.
+				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					if u.GetKind() != "Claim" {
+						return u, nil
+					}
+					return manual(xr("claim-xyz", "file")), nil
+				},
+			},
+			want: want{rendered: []string{"claim/file"}, repointed: map[string]int{"test-comp": 1}},
+		},
+		"ReplacingSuppliedPinnedClaimOverManualBackingXRDeferred": {
+			reason: "A supplied Manual claim naming a revision whose backing XR is Manual has the ref propagated, so it stays pinned and is deferred.",
+			args: args{
+				find:             found(),
+				supplied:         map[string][]*un.Unstructured{"test-comp": {pinned(manual(claim()))}},
+				clusterComposite: self,
+				resolve: func(_ context.Context, u *un.Unstructured) (*un.Unstructured, error) {
+					if u.GetKind() != "Claim" {
+						return u, nil
+					}
+					return pinned(manual(xr("claim-xyz", "file"))), nil
+				},
+			},
+			want: want{rendered: nil, repointed: map[string]int{"test-comp": 0}},
+		},
 		"UnresolvedSuppliedXRErrors": {
 			reason: "A live supplied XR naming no policy whose effective composite cannot be resolved reports that error, is not rendered, and is not counted as re-pointing.",
 			args: args{

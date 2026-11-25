@@ -9,7 +9,8 @@ spec:
   - functionRef:
       name: function-dummy
     step: be-a-dummy
-status: {}
+status:
+  appliedResources: 0
 ---
 apiVersion: render.crossplane.io/v1beta1
 kind: Result

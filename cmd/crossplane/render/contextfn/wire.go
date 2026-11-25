@@ -49,7 +49,7 @@ func (h *Handle) Function() pkgv1.Function {
 func (h *Handle) CompositeSeedStep() apiextensionsv1.PipelineStep {
 	return apiextensionsv1.PipelineStep{
 		Step:        stepSeed,
-		FunctionRef: apiextensionsv1.FunctionReference{Name: FunctionName},
+		FunctionRef: &apiextensionsv1.FunctionReference{Name: FunctionName},
 		Input:       h.seedInput,
 	}
 }
@@ -60,7 +60,7 @@ func (h *Handle) CompositeSeedStep() apiextensionsv1.PipelineStep {
 func (h *Handle) CompositeCaptureStep() apiextensionsv1.PipelineStep {
 	return apiextensionsv1.PipelineStep{
 		Step:        stepCapture,
-		FunctionRef: apiextensionsv1.FunctionReference{Name: FunctionName},
+		FunctionRef: &apiextensionsv1.FunctionReference{Name: FunctionName},
 		Input:       h.captureInput,
 	}
 }
@@ -70,7 +70,7 @@ func (h *Handle) CompositeCaptureStep() apiextensionsv1.PipelineStep {
 func (h *Handle) OperationSeedStep() opsv1alpha1.PipelineStep {
 	return opsv1alpha1.PipelineStep{
 		Step:        stepSeed,
-		FunctionRef: opsv1alpha1.FunctionReference{Name: FunctionName},
+		FunctionRef: &opsv1alpha1.FunctionReference{Name: FunctionName},
 		Input:       h.seedInput,
 	}
 }
@@ -80,7 +80,7 @@ func (h *Handle) OperationSeedStep() opsv1alpha1.PipelineStep {
 func (h *Handle) OperationCaptureStep() opsv1alpha1.PipelineStep {
 	return opsv1alpha1.PipelineStep{
 		Step:        stepCapture,
-		FunctionRef: opsv1alpha1.FunctionReference{Name: FunctionName},
+		FunctionRef: &opsv1alpha1.FunctionReference{Name: FunctionName},
 		Input:       h.captureInput,
 	}
 }

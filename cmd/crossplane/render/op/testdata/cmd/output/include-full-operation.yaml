@@ -9,4 +9,5 @@ spec:
   - functionRef:
       name: function-dummy
     step: be-a-dummy
-status: {}
+status:
+  appliedResources: 0

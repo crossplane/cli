@@ -261,9 +261,9 @@ func TestFunctionProviderFactory(t *testing.T) {
 		Spec: apiextensionsv1.CompositionSpec{
 			Mode: apiextensionsv1.CompositionModePipeline,
 			Pipeline: []apiextensionsv1.PipelineStep{
-				{Step: "a", FunctionRef: apiextensionsv1.FunctionReference{Name: "fn-cluster"}},
-				{Step: "b", FunctionRef: apiextensionsv1.FunctionReference{Name: "fn-dep"}},
-				{Step: "c", FunctionRef: apiextensionsv1.FunctionReference{Name: "fn-own"}},
+				{Step: "a", FunctionRef: &apiextensionsv1.FunctionReference{Name: "fn-cluster"}},
+				{Step: "b", FunctionRef: &apiextensionsv1.FunctionReference{Name: "fn-dep"}},
+				{Step: "c", FunctionRef: &apiextensionsv1.FunctionReference{Name: "fn-own"}},
 			},
 		},
 	}

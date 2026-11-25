@@ -44,3 +44,4 @@ spec:
               forProvider:
                 configData: {{ .observed.composite.resource.spec.coolField }}
                 roleName: static-role
+  unusedRevisionHistoryLimit: 1

@@ -50,7 +50,7 @@ func pipelineComp(name string, fnNames ...string) *apiextensionsv1.Composition {
 	for i, fn := range fnNames {
 		comp.Spec.Pipeline = append(comp.Spec.Pipeline, apiextensionsv1.PipelineStep{
 			Step:        "step-" + string(rune('a'+i)),
-			FunctionRef: apiextensionsv1.FunctionReference{Name: fn},
+			FunctionRef: &apiextensionsv1.FunctionReference{Name: fn},
 		})
 	}
 

@@ -39,6 +39,7 @@ spec:
     - step: generate-resources
       functionRef:
         name: function-dummy
+  unusedRevisionHistoryLimit: 1
 ---
 apiVersion: v1
 kind: Namespace

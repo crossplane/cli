@@ -44,3 +44,4 @@ spec:
                 roleName: templated-{{ $configMap.resource.metadata.name }}
             {{- end }}
             {{- end }}
+  unusedRevisionHistoryLimit: 1

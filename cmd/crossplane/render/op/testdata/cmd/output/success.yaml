@@ -9,7 +9,8 @@ spec:
   - functionRef:
       name: function-dummy
     step: be-a-dummy
-status: {}
+status:
+  appliedResources: 0
 ---
 apiVersion: example.org/v1alpha1
 kind: AppliedResource

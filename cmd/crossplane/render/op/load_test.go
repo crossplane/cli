@@ -109,7 +109,7 @@ spec:
 			Pipeline: []opsv1alpha1.PipelineStep{
 				{
 					Step: "test-step",
-					FunctionRef: opsv1alpha1.FunctionReference{
+					FunctionRef: &opsv1alpha1.FunctionReference{
 						Name: "test-function",
 					},
 				},
@@ -254,13 +254,13 @@ func TestInjectWatchedResource(t *testing.T) {
 						Pipeline: []opsv1alpha1.PipelineStep{
 							{
 								Step: "step-one",
-								FunctionRef: opsv1alpha1.FunctionReference{
+								FunctionRef: &opsv1alpha1.FunctionReference{
 									Name: "fn-one",
 								},
 							},
 							{
 								Step: "step-two",
-								FunctionRef: opsv1alpha1.FunctionReference{
+								FunctionRef: &opsv1alpha1.FunctionReference{
 									Name: "fn-two",
 								},
 							},
@@ -284,7 +284,7 @@ func TestInjectWatchedResource(t *testing.T) {
 					Pipeline: []opsv1alpha1.PipelineStep{
 						{
 							Step: "step-one",
-							FunctionRef: opsv1alpha1.FunctionReference{
+							FunctionRef: &opsv1alpha1.FunctionReference{
 								Name: "fn-one",
 							},
 							Requirements: &opsv1alpha1.FunctionRequirements{
@@ -301,7 +301,7 @@ func TestInjectWatchedResource(t *testing.T) {
 						},
 						{
 							Step: "step-two",
-							FunctionRef: opsv1alpha1.FunctionReference{
+							FunctionRef: &opsv1alpha1.FunctionReference{
 								Name: "fn-two",
 							},
 							Requirements: &opsv1alpha1.FunctionRequirements{
@@ -329,7 +329,7 @@ func TestInjectWatchedResource(t *testing.T) {
 						Pipeline: []opsv1alpha1.PipelineStep{
 							{
 								Step: "test-step",
-								FunctionRef: opsv1alpha1.FunctionReference{
+								FunctionRef: &opsv1alpha1.FunctionReference{
 									Name: "test-fn",
 								},
 							},
@@ -352,7 +352,7 @@ func TestInjectWatchedResource(t *testing.T) {
 					Pipeline: []opsv1alpha1.PipelineStep{
 						{
 							Step: "test-step",
-							FunctionRef: opsv1alpha1.FunctionReference{
+							FunctionRef: &opsv1alpha1.FunctionReference{
 								Name: "test-fn",
 							},
 							Requirements: &opsv1alpha1.FunctionRequirements{

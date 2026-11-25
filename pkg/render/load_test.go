@@ -185,7 +185,7 @@ func TestLoadComposition(t *testing.T) {
 						Mode: apiextensionsv1.CompositionModePipeline,
 						Pipeline: []apiextensionsv1.PipelineStep{{
 							Step:        "be-a-dummy",
-							FunctionRef: apiextensionsv1.FunctionReference{Name: "function-dummy"},
+							FunctionRef: &apiextensionsv1.FunctionReference{Name: "function-dummy"},
 						}},
 					},
 				},

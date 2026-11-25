@@ -26,7 +26,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/crossplane/crossplane-runtime/v2 v2.4.3
-	github.com/crossplane/crossplane/apis/v2 v2.4.3
+	github.com/crossplane/crossplane/apis/v2 v2.5.0
 	github.com/crossplane/function-sdk-go v0.7.1
 	github.com/crossplane/upjet/v2 v2.5.1-0.20261005082904-c3b7d449d0d4
 	github.com/docker/cli v29.10.0+incompatible
@@ -73,7 +73,7 @@ require (
 	k8s.io/kube-openapi v0.0.0-20260821135717-be32def86098
 	k8s.io/metrics v0.37.1
 	k8s.io/utils v0.0.0-20261023123148-ca04ba58ecab
-	sigs.k8s.io/controller-runtime v0.24.1
+	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/kind v0.33.0
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2
 	sigs.k8s.io/yaml v1.6.0

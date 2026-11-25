@@ -42,3 +42,4 @@ spec:
                 configData: {{ $.observed.composite.resource.spec.coolField }}
                 roleName: templated-{{ $configMap.resource.metadata.name }}
             {{- end }}
+  unusedRevisionHistoryLimit: 1

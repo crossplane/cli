@@ -420,12 +420,7 @@ func TestSelectionMatchesCluster(t *testing.T) {
 				b = b.WithDefaultCompositionRef(tc.args.defalt)
 			}
 			xrd := b.BuildAsUnstructured()
-			defs := &testutils.MockDefinitionClient{
-				GetXRDForXRFn: func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) { return xrd, nil },
-				GetXRDForClaimFn: func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) {
-					return nil, errors.New("not a claim")
-				},
-			}
+			defs := testutils.NewMockDefinitionClient().WithXRDForXR(xrd).Build()
 
 			resources := testutils.NewMockResourceClient().WithListableResources(comps...).WithResourcesExist(comps...).Build()
 			cluster, err := xpclient.NewCompositionClient(resources, defs, testutils.TestLogger(t, false)).FindMatchingComposition(t.Context(), in.DeepCopy())

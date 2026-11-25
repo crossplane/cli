@@ -1235,7 +1235,7 @@ func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *u
 
 	name := xp.XRDSelectionRefs(xrd).Enforced
 	if name == "" {
-		if name, err = xp.XRCompositionRef(res.Object, res.GetAPIVersion()); err != nil {
+		if name, err = xp.XRCompositionRef(res.Object, xrd.GetAPIVersion()); err != nil {
 			return dtypes.ResolvedComposition{}, errors.Wrapf(err, "cannot read compositionRef for %s/%s", res.GetKind(), res.GetName())
 		}
 	}

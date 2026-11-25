@@ -50,9 +50,10 @@ func XRDSelectionRefs(xrd *un.Unstructured) SelectionRefs {
 // selects any), the XRD's defaultCompositionRef, then the only Composition of the type. A
 // compositionSelector that is present but selects no labels skips the default, as Crossplane's does:
 // Crossplane then picks any Composition of the type at random, which can't be previewed, so the only
-// Composition of the type is used and several fail through l.ByType. The first step that applies decides; its lookup's error is returned as is. res's fields are read at the
-// paths xrdAPIVersion gives (see NestedCrossplaneValue), and one of the wrong type fails through
-// l.Malformed before any later step is tried.
+// Composition of the type is used and several fail through l.ByType. The first step that applies
+// decides; its lookup's error is returned as is. res's fields are read at the paths xrdAPIVersion gives
+// (see NestedCrossplaneValue), and one of the wrong type fails through l.Malformed before any later step
+// is tried.
 func SelectComposition[C any](ctx context.Context, res *un.Unstructured, xrdAPIVersion string, refs SelectionRefs, l CompositionLookup[C]) (C, error) {
 	var zero C
 

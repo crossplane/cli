@@ -2022,6 +2022,8 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 		run map[string]runComposition
 		// enforced is the nested XR's XRD's enforcedCompositionRef.
 		enforced string
+		// xrdAPIVersion is the nested XR's XRD's apiVersion; v2 when unset.
+		xrdAPIVersion string
 	}
 
 	// errBoom is the error a run Composition that could not be read carries.
@@ -2052,6 +2054,15 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 			reason: "A nested XR whose XRD enforces a Composition in the run renders with the run's copy, whatever its compositionRef names.",
 			args:   args{nested: nested("other-child").Build(), enforced: "child", cluster: types.ResolvedComposition{Composition: otherChild, RevisionName: "other-child-0ld0001"}},
 			want:   want{Composition: "child", Labels: runChild.Build().GetLabels(), Revision: childRevision},
+		},
+		"LegacyNestedXRReadsSpecCompositionRef": {
+			reason: "A nested XR of a v1 XRD names its Composition at spec.compositionRef, not spec.crossplane.compositionRef, as the cluster path reads it.",
+			args: args{
+				nested:        nested("other-child").WithNestedField(map[string]any{"name": "child"}, "spec", "compositionRef").Build(),
+				xrdAPIVersion: xp.CrossplaneAPIExtGroupV1,
+				cluster:       types.ResolvedComposition{Composition: otherChild, RevisionName: "other-child-0ld0001"},
+			},
+			want: want{Composition: "child", Labels: runChild.Build().GetLabels(), Revision: childRevision},
 		},
 		"ClusterSelectedRunCompositionGetsIt": {
 			reason: "A nested XR naming no Composition renders with the run's copy of the one the cluster selects for it.",
@@ -2137,7 +2148,12 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 					Build(),
 				definitionClient: tu.NewMockDefinitionClient().
 					WithGetXRDForXR(func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) {
-						xrd := tu.NewResource(xp.CrossplaneAPIExtGroupV2, "CompositeResourceDefinition", "xchildren.child.example.org").Build()
+						xrdAPIVersion := xp.CrossplaneAPIExtGroupV2
+						if tc.args.xrdAPIVersion != "" {
+							xrdAPIVersion = tc.args.xrdAPIVersion
+						}
+
+						xrd := tu.NewResource(xrdAPIVersion, "CompositeResourceDefinition", "xchildren.child.example.org").Build()
 						if tc.args.enforced != "" {
 							_ = un.SetNestedField(xrd.Object, tc.args.enforced, "spec", "enforcedCompositionRef", "name")
 						}

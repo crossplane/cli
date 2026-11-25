@@ -704,7 +704,7 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 	// The --resource-file inputs are checked and assigned once the clients
 	// initialize, which caches the cluster's XRDs, and before rendering.
 	supplied := map[string][]*un.Unstructured{}
-	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, append(opts, dp.WithSuppliedComposites(supplied))...)
+	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, clients.XpClients.Definition, append(opts, dp.WithSuppliedComposites(supplied))...)
 	diff := c.diffCompositions(k, logger, sp, progress, proc, comps, msg)
 	return c.simulate(sigCtx, logger, clients.Initialize, proc, func(ctx context.Context) (bool, error) {
 		if err := assignInputs(ctx, clients.XpClients.Definition, inputNamespace(c.sel, ns), comps, in.ResourceFile, supplied); err != nil {

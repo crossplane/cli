@@ -121,12 +121,13 @@ type CompositeDiffer interface {
 // DefaultCompDiffProcessor implements CompDiffProcessor.
 type DefaultCompDiffProcessor struct {
 	compositionClient xp.CompositionClient
+	definitionClient  xp.DefinitionClient
 	config            ProcessorConfig
 	xrProc            CompositeDiffer
 }
 
 // NewCompDiffProcessor creates a new DefaultCompDiffProcessor.
-func NewCompDiffProcessor(xrProc CompositeDiffer, compositionClient xp.CompositionClient, opts ...ProcessorOption) CompDiffProcessor {
+func NewCompDiffProcessor(xrProc CompositeDiffer, compositionClient xp.CompositionClient, definitionClient xp.DefinitionClient, opts ...ProcessorOption) CompDiffProcessor {
 	// Create default configuration
 	config := ProcessorConfig{
 		MaxNestedDepth:      DefaultMaxNestedDepth,
@@ -164,6 +165,7 @@ func NewCompDiffProcessor(xrProc CompositeDiffer, compositionClient xp.Compositi
 
 	return &DefaultCompDiffProcessor{
 		compositionClient: compositionClient,
+		definitionClient:  definitionClient,
 		config:            config,
 		xrProc:            xrProc,
 	}
@@ -1212,22 +1214,30 @@ func (p *DefaultCompDiffProcessor) runCompositions(ctx context.Context, composit
 }
 
 // runCompositionFor resolves the composition of res, a nested XR of a type other than the diffed
-// composition's. The run's Composition is used when it is the one res names in compositionRef, or, when
-// res names none, the one the cluster selects for it (by compositionSelector or type), and res would
-// adopt the revision it produces (see adoptsRunRevision). res then renders with that revision's predicted
-// name, as a composite of the diffed composition does (see cliCompositionRevision). Otherwise res gets the
-// cluster's composition and revision: a Manual res stays on the revision it is pinned to, as Crossplane
-// would keep it.
+// composition's. The run's Composition is used when it is the one res's XRD enforces, or, with none
+// enforced, the one res names in compositionRef, or, when res names none, the one the cluster selects for
+// it (in xp.SelectComposition's order), and res would adopt the revision it produces (see
+// adoptsRunRevision). res then renders with that revision's predicted name, as a composite of the diffed
+// composition does (see cliCompositionRevision). Otherwise res gets the cluster's composition and
+// revision: a Manual res stays on the revision it is pinned to, as Crossplane would keep it.
 //
-// TODO(jcogilvie): selection by compositionSelector or type runs over the cluster's Compositions, so a run
-// Composition the cluster does not have yet, or whose labels the run changes, is not selected for a
-// nested XR without a compositionRef. Crossplane writes compositionRef on every XR it reconciles, so
-// only a nested XR the run would create is affected; overlay the run onto the cluster's candidates if
-// that case matters.
+// TODO(jcogilvie): selection by compositionSelector, the XRD's defaultCompositionRef or type runs over
+// the cluster's Compositions, so a run Composition the cluster does not have yet, or whose labels the run
+// changes, is not selected for a nested XR without a compositionRef. Crossplane writes compositionRef on
+// every XR it reconciles, so only a nested XR the run would create is affected; overlay the run onto the
+// cluster's candidates if that case matters.
 func (p *DefaultCompDiffProcessor) runCompositionFor(ctx context.Context, res *un.Unstructured, run map[string]runComposition) (dtypes.ResolvedComposition, error) {
-	name, err := xp.XRCompositionRef(res.Object, res.GetAPIVersion())
+	// An enforced Composition overrides res's compositionRef, as in xp.SelectComposition.
+	xrd, err := p.definitionClient.GetXRDForXR(ctx, res.GroupVersionKind())
 	if err != nil {
-		return dtypes.ResolvedComposition{}, errors.Wrapf(err, "cannot read compositionRef for %s/%s", res.GetKind(), res.GetName())
+		return dtypes.ResolvedComposition{}, errors.Wrapf(err, "cannot get the XRD of %s/%s", res.GetKind(), res.GetName())
+	}
+
+	name := xp.XRDSelectionRefs(xrd).Enforced
+	if name == "" {
+		if name, err = xp.XRCompositionRef(res.Object, res.GetAPIVersion()); err != nil {
+			return dtypes.ResolvedComposition{}, errors.Wrapf(err, "cannot read compositionRef for %s/%s", res.GetKind(), res.GetName())
+		}
 	}
 
 	// cluster is the cluster's resolution, looked up only when res names no composition or the run's

@@ -1955,6 +1955,7 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRCompositionLookup(t *te
 
 			processor := &DefaultCompDiffProcessor{
 				compositionClient: mockCompClient,
+				definitionClient:  tu.NewMockDefinitionClient().WithV1XRDForXR().Build(),
 				xrProc:            mockXRProc,
 				config: ProcessorConfig{
 					Logger: tu.TestLogger(t, false),
@@ -2019,6 +2020,8 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 		runComps []*un.Unstructured
 		// run, when set, replaces the run built from runComps.
 		run map[string]runComposition
+		// enforced is the nested XR's XRD's enforcedCompositionRef.
+		enforced string
 	}
 
 	// errBoom is the error a run Composition that could not be read carries.
@@ -2043,6 +2046,11 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 		"RefToRunCompositionGetsIt": {
 			reason: "A nested XR naming a Composition in the run renders with the run's copy and its predicted revision.",
 			args:   args{nested: nested("child").Build(), cluster: types.ResolvedComposition{Composition: clusterChild, RevisionName: "child-0ld0001"}},
+			want:   want{Composition: "child", Labels: runChild.Build().GetLabels(), Revision: childRevision},
+		},
+		"EnforcedRunCompositionOverridesRef": {
+			reason: "A nested XR whose XRD enforces a Composition in the run renders with the run's copy, whatever its compositionRef names.",
+			args:   args{nested: nested("other-child").Build(), enforced: "child", cluster: types.ResolvedComposition{Composition: otherChild, RevisionName: "other-child-0ld0001"}},
 			want:   want{Composition: "child", Labels: runChild.Build().GetLabels(), Revision: childRevision},
 		},
 		"ClusterSelectedRunCompositionGetsIt": {
@@ -2125,6 +2133,16 @@ func TestDefaultCompDiffProcessor_collectXRDiffs_NestedXRRunComposition(t *testi
 					WithSuccessfulCompositionFetches([]*apiextensionsv1.Composition{parentComp, clusterChild}).
 					WithFindMatchingComposition(func(context.Context, *un.Unstructured) (types.ResolvedComposition, error) {
 						return tc.args.cluster, nil
+					}).
+					Build(),
+				definitionClient: tu.NewMockDefinitionClient().
+					WithGetXRDForXR(func(context.Context, schema.GroupVersionKind) (*un.Unstructured, error) {
+						xrd := tu.NewResource(xp.CrossplaneAPIExtGroupV2, "CompositeResourceDefinition", "xchildren.child.example.org").Build()
+						if tc.args.enforced != "" {
+							_ = un.SetNestedField(xrd.Object, tc.args.enforced, "spec", "enforcedCompositionRef", "name")
+						}
+
+						return xrd, nil
 					}).
 					Build(),
 				xrProc: &tu.MockDiffProcessor{
@@ -2214,6 +2232,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_ReportErrorOutput(t *testing.T
 	processor := NewCompDiffProcessor(
 		mockXRProc,
 		xpClients.Composition,
+		xpClients.Definition,
 		WithLogger(logger),
 	)
 
@@ -2289,7 +2308,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_LateWarningsReachStructuredOut
 		},
 	}
 
-	processor := NewCompDiffProcessor(mockXRProc, compClient,
+	processor := NewCompDiffProcessor(mockXRProc, compClient, tu.NewMockDefinitionClient().Build(),
 		WithLogger(tu.TestLogger(t, false)),
 		WithAdvisories(advisories),
 	)
@@ -3339,7 +3358,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_RenderOverlaps(t *testing.T) {
 			}, tu.NewMockCompositionClient().
 				WithSuccessfulCompositionFetch(comp).
 				WithResourcesForComposition("test-composition", "default", tc.xrs).
-				Build(), WithLogger(tu.TestLogger(t, false)))
+				Build(), tu.NewMockDefinitionClient().Build(), WithLogger(tu.TestLogger(t, false)))
 
 			// The input differs from the cluster's composition (the label), so impact analysis runs.
 			out, err := proc.DiffComposition(t.Context(), []*un.Unstructured{
@@ -3437,7 +3456,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_Health(t *testing.T) {
 			}, tu.NewMockCompositionClient().
 				WithSuccessfulCompositionFetch(comp).
 				WithResourcesForComposition("test-composition", "default", []*un.Unstructured{xr("a")}).
-				Build(), WithLogger(tu.TestLogger(t, false)))
+				Build(), tu.NewMockDefinitionClient().Build(), WithLogger(tu.TestLogger(t, false)))
 
 			// The input differs from the cluster's composition (the label), so impact analysis runs.
 			out, _ := proc.DiffComposition(t.Context(), []*un.Unstructured{

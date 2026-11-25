@@ -52,7 +52,7 @@ func TestProcessorsDefaultEngineLimits(t *testing.T) {
 		return limits{c.MaxNestedDepth, c.MaxRenderIterations}
 	}
 	comp := func(opts ...ProcessorOption) limits {
-		c := NewCompDiffProcessor(nil, nil, opts...).(*DefaultCompDiffProcessor).config
+		c := NewCompDiffProcessor(nil, nil, nil, opts...).(*DefaultCompDiffProcessor).config
 		return limits{c.MaxNestedDepth, c.MaxRenderIterations}
 	}
 

@@ -504,6 +504,8 @@ func TestTraceWatchIntegration(t *testing.T) {
 				"testdata/integration/composed-watch-xr.yaml"),
 			integration.Composes("testdata/integration/xr-watch-deleted.yaml",
 				"testdata/integration/composed-watch-deleted.yaml"),
+			integration.Composes("testdata/integration/xr-watch-cancelled.yaml",
+				"testdata/integration/composed-watch-cancelled.yaml"),
 		},
 		XRDAPIVersion: integration.XRDV1,
 	})
@@ -520,13 +522,13 @@ func TestTraceWatchIntegration(t *testing.T) {
 	cases := map[string]struct {
 		reason string
 		xr     string
-		change func(t *testing.T, xr *un.Unstructured)
+		change func(t *testing.T, xr *un.Unstructured, cancel context.CancelFunc)
 		want   want
 	}{
 		"ComposedResourceChanged": {
 			reason: "A change to a composed resource should be redrawn. No watch covers it, so the periodic refresh picks it up.",
 			xr:     "watch-composed",
-			change: func(t *testing.T, _ *un.Unstructured) {
+			change: func(t *testing.T, _ *un.Unstructured, _ context.CancelFunc) {
 				t.Helper()
 
 				child := &un.Unstructured{}
@@ -560,7 +562,7 @@ func TestTraceWatchIntegration(t *testing.T) {
 		"XRChanged": {
 			reason: "A change to the XR should be redrawn without ending the watch. The periodic refresh re-reads the XR too, so the output can't show whether the watch event or the refresh redrew it.",
 			xr:     "watch-xr",
-			change: func(t *testing.T, xr *un.Unstructured) {
+			change: func(t *testing.T, xr *un.Unstructured, _ context.CancelFunc) {
 				t.Helper()
 
 				if err := cluster.Client.Get(cluster.Context, client.ObjectKeyFromObject(xr), xr); err != nil {
@@ -584,12 +586,20 @@ func TestTraceWatchIntegration(t *testing.T) {
 		"XRDeleted": {
 			reason: "Deleting the watched XR should end the watch without an error.",
 			xr:     "watch-deleted",
-			change: func(t *testing.T, xr *un.Unstructured) {
+			change: func(t *testing.T, xr *un.Unstructured, _ context.CancelFunc) {
 				t.Helper()
 
 				if err := cluster.Client.Delete(cluster.Context, xr); err != nil {
 					t.Fatalf("cannot delete the XR: %v", err)
 				}
+			},
+			want: want{exit: true},
+		},
+		"ContextCancelled": {
+			reason: "Cancelling Run's context should end the watch without an error.",
+			xr:     "watch-cancelled",
+			change: func(_ *testing.T, _ *un.Unstructured, cancel context.CancelFunc) {
+				cancel()
 			},
 			want: want{exit: true},
 		},
@@ -622,25 +632,23 @@ func TestTraceWatchIntegration(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { done <- c.Run(ctx, kongCtx, logging.NewNopLogger()) }()
 
-			// Cancelling ends the watch if the case failed before it did. The XR is deleted too, so it can't
-			// show up in another case.
+			// Cancelling must end the watch on its own, so cleanup waits for that before deleting the XR, which
+			// would end it too. Deleting the XR also keeps it from showing up in another case.
 			exited := false
 			t.Cleanup(func() {
 				cancel()
 
+				if !exited {
+					select {
+					case <-done:
+					case <-time.After(30 * time.Second):
+						t.Errorf("watch didn't end after its context was cancelled")
+					}
+				}
+
 				// The subtest's t.Context() is done once cleanup runs; the cluster's is the parent test's.
 				if err := cluster.Client.Delete(cluster.Context, xr.DeepCopy()); client.IgnoreNotFound(err) != nil {
 					t.Errorf("cannot delete the XR: %v", err)
-				}
-
-				if exited {
-					return
-				}
-
-				select {
-				case <-done:
-				case <-time.After(30 * time.Second):
-					t.Errorf("watch didn't end after its context was cancelled")
 				}
 			})
 
@@ -668,7 +676,7 @@ func TestTraceWatchIntegration(t *testing.T) {
 
 			waitFor("render the tree", "XNop/"+tc.xr, "NopResource/"+tc.xr+"-only")
 
-			tc.change(t, xr)
+			tc.change(t, xr, cancel)
 
 			if !tc.want.exit {
 				waitFor("redraw the changed tree", tc.want.output...)

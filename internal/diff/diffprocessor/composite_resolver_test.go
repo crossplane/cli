@@ -99,6 +99,7 @@ func TestCompositeResolver_Resolve(t *testing.T) {
 	// synthesized is the backing XR ConvertClaimToXR gives authoredClaim under name.
 	synthesized := func(name string) *un.Unstructured {
 		return tu.NewResource(claimAPIVersion, "XR", name).WithUID(generatedUID).
+			WithNestedField("my-claim-", "metadata", "generateName").
 			WithLabels(map[string]string{LabelClaimName: "my-claim", LabelClaimNamespace: "ns"}).
 			WithSpecField("field", "authored").
 			WithSpecField("claimRef", claimRef).

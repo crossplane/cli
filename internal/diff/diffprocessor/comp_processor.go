@@ -1365,7 +1365,11 @@ func withoutLastApplied(obj *un.Unstructured) *un.Unstructured {
 
 // callsChangedFunction reports whether any pipeline step references a function in changed.
 func callsChangedFunction(steps []apiextensionsv1.PipelineStep, changed sets.Set[string]) bool {
-	return slices.ContainsFunc(steps, func(s apiextensionsv1.PipelineStep) bool { return changed.Has(s.FunctionRef.Name) })
+	return slices.ContainsFunc(steps, func(s apiextensionsv1.PipelineStep) bool {
+		// Steps that reference a function by OCI ref can't reference a changed
+		// (named) function.
+		return s.FunctionRef != nil && changed.Has(s.FunctionRef.Name)
+	})
 }
 
 // compositionChangeScope classifies how much of a composition differs from its in-cluster version,

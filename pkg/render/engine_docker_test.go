@@ -533,3 +533,50 @@ func TestDockerRenderEngineSetupCreatesNetwork(t *testing.T) {
 type nonExitError struct{ msg string }
 
 func (e *nonExitError) Error() string { return e.msg }
+
+func TestDockerRenderEngineVersion(t *testing.T) {
+	errBoom := errors.New("boom")
+
+	cases := map[string]struct {
+		reason  string
+		runFn   func(context.Context, string, ...docker.RunContainerOption) ([]byte, []byte, error)
+		want    string
+		wantErr error
+	}{
+		"Success": {
+			reason: "Version should return the container's trimmed stdout.",
+			runFn: func(_ context.Context, img string, _ ...docker.RunContainerOption) ([]byte, []byte, error) {
+				if img != "test-image" {
+					t.Errorf("Run(...): want image %q, got %q", "test-image", img)
+				}
+				return []byte("v2.5.0\n"), nil, nil
+			},
+			want: "v2.5.0",
+		},
+		"RunError": {
+			reason: "Version should return an error if the container fails.",
+			runFn: func(context.Context, string, ...docker.RunContainerOption) ([]byte, []byte, error) {
+				return nil, []byte("sad"), errBoom
+			},
+			wantErr: errBoom,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := &dockerRenderEngine{
+				image:  "test-image",
+				log:    logging.NewNopLogger(),
+				runner: &mockContainerRunner{MockRun: tc.runFn},
+			}
+
+			got, err := e.Version(t.Context())
+			if diff := cmp.Diff(tc.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nVersion(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+			if got != tc.want {
+				t.Errorf("\n%s\nVersion(...): want %q, got %q", tc.reason, tc.want, got)
+			}
+		})
+	}
+}

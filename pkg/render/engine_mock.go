@@ -27,6 +27,7 @@ import (
 // MockEngine is a function-field mock of the Engine interface.
 type MockEngine struct {
 	MockCheckContextSupport func() error
+	MockVersion             func(ctx context.Context) (string, error)
 	MockSetup               func(ctx context.Context, fns []pkgv1.Function) (func(), error)
 	MockRender              func(ctx context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error)
 }
@@ -37,6 +38,15 @@ func (m *MockEngine) CheckContextSupport() error {
 		return nil
 	}
 	return m.MockCheckContextSupport()
+}
+
+// Version calls MockVersion. If unset, it returns an empty version, as a
+// development build of Crossplane would.
+func (m *MockEngine) Version(ctx context.Context) (string, error) {
+	if m.MockVersion == nil {
+		return "", nil
+	}
+	return m.MockVersion(ctx)
 }
 
 // Setup calls MockSetup. If unset, it returns a no-op cleanup and no error.

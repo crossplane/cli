@@ -197,6 +197,13 @@ func (s *Session) CheckContextSupport() error {
 	return s.engine.CheckContextSupport()
 }
 
+// CheckOCIFunctionSupport reports whether the Session's engine supports
+// pipeline steps that reference functions by OCI reference. See
+// CheckOCIFunctionSupport.
+func (s *Session) CheckOCIFunctionSupport(ctx context.Context) error {
+	return CheckOCIFunctionSupport(ctx, s.engine, s.log)
+}
+
 // Start ensures each of fns is running, starting the ones this Session has
 // not started yet, and returns the addresses of fns only. Functions are
 // identified by name. The first call, even with no fns, runs the engine's

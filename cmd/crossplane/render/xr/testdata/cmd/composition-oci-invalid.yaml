@@ -1,0 +1,12 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xnopresources.nop.example.org
+spec:
+  compositeTypeRef:
+    apiVersion: nop.example.org/v1alpha1
+    kind: XNopResource
+  mode: Pipeline
+  pipeline:
+  - step: be-oci
+    function: xpkg.crossplane.io/example/function-oci:v1.0.0

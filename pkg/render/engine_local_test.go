@@ -107,6 +107,13 @@ func runRenderHelper(mode string) {
 	case "hard-fail":
 		fmt.Fprint(os.Stderr, "the binary is sad")
 		os.Exit(1)
+	case "version":
+		if len(os.Args) != 2 || os.Args[1] != "--version" {
+			fmt.Fprintf(os.Stderr, "helper: want args [--version], got %v\n", os.Args[1:])
+			os.Exit(127)
+		}
+		fmt.Fprintln(os.Stdout, "v2.5.0")
+		os.Exit(0)
 	case "stale":
 		fmt.Fprint(os.Stderr, "crossplane: error: unexpected argument internal")
 		os.Exit(80)
@@ -256,6 +263,42 @@ func TestLocalRenderEngineRender(t *testing.T) {
 
 			if diff := cmp.Diff(tc.want.rsp, rsp, protocmp.Transform()); diff != "" {
 				t.Errorf("\n%s\nRender(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestLocalRenderEngineVersion(t *testing.T) {
+	cases := map[string]struct {
+		reason  string
+		mode    string
+		want    string
+		wantErr bool
+	}{
+		"Success": {
+			reason: "Version should run the binary with --version and return its trimmed output.",
+			mode:   "version",
+			want:   "v2.5.0",
+		},
+		"Error": {
+			reason:  "Version should return an error if the binary fails.",
+			mode:    "hard-fail",
+			wantErr: true,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(envHelperMode, tc.mode)
+
+			e := &localRenderEngine{BinaryPath: os.Args[0]}
+
+			got, err := e.Version(t.Context())
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("\n%s\nVersion(...): want error %t, got %v", tc.reason, tc.wantErr, err)
+			}
+			if got != tc.want {
+				t.Errorf("\n%s\nVersion(...): want %q, got %q", tc.reason, tc.want, got)
 			}
 		})
 	}

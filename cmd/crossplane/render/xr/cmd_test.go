@@ -67,8 +67,20 @@ var compositionLabelMismatchYAML string
 //go:embed testdata/cmd/composition-not-pipeline.yaml
 var compositionNotPipelineYAML string
 
+//go:embed testdata/cmd/composition-oci.yaml
+var compositionOCIYAML string
+
+//go:embed testdata/cmd/composition-oci-only.yaml
+var compositionOCIOnlyYAML string
+
+//go:embed testdata/cmd/composition-oci-invalid.yaml
+var compositionOCIInvalidYAML string
+
 //go:embed testdata/cmd/functions.yaml
 var functionsYAML string
+
+//go:embed testdata/cmd/output/oci.yaml
+var ociOutput string
 
 //go:embed testdata/cmd/output/success.yaml
 var successOutput string
@@ -105,6 +117,24 @@ func newTestFS(extra map[string]string) afero.Fs {
 		files[k] = &fstest.MapFile{Data: []byte(v)}
 	}
 	return afero.FromIOFS{FS: fstest.MapFS(files)}
+}
+
+const ociRef = "xpkg.crossplane.io/example/function-oci@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+
+// checkFunctions returns a render function that checks the render request
+// contains the wanted function inputs, then echoes the request's XR.
+func checkFunctions(t *testing.T, want map[string]string) func(context.Context, *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
+	t.Helper()
+	return func(ctx context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
+		got := map[string]string{}
+		for _, fn := range req.GetComposite().GetFunctions() {
+			got[fn.GetName()] = fn.GetAddress()
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("render request functions: -want, +got:\n%s", diff)
+		}
+		return (&render.MockEngine{}).Render(ctx, req)
+	}
 }
 
 func mustNewStruct(t *testing.T, data map[string]any) *structpb.Struct {
@@ -531,6 +561,103 @@ func TestCmdRun(t *testing.T) {
 					Timeout:     time.Minute,
 					fs:          newTestFS(nil),
 					newEngine:   newEngineFunc(&render.MockEngine{}),
+				},
+			},
+			want: want{err: cmpopts.AnyError},
+		},
+		"OCIFunction": {
+			reason: "Pipeline steps that reference a function by OCI reference should run that function alongside the supplied Functions, named after the reference.",
+			args: args{
+				cmd: Cmd{
+					CompositeResource:   "xr.yaml",
+					Composition:         "composition.yaml",
+					Functions:           "functions.yaml",
+					FunctionAnnotations: []string{"render.crossplane.io/runtime=Development", "render.crossplane.io/runtime-development-target=oci:9443"},
+					Timeout:             time.Minute,
+					fs:                  newTestFS(map[string]string{"composition.yaml": compositionOCIYAML}),
+					newEngine: newEngineFunc(&render.MockEngine{
+						MockRender: checkFunctions(t, map[string]string{
+							"function-dummy": "oci:9443",
+							ociRef:           "oci:9443",
+						}),
+					}),
+				},
+			},
+			want: want{
+				stdout: ociOutput,
+			},
+		},
+		"OCIFunctionOnlyNoFunctionsArg": {
+			reason: "The Functions arg should be optional outside a project when every pipeline step references its function by OCI reference. Equivalent references should run one function.",
+			args: args{
+				cmd: Cmd{
+					CompositeResource: "xr.yaml",
+					Composition:       "composition.yaml",
+					// Functions and ProjectFile intentionally empty.
+					FunctionAnnotations: []string{"render.crossplane.io/runtime=Development", "render.crossplane.io/runtime-development-target=oci:9443"},
+					Timeout:             time.Minute,
+					fs:                  newTestFS(map[string]string{"composition.yaml": compositionOCIOnlyYAML}),
+					newEngine: newEngineFunc(&render.MockEngine{
+						MockRender: checkFunctions(t, map[string]string{
+							ociRef: "oci:9443",
+						}),
+					}),
+				},
+			},
+			want: want{
+				stdout: ociOutput,
+			},
+		},
+		"OCIFunctionUnsupportedEngine": {
+			reason: "Rendering a Composition with a pipeline step that references a function by OCI reference should return an error if the engine's Crossplane version doesn't support it.",
+			args: args{
+				cmd: Cmd{
+					CompositeResource:   "xr.yaml",
+					Composition:         "composition.yaml",
+					Functions:           "functions.yaml",
+					FunctionAnnotations: []string{"render.crossplane.io/runtime=Development"},
+					Timeout:             time.Minute,
+					fs:                  newTestFS(map[string]string{"composition.yaml": compositionOCIYAML}),
+					newEngine: newEngineFunc(&render.MockEngine{
+						MockVersion: func(context.Context) (string, error) { return "v2.4.0", nil },
+						MockRender: func(context.Context, *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
+							t.Error("Render(...): unexpected call with an unsupported engine")
+							return nil, nil
+						},
+					}),
+				},
+			},
+			want: want{err: cmpopts.AnyError},
+		},
+		"NamedFunctionsOldEngine": {
+			reason: "The engine's Crossplane version shouldn't matter when no pipeline step references a function by OCI reference.",
+			args: args{
+				cmd: Cmd{
+					CompositeResource: "xr.yaml",
+					Composition:       "composition.yaml",
+					Functions:         "functions.yaml",
+					Timeout:           time.Minute,
+					fs:                newTestFS(nil),
+					newEngine: newEngineFunc(&render.MockEngine{
+						MockVersion: func(context.Context) (string, error) {
+							t.Error("Version(...): unexpected call with no OCI function references")
+							return "v2.4.0", nil
+						},
+					}),
+				},
+			},
+			want: want{stdout: ociOutput},
+		},
+		"OCIFunctionInvalidRef": {
+			reason: "A pipeline step that references a function by an OCI reference that isn't by digest should return an error.",
+			args: args{
+				cmd: Cmd{
+					CompositeResource: "xr.yaml",
+					Composition:       "composition.yaml",
+					Functions:         "functions.yaml",
+					Timeout:           time.Minute,
+					fs:                newTestFS(map[string]string{"composition.yaml": compositionOCIInvalidYAML}),
+					newEngine:         newEngineFunc(&render.MockEngine{}),
 				},
 			},
 			want: want{err: cmpopts.AnyError},

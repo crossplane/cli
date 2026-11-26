@@ -14,3 +14,4 @@ spec:
     - step: auto-ready
       functionRef:
         name: function-auto-ready
+  unusedRevisionHistoryLimit: 1

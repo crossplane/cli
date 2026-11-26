@@ -233,6 +233,12 @@ type StartContainerOption func(*startContainerConfig)
 
 // StartWithVolumeMount mounts a named Docker volume at the given path in the
 // container, e.g. to give the container a cache that outlives it.
+//
+// The volume is mounted with NoCopy, so it holds only what containers write to
+// it. Otherwise Docker seeds a new volume with whatever the image has at the
+// mount path, and containers that mount the same new volume at once, as
+// concurrent python function builds do with the shared pip cache, all seed it
+// together and fail with "mkdir ...: file exists".
 func StartWithVolumeMount(name, containerPath string) StartContainerOption {
 	return func(cfg *startContainerConfig) {
 		if cfg.hostConfig == nil {

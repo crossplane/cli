@@ -277,7 +277,7 @@ func TestCachedFunctionProvider_GetFunctionsForComposition_SameNameDifferentPipe
 		for _, n := range fnNames {
 			comp.Spec.Pipeline = append(comp.Spec.Pipeline, apiextensionsv1.PipelineStep{
 				Step:        n,
-				FunctionRef: apiextensionsv1.FunctionReference{Name: n},
+				FunctionRef: &apiextensionsv1.FunctionReference{Name: n},
 			})
 		}
 

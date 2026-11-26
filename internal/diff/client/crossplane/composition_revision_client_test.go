@@ -556,7 +556,7 @@ func TestDefaultCompositionRevisionClient_GetCompositionFromRevision(t *testing.
 					Pipeline: []apiextensionsv1.PipelineStep{
 						{
 							Step: "test-step",
-							FunctionRef: apiextensionsv1.FunctionReference{
+							FunctionRef: &apiextensionsv1.FunctionReference{
 								Name: "test-function",
 							},
 						},
@@ -573,7 +573,7 @@ func TestDefaultCompositionRevisionClient_GetCompositionFromRevision(t *testing.
 					Pipeline: []apiextensionsv1.PipelineStep{
 						{
 							Step: "test-step",
-							FunctionRef: apiextensionsv1.FunctionReference{
+							FunctionRef: &apiextensionsv1.FunctionReference{
 								Name: "test-function",
 							},
 						},

@@ -6,3 +6,4 @@ spec:
   compositeTypeRef:
     apiVersion: example.org/v1
     kind: XThing
+  unusedRevisionHistoryLimit: 1

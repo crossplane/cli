@@ -255,17 +255,17 @@ func TestGeneratedRuntimeObject(t *testing.T) {
 // every generated built-in package in one scheme. It's a table over
 // requiredObjectFields: with it on, this is the real Kubernetes built-in
 // spec, so it's the gate that compiles a required object-typed field wrapped
-// in a single-element allOf $ref (e.g. DeviceClass.spec in
+// in a single-element allOf $ref (e.g. ResourceSlice.spec in
 // resource.k8s.io/v1) end to end, resolved through the type alias
 // collectStructTypes now follows (see TestGenerateFromOpenAPIGoRequiredObjectFieldsAlias),
 // and a required field that resolves to a shared k8s type (e.g. a
 // LabelSelector), which must stay a pointer rather than become a
 // cross-package non-pointer value. With it off (the default for every
-// existing WithGoRuntimeObjects caller), DeviceClass.spec's DeepCopy must
+// existing WithGoRuntimeObjects caller), ResourceSlice.spec's DeepCopy must
 // still be independent through that same alias — a pre-existing shallow-copy
 // gap this PR also fixes, unconditionally.
 func TestGenerateFromOpenAPIRuntimeObjectsCompile(t *testing.T) {
-	// TestDeviceClassSpecDeepCopyIndependence's body differs by shape (each
+	// TestResourceSliceSpecDeepCopyIndependence's body differs by shape (each
 	// case's want): with requiredObjectFields on, Spec is a non-pointer
 	// value (constructed directly); off, it's a pointer (constructed with &).
 	cases := map[string]struct {
@@ -276,33 +276,33 @@ func TestGenerateFromOpenAPIRuntimeObjectsCompile(t *testing.T) {
 		"Enabled": {
 			args: true,
 			want: `
-	name := "gpu"
-	orig := &resourcev1.DeviceClass{
-		Spec: resourcev1.IoK8SApiResourceV1DeviceClassSpec{
-			ExtendedResourceName: &name,
+	node := "node-a"
+	orig := &resourcev1.ResourceSlice{
+		Spec: resourcev1.IoK8SApiResourceV1ResourceSliceSpec{
+			NodeName: &node,
 		},
 	}
 	cp := orig.DeepCopy()
-	*cp.Spec.ExtendedResourceName = "mutated"
-	if *orig.Spec.ExtendedResourceName != "gpu" {
-		t.Fatalf("DeepCopy of a required object-typed field resolved through a type alias was not independent: original mutated to %q", *orig.Spec.ExtendedResourceName)
+	*cp.Spec.NodeName = "mutated"
+	if *orig.Spec.NodeName != "node-a" {
+		t.Fatalf("DeepCopy of a required object-typed field resolved through a type alias was not independent: original mutated to %q", *orig.Spec.NodeName)
 	}
 `,
-			reason: "DeviceClass.spec is a required object-typed field resolved through a type alias to a non-pointer struct",
+			reason: "ResourceSlice.spec is a required object-typed field resolved through a type alias to a non-pointer struct",
 		},
 		"Disabled": {
 			args: false,
 			want: `
-	name := "gpu"
-	orig := &resourcev1.DeviceClass{
-		Spec: &resourcev1.IoK8SApiResourceV1DeviceClassSpec{
-			ExtendedResourceName: &name,
+	node := "node-a"
+	orig := &resourcev1.ResourceSlice{
+		Spec: &resourcev1.IoK8SApiResourceV1ResourceSliceSpec{
+			NodeName: &node,
 		},
 	}
 	cp := orig.DeepCopy()
-	*cp.Spec.ExtendedResourceName = "mutated"
-	if *orig.Spec.ExtendedResourceName != "gpu" {
-		t.Fatalf("DeepCopy of an optional pointer field resolved through a type alias was not independent: original mutated to %q", *orig.Spec.ExtendedResourceName)
+	*cp.Spec.NodeName = "mutated"
+	if *orig.Spec.NodeName != "node-a" {
+		t.Fatalf("DeepCopy of an optional pointer field resolved through a type alias was not independent: original mutated to %q", *orig.Spec.NodeName)
 	}
 `,
 			reason: "runtimeObjects on with requiredObjectFields off (today's default) must still DeepCopy an optional field resolved through the same type alias independently",
@@ -340,12 +340,12 @@ import (
 	resourcev1 "dev.crossplane.io/models/io/k8s/api/resource/v1"
 )
 
-// TestDeviceClassSpecDeepCopyIndependence covers DeviceClass.spec, which
-// resolves to IoK8SApiResourceV1DeviceClassSpec — a true Go alias of the
-// real DeviceClassSpec struct, not the struct itself. Without
+// TestResourceSliceSpecDeepCopyIndependence covers ResourceSlice.spec, which
+// resolves to IoK8SApiResourceV1ResourceSliceSpec — a true Go alias of the
+// real ResourceSliceSpec struct, not the struct itself. Without
 // collectStructTypes resolving that alias, DeepCopyInto falls back to the
 // top-level shallow struct copy and this test fails.
-func TestDeviceClassSpecDeepCopyIndependence(t *testing.T) {` + tc.want + `}
+func TestResourceSliceSpecDeepCopyIndependence(t *testing.T) {` + tc.want + `}
 
 func TestBuiltInGroupVersions(t *testing.T) {
 	s := runtime.NewScheme()
@@ -608,8 +608,8 @@ func TestGeneratedModelsCompileWithAccessorsAndRuntimeObjects(t *testing.T) {
 // TestGenerateFromOpenAPIWithAccessorsAndRuntimeObjects is the same check for
 // the OpenAPI path, which generates the far larger built-in Kubernetes
 // packages, as a table over requiredObjectFields. The chained getter through
-// DeviceClass.Spec — resolved through a type alias either way (see
-// TestDeviceClassSpecDeepCopyIndependence) — proves GetSpec returns a
+// ResourceSlice.Spec — resolved through a type alias either way (see
+// TestResourceSliceSpecDeepCopyIndependence) — proves GetSpec returns a
 // pointer usable exactly like every other field's getter, whether Spec
 // itself is a pointer (requiredObjectFields off) or a non-pointer struct
 // value (on); accessors and DeepCopy only special-case a non-pointer field
@@ -643,8 +643,8 @@ import (
 	resourcev1 "dev.crossplane.io/models/io/k8s/api/resource/v1"
 )
 
-func ChainOnEmptyDeviceClass() *string {
-	return (&resourcev1.DeviceClass{}).GetSpec().GetExtendedResourceName()
+func ChainOnEmptyResourceSlice() *string {
+	return (&resourcev1.ResourceSlice{}).GetSpec().GetNodeName()
 }
 `
 			consumerDir := filepath.Join(dir, "models", "consumer")
@@ -658,8 +658,8 @@ func ChainOnEmptyDeviceClass() *string {
 
 import "testing"
 
-func TestChainOnEmptyDeviceClassDoesNotPanic(t *testing.T) {
-	if got := ChainOnEmptyDeviceClass(); got != nil {
+func TestChainOnEmptyResourceSliceDoesNotPanic(t *testing.T) {
+	if got := ChainOnEmptyResourceSlice(); got != nil {
 		t.Errorf("expected nil from a chain over an empty resource, got %v", *got)
 	}
 }

@@ -191,7 +191,7 @@ func TestGenerateFromCRDGoRequiredObjectFields(t *testing.T) {
 // object, a $ref/single-element-allOf wrapper with no sibling properties that
 // must be resolved against schemas before its shape can be judged (the form
 // Kubernetes' own OpenAPI uses for a required nested object, e.g.
-// DeviceClass.spec), a ref to a k8s API machinery type that generates in a
+// ResourceSlice.spec), a ref to a k8s API machinery type that generates in a
 // separate package, and every other $ref/allOf shape — a multi-element
 // allOf, or any $ref/allOf alongside sibling inline properties — which is
 // excluded because oapi-codegen v2.8 merges those into an anonymous struct
@@ -559,8 +559,8 @@ func TestGenerateFromOpenAPIGo(t *testing.T) {
 // TestGenerateFromOpenAPIGoRequiredObjectFields verifies the OpenAPI
 // generation path resolves a required property wrapped in a single-element
 // allOf $ref — the shape Kubernetes' own built-in OpenAPI uses for a required
-// nested object — before judging whether it's struct-shaped. DeviceClass.spec
-// in resource.k8s.io/v1 is `{allOf: [{$ref: ".../DeviceClassSpec"}]}` with no
+// nested object — before judging whether it's struct-shaped. ResourceSlice.spec
+// in resource.k8s.io/v1 is `{allOf: [{$ref: ".../ResourceSliceSpec"}]}` with no
 // inline properties of its own, so this only passes if the ref is followed.
 func TestGenerateFromOpenAPIGoRequiredObjectFields(t *testing.T) {
 	cases := map[string]struct {
@@ -570,12 +570,12 @@ func TestGenerateFromOpenAPIGoRequiredObjectFields(t *testing.T) {
 	}{
 		"Enabled": {
 			args:   true,
-			want:   goStructField{typ: "IoK8SApiResourceV1DeviceClassSpec", tag: `json:"spec"`},
+			want:   goStructField{typ: "IoK8SApiResourceV1ResourceSliceSpec", tag: `json:"spec"`},
 			reason: "a required property whose allOf ref resolves to a struct must generate as a non-pointer value",
 		},
 		"DisabledByDefault": {
 			args:   false,
-			want:   goStructField{typ: "*IoK8SApiResourceV1DeviceClassSpec", tag: `json:"spec,omitempty"`},
+			want:   goStructField{typ: "*IoK8SApiResourceV1ResourceSliceSpec", tag: `json:"spec,omitempty"`},
 			reason: "with the feature off, the default pointer/omitempty shape is unchanged",
 		},
 	}
@@ -599,9 +599,9 @@ func TestGenerateFromOpenAPIGoRequiredObjectFields(t *testing.T) {
 				t.Fatalf("failed to parse generated source: %v\n%s", err, contents)
 			}
 
-			fields := goStructFields(t, f, "DeviceClass")
+			fields := goStructFields(t, f, "ResourceSlice")
 			if got := fields["Spec"]; got != tc.want {
-				t.Errorf("DeviceClass.Spec = %+v, want %+v (%s)", got, tc.want, tc.reason)
+				t.Errorf("ResourceSlice.Spec = %+v, want %+v (%s)", got, tc.want, tc.reason)
 			}
 		})
 	}
@@ -842,11 +842,11 @@ func TestGoRemoveRequiredValueCycles(t *testing.T) {
 }
 
 // TestGenerateFromOpenAPIGoRequiredObjectFieldsAlias is the generator-level
-// gate for collectStructTypes' alias resolution: DeviceClass.spec resolves
+// gate for collectStructTypes' alias resolution: ResourceSlice.spec resolves
 // (via TestGenerateFromOpenAPIGoRequiredObjectFields) to
-// IoK8SApiResourceV1DeviceClassSpec, which oapi-codegen declares as a true Go
-// alias (`type IoK8SApiResourceV1DeviceClassSpec = DeviceClassSpec`), not the
-// struct itself — the real struct is separately declared as DeviceClassSpec.
+// IoK8SApiResourceV1ResourceSliceSpec, which oapi-codegen declares as a true Go
+// alias (`type IoK8SApiResourceV1ResourceSliceSpec = ResourceSliceSpec`), not the
+// struct itself — the real struct is separately declared as ResourceSliceSpec.
 // Without resolving that alias, writeFieldCopy and addAccessors wouldn't
 // recognize the field as a locally declared struct at all.
 func TestGenerateFromOpenAPIGoRequiredObjectFieldsAlias(t *testing.T) {
@@ -862,32 +862,47 @@ func TestGenerateFromOpenAPIGoRequiredObjectFieldsAlias(t *testing.T) {
 	}
 	code := string(contents)
 
-	// This test's premise is that DeviceClass.spec's resolved type is a true
+	// This test's premise is that ResourceSlice.spec's resolved type is a true
 	// Go alias of the real struct, not the struct itself. If that's no
 	// longer true (e.g. a future oapi-codegen version stops emitting the
 	// alias), the cases below would pass vacuously, so pin the premise first.
-	if !strings.Contains(code, "type IoK8SApiResourceV1DeviceClassSpec = DeviceClassSpec") {
-		t.Fatalf("expected DeviceClass.spec's resolved type to be a Go alias of the real struct; generated source no longer matches this test's premise:\n%s", code)
+	if !strings.Contains(code, "type IoK8SApiResourceV1ResourceSliceSpec = ResourceSliceSpec") {
+		t.Fatalf("expected ResourceSlice.spec's resolved type to be a Go alias of the real struct; generated source no longer matches this test's premise:\n%s", code)
+	}
+
+	// Several types copy a field named Spec, so scope the DeepCopy check to
+	// ResourceSlice's own DeepCopyInto rather than the whole file.
+	const deepCopyDecl = "func (in *ResourceSlice) DeepCopyInto(out *ResourceSlice) {"
+	start := strings.Index(code, deepCopyDecl)
+	if start == -1 {
+		t.Fatalf("expected generated source to declare %q:\n%s", deepCopyDecl, code)
+	}
+	deepCopy := code[start:]
+	if end := strings.Index(deepCopy, "\n}\n"); end != -1 {
+		deepCopy = deepCopy[:end]
 	}
 
 	cases := map[string]struct {
+		args   string
 		want   []string
 		reason string
 	}{
 		"DeepCopyThroughAlias": {
+			args:   deepCopy,
 			want:   []string{"in.Spec.DeepCopyInto(&out.Spec)"},
-			reason: "DeviceClass.DeepCopyInto must call in.Spec.DeepCopyInto(&out.Spec) through the alias, not a shallow copy",
+			reason: "ResourceSlice.DeepCopyInto must call in.Spec.DeepCopyInto(&out.Spec) through the alias, not a shallow copy",
 		},
 		"AccessorThroughAlias": {
-			want:   []string{"func (o *DeviceClass) GetSpec() *IoK8SApiResourceV1DeviceClassSpec {"},
-			reason: "DeviceClass.GetSpec must return a pointer to the aliased type, matching every other field's chainable getter shape",
+			args:   code,
+			want:   []string{"func (o *ResourceSlice) GetSpec() *IoK8SApiResourceV1ResourceSliceSpec {"},
+			reason: "ResourceSlice.GetSpec must return a pointer to the aliased type, matching every other field's chainable getter shape",
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			for _, want := range tc.want {
-				if !strings.Contains(code, want) {
+				if !strings.Contains(tc.args, want) {
 					t.Errorf("expected generated source to contain %q (%s)", want, tc.reason)
 				}
 			}

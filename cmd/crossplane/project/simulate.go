@@ -110,6 +110,7 @@ func (c *SimulateCmd) buildProject(ctx context.Context, logger logging.Logger, s
 	generators := generator.AllLanguages(
 		generator.WithGoModelAccessors(cliCfg.Features.GenerateGoModelAccessors),
 		generator.WithGoRuntimeObjects(cliCfg.Features.GenerateGoRuntimeObjects),
+		generator.WithGoRequiredObjectFields(cliCfg.Features.GenerateGoRequiredObjectFields),
 	)
 	depMgr := dependency.NewManager(proj, projFS,
 		dependency.WithProjectFile(projFileName),

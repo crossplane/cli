@@ -131,6 +131,7 @@ func Build(ctx context.Context, cfg *config.Config, proj *devv1alpha1.Project, p
 		generator.AllLanguages(
 			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
 			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+			generator.WithGoRequiredObjectFields(cfg.Features.GenerateGoRequiredObjectFields),
 		),
 		proj.Spec.Schemas.GetLanguages(),
 	)
@@ -246,6 +247,7 @@ func UpdateSchemas(ctx context.Context, cfg *config.Config, proj *devv1alpha1.Pr
 		generator.AllLanguages(
 			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
 			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+			generator.WithGoRequiredObjectFields(cfg.Features.GenerateGoRequiredObjectFields),
 		),
 		proj.Spec.Schemas.GetLanguages(),
 	)
@@ -321,6 +323,7 @@ func AddSchemas(ctx context.Context, cfg *config.Config, proj *devv1alpha1.Proje
 		generator.AllLanguages(
 			generator.WithGoModelAccessors(cfg.Features.GenerateGoModelAccessors),
 			generator.WithGoRuntimeObjects(cfg.Features.GenerateGoRuntimeObjects),
+			generator.WithGoRequiredObjectFields(cfg.Features.GenerateGoRequiredObjectFields),
 		),
 		proj.Spec.Schemas.GetLanguages(),
 	)

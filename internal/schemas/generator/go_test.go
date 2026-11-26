@@ -246,9 +246,9 @@ func TestIsStructShapedProperty(t *testing.T) {
 		},
 		"SingleAllOfRef": {
 			args: spec.Schema{SchemaProps: spec.SchemaProps{
-				AllOf: []spec.Schema{{SchemaProps: spec.SchemaProps{
+				AllOf: []spec.Schema{{
 					Ref: spec.MustCreateRef("#/components/schemas/pkg.Struct"),
-				}}},
+				}},
 				Default: map[string]any{},
 			}},
 			want:   true,
@@ -263,9 +263,9 @@ func TestIsStructShapedProperty(t *testing.T) {
 		},
 		"K8sSharedTypeRef": {
 			args: spec.Schema{SchemaProps: spec.SchemaProps{
-				AllOf: []spec.Schema{{SchemaProps: spec.SchemaProps{
+				AllOf: []spec.Schema{{
 					Ref: spec.MustCreateRef("#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"),
-				}}},
+				}},
 			}},
 			want:   false,
 			reason: "a ref to a k8s API machinery type becomes a cross-package value; accessors and DeepCopy only special-case a locally declared struct, so it must stay a pointer",
@@ -273,8 +273,8 @@ func TestIsStructShapedProperty(t *testing.T) {
 		"MultiElementAllOf": {
 			args: spec.Schema{SchemaProps: spec.SchemaProps{
 				AllOf: []spec.Schema{
-					{SchemaProps: spec.SchemaProps{Ref: spec.MustCreateRef("#/components/schemas/pkg.Struct")}},
-					{SchemaProps: spec.SchemaProps{Required: []string{"name"}}},
+					{Ref: spec.MustCreateRef("#/components/schemas/pkg.Struct")},
+					{Required: []string{"name"}},
 				},
 			}},
 			want:   false,
@@ -284,8 +284,8 @@ func TestIsStructShapedProperty(t *testing.T) {
 			args: spec.Schema{SchemaProps: spec.SchemaProps{
 				Properties: map[string]spec.Schema{"name": {}},
 				AllOf: []spec.Schema{
-					{SchemaProps: spec.SchemaProps{Required: []string{"name"}}},
-					{SchemaProps: spec.SchemaProps{Required: []string{"other"}}},
+					{Required: []string{"name"}},
+					{Required: []string{"other"}},
 				},
 			}},
 			want:   false,
@@ -295,7 +295,7 @@ func TestIsStructShapedProperty(t *testing.T) {
 			args: spec.Schema{SchemaProps: spec.SchemaProps{
 				Properties: map[string]spec.Schema{"extra": {}},
 				AllOf: []spec.Schema{
-					{SchemaProps: spec.SchemaProps{Ref: spec.MustCreateRef("#/components/schemas/pkg.Struct")}},
+					{Ref: spec.MustCreateRef("#/components/schemas/pkg.Struct")},
 				},
 			}},
 			want:   false,
@@ -637,7 +637,7 @@ func TestGoRemoveRequiredAllOfShapes(t *testing.T) {
 		},
 		"SingleAllOfRefNoSiblingProperties": {
 			args: spec.Schema{SchemaProps: spec.SchemaProps{
-				AllOf: []spec.Schema{{SchemaProps: spec.SchemaProps{Ref: spec.MustCreateRef("#/components/schemas/pkg.Local")}}},
+				AllOf: []spec.Schema{{Ref: spec.MustCreateRef("#/components/schemas/pkg.Local")}},
 			}},
 			want:   true,
 			reason: "a lone allOf $ref with no sibling properties resolves to the named referenced type",
@@ -645,7 +645,7 @@ func TestGoRemoveRequiredAllOfShapes(t *testing.T) {
 		"SingleAllOfRefWithSiblingProperties": {
 			args: spec.Schema{SchemaProps: spec.SchemaProps{
 				Properties: map[string]spec.Schema{"name": {SchemaProps: spec.SchemaProps{Type: spec.StringOrArray{"string"}}}},
-				AllOf:      []spec.Schema{{SchemaProps: spec.SchemaProps{Ref: spec.MustCreateRef("#/components/schemas/pkg.Local")}}},
+				AllOf:      []spec.Schema{{Ref: spec.MustCreateRef("#/components/schemas/pkg.Local")}},
 			}},
 			want:   false,
 			reason: "a single allOf $ref alongside sibling properties merges into an anonymous struct, so it must stay a pointer",
@@ -654,8 +654,8 @@ func TestGoRemoveRequiredAllOfShapes(t *testing.T) {
 			args: spec.Schema{SchemaProps: spec.SchemaProps{
 				Properties: map[string]spec.Schema{"name": {SchemaProps: spec.SchemaProps{Type: spec.StringOrArray{"string"}}}},
 				AllOf: []spec.Schema{
-					{SchemaProps: spec.SchemaProps{Required: []string{"x"}}},
-					{SchemaProps: spec.SchemaProps{Required: []string{"y"}}},
+					{Required: []string{"x"}},
+					{Required: []string{"y"}},
 				},
 			}},
 			want:   false,
@@ -664,8 +664,8 @@ func TestGoRemoveRequiredAllOfShapes(t *testing.T) {
 		"MultiElementAllOfNoSiblingProperties": {
 			args: spec.Schema{SchemaProps: spec.SchemaProps{
 				AllOf: []spec.Schema{
-					{SchemaProps: spec.SchemaProps{Ref: spec.MustCreateRef("#/components/schemas/pkg.Local")}},
-					{SchemaProps: spec.SchemaProps{Required: []string{"y"}}},
+					{Ref: spec.MustCreateRef("#/components/schemas/pkg.Local")},
+					{Required: []string{"y"}},
 				},
 			}},
 			want:   false,

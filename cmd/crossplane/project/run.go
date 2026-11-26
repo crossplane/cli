@@ -71,8 +71,8 @@ type RunCmd struct {
 
 	ControlPlaneName  string        `help:"Name of the dev control plane. Defaults to project name."`
 	CrossplaneVersion string        `help:"Version of Crossplane to install."`
-	Internal          *bool         `help:"Use internal addresses in the exported kubeconfig. Enable if running crossplane project in a container."`
-	KindConfig        string        `help:"The path to the KinD configuration which should be used to create the local development cluster."`
+	Internal          *bool         `help:"Use internal addresses in the exported kubeconfig. Enable if running crossplane project in a container. This overrides the corresponding configuration in the project file."`
+	KindConfig        string        `help:"The path to the KinD configuration which should be used to create the local development cluster. This overrides the corresponding configuration in the project file."`
 	RegistryDir       string        `help:"Directory for local registry images."`
 	ClusterAdmin      bool          `default:"true"                                                                                                 help:"Grant Crossplane the cluster-admin role."                                               negatable:""`
 	DefaultMRAP       bool          `default:"true"                                                                                                 help:"Install the default wildcard ManagedResourceActivationPolicy in the dev control plane." negatable:""`

@@ -20,6 +20,7 @@ import (
 	cmpstd "cmp"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -378,36 +379,44 @@ func TestSelectCompositionNotInProjectMessage(t *testing.T) {
 		comps []*un.Unstructured
 		xrd   xrdInfo
 	}
+	type want struct {
+		rejected *InputError
+		// fix is the clause saying which reference to correct, and to what.
+		fix string
+	}
 	cases := map[string]struct {
 		reason string
 		args   args
-		want   string
+		want   want
 	}{
 		"InputRef": {
 			reason: "An input's compositionRef names the candidates to correct it to.",
 			args:   args{comps: []*un.Unstructured{b, a}, xrd: xrdInfo{CompositeGVK: xr}},
-			want:   `--resource-file inputs include XBucket "x" (example.org/v1), whose compositionRef "z" is not a project Composition composing XBucket; correct its compositionRef to one of a, b`,
+			want:   want{rejected: rejected("XBucket", "x", rejectNotInProject), fix: "; correct its compositionRef to one of a, b"},
 		},
 		"EnforcedRef": {
 			reason: "An XRD's enforcedCompositionRef says the XRD holds the reference.",
 			args:   args{comps: []*un.Unstructured{a}, xrd: xrdInfo{CompositeGVK: xr, EnforcedComposition: "z"}},
-			want:   `--resource-file inputs include XBucket "x" (example.org/v1), whose XRD enforcedCompositionRef "z" is not a project Composition composing XBucket; correct the XRD's enforcedCompositionRef to one of a`,
+			want:   want{rejected: rejected("XBucket", "x", rejectNotInProject), fix: "; correct the XRD's enforcedCompositionRef to one of a"},
 		},
 		"NoCandidates": {
 			reason: "With no Composition of the type there are no candidates to name.",
 			args:   args{xrd: xrdInfo{CompositeGVK: xr, DefaultComposition: "z"}},
-			want:   `--resource-file inputs include XBucket "x" (example.org/v1), whose compositionRef "z" is not a project Composition composing XBucket; correct its compositionRef`,
+			want:   want{rejected: rejected("XBucket", "x", rejectNotInProject), fix: "; correct its compositionRef"},
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := selectComposition(tc.args.comps, in, tc.args.xrd)
-			got := ""
-			if err != nil {
-				got = err.Error()
+			got, other := splitRejected(err)
+			if other != nil {
+				t.Fatalf("\n%s\nselectComposition(...): want an InputError, got %v", tc.reason, other)
 			}
-			if diff := cmp.Diff(tc.want, got); diff != "" {
+			if diff := cmp.Diff(tc.want.rejected, got, cmpInputError); diff != "" {
 				t.Errorf("\n%s\nselectComposition(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+			if got != nil && !strings.HasSuffix(got.Error(), tc.want.fix) {
+				t.Errorf("\n%s\nselectComposition(...): want error ending %q, got %q", tc.reason, tc.want.fix, got.Error())
 			}
 		})
 	}

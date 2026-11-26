@@ -18,10 +18,12 @@ package load
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -228,6 +230,141 @@ func TestNewDocumentLoaderStdin(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("\n%s\nLoad(): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestSplitDocumentsReadError(t *testing.T) {
+	_, err := SplitDocuments("in.yaml", iotest.ErrReader(errors.New("boom")))
+	if err == nil {
+		t.Error("SplitDocuments(): want error from a failing reader, got nil")
+	}
+}
+
+func TestNewDocumentLoaderDefaultStdin(t *testing.T) {
+	l, err := NewDocumentLoader(StdinSource, WithStdin(nil))
+	if err != nil {
+		t.Fatalf("NewDocumentLoader(): %v", err)
+	}
+	m, ok := l.(multiDocumentLoader)
+	if !ok || len(m) != 1 {
+		t.Fatalf("NewDocumentLoader(): want one multiDocumentLoader entry, got %#v", l)
+	}
+	if m[0].stdin != os.Stdin {
+		t.Errorf("WithStdin(nil): want os.Stdin, got %v", m[0].stdin)
+	}
+}
+
+func TestDocumentLoaderErrors(t *testing.T) {
+	t.Parallel()
+
+	type args struct {
+		// setup returns the loader input, and a func run between creating the
+		// loader and calling Load.
+		setup func(t *testing.T, dir string) (string, func())
+	}
+
+	cases := map[string]struct {
+		reason  string
+		args    args
+		newErr  bool
+		loadErr bool
+	}{
+		"MissingInList": {
+			reason: "A missing source in a comma-separated list fails loader creation.",
+			args: args{setup: func(t *testing.T, dir string) (string, func()) {
+				t.Helper()
+				good := filepath.Join(dir, "good.yaml")
+				if err := os.WriteFile(good, []byte("a: 1\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return good + "," + filepath.Join(dir, "missing.yaml"), nil
+			}},
+			newErr: true,
+		},
+		"InvalidFile": {
+			reason: "An invalid document in one of several sources fails Load.",
+			args: args{setup: func(t *testing.T, dir string) (string, func()) {
+				t.Helper()
+				good := filepath.Join(dir, "good.yaml")
+				bad := filepath.Join(dir, "bad.yaml")
+				if err := os.WriteFile(good, []byte("a: 1\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(bad, []byte("a: 1\n--- b\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return good + "," + bad, nil
+			}},
+			loadErr: true,
+		},
+		"InvalidFileInDir": {
+			reason: "An invalid document in a directory fails Load.",
+			args: args{setup: func(t *testing.T, dir string) (string, func()) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte("a: 1\n--- b\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return dir, nil
+			}},
+			loadErr: true,
+		},
+		"DirRemoved": {
+			reason: "A directory removed after the loader is created fails Load.",
+			args: args{setup: func(t *testing.T, dir string) (string, func()) {
+				t.Helper()
+				sub := filepath.Join(dir, "sub")
+				if err := os.Mkdir(sub, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				return sub, func() {
+					if err := os.RemoveAll(sub); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}},
+			loadErr: true,
+		},
+		"FileRemoved": {
+			reason: "A file removed after the loader is created fails Load.",
+			args: args{setup: func(t *testing.T, dir string) (string, func()) {
+				t.Helper()
+				f := filepath.Join(dir, "gone.yaml")
+				if err := os.WriteFile(f, []byte("a: 1\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return f, func() {
+					if err := os.Remove(f); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}},
+			loadErr: true,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			input, between := tc.args.setup(t, t.TempDir())
+
+			l, err := NewDocumentLoader(input)
+			if tc.newErr {
+				if err == nil {
+					t.Errorf("\n%s\nNewDocumentLoader(): want error, got nil", tc.reason)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("\n%s\nNewDocumentLoader(): %v", tc.reason, err)
+			}
+			if between != nil {
+				between()
+			}
+			_, err = l.Load()
+			if tc.loadErr && err == nil {
+				t.Errorf("\n%s\nLoad(): want error, got nil", tc.reason)
 			}
 		})
 	}

@@ -421,3 +421,45 @@ func TestSelectCompositionNotInProjectMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectCompositionMalformedLabelsPath(t *testing.T) {
+	xr := schema.GroupVersionKind{Group: "example.org", Version: "v1", Kind: "XBucket"}
+	a := testutils.NewComposition("a").WithCompositeTypeRef("example.org/v1", "XBucket").BuildAsUnstructured()
+	in := testutils.NewResource("example.org/v1", "XBucket", "x").WithSpec(map[string]any{"compositionSelector": map[string]any{"matchLabels": "tier"}}).Build()
+
+	type want struct {
+		rejected *InputError
+		// path is the YAML path the error names.
+		path string
+	}
+	cases := map[string]struct {
+		reason string
+		legacy bool
+		want   want
+	}{
+		"V2": {
+			reason: "A v2 composite reads matchLabels from spec.crossplane or spec, so the error names both.",
+			want:   want{rejected: rejected("XBucket", "x", rejectMalformed), path: "whose spec.crossplane.compositionSelector.matchLabels or spec.compositionSelector.matchLabels is not"},
+		},
+		"Legacy": {
+			reason: "A legacy composite reads matchLabels from spec only.",
+			legacy: true,
+			want:   want{rejected: rejected("XBucket", "x", rejectMalformed), path: "whose spec.compositionSelector.matchLabels is not"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := selectComposition([]*un.Unstructured{a}, in, xrdInfo{CompositeGVK: xr, Legacy: tc.legacy})
+			got, other := splitRejected(err)
+			if other != nil {
+				t.Fatalf("\n%s\nselectComposition(...): want an InputError, got %v", tc.reason, other)
+			}
+			if diff := cmp.Diff(tc.want.rejected, got, cmpInputError); diff != "" {
+				t.Errorf("\n%s\nselectComposition(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+			if got != nil && !strings.Contains(got.Error(), tc.want.path) {
+				t.Errorf("\n%s\nselectComposition(...): want error naming %q, got %q", tc.reason, tc.want.path, got.Error())
+			}
+		})
+	}
+}

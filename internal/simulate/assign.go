@@ -181,7 +181,7 @@ func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInf
 		// Read from the selector found, so its labels come from the same path.
 		sel, _, err := un.NestedStringMap(selector, "matchLabels")
 		if err != nil {
-			return "", rejectInput(in, FlagResourceFile, rejectMalformed, "whose compositionSelector.matchLabels is not a map of strings", "correct it in the file")
+			return "", rejectInput(in, FlagResourceFile, rejectMalformed, "whose "+crossplanePath(xrd.Legacy, "compositionSelector", "matchLabels")+" is not a map of strings", "correct it in the file")
 		}
 		var match []*un.Unstructured
 		for _, c := range typed {
@@ -238,14 +238,23 @@ func names(comps []*un.Unstructured) []string {
 // spec.crossplane.<path> or, if not set there, spec.<path>, as the engine does.
 // A value that is not typeName fails, naming the field to correct.
 func crossplaneField[T any](in *un.Unstructured, legacy bool, typeName string, get func(map[string]any, ...string) (T, bool, error), path ...string) (T, error) {
-	field := strings.Join(path, ".")
-	apiVersion, where := xpclient.CrossplaneAPIExtGroupV2, "spec.crossplane."+field+" or spec."+field
+	apiVersion := xpclient.CrossplaneAPIExtGroupV2
 	if legacy {
-		apiVersion, where = xpclient.CrossplaneAPIExtGroupV1, "spec."+field
+		apiVersion = xpclient.CrossplaneAPIExtGroupV1
 	}
 	v, _, err := xpclient.NestedCrossplaneValue(in.Object, apiVersion, typeName, get, path...)
 	if err != nil {
-		return v, rejectInput(in, FlagResourceFile, rejectMalformed, fmt.Sprintf("whose %s is not %s", where, typeName), "correct it in the file")
+		return v, rejectInput(in, FlagResourceFile, rejectMalformed, fmt.Sprintf("whose %s is not %s", crossplanePath(legacy, path...), typeName), "correct it in the file")
 	}
 	return v, nil
+}
+
+// crossplanePath is where a Crossplane field at path is read from in the YAML: spec.crossplane.<path>
+// or spec.<path>, or only spec.<path> when legacy.
+func crossplanePath(legacy bool, path ...string) string {
+	field := strings.Join(path, ".")
+	if legacy {
+		return "spec." + field
+	}
+	return "spec.crossplane." + field + " or spec." + field
 }

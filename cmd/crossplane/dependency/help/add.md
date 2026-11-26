@@ -25,6 +25,16 @@ Git dependencies fetched over HTTPS can authenticate using `--git-token` and
 in shell history. The username defaults to `x-access-token`. Credentials aren't
 saved in the project file.
 
+## Package metadata files
+
+The command can also add a dependency to package metadata (`crossplane.yaml`) of a Configuration, Provider, or Function.
+When `-f` isn't set, it uses `crossplane-project.yaml` in the current directory if present,
+otherwise `crossplane.yaml`.
+Package metadata only supports runtime xpkg dependencies, which are added to `spec.dependsOn`.
+Kubernetes, CRD, and `--api-only` dependencies require a project file.
+Use `--schemas-dir` to choose where schemas are generated (default `schemas`), and
+`--schema-languages` to generate only some languages (default all).
+
 ## Examples
 
 Retrieve the latest available semantic version of `provider-aws-eks`, generate

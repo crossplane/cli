@@ -213,6 +213,9 @@ func noopCleanup() {}
 
 // UpdateSchemasOptions configures UpdateSchemas.
 type UpdateSchemasOptions struct {
+	// Store records dependencies in the file that declares them.
+	// Defaults to the project file, crossplane-project.yaml.
+	Store dependency.Store
 	// CacheDir is the xpkg dependency cache directory. Defaults to the
 	// standard per-user crossplane cache location.
 	CacheDir string
@@ -266,6 +269,9 @@ func UpdateSchemas(ctx context.Context, cfg *config.Config, proj *devv1alpha1.Pr
 	}
 	if o.GitInsecureHostKey {
 		opts = append(opts, dependency.WithGitInsecureHostKey(true))
+	}
+	if o.Store != nil {
+		opts = append(opts, dependency.WithStore(o.Store))
 	}
 	m := dependency.NewManager(proj, projFS, opts...)
 

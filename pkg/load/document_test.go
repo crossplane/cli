@@ -19,6 +19,8 @@ package load
 import (
 	"bytes"
 	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +28,7 @@ import (
 	"testing/iotest"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestSplitDocuments(t *testing.T) {
@@ -34,86 +37,94 @@ func TestSplitDocuments(t *testing.T) {
 		Raw       string
 	}
 
+	type args struct {
+		input string
+	}
+
+	type want struct {
+		docs []doc
+		err  error
+	}
+
 	cases := map[string]struct {
 		reason string
-		input  string
-		want   []doc
-		err    bool
+		args   args
+		want   want
 	}{
 		"Single": {
 			reason: "One document starts on line 1.",
-			input:  "a: 1\nb: 2\n",
-			want:   []doc{{StartLine: 1, Raw: "a: 1\nb: 2\n"}},
+			args:   args{input: "a: 1\nb: 2\n"},
+			want:   want{docs: []doc{{StartLine: 1, Raw: "a: 1\nb: 2\n"}}},
 		},
 		"Separated": {
 			reason: "A document after a separator starts on the line after it.",
-			input:  "a: 1\n---\nb: 2\n",
-			want:   []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "b: 2\n"}},
+			args:   args{input: "a: 1\n---\nb: 2\n"},
+			want:   want{docs: []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "b: 2\n"}}},
 		},
 		"LeadingSeparator": {
 			reason: "A leading separator stays at the start of the first document, as YamlStream keeps it.",
-			input:  "---\na: 1\n---\nb: 2\n",
-			want:   []doc{{StartLine: 1, Raw: "---\na: 1\n"}, {StartLine: 4, Raw: "b: 2\n"}},
+			args:   args{input: "---\na: 1\n---\nb: 2\n"},
+			want:   want{docs: []doc{{StartLine: 1, Raw: "---\na: 1\n"}, {StartLine: 4, Raw: "b: 2\n"}}},
 		},
 		"SeparatorWithComment": {
 			reason: "A separator may carry a trailing comment.",
-			input:  "a: 1\n--- # next\nb: 2\n",
-			want:   []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "b: 2\n"}},
+			args:   args{input: "a: 1\n--- # next\nb: 2\n"},
+			want:   want{docs: []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "b: 2\n"}}},
 		},
 		"LeadingComment": {
 			reason: "Comments before the first document belong to it and keep its start at line 1.",
-			input:  "# header\n# more\na: 1\n",
-			want:   []doc{{StartLine: 1, Raw: "# header\n# more\na: 1\n"}},
+			args:   args{input: "# header\n# more\na: 1\n"},
+			want:   want{docs: []doc{{StartLine: 1, Raw: "# header\n# more\na: 1\n"}}},
 		},
 		"CommentBeforeSecond": {
 			reason: "Comments after a separator belong to the next document.",
-			input:  "a: 1\n---\n# about b\nb: 2\n",
-			want:   []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "# about b\nb: 2\n"}},
+			args:   args{input: "a: 1\n---\n# about b\nb: 2\n"},
+			want:   want{docs: []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "# about b\nb: 2\n"}}},
 		},
 		"EmptyDocuments": {
 			reason: "Back-to-back separators yield what YamlStream yields: a separator-only document and no empty ones.",
-			input:  "a: 1\n---\n---\n---\nb: 2\n",
-			want:   []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "---\n"}, {StartLine: 5, Raw: "b: 2\n"}},
+			args:   args{input: "a: 1\n---\n---\n---\nb: 2\n"},
+			want:   want{docs: []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "---\n"}, {StartLine: 5, Raw: "b: 2\n"}}},
 		},
 		"TrailingSeparator": {
 			reason: "A trailing separator adds no document.",
-			input:  "a: 1\n---\n",
-			want:   []doc{{StartLine: 1, Raw: "a: 1\n"}},
+			args:   args{input: "a: 1\n---\n"},
+			want:   want{docs: []doc{{StartLine: 1, Raw: "a: 1\n"}}},
 		},
 		"NoTrailingNewline": {
 			reason: "A final line without a newline is normalised to end in one.",
-			input:  "a: 1\n---\nb: 2",
-			want:   []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "b: 2\n"}},
+			args:   args{input: "a: 1\n---\nb: 2"},
+			want:   want{docs: []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "b: 2\n"}}},
 		},
 		"CRLF": {
 			reason: "Windows line endings are normalised as YamlStream normalises them, and lines still count.",
-			input:  "a: 1\r\n---\r\nb: 2\r\n",
-			want:   []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "b: 2\n"}},
+			args:   args{input: "a: 1\r\n---\r\nb: 2\r\n"},
+			want:   want{docs: []doc{{StartLine: 1, Raw: "a: 1\n"}, {StartLine: 3, Raw: "b: 2\n"}}},
 		},
 		"Empty": {
 			reason: "An empty stream has no documents.",
-			input:  "",
-			want:   nil,
+			args:   args{input: ""},
+			want:   want{},
 		},
 		"InvalidSeparator": {
 			reason: "Text after a separator, other than a comment, is an error, as it is for YamlStream.",
-			input:  "a: 1\n--- b\n",
-			err:    true,
+			args:   args{input: "a: 1\n--- b\n"},
+			want:   want{err: cmpopts.AnyError},
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			docs, err := SplitDocuments("in.yaml", strings.NewReader(tc.input))
-			_, streamErr := YamlStream(strings.NewReader(tc.input))
-			if tc.err {
-				if err == nil || streamErr == nil {
-					t.Fatalf("\n%s\nSplitDocuments(): want error from both, got %v and YamlStream %v", tc.reason, err, streamErr)
-				}
-				return
+			docs, err := SplitDocuments("in.yaml", strings.NewReader(tc.args.input))
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nSplitDocuments(): -want error, +got error:\n%s", tc.reason, diff)
 			}
-			if err != nil {
-				t.Fatalf("\n%s\nSplitDocuments(): %v", tc.reason, err)
+			stream, streamErr := YamlStream(strings.NewReader(tc.args.input))
+			if diff := cmp.Diff(tc.want.err, streamErr, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nYamlStream(): -want error, +got error:\n%s", tc.reason, diff)
+			}
+			if err != nil || streamErr != nil {
+				return
 			}
 
 			var got []doc
@@ -123,21 +134,77 @@ func TestSplitDocuments(t *testing.T) {
 				}
 				got = append(got, doc{StartLine: d.StartLine, Raw: string(d.Raw)})
 			}
-			if diff := cmp.Diff(tc.want, got); diff != "" {
+			if diff := cmp.Diff(tc.want.docs, got); diff != "" {
 				t.Errorf("\n%s\nSplitDocuments(): -want, +got:\n%s", tc.reason, diff)
 			}
 
 			// The documents must be exactly those YamlStream returns.
-			stream, err := YamlStream(strings.NewReader(tc.input))
-			if err != nil {
-				t.Fatal(err)
-			}
 			raws := make([][]byte, 0, len(docs))
 			for _, d := range docs {
 				raws = append(raws, d.Raw)
 			}
 			if diff := cmp.Diff(stream, raws, cmp.Comparer(bytes.Equal)); diff != "" && len(stream)+len(raws) > 0 {
 				t.Errorf("\n%s\nSplitDocuments() and YamlStream() disagree: -YamlStream, +SplitDocuments:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestSplitDocumentsErrors(t *testing.T) {
+	errBoom := errors.New("boom")
+
+	type args struct {
+		source string
+		r      io.Reader
+	}
+
+	type want struct {
+		err error
+		msg string
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"ReadError": {
+			reason: "A failing reader's error is returned.",
+			args:   args{source: "in.yaml", r: iotest.ErrReader(errBoom)},
+			want: want{
+				err: errBoom,
+				msg: "cannot parse YAML stream: boom",
+			},
+		},
+		"InvalidSeparatorInFile": {
+			reason: "An invalid separator error names the file and line, and says what a separator may contain.",
+			args:   args{source: "in.yaml", r: strings.NewReader("a: 1\n--- b\n")},
+			want: want{
+				err: cmpopts.AnyError,
+				msg: `cannot parse YAML stream: invalid document separator "--- b" on line 2 of in.yaml: "---" may be followed only by whitespace or a comment`,
+			},
+		},
+		"InvalidSeparatorOnStdin": {
+			reason: "An invalid separator error names stdin, not its - source.",
+			args:   args{source: StdinSource, r: strings.NewReader("--- b\n")},
+			want: want{
+				err: cmpopts.AnyError,
+				msg: `cannot parse YAML stream: invalid document separator "--- b" on line 1 of stdin: "---" may be followed only by whitespace or a comment`,
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := SplitDocuments(tc.args.source, tc.args.r)
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nSplitDocuments(): -want error, +got error:\n%s", tc.reason, diff)
+			}
+			if err == nil {
+				return
+			}
+			if diff := cmp.Diff(tc.want.msg, err.Error()); diff != "" {
+				t.Errorf("\n%s\nSplitDocuments(): -want message, +got message:\n%s", tc.reason, diff)
 			}
 		})
 	}
@@ -186,10 +253,6 @@ func TestNewDocumentLoader(t *testing.T) {
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("Load(): -want, +got:\n%s", diff)
 	}
-
-	if _, err := NewDocumentLoader(filepath.Join(dir, "missing.yaml")); err == nil {
-		t.Error("NewDocumentLoader(missing): want error, got nil")
-	}
 }
 
 func TestNewDocumentLoaderStdin(t *testing.T) {
@@ -235,13 +298,6 @@ func TestNewDocumentLoaderStdin(t *testing.T) {
 	}
 }
 
-func TestSplitDocumentsReadError(t *testing.T) {
-	_, err := SplitDocuments("in.yaml", iotest.ErrReader(errors.New("boom")))
-	if err == nil {
-		t.Error("SplitDocuments(): want error from a failing reader, got nil")
-	}
-}
-
 func TestNewDocumentLoaderDefaultStdin(t *testing.T) {
 	l, err := NewDocumentLoader(StdinSource, WithStdin(nil))
 	if err != nil {
@@ -265,12 +321,24 @@ func TestDocumentLoaderErrors(t *testing.T) {
 		setup func(t *testing.T, dir string) (string, func())
 	}
 
+	type want struct {
+		newErr  error
+		loadErr error
+	}
+
 	cases := map[string]struct {
-		reason  string
-		args    args
-		newErr  bool
-		loadErr bool
+		reason string
+		args   args
+		want   want
 	}{
+		"Missing": {
+			reason: "A missing source fails loader creation.",
+			args: args{setup: func(t *testing.T, dir string) (string, func()) {
+				t.Helper()
+				return filepath.Join(dir, "missing.yaml"), nil
+			}},
+			want: want{newErr: fs.ErrNotExist},
+		},
 		"MissingInList": {
 			reason: "A missing source in a comma-separated list fails loader creation.",
 			args: args{setup: func(t *testing.T, dir string) (string, func()) {
@@ -281,7 +349,7 @@ func TestDocumentLoaderErrors(t *testing.T) {
 				}
 				return good + "," + filepath.Join(dir, "missing.yaml"), nil
 			}},
-			newErr: true,
+			want: want{newErr: fs.ErrNotExist},
 		},
 		"InvalidFile": {
 			reason: "An invalid document in one of several sources fails Load.",
@@ -297,7 +365,7 @@ func TestDocumentLoaderErrors(t *testing.T) {
 				}
 				return good + "," + bad, nil
 			}},
-			loadErr: true,
+			want: want{loadErr: cmpopts.AnyError},
 		},
 		"InvalidFileInDir": {
 			reason: "An invalid document in a directory fails Load.",
@@ -308,7 +376,7 @@ func TestDocumentLoaderErrors(t *testing.T) {
 				}
 				return dir, nil
 			}},
-			loadErr: true,
+			want: want{loadErr: cmpopts.AnyError},
 		},
 		"DirRemoved": {
 			reason: "A directory removed after the loader is created fails Load.",
@@ -324,7 +392,7 @@ func TestDocumentLoaderErrors(t *testing.T) {
 					}
 				}
 			}},
-			loadErr: true,
+			want: want{loadErr: fs.ErrNotExist},
 		},
 		"FileRemoved": {
 			reason: "A file removed after the loader is created fails Load.",
@@ -340,7 +408,7 @@ func TestDocumentLoaderErrors(t *testing.T) {
 					}
 				}
 			}},
-			loadErr: true,
+			want: want{loadErr: fs.ErrNotExist},
 		},
 	}
 
@@ -350,21 +418,18 @@ func TestDocumentLoaderErrors(t *testing.T) {
 			input, between := tc.args.setup(t, t.TempDir())
 
 			l, err := NewDocumentLoader(input)
-			if tc.newErr {
-				if err == nil {
-					t.Errorf("\n%s\nNewDocumentLoader(): want error, got nil", tc.reason)
-				}
-				return
+			if diff := cmp.Diff(tc.want.newErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nNewDocumentLoader(): -want error, +got error:\n%s", tc.reason, diff)
 			}
 			if err != nil {
-				t.Fatalf("\n%s\nNewDocumentLoader(): %v", tc.reason, err)
+				return
 			}
 			if between != nil {
 				between()
 			}
 			_, err = l.Load()
-			if tc.loadErr && err == nil {
-				t.Errorf("\n%s\nLoad(): want error, got nil", tc.reason)
+			if diff := cmp.Diff(tc.want.loadErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nLoad(): -want error, +got error:\n%s", tc.reason, diff)
 			}
 		})
 	}

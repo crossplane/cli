@@ -21,4 +21,5 @@ package xrd
 type Cmd struct {
 	Convert  convertCmd  `cmd:"" help:"Convert an XRD to a Kubernetes CRD."`
 	Generate generateCmd `cmd:"" help:"Generate an XRD from a Composite Resource (XR) or SimpleSchema definition."`
+	Lint     lintCmd     `cmd:"" help:"Check XRDs against rules for good API design."                              maturity:"alpha"`
 }

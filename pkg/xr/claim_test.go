@@ -22,10 +22,13 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
+
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 )
 
 // Helper functions for common Claim modifications
@@ -210,6 +213,51 @@ func generateExpectedXR(claim *unstructured.Unstructured, kind string, direct bo
 	return xr
 }
 
+func TestResolveKind(t *testing.T) {
+	xrdWithKind := func(kind string) *apiextensionsv1.CompositeResourceDefinition {
+		return &apiextensionsv1.CompositeResourceDefinition{
+			Spec: apiextensionsv1.CompositeResourceDefinitionSpec{
+				Names: extv1.CustomResourceDefinitionNames{Kind: kind},
+			},
+		}
+	}
+
+	cases := map[string]struct {
+		reason    string
+		claimKind string
+		kind      string
+		xrd       *apiextensionsv1.CompositeResourceDefinition
+		want      string
+	}{
+		"GuessFromClaimKind": {
+			reason:    "With neither kind nor XRD set, should guess 'X' + claim kind.",
+			claimKind: "Widget",
+			want:      "XWidget",
+		},
+		"XRDWins": {
+			reason:    "With an XRD and no explicit kind, should use the XRD's kind.",
+			claimKind: "WidgetClaim",
+			xrd:       xrdWithKind("Widget"),
+			want:      "Widget",
+		},
+		"ExplicitKindWinsOverXRD": {
+			reason:    "An explicit kind should win even when an XRD is also given.",
+			claimKind: "WidgetClaim",
+			kind:      "ExplicitKind",
+			xrd:       xrdWithKind("FromXRD"),
+			want:      "ExplicitKind",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := ResolveKind(tc.claimKind, tc.kind, tc.xrd); got != tc.want {
+				t.Errorf("\n%s\nResolveKind(...) = %q, want %q", tc.reason, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestConvertClaimToXR(t *testing.T) {
 	type args struct {
 		claim *unstructured.Unstructured
@@ -272,6 +320,45 @@ func TestConvertClaimToXR(t *testing.T) {
 				xr:      generateExpectedXR(testClaim, "", false),
 				err:     nil,
 				nameLen: len("test-app-") + 5, // name length should be original name + hyphen + 5 char suffix
+			},
+		},
+		"KindFromXRD": {
+			reason: "Should use the kind of the XRD, and not 'X' + the Claim's kind, when the two differ.",
+			args: args{
+				claim: testClaim,
+				opts: Options{Direct: true, XRD: &apiextensionsv1.CompositeResourceDefinition{
+					Spec: apiextensionsv1.CompositeResourceDefinitionSpec{
+						Names: extv1.CustomResourceDefinitionNames{Kind: "Widget"},
+					},
+				}},
+			},
+			want: want{
+				xr:      generateExpectedXR(testClaim, "Widget", true),
+				err:     nil,
+				nameLen: len("test-app"),
+			},
+		},
+		"ErrXRDWithoutKind": {
+			reason: "Should return error when the kind resolves to the XRD's, and the XRD has no spec.names.kind.",
+			args: args{
+				claim: testClaim,
+				opts:  Options{XRD: &apiextensionsv1.CompositeResourceDefinition{}},
+			},
+			want: want{
+				xr:  nil,
+				err: errors.New("cannot resolve XR kind: XRD spec.names.kind is empty"),
+			},
+		},
+		"ExplicitKindWithXRDWithoutKind": {
+			reason: "Should use the explicit kind, and not return an error, when the XRD has no spec.names.kind.",
+			args: args{
+				claim: testClaim,
+				opts:  Options{Direct: true, Kind: "ExplicitKind", XRD: &apiextensionsv1.CompositeResourceDefinition{}},
+			},
+			want: want{
+				xr:      generateExpectedXR(testClaim, "ExplicitKind", true),
+				err:     nil,
+				nameLen: len("test-app"),
 			},
 		},
 		"ErrNoAPIVersion": {

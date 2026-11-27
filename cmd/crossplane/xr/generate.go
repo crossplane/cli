@@ -24,7 +24,10 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+
 	commonIO "github.com/crossplane/cli/v2/cmd/crossplane/convert/io"
+	"github.com/crossplane/cli/v2/pkg/render"
 	xrpkg "github.com/crossplane/cli/v2/pkg/xr"
 
 	_ "embed"
@@ -38,11 +41,12 @@ type generateCmd struct {
 	InputFile string `arg:"" default:"-" help:"The Claim YAML file to convert, or '-' for stdin." optional:"" predictor:"file" type:"path"`
 
 	// Flags.
-	OutputFile string `help:"The file to write the generated XR YAML to. Defaults to stdout."                                                                         placeholder:"PATH" predictor:"file" short:"o" type:"path"`
-	Name       string `help:"The name to use for the XR. If empty, defaults to the Claim's name (direct mode) or the Claim's name with a random suffix (non-direct)." placeholder:"NAME" type:"string"`
-	Kind       string `help:"The kind to use for the XR. Defaults to 'X' prepended to the Claim's kind (for example, Infra -> XInfra)."                               placeholder:"KIND" type:"string"`
-	Direct     bool   `help:"Create a direct XR without Claim references and suffix."                                                                                 name:"direct"      negatable:""`
-	GenUID     bool   `help:"Set a fresh random metadata.uid on the generated XR."                                                                                    name:"gen-uid"`
+	OutputFile string `help:"The file to write the generated XR YAML to. Defaults to stdout."                                                                                             placeholder:"PATH" predictor:"file"   short:"o"        type:"path"`
+	Name       string `help:"The name to use for the XR. If empty, defaults to the Claim's name (direct mode) or the Claim's name with a random suffix (non-direct)."                     placeholder:"NAME" type:"string"`
+	Kind       string `help:"The kind to use for the XR. Mutually exclusive with --xrd. If neither is set, defaults to 'X' prepended to the Claim's kind (for example, Infra -> XInfra)." placeholder:"KIND" type:"string"      xor:"kind-xrd"`
+	XRD        string `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that owns the Claim, used to resolve the XR's kind. Mutually exclusive with --kind."            name:"xrd"         placeholder:"PATH" predictor:"file" type:"path" xor:"kind-xrd"`
+	Direct     bool   `help:"Create a direct XR without Claim references and suffix."                                                                                                     name:"direct"      negatable:""`
+	GenUID     bool   `help:"Set a fresh random metadata.uid on the generated XR."                                                                                                        name:"gen-uid"`
 
 	fs afero.Fs
 }
@@ -69,10 +73,20 @@ func (c *generateCmd) Run(k *kong.Context) error {
 		return errors.Wrap(err, "cannot unmarshal Claim")
 	}
 
+	var xrd *apiextensionsv1.CompositeResourceDefinition
+
+	if c.XRD != "" {
+		xrd, err = render.LoadXRD(c.fs, c.XRD)
+		if err != nil {
+			return errors.Wrapf(err, "cannot load XRD from %q", c.XRD)
+		}
+	}
+
 	// Convert to XR
 	xr, err := xrpkg.ConvertClaimToXR(claim, xrpkg.Options{
 		Name:        c.Name,
 		Kind:        c.Kind,
+		XRD:         xrd,
 		Direct:      c.Direct,
 		GenerateUID: c.GenUID,
 	})

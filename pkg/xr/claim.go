@@ -25,6 +25,8 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 )
 
 const (
@@ -41,8 +43,11 @@ type Options struct {
 	// A non-empty Name overrides both fallbacks.
 	Name string
 
-	// Kind is the XR kind. Empty defaults to "X" + claim.Kind.
+	// Kind is the XR kind. When empty, ResolveKind decides it.
 	Kind string
+
+	// XRD is the CompositeResourceDefinition of the Claim, whose kind is used when Kind is empty.
+	XRD *apiextensionsv1.CompositeResourceDefinition
 
 	// Direct controls XR linkage to the claim:
 	//   - true:  no spec.claimRef; no claim-name/claim-namespace labels
@@ -51,6 +56,21 @@ type Options struct {
 
 	// GenerateUID, when true, sets metadata.uid to a fresh random UUID.
 	GenerateUID bool
+}
+
+// ResolveKind returns the XR kind ConvertClaimToXR would use for a Claim of the given kind,
+// following the precedence: explicit kind, then the XRD's kind, then "X" + claimKind. It is
+// exported so callers can learn the target kind before the conversion runs.
+func ResolveKind(claimKind, kind string, xrd *apiextensionsv1.CompositeResourceDefinition) string {
+	if kind != "" {
+		return kind
+	}
+
+	if xrd != nil {
+		return xrd.Spec.Names.Kind
+	}
+
+	return "X" + claimKind
 }
 
 // ConvertClaimToXR converts a Crossplane Claim to a Composite Resource (XR).
@@ -104,10 +124,10 @@ func ConvertClaimToXR(claim *unstructured.Unstructured, opts Options) (*composit
 		return nil, errors.Wrap(err, "cannot set apiVersion")
 	}
 
-	// Set XR kind - either from opts or by prepending X to Claim's kind
-	kind := opts.Kind
+	// Set XR kind - from opts, the XRD, or by prepending X to Claim's kind
+	kind := ResolveKind(claimKind, opts.Kind, opts.XRD)
 	if kind == "" {
-		kind = "X" + claimKind
+		return nil, errors.New("cannot resolve XR kind: XRD spec.names.kind is empty")
 	}
 
 	if err := xrPaved.SetString("kind", kind); err != nil {

@@ -23,9 +23,12 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
 	"github.com/crossplane/cli/v2/internal/config"
 	"github.com/crossplane/cli/v2/internal/dependency"
@@ -54,7 +57,12 @@ type SimulateCmd struct {
 
 	MaxConcurrency uint   `default:"8"               help:"Max concurrent function builds."`
 	ProjectFile    string `default:"${project_file}" help:"Path to project definition."     short:"f"`
+
+	ResourceFile []string `help:"Composite resource or claim file or directory to render against the project's Compositions. Takes a comma-separated list of paths, and can be repeated. - reads standard input." placeholder:"PATH" predictor:"yaml_file_or_directory"`
 }
+
+// takes is what --resource-file takes, for simulate.RejectInput.
+const takes = "--resource-file takes composite resource or claim files"
 
 // Help returns help for the simulate command.
 func (c *SimulateCmd) Help() string {
@@ -64,9 +72,34 @@ func (c *SimulateCmd) Help() string {
 // Run previews the project's compositions against the cluster, with its
 // functions built locally.
 func (c *SimulateCmd) Run(sigCtx context.Context, k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, cliCfg *config.Config) error {
+	xrs, err := c.loadResourceFiles()
+	if err != nil {
+		return err
+	}
 	return simulate.NewRunner(&c.Flags).Run(sigCtx, k, logger, sp, &simulate.Inputs{Build: func(ctx context.Context) (*simulate.Built, error) {
 		return c.buildProject(ctx, logger, sp, cliCfg)
-	}, Selection: &c.CompositionFlags})
+	}, ResourceFile: xrs, Selection: &c.CompositionFlags})
+}
+
+// loadResourceFiles loads the --resource-file inputs, rejecting Compositions,
+// project files and Lists as xr simulate does. The cluster's XRDs confirm the
+// rest are composite resources or claims once Run connects.
+func (c *SimulateCmd) loadResourceFiles() ([]*un.Unstructured, error) {
+	if len(c.ResourceFile) == 0 {
+		return nil, nil
+	}
+	return simulate.LoadInputs(simulate.FlagResourceFile, c.ResourceFile, func(r *un.Unstructured) error {
+		gvk := r.GroupVersionKind()
+		switch {
+		case gvk == apiextensionsv1.CompositionGroupVersionKind:
+			return simulate.RejectInput(r, simulate.FlagResourceFile, takes+"; the project's Compositions are under its APIs path")
+		case gvk.GroupVersion().String() == projectfile.APIVersion && gvk.Kind == projectfile.Kind:
+			return simulate.RejectInput(r, simulate.FlagResourceFile, takes+"; pass the project file with -f")
+		case r.IsList() || gvk.Kind == "List":
+			return simulate.RejectInput(r, simulate.FlagResourceFile, takes)
+		}
+		return nil
+	})
 }
 
 // buildProject returns the project's compositions, its locally built

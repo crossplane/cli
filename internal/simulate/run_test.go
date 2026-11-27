@@ -1087,3 +1087,115 @@ func TestSimulateWithProgress(t *testing.T) {
 		t.Errorf("expected a success line for %q, got:\n%s", simulatingMsg, out)
 	}
 }
+
+func TestSimulateNewCompositionHint(t *testing.T) {
+	const note = "Composition net is new; no composite resources exist to render. Pass a composite resource or claim file with --resource-file to preview what it would create."
+	build := func(context.Context) (*Built, error) { return nil, nil }
+	xr := testutils.NewResource("example.org/v1", "XNetwork", "").Build()
+	comp := func(dtype dt.DiffType, ri dt.RevisionImpact) *dt.CompDiffOutput {
+		return &dt.CompDiffOutput{Compositions: []dt.CompositionDiff{{
+			Name: "net", RevisionImpact: ri,
+			CompositionDiff: &dt.ResourceDiff{ResourceName: "net", DiffType: dtype},
+		}}}
+	}
+	none := dt.RevisionImpact{ChangeScope: "spec", CreatesRevision: true}
+
+	type args struct {
+		in     *Inputs
+		output string
+		report *dt.CompDiffOutput
+	}
+	type want struct {
+		notes  []string
+		stderr string
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"NewNoAdopters": {
+			reason: "A new Composition no composite adopts should get the hint after the provider-plan note.",
+			args:   args{in: &Inputs{Build: build}, output: "json", report: comp(dt.DiffTypeAdded, none)},
+			want:   want{notes: []string{NoteProviderPlanSkipped, note}},
+		},
+		"WithResourceFile": {
+			reason: "With --resource-file inputs there should be no hint.",
+			args:   args{in: &Inputs{Build: build, ResourceFile: []*un.Unstructured{xr}}, output: "json", report: comp(dt.DiffTypeAdded, none)},
+			want:   want{notes: []string{NoteProviderPlanSkipped}},
+		},
+		"Update": {
+			reason: "An updated Composition should get no hint.",
+			args:   args{in: &Inputs{Build: build}, output: "json", report: comp(dt.DiffTypeModified, none)},
+			want:   want{notes: []string{NoteProviderPlanSkipped}},
+		},
+		"NotDetermined": {
+			reason: "Without a determined revision impact, whether composites exist is unknown, so no hint.",
+			args:   args{in: &Inputs{Build: build}, output: "json", report: comp(dt.DiffTypeAdded, dt.RevisionImpact{})},
+			want:   want{notes: []string{NoteProviderPlanSkipped}},
+		},
+		"CompositionSimulate": {
+			reason: "composition simulate, which has no Build, should never hint.",
+			args:   args{in: &Inputs{}, output: "json", report: comp(dt.DiffTypeAdded, none)},
+			want:   want{notes: []string{NoteProviderPlanSkipped}},
+		},
+		"Diff": {
+			reason: "-o diff has no notes, so the hint should go to stderr.",
+			args:   args{in: &Inputs{Build: build}, output: "diff", report: comp(dt.DiffTypeAdded, none)},
+			want:   want{stderr: note + "\n"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			k := &kong.Context{Kong: &kong.Kong{Stdout: stdout, Stderr: stderr}}
+			c := &Runner{Flags: &Flags{Output: tc.args.output, SkipPlan: true, NoColor: true}, hintNewCompositions: hintsNewCompositions(tc.args.in)}
+			if _, err := c.renderCompReport(k, logging.NewNopLogger(), tc.args.report, nil); err != nil {
+				t.Fatalf("\n%s\nrenderCompReport: %v", tc.reason, err)
+			}
+			if tc.args.output == "diff" {
+				if diff := cmp.Diff(tc.want.stderr, stderr.String()); diff != "" {
+					t.Errorf("\n%s\nstderr: -want, +got:\n%s", tc.reason, diff)
+				}
+				return
+			}
+			var r Result
+			if err := json.Unmarshal(stdout.Bytes(), &r); err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(tc.want.notes, r.Notes); diff != "" {
+				t.Errorf("\n%s\nNotes: -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestInputNamespace(t *testing.T) {
+	type args struct {
+		sel   CompositionFlags
+		ctxNS string
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   string
+	}{
+		"NamespaceFlagWins": {
+			reason: "--namespace is the namespace an input that sets none gets, over the context's.",
+			args:   args{sel: CompositionFlags{Namespace: "team-a"}, ctxNS: "default"},
+			want:   "team-a",
+		},
+		"ContextNamespaceOtherwise": {
+			reason: "Without --namespace the kubeconfig context's namespace applies.",
+			args:   args{ctxNS: "default"},
+			want:   "default",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if diff := cmp.Diff(tc.want, inputNamespace(tc.args.sel, tc.args.ctxNS)); diff != "" {
+				t.Errorf("\n%s\ninputNamespace(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}

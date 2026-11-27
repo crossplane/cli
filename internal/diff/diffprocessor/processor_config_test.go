@@ -48,11 +48,11 @@ func TestProcessorsDefaultEngineLimits(t *testing.T) {
 	defaults := limits{DefaultMaxNestedDepth, DefaultMaxRenderIterations}
 
 	xr := func(opts ...ProcessorOption) limits {
-		c := NewDiffProcessor(k8.Clients{}, xp.Clients{}, opts...).(*DefaultDiffProcessor).config
+		c := NewDiffProcessor(k8.Clients{}, xp.Clients{}, opts...).config
 		return limits{c.MaxNestedDepth, c.MaxRenderIterations}
 	}
 	comp := func(opts ...ProcessorOption) limits {
-		c := NewCompDiffProcessor(nil, nil, opts...).(*DefaultCompDiffProcessor).config
+		c := NewCompDiffProcessor(nil, nil, nil, opts...).(*DefaultCompDiffProcessor).config
 		return limits{c.MaxNestedDepth, c.MaxRenderIterations}
 	}
 
@@ -151,12 +151,7 @@ func TestNewDiffProcessorThreadsRenderBackendToEngine(t *testing.T) {
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			processor := NewDiffProcessor(k8.Clients{}, xp.Clients{}, tt.options...)
-
-			p, ok := processor.(*DefaultDiffProcessor)
-			if !ok {
-				t.Fatalf("NewDiffProcessor() returned %T, want *DefaultDiffProcessor", processor)
-			}
+			p := NewDiffProcessor(k8.Clients{}, xp.Clients{}, tt.options...)
 
 			if p.engineFn == nil {
 				t.Fatal("NewDiffProcessor() left engineFn nil; the default engine-backed RenderFn was not built")

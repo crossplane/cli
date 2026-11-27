@@ -170,8 +170,9 @@ func (c *Runner) noteNoServers(k *kong.Context, notes []string) {
 // restConfig returns the cluster to simulate against and the namespace for
 // namespaced resources that set none: the hooks' cluster and "default" when
 // set, otherwise the kubeconfig's cluster and namespace. Unlike kubectl's
-// -n, simulate's -n filters composite resources, so it doesn't override this
-// namespace.
+// -n, simulate's -n filters discovered composite resources, so it doesn't
+// override this namespace, except for --resource-file inputs, which it
+// defaults but doesn't filter.
 func (c *Flags) restConfig() (*rest.Config, string, error) {
 	if c.Hooks != nil && c.Hooks.RESTConfig != nil {
 		return c.Hooks.RESTConfig, "default", nil
@@ -242,7 +243,7 @@ func (c *Runner) diffCompositions(k *kong.Context, logger logging.Logger, sp ter
 // (crossplane/cli#367).
 func (c *Runner) diffComposites(k *kong.Context, logger logging.Logger, sp terminal.SpinnerPrinter, progress *dp.Progress, proc dp.DiffProcessor, xp *xpclient.Clients, ns string, xrs []*un.Unstructured) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
-		if err := checkComposites(ctx, xp.Definition, ns, xrs); err != nil {
+		if err := checkComposites(ctx, xp.Definition, FlagInput, ns, xrs); err != nil {
 			return false, err
 		}
 		var report *dt.XRReport
@@ -494,7 +495,7 @@ func (c *Runner) notes() []string {
 // renderReport does.
 func (c *Runner) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XRReport, runErr error) (bool, error) {
 	plans := c.providerPlans()
-	return c.renderReport(k, logger, runErr, FromXRReport(r, plans, c.keep), r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
+	return c.renderReport(k, logger, runErr, FromXRReport(r, plans, c.keep), nil, r.HasChanges(), dt.XRDryRunWarnings(r.Groups), func(opts renderer.DiffOptions) error {
 		// Annotated even without plans, so a Secret's values are redacted.
 		r = AnnotateXRReport(r, plans)
 		return renderer.NewDiffRenderer(logger, opts).RenderDiffs(r.Groups, r.Errors, r.Warnings)
@@ -505,7 +506,11 @@ func (c *Runner) renderXRReport(k *kong.Context, logger logging.Logger, r *dt.XR
 // selects, as renderReport does.
 func (c *Runner) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.CompDiffOutput, runErr error) (bool, error) {
 	plans := c.providerPlans()
-	return c.renderReport(k, logger, runErr, FromCompReport(o, plans, c.keep), o.HasChanges(), dt.CompDryRunWarnings(o), func(opts renderer.DiffOptions) error {
+	var hints []string
+	if c.hintNewCompositions {
+		hints = newCompositionNotes(o)
+	}
+	return c.renderReport(k, logger, runErr, FromCompReport(o, plans, c.keep), hints, o.HasChanges(), dt.CompDryRunWarnings(o), func(opts renderer.DiffOptions) error {
 		opts.MinimizeComposition = c.sel.MinimizeComposition
 		// Annotated even without plans, so a Secret's values are redacted.
 		o = AnnotateCompReport(o, plans)
@@ -517,8 +522,9 @@ func (c *Runner) renderCompReport(k *kong.Context, logger logging.Logger, o *dt.
 // human diff for diff, and res otherwise, followed by warnings. It returns
 // whether the run changed anything, provider plans included, and runErr
 // with any render failure joined to it, so neither is lost. changed is
-// whether the report itself has changes.
-func (c *Runner) renderReport(k *kong.Context, logger logging.Logger, runErr error, res Result, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (bool, error) {
+// whether the report itself has changes. hints are notes appended after the
+// result's own; -o diff, which has no notes, prints them to stderr.
+func (c *Runner) renderReport(k *kong.Context, logger logging.Logger, runErr error, res Result, hints []string, changed bool, warnings []dt.OutputWarning, renderDiff func(renderer.DiffOptions) error) (bool, error) {
 	opts := c.diffOptions(k)
 	plans := c.providerPlans()
 	if plans != nil {
@@ -529,6 +535,12 @@ func (c *Runner) renderReport(k *kong.Context, logger logging.Logger, runErr err
 		res.Notes = n
 	}
 	c.noteNoServers(k, n)
+	res.Notes = append(res.Notes, hints...)
+	if c.Output == string(renderer.OutputFormatDiff) {
+		for _, h := range hints {
+			_, _ = fmt.Fprintln(k.Stderr, h)
+		}
+	}
 	changed = changed || (plans != nil && res.Summary.Changes() > 0)
 
 	var err error
@@ -602,6 +614,9 @@ type Runner struct {
 	noServersNoted bool
 	// sel is Inputs.Selection, which run copies in; zero without one.
 	sel CompositionFlags
+	// hintNewCompositions is set for project simulate without
+	// --resource-file, to note each new Composition nothing would render.
+	hintNewCompositions bool
 }
 
 // NewRunner returns a Runner configured by f.
@@ -618,6 +633,7 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 		c.sel = *in.Selection
 	}
 	project := in.Build != nil
+	c.hintNewCompositions = hintsNewCompositions(in)
 	warnIgnoredFlags(k.Stderr, setFlags(k), c.SkipPlan, project)
 
 	if err := docker.Check(sigCtx); err != nil {
@@ -685,8 +701,23 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 	if in.Composites != nil {
 		return c.simulate(sigCtx, logger, clients.Initialize, xrProc, c.diffComposites(k, logger, sp, progress, xrProc, &clients.XpClients, ns, in.Composites))
 	}
-	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, opts...)
-	return c.simulate(sigCtx, logger, clients.Initialize, proc, c.diffCompositions(k, logger, sp, progress, proc, comps, msg))
+	// The --resource-file inputs are checked and assigned once the clients
+	// initialize, which caches the cluster's XRDs, and before rendering.
+	supplied := map[string][]*un.Unstructured{}
+	proc := dp.NewCompDiffProcessor(xrProc, clients.XpClients.Composition, clients.XpClients.Definition, append(opts, dp.WithSuppliedComposites(supplied))...)
+	diff := c.diffCompositions(k, logger, sp, progress, proc, comps, msg)
+	return c.simulate(sigCtx, logger, clients.Initialize, proc, func(ctx context.Context) (bool, error) {
+		if err := assignInputs(ctx, clients.XpClients.Definition, inputNamespace(c.sel, ns), comps, in.ResourceFile, supplied); err != nil {
+			return false, err
+		}
+		return diff(ctx)
+	})
+}
+
+// inputNamespace is the namespace a --resource-file input that sets none
+// gets: --namespace when set, else the kubeconfig context's ctxNS.
+func inputNamespace(sel CompositionFlags, ctxNS string) string {
+	return cmp.Or(sel.Namespace, ctxNS)
 }
 
 // build builds in's project, or for file inputs (Compositions or composite
@@ -735,6 +766,13 @@ func warnIgnoredFlags(stderr io.Writer, set map[string]bool, skipPlan, project b
 	}
 }
 
+// hintsNewCompositions reports whether a run of in notes each new
+// Composition nothing would render: only project simulate, and only without
+// --resource-file, which renders them.
+func hintsNewCompositions(in *Inputs) bool {
+	return in.Build != nil && len(in.ResourceFile) == 0
+}
+
 // Built is a built project: what Inputs.Build returns.
 type Built struct {
 	// Compositions are the project's Compositions.
@@ -763,6 +801,11 @@ type Inputs struct {
 	// cluster's Compositions and functions, when Build is nil. When set,
 	// Compositions is unused.
 	Composites []*un.Unstructured
+
+	// ResourceFile are the composite resources or claims to render against
+	// the project's Compositions, alongside the composites each one
+	// discovers, when Build is set (project simulate --resource-file).
+	ResourceFile []*un.Unstructured
 
 	// Selection limits the run to the composite resources it selects. A
 	// command without CompositionFlags leaves it nil, which selects them all.

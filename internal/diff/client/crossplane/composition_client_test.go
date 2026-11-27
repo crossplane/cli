@@ -251,6 +251,142 @@ func TestDefaultCompositionClient_FindMatchingComposition(t *testing.T) {
 				err: errors.Errorf("composition non-existent-comp referenced in example.org/v1, Kind=XR1/my-xr not found"),
 			},
 		},
+		"MalformedCompositionRef": {
+			reason: "Should fail, naming the field, on a compositionRef name that is not a string",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithEmptyListResources().
+				Build(),
+			mockDef: *tu.NewMockDefinitionClient().
+				WithSuccessfulInitialize().
+				WithV1XRDForXR().
+				Build(),
+			fields: fields{
+				compositions: map[string]*apiextensionsv1.Composition{
+					"existing-comp": matchingComp,
+				},
+			},
+			args: args{
+				ctx: t.Context(),
+				res: func() *un.Unstructured {
+					xr := tu.NewResource("example.org/v1", "XR1", "my-xr").Build()
+					_ = un.SetNestedField(xr.Object, int64(3), "spec", "compositionRef", "name")
+
+					return xr
+				}(),
+			},
+			want: want{
+				err: errors.New(`cannot read compositionRef for example.org/v1, Kind=XR1/my-xr: field "compositionRef.name" is not a string: .spec.compositionRef.name accessor error: 3 is of the type int64, expected string`),
+			},
+		},
+		"MalformedSelectorLabel": {
+			reason: "Should fail, naming the field, on a compositionSelector label that is not a string",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithEmptyListResources().
+				Build(),
+			mockDef: *tu.NewMockDefinitionClient().
+				WithSuccessfulInitialize().
+				WithV1XRDForXR().
+				Build(),
+			fields: fields{
+				compositions: map[string]*apiextensionsv1.Composition{
+					"existing-comp": matchingComp,
+				},
+			},
+			args: args{
+				ctx: t.Context(),
+				res: func() *un.Unstructured {
+					xr := tu.NewResource("example.org/v1", "XR1", "my-xr").Build()
+					_ = un.SetNestedField(xr.Object, int64(3), "spec", "compositionSelector", "matchLabels", "tier")
+
+					return xr
+				}(),
+			},
+			want: want{
+				err: errors.New(`cannot read compositionSelector for example.org/v1, Kind=XR1/my-xr: field "compositionSelector.matchLabels" is not an object: .spec.compositionSelector.matchLabels accessor error: contains non-string value in the map under key "tier": 3 is of the type int64, expected string`),
+			},
+		},
+		"EnforcedCompositionRef": {
+			reason: "Should return the XRD's enforcedCompositionRef over the resource's compositionRef",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithEmptyListResources().
+				Build(),
+			mockDef: *tu.NewMockDefinitionClient().
+				WithSuccessfulInitialize().
+				WithXRDForXR(xrdWithRefs(CrossplaneAPIExtGroupV2, "enforcedCompositionRef", "referenced-comp")).
+				Build(),
+			fields: fields{
+				compositions: map[string]*apiextensionsv1.Composition{
+					"matching-comp":   matchingComp,
+					"referenced-comp": referencedComp,
+				},
+			},
+			args: args{
+				ctx: t.Context(),
+				res: tu.NewResource("example.org/v1", "XR1", "my-xr").
+					WithSpecField("crossplane", map[string]any{"compositionRef": map[string]any{"name": "matching-comp"}}).
+					Build(),
+			},
+			want: want{
+				composition: referencedComp,
+			},
+		},
+		"DefaultCompositionRefResolvesRevision": {
+			reason: "Should resolve the revision of the XRD's defaultCompositionRef, as for a compositionRef",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithResourcesFoundByLabel([]*un.Unstructured{
+					tu.NewResource(CrossplaneAPIExtGroupV1, "CompositionRevision", "referenced-comp-abc1234").
+						WithLabels(map[string]string{LabelCompositionName: "referenced-comp"}).
+						WithSpecField("revision", int64(1)).
+						WithSpecField("compositeTypeRef", map[string]any{"apiVersion": "example.org/v1", "kind": "XR1"}).
+						Build(),
+				}, LabelCompositionName, "referenced-comp").
+				Build(),
+			mockDef: *tu.NewMockDefinitionClient().
+				WithSuccessfulInitialize().
+				WithXRDForXR(xrdWithRefs(CrossplaneAPIExtGroupV1, "defaultCompositionRef", "referenced-comp")).
+				Build(),
+			fields: fields{
+				compositions: map[string]*apiextensionsv1.Composition{
+					"matching-comp":   matchingComp,
+					"referenced-comp": referencedComp,
+				},
+			},
+			args: args{
+				ctx: t.Context(),
+				res: tu.NewResource("example.org/v1", "XR1", "my-xr").Build(),
+			},
+			want: want{
+				composition:  referencedComp,
+				revisionName: "referenced-comp-abc1234",
+			},
+		},
+		"DefaultCompositionRefNotFound": {
+			reason: "Should name the XRD's defaultCompositionRef when the composition it names doesn't exist",
+			mockResource: *tu.NewMockResourceClient().
+				WithSuccessfulInitialize().
+				WithEmptyListResources().
+				Build(),
+			mockDef: *tu.NewMockDefinitionClient().
+				WithSuccessfulInitialize().
+				WithXRDForXR(xrdWithRefs(CrossplaneAPIExtGroupV1, "defaultCompositionRef", "non-existent-comp")).
+				Build(),
+			fields: fields{
+				compositions: map[string]*apiextensionsv1.Composition{
+					"matching-comp": matchingComp,
+				},
+			},
+			args: args{
+				ctx: t.Context(),
+				res: tu.NewResource("example.org/v1", "XR1", "my-xr").Build(),
+			},
+			want: want{
+				err: errors.Errorf("composition non-existent-comp referenced in the XRD defaultCompositionRef for example.org/v1, Kind=XR1/my-xr not found"),
+			},
+		},
 		"CompositionSelectorMatch": {
 			reason: "Should return composition matching the selector labels",
 			mockResource: *tu.NewMockResourceClient().
@@ -786,6 +922,14 @@ func TestDefaultCompositionClient_FindMatchingComposition(t *testing.T) {
 			}
 		})
 	}
+}
+
+// xrdWithRefs returns an XRD of apiVersion whose spec.<field>.name is name.
+func xrdWithRefs(apiVersion, field, name string) *un.Unstructured {
+	return &un.Unstructured{Object: map[string]any{
+		"apiVersion": apiVersion,
+		"spec":       map[string]any{field: map[string]any{"name": name}},
+	}}
 }
 
 // TestFindByTypeReferenceWhenCacheEmpty covers an XR that names no composition, so it is matched

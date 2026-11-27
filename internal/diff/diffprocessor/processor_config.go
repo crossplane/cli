@@ -169,6 +169,13 @@ type ProcessorConfig struct {
 	// of its diffs are reported. Nil, the default, runs nothing.
 	AfterXRDiff func(ctx context.Context, diffs map[string]*dt.ResourceDiff) error
 
+	// SuppliedComposites holds composites (XRs or claims) the caller supplies, keyed by the name of
+	// the Composition they render against. DiffComposition renders them alongside the composites it
+	// discovers (or the --resource scoped set) for that Composition. A supplied composite with the
+	// same group, kind, namespace and name as a discovered one replaces it, so it renders once and
+	// diffs against the live object. Nil, the default, adds none.
+	SuppliedComposites map[string][]*un.Unstructured
+
 	// FunctionCredentials holds Secret credentials to pass to Functions during rendering
 	FunctionCredentials []corev1.Secret
 
@@ -290,6 +297,14 @@ func WithChangedFunctions(names ...string) ProcessorOption {
 		}
 
 		config.ChangedFunctions.Insert(names...)
+	}
+}
+
+// WithSuppliedComposites sets the composites to render per Composition name (see
+// ProcessorConfig.SuppliedComposites).
+func WithSuppliedComposites(byComposition map[string][]*un.Unstructured) ProcessorOption {
+	return func(config *ProcessorConfig) {
+		config.SuppliedComposites = byComposition
 	}
 }
 

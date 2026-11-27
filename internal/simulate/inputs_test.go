@@ -188,9 +188,9 @@ spec:
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := LoadInputs(tc.paths, func(r *un.Unstructured) error {
+			got, err := LoadInputs(FlagInput, tc.paths, func(r *un.Unstructured) error {
 				if r.GroupVersionKind() != apiextensionsv1.CompositionGroupVersionKind {
-					return RejectInput(r, "composition simulate takes Composition files")
+					return RejectInput(r, FlagInput, "composition simulate takes Composition files")
 				}
 				return nil
 			})
@@ -266,7 +266,7 @@ func TestCheckComposites(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			err := checkComposites(context.Background(), defs, "ctx-ns", tc.resources)
+			err := checkComposites(context.Background(), defs, FlagInput, "ctx-ns", tc.resources)
 			if tc.err == "" {
 				if err != nil {
 					t.Fatalf("\n%s\ncheckComposites(...): %v", tc.reason, err)
@@ -328,7 +328,7 @@ func TestCheckCompositesNamespace(t *testing.T) {
 			if tc.namespace != "" {
 				r.SetNamespace(tc.namespace)
 			}
-			if err := checkComposites(context.Background(), defs, "ctx-ns", []*un.Unstructured{r}); err != nil {
+			if err := checkComposites(context.Background(), defs, FlagInput, "ctx-ns", []*un.Unstructured{r}); err != nil {
 				t.Fatalf("checkComposites(...): %v", err)
 			}
 			if got := r.GetNamespace(); got != tc.want {

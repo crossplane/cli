@@ -134,11 +134,41 @@ func (r *DefaultCompDiffRenderer) renderCompositionImpact(comp *dt.CompositionDi
 // that case, so say so once instead — then report the composites the tool did rule out locally, which
 // no render was needed to establish.
 func (r *DefaultCompDiffRenderer) renderSkippedComposition(comp *dt.CompositionDiff) error {
-	if _, err := fmt.Fprint(r.opts.Stdout, skippedMessage(comp.RevisionImpact)); err != nil {
+	supplied := suppliedRendered(comp.ImpactAnalysis)
+	if _, err := fmt.Fprint(r.opts.Stdout, skippedMessage(comp.RevisionImpact, supplied)); err != nil {
 		return errors.Wrap(err, "cannot write impact analysis skipped message")
 	}
 
-	return r.renderFilteredUnderSkip(comp)
+	if supplied == 0 {
+		return r.renderFilteredUnderSkip(comp)
+	}
+
+	// The supplied composites were rendered, so their verdicts are earned: show them as an analysed
+	// composition would. The list names only the rendered ones in default discovery, so the filtered
+	// breakdown is reported first, as the skip must not hide it (#478).
+	if err := r.writeFilteredSummary(comp); err != nil {
+		return err
+	}
+
+	if err := r.renderAffectedResourcesList(comp); err != nil {
+		return err
+	}
+
+	return r.renderImpactAnalysis(comp)
+}
+
+// suppliedRendered counts the --resource-file composites that were rendered, which a skip does not
+// suppress.
+func suppliedRendered(impacts []dt.XRImpact) int {
+	n := 0
+
+	for _, impact := range impacts {
+		if impact.Supplied && impact.Status != dt.XRStatusFiltered {
+			n++
+		}
+	}
+
+	return n
 }
 
 // renderCompositionChanges renders the composition changes section.
@@ -189,13 +219,36 @@ func (r *DefaultCompDiffRenderer) renderCompositionChanges(comp *dt.CompositionD
 // CompositionRevision and so genuinely cannot affect anything, whereas a metadata-only change does
 // create one — the user simply asked not to pay for evaluating it. Reporting the first message for
 // the second case would claim a guarantee the tool did not establish.
-func skippedMessage(impact dt.RevisionImpact) string {
-	if impact.CreatesRevision {
-		return fmt.Sprintf("Impact analysis skipped: --analyze-on=spec-change and this composition's spec is unchanged. Applying it still creates a new CompositionRevision that %d composite%s would adopt; whether that changes any rendered output was not evaluated. Pass --analyze-on=any-change to check.\n\n",
-			impact.RepointedComposites, pluralize(impact.RepointedComposites))
+//
+// supplied counts the --resource-file composites rendered regardless; when any were, the message
+// confines its claim to the cluster's composites and says those were rendered.
+func skippedMessage(impact dt.RevisionImpact, supplied int) string {
+	// The sentences both branches share, so the plain and the supplied wording state the same facts.
+	const (
+		specUnchanged = "--analyze-on=spec-change and this composition's spec is unchanged"
+		identical     = "this composition is identical to the cluster's, so applying it creates no new CompositionRevision"
+		checkAnyway   = "Pass --analyze-on=always to evaluate them anyway."
+		checkChange   = "Pass --analyze-on=any-change to check"
+	)
+
+	adopt := fmt.Sprintf("a new CompositionRevision that %d composite%s would adopt", impact.RepointedComposites, pluralize(impact.RepointedComposites))
+
+	if supplied > 0 {
+		reason, remedy := identical, checkAnyway
+		if impact.CreatesRevision {
+			reason = specUnchanged + ", though applying it creates " + adopt
+			remedy = checkChange + " them."
+		}
+
+		return fmt.Sprintf("Impact analysis skipped for the cluster's composites: %s. %s The %d composite%s from --resource-file %s rendered.\n\n",
+			reason, remedy, supplied, pluralize(supplied), map[bool]string{true: "was", false: "were"}[supplied == 1])
 	}
 
-	return "Impact analysis skipped: this composition is identical to the cluster's, so applying it creates no new CompositionRevision and no composite resource could change as a result. Pass --analyze-on=always to evaluate them anyway.\n\n"
+	if impact.CreatesRevision {
+		return "Impact analysis skipped: " + specUnchanged + ". Applying it still creates " + adopt + "; whether that changes any rendered output was not evaluated. " + checkChange + ".\n\n"
+	}
+
+	return "Impact analysis skipped: " + identical + " and no composite resource could change as a result. " + checkAnyway + "\n\n"
 }
 
 // renderFilteredUnderSkip reports the composites ruled out as not adopting the resulting revision, for
@@ -221,9 +274,8 @@ func (r *DefaultCompDiffRenderer) renderFilteredUnderSkip(comp *dt.CompositionDi
 
 	stdout := r.opts.Stdout
 
-	if _, err := fmt.Fprintf(stdout, "%d of %d XR(s) using composition %s would not adopt this revision: %s\n",
-		filtered, comp.AffectedResources.Total, comp.Name, filteredClauses(comp.AffectedResources)); err != nil {
-		return errors.Wrap(err, "cannot write filtered XRs summary")
+	if err := r.writeFilteredSummary(comp); err != nil {
+		return err
 	}
 
 	if impacts := listedImpacts(comp); len(impacts) > 0 {
@@ -234,6 +286,22 @@ func (r *DefaultCompDiffRenderer) renderFilteredUnderSkip(comp *dt.CompositionDi
 
 	if _, err := fmt.Fprintln(stdout); err != nil {
 		return errors.Wrap(err, "cannot write filtered XRs separator")
+	}
+
+	return nil
+}
+
+// writeFilteredSummary writes the line counting the composites that would not adopt this revision, and
+// nothing when there are none.
+func (r *DefaultCompDiffRenderer) writeFilteredSummary(comp *dt.CompositionDiff) error {
+	filtered := totalFiltered(comp.AffectedResources)
+	if filtered == 0 {
+		return nil
+	}
+
+	if _, err := fmt.Fprintf(r.opts.Stdout, "%d of %d XR(s) using composition %s would not adopt this revision: %s\n",
+		filtered, comp.AffectedResources.Total, comp.Name, filteredClauses(comp.AffectedResources)); err != nil {
+		return errors.Wrap(err, "cannot write filtered XRs summary")
 	}
 
 	return nil
@@ -566,6 +634,10 @@ func (r *DefaultCompDiffRenderer) buildXRStatusList(impacts []dt.XRImpact) strin
 			indicator = "⊘" // ⊘
 			color = colorYellow
 			suffix = filteredSuffix(impact)
+		}
+
+		if impact.Supplied {
+			suffix = " (from --resource-file)" + suffix
 		}
 
 		fmt.Fprintf(&sb, "%s  %s %s/%s (%s)%s%s\n",

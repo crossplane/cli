@@ -18,6 +18,7 @@ package simulate
 
 import (
 	"cmp"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -45,6 +46,27 @@ const (
 	NoteProviderPlanSkipped = "Provider plan skipped (--skip-plan)."
 	NoteNoDiffServers       = "Provider plan not run: no provider diff server planned these resources."
 )
+
+// newCompositionNotes returns a note for each Composition in o that is
+// created and that no composite would adopt, saying how to render one. A
+// Composition whose impact was not determined gets none: whether composites
+// exist is unknown.
+func newCompositionNotes(o *dt.CompDiffOutput) []string {
+	if o == nil {
+		return nil
+	}
+	var notes []string
+	for _, c := range o.Compositions {
+		if c.Error != nil || c.CompositionDiff == nil || c.CompositionDiff.DiffType != dt.DiffTypeAdded {
+			continue
+		}
+		if !c.RevisionImpact.Determined() || c.RevisionImpact.RepointedComposites != 0 {
+			continue
+		}
+		notes = append(notes, fmt.Sprintf("Composition %s is new; no composite resources exist to render. Pass a composite resource or claim file with --resource-file to preview what it would create.", c.Name))
+	}
+	return notes
+}
 
 // FromXRReport maps an xr or project diff run onto a Result: one plan per
 // resource diff (the XR's own included), each grouped under its input XR or
@@ -165,7 +187,7 @@ func FromCompReport(o *dt.CompDiffOutput, plans *ProviderPlans, keep func(*unstr
 // rendered against its pinned revision because that calls a changed function)
 // keeps the status of its simulation. Other filtered composites are skipped.
 func compositeResult(impact dt.XRImpact) CompositeResult {
-	c := CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned || impact.FilterReason == dt.FilterReasonManualPolicy}
+	c := CompositeResult{Ref: resourceRef(impact.ObjectReference), Pinned: impact.Pinned || impact.FilterReason == dt.FilterReasonManualPolicy, Supplied: impact.Supplied}
 	if impact.ComposedBy != nil {
 		ref := resourceRef(*impact.ComposedBy)
 		c.ComposedBy = &ref

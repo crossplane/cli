@@ -83,6 +83,17 @@ type Cmd struct {
 	Watch                     bool   `default:"false"                               help:"Watch for changes until resource deletion."  name:"watch"                                                                   short:"w"`
 
 	Impersonation kube.ImpersonationFlags `embed:""`
+
+	// Hooks is for tests; the CLI never sets it.
+	Hooks *Hooks `kong:"-"`
+}
+
+// Hooks change how a trace command runs, so a test can run the real command.
+// Fields left zero keep the CLI's behavior.
+type Hooks struct {
+	// Headless runs watch mode without reading the terminal and at a fixed
+	// window size, since tests have no TTY.
+	Headless bool
 }
 
 // Help returns help message for the trace command.
@@ -141,8 +152,7 @@ func (c *Cmd) setupKubeClient(logger logging.Logger) (clientcmd.ClientConfig, cl
 }
 
 // Run runs the trace command.
-func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
-	ctx := context.Background()
+func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger) error {
 	logger = logger.WithValues("Resource", c.Resource, "Name", c.Name)
 
 	// Init new printer

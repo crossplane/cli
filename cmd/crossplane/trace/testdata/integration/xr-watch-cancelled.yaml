@@ -1,0 +1,9 @@
+# A cluster-scoped XR the watch-cancelled case of TestTraceWatchIntegration watches.
+apiVersion: trace.example.org/v1alpha1
+kind: XNop
+metadata:
+  name: watch-cancelled
+spec:
+  coolField: watch-cancelled
+  compositionRef:
+    name: xnops.trace.example.org

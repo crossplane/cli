@@ -23,7 +23,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -58,12 +57,7 @@ func startInstallCluster(t *testing.T) *integration.Cluster {
 
 	cluster := integration.Start(t, integration.Setup{})
 
-	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-	if err := os.WriteFile(kubeconfig, cluster.Kubeconfig, 0o600); err != nil {
-		t.Fatalf("cannot write kubeconfig: %v", err)
-	}
-
-	t.Setenv("KUBECONFIG", kubeconfig)
+	cluster.UseKubeconfig(t)
 
 	return cluster
 }

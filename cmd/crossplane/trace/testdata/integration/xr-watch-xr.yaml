@@ -1,0 +1,9 @@
+# A cluster-scoped XR the watch-xr case of TestTraceWatchIntegration watches.
+apiVersion: trace.example.org/v1alpha1
+kind: XNop
+metadata:
+  name: watch-xr
+spec:
+  coolField: watch-xr
+  compositionRef:
+    name: xnops.trace.example.org

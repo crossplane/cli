@@ -20,12 +20,13 @@ package trace
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,13 +72,8 @@ func TestTraceIntegration(t *testing.T) {
 	createFromFile(t, cluster, "testdata/integration/packages-current-revision.yaml")
 	setPackageStatus(t, cluster, "testdata/integration/packages.yaml", "testdata/integration/packages-current-revision.yaml")
 
-	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-	if err := os.WriteFile(kubeconfig, cluster.Kubeconfig, 0o600); err != nil {
-		t.Fatalf("cannot write kubeconfig: %v", err)
-	}
-
 	// trace loads its kubeconfig the way kubectl does.
-	t.Setenv("KUBECONFIG", kubeconfig)
+	cluster.UseKubeconfig(t)
 
 	// The resources trace finds, as parseTree reads them from its json or yaml output. No controller runs under
 	// envtest, so the claim and XRs have no conditions.
@@ -295,7 +291,7 @@ func runTrace(t *testing.T, args []string) (string, error) {
 	var stdout bytes.Buffer
 	kongCtx.Stdout = &stdout
 
-	err = c.Run(kongCtx, logging.NewNopLogger())
+	err = c.Run(t.Context(), kongCtx, logging.NewNopLogger())
 
 	return stdout.String(), err
 }
@@ -472,4 +468,230 @@ func trimLines(s string) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// syncBuffer is a bytes.Buffer safe to read while watch mode writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
+// TestTraceWatchIntegration runs trace -w on XRs in a real API server, through watchResourceTree and its producer.
+// Each case watches its own XR until the tree renders, changes something, then waits for the redraw, or for the
+// watch to end. Hooks.Headless keeps the program off the terminal, which go test doesn't have.
+func TestTraceWatchIntegration(t *testing.T) {
+	cluster := integration.Start(t, integration.Setup{
+		CRDDirs:    []string{"testdata/integration/crds"},
+		SetupFiles: []string{"testdata/integration/setup.yaml"},
+		CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+			integration.Composes("testdata/integration/xr-watch-composed.yaml",
+				"testdata/integration/composed-watch-composed.yaml"),
+			integration.Composes("testdata/integration/xr-watch-xr.yaml",
+				"testdata/integration/composed-watch-xr.yaml"),
+			integration.Composes("testdata/integration/xr-watch-deleted.yaml",
+				"testdata/integration/composed-watch-deleted.yaml"),
+			integration.Composes("testdata/integration/xr-watch-cancelled.yaml",
+				"testdata/integration/composed-watch-cancelled.yaml"),
+		},
+		XRDAPIVersion: integration.XRDV1,
+	})
+
+	cluster.UseKubeconfig(t)
+
+	type want struct {
+		// output is what stdout should come to contain after the change.
+		output []string
+		// exit is whether Run should return nil after the change.
+		exit bool
+	}
+
+	cases := map[string]struct {
+		reason string
+		xr     string
+		change func(t *testing.T, xr *un.Unstructured, cancel context.CancelFunc)
+		want   want
+	}{
+		"ComposedResourceChanged": {
+			reason: "A change to a composed resource should be redrawn. No watch covers it, so the periodic refresh picks it up.",
+			xr:     "watch-composed",
+			change: func(t *testing.T, _ *un.Unstructured, _ context.CancelFunc) {
+				t.Helper()
+
+				child := &un.Unstructured{}
+				child.SetAPIVersion("nop.example.org/v1alpha1")
+				child.SetKind("NopResource")
+				if err := cluster.Client.Get(cluster.Context, client.ObjectKey{Name: "watch-composed-only"}, child); err != nil {
+					t.Fatalf("cannot get the composed resource: %v", err)
+				}
+
+				conds, _, _ := un.NestedSlice(child.Object, "status", "conditions")
+				for i, cond := range conds {
+					if cond, ok := cond.(map[string]any); ok && cond["type"] == "Ready" {
+						cond["status"] = "False"
+						cond["reason"] = "Unavailable"
+						cond["message"] = "watch-redraw-check"
+						conds[i] = cond
+					}
+				}
+
+				if err := un.SetNestedSlice(child.Object, conds, "status", "conditions"); err != nil {
+					t.Fatalf("cannot set the composed resource's conditions: %v", err)
+				}
+
+				// The NopResource CRD has no status subresource, so its status is updated with the rest of it.
+				if err := cluster.Client.Update(cluster.Context, child); err != nil {
+					t.Fatalf("cannot update the composed resource's status: %v", err)
+				}
+			},
+			want: want{output: []string{"Unavailable: watch-redraw-check"}},
+		},
+		"XRChanged": {
+			reason: "A change to the XR should be redrawn without ending the watch. The periodic refresh re-reads the XR too, so the output can't show whether the watch event or the refresh redrew it.",
+			xr:     "watch-xr",
+			change: func(t *testing.T, xr *un.Unstructured, _ context.CancelFunc) {
+				t.Helper()
+
+				if err := cluster.Client.Get(cluster.Context, client.ObjectKeyFromObject(xr), xr); err != nil {
+					t.Fatalf("cannot get the XR: %v", err)
+				}
+
+				// The XR's CRD comes from its XRD, which gives it a status subresource.
+				if err := un.SetNestedSlice(xr.Object, []any{map[string]any{
+					"type": "Synced", "status": "False", "reason": "ReconcileError", "message": "xr-redraw-check",
+					"lastTransitionTime": "2026-01-01T00:00:00Z",
+				}}, "status", "conditions"); err != nil {
+					t.Fatalf("cannot set the XR's conditions: %v", err)
+				}
+
+				if err := cluster.Client.Status().Update(cluster.Context, xr); err != nil {
+					t.Fatalf("cannot update the XR's status: %v", err)
+				}
+			},
+			want: want{output: []string{"ReconcileError: xr-redraw-check"}},
+		},
+		"XRDeleted": {
+			reason: "Deleting the watched XR should end the watch without an error.",
+			xr:     "watch-deleted",
+			change: func(t *testing.T, xr *un.Unstructured, _ context.CancelFunc) {
+				t.Helper()
+
+				if err := cluster.Client.Delete(cluster.Context, xr); err != nil {
+					t.Fatalf("cannot delete the XR: %v", err)
+				}
+			},
+			want: want{exit: true},
+		},
+		"ContextCancelled": {
+			reason: "Cancelling Run's context should end the watch without an error.",
+			xr:     "watch-cancelled",
+			change: func(_ *testing.T, _ *un.Unstructured, cancel context.CancelFunc) {
+				cancel()
+			},
+			want: want{exit: true},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			xr := &un.Unstructured{}
+			xr.SetAPIVersion("trace.example.org/v1alpha1")
+			xr.SetKind("XNop")
+			xr.SetName(tc.xr)
+
+			var c Cmd
+
+			parser, err := kong.New(&c)
+			if err != nil {
+				t.Fatalf("kong.New(): %v", err)
+			}
+
+			kongCtx, err := parser.Parse([]string{"xnop", tc.xr, "-w"})
+			if err != nil {
+				t.Fatalf("Parse(): %v", err)
+			}
+
+			stdout := &syncBuffer{}
+			kongCtx.Stdout = stdout
+			c.Hooks = &Hooks{Headless: true}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- c.Run(ctx, kongCtx, logging.NewNopLogger()) }()
+
+			// Cancelling must end the watch on its own, so cleanup waits for that before deleting the XR, which
+			// would end it too. Deleting the XR also keeps it from showing up in another case.
+			exited := false
+			t.Cleanup(func() {
+				cancel()
+
+				if !exited {
+					select {
+					case <-done:
+					case <-time.After(30 * time.Second):
+						t.Errorf("watch didn't end after its context was cancelled")
+					}
+				}
+
+				// The subtest's t.Context() is done once cleanup runs; the cluster's is the parent test's.
+				if err := cluster.Client.Delete(cluster.Context, xr.DeepCopy()); client.IgnoreNotFound(err) != nil {
+					t.Errorf("cannot delete the XR: %v", err)
+				}
+			})
+
+			// waitFor waits for stdout to contain each of want, failing if Run returns or the deadline passes first.
+			waitFor := func(what string, want ...string) {
+				t.Helper()
+
+				deadline := time.After(30 * time.Second)
+				for {
+					out := stdout.String()
+					if !slices.ContainsFunc(want, func(s string) bool { return !strings.Contains(out, s) }) {
+						return
+					}
+
+					select {
+					case err := <-done:
+						exited = true
+						t.Fatalf("\n%s\nRun returned before it could %s: %v\nstdout:\n%s", tc.reason, what, err, out)
+					case <-deadline:
+						t.Fatalf("\n%s\nwatch didn't %s in time; stdout:\n%s", tc.reason, what, out)
+					case <-time.After(100 * time.Millisecond):
+					}
+				}
+			}
+
+			waitFor("render the tree", "XNop/"+tc.xr, "NopResource/"+tc.xr+"-only")
+
+			tc.change(t, xr, cancel)
+
+			if !tc.want.exit {
+				waitFor("redraw the changed tree", tc.want.output...)
+				return
+			}
+
+			select {
+			case err := <-done:
+				exited = true
+				if err != nil {
+					t.Errorf("\n%s\nRun(): %v", tc.reason, err)
+				}
+			case <-time.After(30 * time.Second):
+				t.Errorf("\n%s\nwatch didn't end in time; stdout:\n%s", tc.reason, stdout.String())
+			}
+		})
+	}
 }

@@ -192,13 +192,7 @@ func SplitDocuments(source string, r io.Reader) ([]Document, error) {
 			}
 			if buf.Len() != 0 {
 				emit()
-				if errors.Is(err, io.EOF) {
-					return docs, nil
-				}
 				continue
-			}
-			if errors.Is(err, io.EOF) {
-				return docs, nil
 			}
 		}
 		if errors.Is(err, io.EOF) {

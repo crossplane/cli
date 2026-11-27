@@ -301,6 +301,80 @@ Summary: 2 modified`,
 				WithDownstreamSummary(0, 0, 1).
 				WithDownstreamResource("removed", "XDownstreamResource", "resource-to-be-removed", "default"),
 		},
+		"UnhealthyXRWithChangesExits7": {
+			Reason: "A composition change on a failing XR prints the XR's health and its not-ready composed resource's in the impact analysis, then the Health: line, and exits 7: changes (3) and failing (4).",
+			SetupFiles: []string{
+				"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/original-composition.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
+			},
+			CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+				integration.Composes(
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-xr-1-failing.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-1-not-ready.yaml",
+				),
+			},
+			InputFiles: []string{"../../../internal/testutils/integration/testdata/comp/updated-composition.yaml"},
+			Namespace:  "default",
+			NoColor:    true,
+			ExpectedOutput: `
+=== Affected Composite Resources ===
+
+  ⚠ XNopResource/test-resource (namespace: default) ⚠ failing (Synced=False, ReconcileError): cannot compose resources: the vpc does not exist
+
+Summary: 1 resource with changes
+
+=== Impact Analysis ===
+
+~~~ XDownstreamResource/test-resource ⚠ not ready (Ready=False, Creating)
+  apiVersion: ns.nop.example.org/v1alpha1
+  kind: XDownstreamResource
+  metadata:
+    annotations:
+      crossplane.io/composition-resource-name: nop-resource
+    labels:
+      crossplane.io/composite: test-resource
+    name: test-resource
+    namespace: default
+  spec:
+    forProvider:
+-     configData: existing-value
+-     resourceTier: basic
++     configData: updated-existing-value
++     resourceTier: premium
+
+---
+
+Summary: 1 modified
+
+Health: 1 of 1 XR unhealthy before apply; 1 resource not ready.`,
+			ExpectedExitCode: dp.ExitCodeDiffDetected | dp.ExitCodeFailing,
+		},
+		"UnhealthyXRWithoutChangesExits4": {
+			Reason: "An unchanged composition analysed on a failing XR reports its health in -o json and exits 4: failing, no changes.",
+			SetupFiles: []string{
+				"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/original-composition.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
+			},
+			CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+				integration.Composes(
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-xr-1-failing.yaml",
+					"../../../internal/testutils/integration/testdata/comp/resources/existing-downstream-1-not-ready.yaml",
+				),
+			},
+			InputFiles:       []string{"testdata/comp/composition-no-changes.yaml"},
+			Namespace:        "default",
+			AnalyzeUnchanged: true,
+			OutputFormat:     "json",
+			ExpectedExitCode: dp.ExitCodeFailing,
+			ExpectedStructured: simtest.Expect().
+				WithHealthSummary(1, 0, 1, 0).
+				WithXRs(simtest.XR("XNopResource", "test-resource", "default").
+					Status("unchanged").
+					Health("failing").
+					Unhealthy("XDownstreamResource", "test-resource", "notReady")),
+		},
 		"CompositionDiffIgnorePaths": {
 			Reason: "Validates that ArgoCD annotations are ignored in composition diffs",
 			SetupFiles: []string{

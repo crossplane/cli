@@ -12,7 +12,16 @@ the result:
 - 2: only schema validation failed.
 - 3: the simulation succeeded and found changes, including drift a provider
   plan found that the cluster diff didn't.
+- 4: the simulation succeeded, found no changes, and a composite resource or
+  a resource it composes was failing (Synced=False) before apply, including
+  one the change would delete. A resource that's only not ready, or is
+  paused, doesn't set it.
+- 7: the simulation succeeded, found changes, and a resource was failing:
+  3 and 4 combined.
 - 80: a flag was unknown or had an invalid value, so nothing was simulated.
 - 130: the simulation was interrupted.
 
-When more than one applies, the lowest of 1, 2 and 3 wins.
+An error wins over what the simulation found: 130 over 1 over 2, and any of
+them over 3, 4 and 7. Without an error, the status adds 4 for a failing
+resource to 3 for changes, so 3 and 7 both mean changes, and 4 and 7 both mean
+a failing resource.

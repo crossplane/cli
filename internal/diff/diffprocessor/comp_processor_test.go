@@ -3274,7 +3274,7 @@ func TestDefaultCompDiffProcessor_DiffComposition_RenderOverlaps(t *testing.T) {
 				t.Errorf("%s\nDiffComposition(...): want one run-level report error containing %q, got %+v", tc.reason, tc.wantErr, out)
 			}
 
-			if code := DetermineExitCode(err, true); code != ExitCodeToolError {
+			if code := DetermineExitCode(err, true, false); code != ExitCodeToolError {
 				t.Errorf("%s\nDetermineExitCode(...) = %d, want %d", tc.reason, code, ExitCodeToolError)
 			}
 		})

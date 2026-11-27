@@ -650,8 +650,34 @@ func TestDetermineExitCode(t *testing.T) {
 	tests := map[string]struct {
 		err      error
 		hasDiffs bool
+		failing  bool
 		want     int
 	}{
+		"NoErrorFailing": {
+			failing: true,
+			want:    ExitCodeFailing,
+		},
+		"NoErrorWithDiffFailing": {
+			hasDiffs: true,
+			failing:  true,
+			want:     ExitCodeDiffDetected | ExitCodeFailing,
+		},
+		"ToolErrorOutranksFailing": {
+			err:      errors.New("connection refused"),
+			hasDiffs: true,
+			failing:  true,
+			want:     ExitCodeToolError,
+		},
+		"SchemaValidationErrorOutranksFailing": {
+			err:     &SchemaValidationError{ResourceID: "Kind/res", Message: "invalid"},
+			failing: true,
+			want:    ExitCodeSchemaValidation,
+		},
+		"InterruptedOutranksFailing": {
+			err:     ErrInterrupted,
+			failing: true,
+			want:    ExitCodeInterrupted,
+		},
 		"NoErrorNoDiff": {
 			err:      nil,
 			hasDiffs: false,
@@ -780,7 +806,7 @@ func TestDetermineExitCode(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := DetermineExitCode(tc.err, tc.hasDiffs)
+			got := DetermineExitCode(tc.err, tc.hasDiffs, tc.failing)
 			if got != tc.want {
 				t.Errorf("DetermineExitCode() = %v, want %v", got, tc.want)
 			}

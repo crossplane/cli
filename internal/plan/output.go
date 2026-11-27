@@ -28,6 +28,8 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+
+	"github.com/crossplane/cli/v2/internal/health"
 )
 
 // The output formats simulate commands share. A unified diff format
@@ -161,7 +163,7 @@ type planRenderer struct{}
 // Render writes the plans to w in the human-readable plan format.
 func (planRenderer) Render(w io.Writer, plans []*ResourcePlan) error {
 	for _, p := range plans {
-		RenderPlan(w, p, "")
+		RenderPlan(w, p, "", false)
 	}
 	s := Summarize(plans)
 	RenderSummaryLine(w, s)
@@ -169,11 +171,20 @@ func (planRenderer) Render(w io.Writer, plans []*ResourcePlan) error {
 	return nil
 }
 
-// RenderPlan prints one resource's header, note when not empty, and change
-// tree. A delete prints only its header and note, Terraform-style, though it
-// carries actual-only changes.
-func RenderPlan(w io.Writer, p *ResourcePlan, note string) {
+// RenderPlan prints one resource's header, its health when it is not
+// healthy, note when not empty, and change tree. A delete prints only its
+// header, health and note, Terraform-style, though it carries actual-only
+// changes. With fullMessages a health condition message prints in full,
+// wrapped, rather than cut to one line.
+func RenderPlan(w io.Writer, p *ResourcePlan, note string, fullMessages bool) {
 	_, _ = fmt.Fprintln(w, header(p))
+	for i, l := range health.Lines(p.Health, fullMessages) {
+		indent := "    "
+		if i > 0 {
+			indent += "    "
+		}
+		_, _ = fmt.Fprintln(w, indent+l)
+	}
 	if note != "" {
 		_, _ = fmt.Fprintf(w, "    %s\n", note)
 	}

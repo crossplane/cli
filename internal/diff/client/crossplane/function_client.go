@@ -17,6 +17,7 @@ import (
 
 	"github.com/crossplane/cli/v2/internal/diff/client/core"
 	"github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
+	"github.com/crossplane/cli/v2/pkg/render"
 )
 
 // FunctionClient handles operations related to Functions.
@@ -93,6 +94,19 @@ func (c *DefaultFunctionClient) GetFunctionsFromPipeline(ctx context.Context, co
 	c.logger.Debug("Processing pipeline steps", "steps_count", len(comp.Spec.Pipeline))
 
 	for _, step := range comp.Spec.Pipeline {
+		// Steps that reference a function by OCI ref don't need a Function
+		// from the cluster. Synthesize one the render engine will use to
+		// satisfy the step.
+		if step.FunctionRef == nil {
+			fns, err := render.OCIRefsToFunctions([]string{step.Function})
+			if err != nil {
+				return nil, errors.Wrapf(err, "cannot load function referenced in pipeline step %q", step.Step)
+			}
+			functions = append(functions, fns...)
+
+			continue
+		}
+
 		fn, ok, err := c.getFunction(ctx, step.FunctionRef.Name)
 		if err != nil {
 			return nil, err

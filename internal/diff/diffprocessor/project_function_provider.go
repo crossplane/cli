@@ -74,7 +74,7 @@ func (p *ProjectFunctionProvider) GetFunctionsForComposition(ctx context.Context
 
 	clusterSteps := make([]apiextensionsv1.PipelineStep, 0, len(comp.Spec.Pipeline))
 	for _, step := range comp.Spec.Pipeline {
-		if _, ok := p.project[step.FunctionRef.Name]; !ok {
+		if _, ok := p.project[stepFunctionName(step)]; !ok {
 			clusterSteps = append(clusterSteps, step)
 		}
 	}
@@ -104,7 +104,7 @@ func (p *ProjectFunctionProvider) GetFunctionsForComposition(ctx context.Context
 
 	out := make([]pkgv1.Function, 0, len(comp.Spec.Pipeline))
 	for _, step := range comp.Spec.Pipeline {
-		name := step.FunctionRef.Name
+		name := stepFunctionName(step)
 
 		if fn, ok := p.project[name]; ok {
 			p.logger.Debug("Using project function", "composition", comp.GetName(), "step", step.Step, "function", name, "package", fn.Spec.Package)

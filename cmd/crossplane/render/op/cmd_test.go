@@ -49,11 +49,17 @@ var operationYAML string
 //go:embed testdata/cmd/operation-not-op.yaml
 var operationNotOpYAML string
 
+//go:embed testdata/cmd/operation-oci-only.yaml
+var operationOCIOnlyYAML string
+
 //go:embed testdata/cmd/functions.yaml
 var functionsYAML string
 
 //go:embed testdata/cmd/watched-multi.yaml
 var watchedMultiYAML string
+
+//go:embed testdata/cmd/output/oci.yaml
+var ociOutput string
 
 //go:embed testdata/cmd/output/success.yaml
 var successOutput string
@@ -172,6 +178,63 @@ func TestCmdRun(t *testing.T) {
 					Timeout:     time.Minute,
 					fs:          newTestFS(nil),
 					newEngine:   newEngineFunc(&render.MockEngine{}),
+				},
+			},
+			want: want{err: cmpopts.AnyError},
+		},
+		"OCIFunctionOnlyNoFunctionsArg": {
+			reason: "The Functions arg should be optional outside a project when every pipeline step references its function by OCI reference, which should run named after the reference.",
+			args: args{
+				cmd: Cmd{
+					Operation: "operation.yaml",
+					// Functions intentionally empty.
+					ProjectFile:         "/nonexistent/path/crossplane-project.yaml",
+					FunctionAnnotations: []string{"render.crossplane.io/runtime=Development", "render.crossplane.io/runtime-development-target=oci:9443"},
+					Timeout:             time.Minute,
+					fs:                  newTestFS(map[string]string{"operation.yaml": operationOCIOnlyYAML}),
+					newEngine: newEngineFunc(&render.MockEngine{
+						MockRender: func(_ context.Context, req *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
+							got := map[string]string{}
+							for _, fn := range req.GetOperation().GetFunctions() {
+								got[fn.GetName()] = fn.GetAddress()
+							}
+							want := map[string]string{
+								"xpkg.crossplane.io/example/function-oci@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef": "oci:9443",
+							}
+							if diff := cmp.Diff(want, got); diff != "" {
+								t.Errorf("render request functions: -want, +got:\n%s", diff)
+							}
+							return &renderv1alpha1.RenderResponse{
+								Output: &renderv1alpha1.RenderResponse_Operation{
+									Operation: &renderv1alpha1.OperationOutput{
+										Operation: req.GetOperation().GetOperation(),
+									},
+								},
+							}, nil
+						},
+					}),
+				},
+			},
+			want: want{
+				stdout: ociOutput,
+			},
+		},
+		"OCIFunctionUnsupportedEngine": {
+			reason: "Rendering an Operation with a pipeline step that references a function by OCI reference should return an error if the engine's Crossplane version doesn't support it.",
+			args: args{
+				cmd: Cmd{
+					Operation:           "operation.yaml",
+					Functions:           "functions.yaml",
+					FunctionAnnotations: []string{"render.crossplane.io/runtime=Development"},
+					Timeout:             time.Minute,
+					fs:                  newTestFS(map[string]string{"operation.yaml": operationOCIOnlyYAML}),
+					newEngine: newEngineFunc(&render.MockEngine{
+						MockVersion: func(context.Context) (string, error) { return "v2.4.0", nil },
+						MockRender: func(context.Context, *renderv1alpha1.RenderRequest) (*renderv1alpha1.RenderResponse, error) {
+							t.Error("Render(...): unexpected call with an unsupported engine")
+							return nil, nil
+						},
+					}),
 				},
 			},
 			want: want{err: cmpopts.AnyError},

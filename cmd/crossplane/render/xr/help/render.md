@@ -52,6 +52,27 @@ If a container named by `runtime-docker-name` already exists:
 | Running, started by this run | Shares it. |
 | Running, `Stop` or `Remove`, started by another run | Fails, because that run will stop or remove it. Use `Orphan` to share a container between runs. |
 
+## Functions referenced by OCI reference
+
+Composition pipeline steps may reference a function by its fully qualified OCI
+reference, specified by digest, using `function` instead of `functionRef`:
+
+```yaml
+pipeline:
+- step: run-a-function
+  function: xpkg.crossplane.io/crossplane-contrib/function-dummy@sha256:<digest>
+```
+
+Rendering these steps requires Crossplane v2.5.0 or later; `render` returns an
+error if `--crossplane-version`, `--crossplane-image`, or `--crossplane-binary`
+selects an older version. `render` runs these functions automatically, so they
+don't need to appear in the functions file argument. You may omit the functions
+file argument entirely when every pipeline step references its function this
+way. To configure how a function referenced this way runs (for example to run it
+in `Development` mode), add a Function named with its OCI reference to the
+functions file, with the annotations described above. Annotations set with
+`--function-annotations` (`-a`) also apply to these functions.
+
 ## Project support
 
 When running `render` in a Crossplane Project (any directory containing a

@@ -68,6 +68,11 @@ type Engine interface {
 	// works with this engine in the current runtime environment.
 	CheckContextSupport() error
 
+	// Version returns the version of Crossplane the engine renders with, as
+	// reported by crossplane --version. It may return an empty string for a
+	// development build of Crossplane.
+	Version(ctx context.Context) (string, error)
+
 	// Setup performs engine-specific pre-render preparation, such as
 	// creating Docker networks and annotating functions so their containers
 	// can reach the render engine. It may mutate fns.

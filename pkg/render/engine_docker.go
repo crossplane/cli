@@ -99,6 +99,29 @@ func (e *dockerRenderEngine) CheckContextSupport() error {
 	return nil
 }
 
+// Version runs the Crossplane image with --version and returns its output.
+func (e *dockerRenderEngine) Version(ctx context.Context) (string, error) {
+	opts := []docker.RunContainerOption{
+		docker.RunWithCommand([]string{"--version"}),
+		docker.RunWithLabels(managedLabels(e.session)),
+	}
+	if e.dockerClient != nil {
+		opts = append(opts, docker.RunWithClient(e.dockerClient))
+	}
+
+	runner := e.runner
+	if runner == nil {
+		runner = realContainerRunner{}
+	}
+
+	stdout, stderr, err := runner.Run(ctx, e.image, opts...)
+	if err != nil {
+		return "", errors.Wrapf(err, "cannot get crossplane version from image %q with output: %s", e.image, stderr)
+	}
+
+	return strings.TrimSpace(string(stdout)), nil
+}
+
 // Setup wires the supplied functions into the Docker network the render
 // container joins. On the first call with an unset e.network, it creates a
 // temporary network, records its name, annotates fns to join it, and returns

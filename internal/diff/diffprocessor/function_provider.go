@@ -110,10 +110,20 @@ func functionCacheKey(comp *apiextensionsv1.Composition) string {
 	parts = append(parts, comp.GetName())
 
 	for _, step := range comp.Spec.Pipeline {
-		parts = append(parts, step.FunctionRef.Name)
+		parts = append(parts, stepFunctionName(step))
 	}
 
 	return strings.Join(parts, "/")
+}
+
+// stepFunctionName returns the name of the function the supplied pipeline step
+// uses: the name of the referenced Function, or the OCI ref for steps that
+// reference their function by OCI ref.
+func stepFunctionName(step apiextensionsv1.PipelineStep) string {
+	if step.FunctionRef != nil {
+		return step.FunctionRef.Name
+	}
+	return step.Function
 }
 
 // deepCopyFunctions returns a copy of fns that shares no maps or slices with it.

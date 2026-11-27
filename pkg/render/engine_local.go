@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"strings"
 
 	"google.golang.org/protobuf/proto"
 
@@ -42,6 +43,21 @@ type localRenderEngine struct {
 
 func (e *localRenderEngine) CheckContextSupport() error {
 	return nil
+}
+
+// Version runs the local binary with --version and returns its output.
+func (e *localRenderEngine) Version(ctx context.Context) (string, error) {
+	var stderr bytes.Buffer
+
+	cmd := exec.CommandContext(ctx, e.BinaryPath, "--version") //nolint:gosec // The binary path is user-supplied via CLI flag.
+	cmd.Stderr = &stderr
+
+	out, err := cmd.Output()
+	if err != nil {
+		return "", errors.Wrapf(err, "cannot get crossplane version with output: %s", stderr.String())
+	}
+
+	return strings.TrimSpace(string(out)), nil
 }
 
 // Setup only annotates fns with the session ID, if one was supplied. Function

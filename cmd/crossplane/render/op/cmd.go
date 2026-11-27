@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	kjson "k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kube-openapi/pkg/spec3"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -64,8 +65,8 @@ type Cmd struct {
 	render.EngineFlags `prefix:""`
 
 	// Arguments.
-	Operation string `arg:"" help:"A YAML file specifying the Operation to render."                                                                                          predictor:"yaml_file" type:"existingfile"`
-	Functions string `arg:"" help:"A YAML file or directory of YAML files specifying the Composition Functions to use to render the XR. Optional when running in a project." optional:""           predictor:"yaml_file_or_directory" type:"path"`
+	Operation string `arg:"" help:"A YAML file specifying the Operation to render."                                                                                                                                                                predictor:"yaml_file" type:"existingfile"`
+	Functions string `arg:"" help:"A YAML file or directory of YAML files specifying the Composition Functions to use to render the XR. Optional when running in a project, or when every pipeline step references its function by OCI reference." optional:""           predictor:"yaml_file_or_directory" type:"path"`
 
 	// Flags. Keep them in alphabetical order.
 	ContextFiles           map[string]string `help:"Comma-separated context key-value pairs to pass to the function pipeline. Values must be files containing JSON."                                          mapsep:""               predictor:"file"`
@@ -114,6 +115,10 @@ func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, 
 		return err
 	}
 
+	if c.needsFunctions(op) && c.Functions == "" {
+		return errors.New("functions file is required")
+	}
+
 	// Load required resources
 	rrs := []unstructured.Unstructured{}
 	for _, path := range c.RequiredResources {
@@ -152,7 +157,7 @@ func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, 
 	}
 
 	// Load functions
-	fns, err := c.loadFunctions(ctx, log, sp, cfg)
+	fns, err := c.loadFunctions(ctx, log, sp, cfg, op)
 	if err != nil {
 		return err
 	}
@@ -182,6 +187,18 @@ func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, 
 			log.Debug("Cannot lease this run or reclaim dead runs' Docker resources", "error", err)
 		}),
 	)
+
+	// If any step uses an OCI ref, check that the engine is using a Crossplane
+	// version that supports them.
+	for _, step := range op.Spec.Pipeline {
+		if step.FunctionRef != nil {
+			continue
+		}
+		if err := sess.CheckOCIFunctionSupport(ctx); err != nil {
+			return err
+		}
+		break
+	}
 
 	seedCtx := len(c.ContextValues) > 0 || len(c.ContextFiles) > 0
 	captureCtx := c.IncludeContext
@@ -323,7 +340,63 @@ func (c *Cmd) Run(baseCtx context.Context, k *kong.Context, log logging.Logger, 
 	return nil
 }
 
-func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) ([]pkgv1.Function, error) {
+func (c *Cmd) needsFunctions(op *opsv1alpha1.Operation) bool {
+	if isProj, err := projectfile.IsProjectFile(c.fs, c.ProjectFile); err == nil && isProj {
+		return false
+	}
+
+	for _, step := range op.Spec.Pipeline {
+		if step.FunctionRef != nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config, op *opsv1alpha1.Operation) ([]pkgv1.Function, error) {
+	ociRefs := make([]string, 0, len(op.Spec.Pipeline))
+	for _, step := range op.Spec.Pipeline {
+		if step.FunctionRef != nil {
+			continue
+		}
+		ociRefs = append(ociRefs, step.Function)
+	}
+
+	// Load named functions from the functions file or project if required. When
+	// all steps use OCI refs we don't need named functions.
+	var fns []pkgv1.Function
+	if c.Functions != "" || len(ociRefs) < len(op.Spec.Pipeline) {
+		namedFns, err := c.loadNamedFunctions(ctx, log, sp, cfg)
+		if err != nil {
+			return nil, err
+		}
+		fns = namedFns
+	}
+
+	// Convert OCI refs into synthetic functions the render engine can use.
+	ociFns, err := render.OCIRefsToFunctions(ociRefs)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot load functions referenced by Operation %q", op.GetName())
+	}
+
+	// If the user specified OCI ref functions in their functions file, those
+	// take precedence over the ones we create automatically.
+	names := sets.NewString()
+	for _, fn := range fns {
+		names.Insert(fn.Name)
+	}
+	for _, fn := range ociFns {
+		if names.Has(fn.Name) {
+			continue
+		}
+		fns = append(fns, fn)
+	}
+
+	return fns, nil
+}
+
+func (c *Cmd) loadNamedFunctions(ctx context.Context, log logging.Logger, sp terminal.SpinnerPrinter, cfg *config.Config) ([]pkgv1.Function, error) {
 	if c.Functions != "" {
 		fns, err := render.LoadFunctions(c.fs, c.Functions)
 		if err != nil {
@@ -336,14 +409,9 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot determine project file path")
 	}
-	projDir := filepath.Dir(projFilePath)
-
-	if _, err := os.Stat(projFilePath); err != nil {
-		return nil, errors.New("functions argument is required when not in a project")
-	}
-
 	log.Debug("Loading functions from project", "project-file", projFilePath)
 
+	projDir := filepath.Dir(projFilePath)
 	projFS := afero.NewBasePathFs(afero.NewOsFs(), projDir)
 	proj, err := projectfile.Parse(projFS, filepath.Base(projFilePath))
 	if err != nil {

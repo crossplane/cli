@@ -1,0 +1,12 @@
+---
+apiVersion: ops.crossplane.io/v1alpha1
+kind: Operation
+metadata:
+  name: test-op
+spec:
+  mode: Pipeline
+  pipeline:
+  - function: xpkg.crossplane.io/example/function-oci@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+    step: be-oci
+status:
+  appliedResources: 0

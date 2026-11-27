@@ -55,10 +55,15 @@ const (
 	XRDV1
 )
 
-// FieldManagerApply is a manifest to server-side apply under a specific field manager.
+// FieldManagerApply is a manifest to write under a specific field manager: server-side applied, or
+// created when Create is set.
 type FieldManagerApply struct {
 	File         string
 	FieldManager string
+	// Create creates the manifest under FieldManager instead, which records an Update, as kubectl's
+	// client-side apply or create does. A manifest carrying kubectl's last-applied-configuration
+	// annotation is then client-side applied.
+	Create bool
 }
 
 // Setup is the state Start puts in a fresh cluster, in the order its fields are listed. Every path is a YAML file
@@ -206,7 +211,13 @@ func Start(t *testing.T, s Setup) *Cluster {
 		}
 
 		for _, r := range resources {
-			if err := applyResourceWithSSA(ctx, k8sClient, r, a.FieldManager); err != nil {
+			if a.Create {
+				err = k8sClient.Create(ctx, r.DeepCopy(), client.FieldOwner(a.FieldManager))
+			} else {
+				err = applyResourceWithSSA(ctx, k8sClient, r, a.FieldManager)
+			}
+
+			if err != nil {
 				t.Fatalf("failed to setup field-managed resources: %v", err)
 			}
 		}

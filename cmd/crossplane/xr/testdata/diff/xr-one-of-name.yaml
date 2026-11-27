@@ -1,0 +1,9 @@
+# The same XR switched from selector to name.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XOneOfResource
+metadata:
+  name: test-one-of
+  namespace: default
+spec:
+  target:
+    name: example

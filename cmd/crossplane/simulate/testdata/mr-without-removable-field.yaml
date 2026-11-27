@@ -1,0 +1,8 @@
+apiVersion: ns.nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  name: test-resource
+  namespace: default
+spec:
+  forProvider:
+    configData: existing-value

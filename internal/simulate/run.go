@@ -56,6 +56,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/docker"
 	"github.com/crossplane/cli/v2/internal/exitcode"
 	"github.com/crossplane/cli/v2/internal/kube"
+	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
@@ -388,6 +389,7 @@ func (c *Runner) processorOptions(advisories *dp.AdvisoryCollector, logger loggi
 		dp.WithEventualState(c.EventualState),
 		dp.WithAnalyzeOn(dp.AnalyzeOn(c.sel.AnalyzeOn)),
 		dp.WithDryRunOn(dp.DryRunOn(c.DryRunOn)),
+		dp.WithApplier(plan.ApplierFlags{FieldManager: c.FieldManager, ServerSide: c.ServerSide}),
 		dp.WithIgnorePaths(c.IgnorePaths),
 		dp.WithIncludeManual(c.sel.IncludePinned),
 		dp.WithMaxRenderIterations(c.MaxIterations),
@@ -618,7 +620,7 @@ func (c *Runner) Run(sigCtx context.Context, k *kong.Context, logger logging.Log
 		c.sel = *in.Selection
 	}
 	project := in.Build != nil
-	warnIgnoredFlags(k.Stderr, setFlags(k), c.SkipPlan, project)
+	warnIgnoredFlags(k.Stderr, setFlags(k), c.SkipPlan, project, in.Composites != nil)
 
 	if err := docker.Check(sigCtx); err != nil {
 		return errors.Wrap(err, "cannot connect to Docker, which simulate needs to run functions")
@@ -723,8 +725,10 @@ func (c *Flags) flagImageConfigs() ([]pkgv1beta1.ImageConfig, error) {
 // warnIgnoredFlags prints a warning to stderr for each flag set on the
 // command line that does nothing in this run: --skip-plan runs no diff
 // servers, so --providers and --session-id do nothing with it, and
-// --cache-dir caches nothing with --skip-plan unless the run builds a project.
-func warnIgnoredFlags(stderr io.Writer, set map[string]bool, skipPlan, project bool) {
+// --cache-dir caches nothing with --skip-plan unless the run builds a project,
+// and --field-manager and --server-side only say how input composite
+// resources and claims are applied, so do nothing in a run without them.
+func warnIgnoredFlags(stderr io.Writer, set map[string]bool, skipPlan, project, composites bool) {
 	for _, f := range []string{"providers", "session-id"} {
 		if skipPlan && set[f] {
 			_, _ = fmt.Fprintf(stderr, "Warning: ignoring --%s; --skip-plan runs no diff servers.\n", f)
@@ -732,6 +736,11 @@ func warnIgnoredFlags(stderr io.Writer, set map[string]bool, skipPlan, project b
 	}
 	if !project && skipPlan && set["cache-dir"] {
 		_, _ = fmt.Fprintln(stderr, "Warning: ignoring --cache-dir; with --skip-plan and no project file there is nothing to cache.")
+	}
+	for _, f := range []string{"field-manager", "server-side"} {
+		if !composites && set[f] {
+			_, _ = fmt.Fprintf(stderr, "Warning: ignoring --%s; it only says how input composite resources and claims are applied, and this run takes none.\n", f)
+		}
 	}
 }
 

@@ -24,21 +24,28 @@ import (
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
-// applierOwned returns the union of live's field sets owned by declarative
-// appliers - server-side apply managers, plus kubectl's client-side apply -
-// minus the fields other managers own too. Applying a manifest only removes
-// fields its applier owns exclusively: a live-only field outside this set -
-// late-initialized by the provider, defaulted by the API server and owned by
-// nobody, or co-owned by another manager that keeps it alive - survives the
-// apply and must not plan as a removal. nil means ownership is unknown (no
-// managedFields, or ones that cannot be parsed) and removals should be taken
-// at face value.
-func applierOwned(live *unstructured.Unstructured) *fieldpath.Set {
+// applierOwned returns the fields of live an apply by a removes when the
+// manifest drops them: the fields a owns, minus the fields other managers own
+// too. Applying a manifest only removes fields its applier owns exclusively: a
+// live-only field outside this set - late-initialized by the provider,
+// defaulted by the API server and owned by nobody, or co-owned by another
+// manager that keeps it alive - survives the apply and must not plan as a
+// removal.
+//
+// Server-side apply as a.FieldManager owns that manager's Apply entry. An
+// ApplyUndetermined applier owns the union of every declarative applier's
+// entries - server-side apply managers, plus kubectl's client-side apply - so
+// it overstates removals when several appliers share an object. nil means
+// ownership is unknown (managedFields that cannot be parsed, or none for an
+// undetermined applier) and removals should be taken at face value. It does
+// not model ApplyClientSide, which removes by LastAppliedConfigAnnotation
+// rather than by ownership.
+func applierOwned(live *unstructured.Unstructured, a Applier) *fieldpath.Set {
 	if live == nil {
 		return nil
 	}
 	entries := live.GetManagedFields()
-	if len(entries) == 0 {
+	if len(entries) == 0 && a.Mode != ApplyServerSide {
 		return nil
 	}
 
@@ -52,7 +59,7 @@ func applierOwned(live *unstructured.Unstructured) *fieldpath.Set {
 		if err := s.FromJSON(bytes.NewReader(e.FieldsV1.GetRawBytes())); err != nil {
 			return nil
 		}
-		if e.Operation == metav1.ManagedFieldsOperationApply || e.Manager == "kubectl-client-side-apply" {
+		if ownedBy(e, a) {
 			owned = owned.Union(s)
 		} else {
 			others = others.Union(s)
@@ -61,10 +68,19 @@ func applierOwned(live *unstructured.Unstructured) *fieldpath.Set {
 	return owned.Difference(others)
 }
 
+// ownedBy reports whether entry e records fields applier a owns.
+func ownedBy(e metav1.ManagedFieldsEntry, a Applier) bool {
+	if a.Mode == ApplyServerSide {
+		return e.Manager == a.FieldManager && e.Operation == metav1.ManagedFieldsOperationApply
+	}
+	return e.Operation == metav1.ManagedFieldsOperationApply || e.Manager == "kubectl-client-side-apply"
+}
+
 // ownedLeaf reports whether leaves - the leaf members of an applier-owned
-// field set - contains fp or a prefix of it. An exact leaf is a plainly owned
-// field; a prefix leaf means the applier owns that whole subtree, the way
-// FieldsV1 records atomic lists and maps.
+// field set, or the paths clientSideRemovable returns - contains fp or a
+// prefix of it. An exact leaf is a plainly owned field; a prefix leaf means
+// the applier owns that whole subtree, the way FieldsV1 records atomic lists
+// and maps.
 func ownedLeaf(leaves *fieldpath.Set, fp fieldpath.Path) bool {
 	for i := 1; i <= len(fp); i++ {
 		if leaves.Has(fp[:i]) {

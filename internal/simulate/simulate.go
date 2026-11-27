@@ -30,6 +30,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,6 +39,7 @@ import (
 
 	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 
+	k8client "github.com/crossplane/cli/v2/internal/diff/client/kubernetes"
 	"github.com/crossplane/cli/v2/internal/plan"
 )
 
@@ -61,14 +63,28 @@ type Planner struct {
 	timeout          time.Duration
 	stores           *objectStoreCache
 	crds             CRDs
+	applier          plan.ApplierFlags
+	warn             io.Writer
+}
+
+// A PlannerOption configures a Planner.
+type PlannerOption func(*Planner)
+
+// WithApplierFlags makes Plan resolve the applier of the resources the user
+// supplied from flags, as kubectl apply's --field-manager and --server-side,
+// and write a warning to w when it cannot tell the applier of one.
+func WithApplierFlags(flags plan.ApplierFlags, w io.Writer) PlannerOption {
+	return func(p *Planner) {
+		p.applier, p.warn = flags, w
+	}
 }
 
 // NewPlanner returns a Planner that reads live state with kubeClient and
 // rmapper, defaults the approximate fallback's desired state from crds,
 // resolves unset namespaces to defaultNamespace, and bounds each diff server
 // plan by timeout, when positive.
-func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, defaultNamespace string, r Router, timeout time.Duration) *Planner {
-	return &Planner{
+func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, defaultNamespace string, r Router, timeout time.Duration, opts ...PlannerOption) *Planner {
+	p := &Planner{
 		kube:             kubeClient,
 		rmapper:          rmapper,
 		defaultNamespace: defaultNamespace,
@@ -77,11 +93,17 @@ func NewPlanner(kubeClient client.Client, rmapper meta.RESTMapper, crds CRDs, de
 		stores:           newObjectStoreCache(),
 		crds:             crds,
 	}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
 }
 
-// Plan plans a single resource: fetch its live counterpart, then plan it
-// with PlanWithLive. Failures become per-resource errors so one resource
-// never fails the whole run.
+// Plan plans a single resource the user supplied: fetch its live
+// counterpart, then plan it as PlanWithLive does, except that the approximate
+// fallback removes fields as the applier plan.ResolveApplier resolves from
+// live and the WithApplierFlags flags. Failures become per-resource errors so
+// one resource never fails the whole run.
 func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) *plan.ResourcePlan {
 	if desired.GetName() == "" {
 		rp := plan.NewResourcePlan(desired)
@@ -95,15 +117,63 @@ func (p *Planner) Plan(ctx context.Context, desired *unstructured.Unstructured) 
 		rp.Error = fmt.Sprintf("cannot fetch live resource: %s", err)
 		return rp
 	}
-	return p.PlanWithLive(ctx, desired, live)
+	a := plan.ResolveApplier(live, p.applier)
+	var onFallback func()
+	// Only the fallback removes fields as the applier, so only it warns.
+	if a.Mode == plan.ApplyUndetermined && a.HasCandidates() && p.warn != nil {
+		onFallback = func() { p.warnUndetermined(desired, a) }
+	}
+	return p.planWithLive(ctx, desired, live, a, onFallback)
+}
+
+// warnUndetermined warns that the fallback's removals, guessed from every
+// candidate applier's fields, may not match the real apply, since applier a
+// cannot be told.
+func (p *Planner) warnUndetermined(desired *unstructured.Unstructured, a plan.Applier) {
+	id := desired.GetName()
+	if ns := desired.GetNamespace(); ns != "" {
+		id = ns + "/" + id
+	}
+	msg := fmt.Sprintf("Warning: cannot tell which field manager applies %s %s (candidates: %s)", desired.GetKind(), id, a.DescribeCandidates())
+	if len(a.ImperativeWriters) > 0 {
+		msg += fmt.Sprintf(", since imperative writers (managers that updated it without applying, such as kubectl create or edit, or a controller) wrote it too (%s)", strings.Join(a.ImperativeWriters, ", "))
+	}
+	_, _ = fmt.Fprintln(p.warn, msg+", so the removals shown are a best guess from every candidate's fields and may not match how its manifest is applied; "+
+		"name the applier with --field-manager, and --server-side or --server-side=false")
 }
 
 // PlanWithLive plans a single resource against an already-fetched live
 // counterpart, or nil when none exists: route it to a diff server, and fall
 // back to the approximate client-side diff when no server can plan it.
 // Failures become per-resource errors so one resource never fails the whole
-// run.
+// run. It is for composed resources, which Crossplane applies, not the user,
+// so the fallback removes fields as the composed field manager live records.
+// When live records none (it is not composed yet, say), the fallback takes
+// removals from every applier live records. A composed manager that recorded
+// no Apply entry outside a subresource owns nothing to remove, so the
+// fallback takes removals from every applier then too.
 func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.Unstructured) *plan.ResourcePlan {
+	a := plan.Applier{Mode: plan.ApplyUndetermined}
+	if m := k8client.GetComposedFieldOwner(live); m != "" && appliesAs(live, m) {
+		a = plan.Applier{Mode: plan.ApplyServerSide, FieldManager: m}
+	}
+	return p.planWithLive(ctx, desired, live, a, nil)
+}
+
+// appliesAs reports whether live records an Apply entry by manager outside a
+// subresource.
+func appliesAs(live *unstructured.Unstructured, manager string) bool {
+	for _, e := range live.GetManagedFields() {
+		if e.Manager == manager && e.Operation == metav1.ManagedFieldsOperationApply && e.Subresource == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// planWithLive is PlanWithLive with the applier the fallback removes fields
+// as, calling onFallback, when not nil, whenever the fallback plans.
+func (p *Planner) planWithLive(ctx context.Context, desired, live *unstructured.Unstructured, a plan.Applier, onFallback func()) *plan.ResourcePlan {
 	// Crossplane's external tags survive every apply (the provider's
 	// initializer re-adds them), so a preview must never claim they would be
 	// removed.
@@ -116,10 +186,17 @@ func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.
 	// state, whichever path planned it.
 	defaulted := applyCRDDefaults(ctx, p.rmapper, p.crds, desired)
 
+	fallback := func(reason string) *plan.ResourcePlan {
+		if onFallback != nil {
+			onFallback()
+		}
+		return plan.Fallback(defaulted, live, a, reason)
+	}
+
 	gk := desired.GroupVersionKind().GroupKind()
 	planClient, ok := p.router.Route(gk)
 	if !ok {
-		return plan.Fallback(defaulted, live, fmt.Sprintf("no diff server for %s", gk))
+		return fallback(fmt.Sprintf("no diff server for %s", gk))
 	}
 
 	pctx := ctx
@@ -134,7 +211,7 @@ func (p *Planner) PlanWithLive(ctx context.Context, desired, live *unstructured.
 	rp, err := plan.Plan(pctx, planClient, desired, live, store)
 	if err != nil {
 		if plan.IsNotSupported(err) {
-			return plan.Fallback(defaulted, live, "the provider cannot compute a diff for this resource")
+			return fallback("the provider cannot compute a diff for this resource")
 		}
 		rp := plan.NewResourcePlan(desired)
 		rp.Error = fmt.Sprintf("diff server cannot plan: %s", err)

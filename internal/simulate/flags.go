@@ -45,12 +45,14 @@ type Flags struct {
 
 	NoColor             bool     `help:"Disable colorized output."`
 	Compact             bool     `help:"Show compact diffs with minimal context."`
-	MaxNestedDepth      int      `default:"10"                                                                                          help:"Maximum depth for nested XR recursion."`
+	MaxNestedDepth      int      `default:"10"                                                                                                                                                                                               help:"Maximum depth for nested XR recursion."`
 	IgnorePaths         []string `help:"Paths to ignore in diffs (e.g., 'metadata.annotations[argocd.argoproj.io/tracking-id]')."`
-	FunctionCredentials string   `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."     placeholder:"PATH"                            predictor:"yaml_file_or_directory"                                                      type:"path"`
+	FunctionCredentials string   `help:"A YAML file or directory of YAML files specifying Secret credentials to pass to Functions."                                                                                                          placeholder:"PATH"                            predictor:"yaml_file_or_directory"                                                      type:"path"`
 	EventualState       bool     `help:"Show eventual state after all reconciliation cycles complete (useful with function-sequencer)."`
 	MaxRecvMessageSize  int      `help:"Max gRPC message size (MB) for render function containers (4 MB if undefined)."`
-	DryRunOn            string   `default:"all"                                                                                         enum:"existing,all"                           help:"Which resources to verify with a server-side dry run: existing or all (default)."`
+	DryRunOn            string   `default:"all"                                                                                                                                                                                              enum:"existing,all"                           help:"Which resources to verify with a server-side dry run: existing or all (default)."`
+	FieldManager        string   `help:"Field manager that applies the input composite resources and claims, as kubectl apply's --field-manager. Inferred from their managedFields and last-applied-configuration annotation when unset."`
+	ServerSide          *bool    `help:"Whether the input composite resources and claims are applied server-side, as kubectl apply's --server-side. Inferred from their managedFields and last-applied-configuration annotation when unset."`
 
 	SkipPlan     bool   `help:"Don't run provider diff servers; show only the cluster diff."`
 	Providers    string `help:"YAML file or directory of Provider manifests to run as diff servers, instead of discovering them from the cluster."                                name:"providers"     optional:"" predictor:"yaml_file_or_directory" type:"path"`

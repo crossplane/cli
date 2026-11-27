@@ -59,6 +59,12 @@ const crossplaneFieldManager = "apiextensions.crossplane.io/composed/integration
 // FieldManagerApply to set up an XR as that reconciler leaves it.
 const CompositeReconcilerFieldManager = "crossplane"
 
+// SetupFieldManager is the field manager of the Creates that set up SetupFiles, UnestablishedXRDs and
+// the owners of CrossplaneManagedResources. Without it each would record the test binary's name, as
+// client-go defaults it, which renaming the binary would change. A Create records an Update entry under
+// it, so a test that names such a resource's author, with --field-manager say, uses this constant.
+const SetupFieldManager = "integration-setup"
+
 // relationshipFieldOwner is the field owner of the Updates that link a composed resource to its XR: the
 // controller ownerReference and the XR's resourceRefs.
 const relationshipFieldOwner = "integration.test"
@@ -459,11 +465,11 @@ func probeAccess(rules []rbacv1.PolicyRule) (authorizationv1.SelfSubjectAccessRe
 	return authorizationv1.SelfSubjectAccessReviewSpec{}, false
 }
 
-// createResources creates all resources in the cluster
+// createResources creates all resources in the cluster as SetupFieldManager.
 // Assumes resources don't already exist - fails if they do.
 func createResources(ctx context.Context, c client.Client, resources []*un.Unstructured) error {
 	for _, resource := range resources {
-		err := c.Create(ctx, resource.DeepCopy())
+		err := c.Create(ctx, resource.DeepCopy(), client.FieldOwner(SetupFieldManager))
 		if err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				return fmt.Errorf("resource %s/%s of kind %s already exists - test setup error",

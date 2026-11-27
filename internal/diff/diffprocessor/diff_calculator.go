@@ -2,11 +2,14 @@ package diffprocessor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/jsonmergepatch"
+	"k8s.io/apimachinery/pkg/util/mergepatch"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
@@ -17,6 +20,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/diff/compare"
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	dtypes "github.com/crossplane/cli/v2/internal/diff/types"
+	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/pkg/render"
 	"github.com/crossplane/cli/v2/pkg/resource"
 )
@@ -24,12 +28,12 @@ import (
 // DiffCalculator calculates differences between resources.
 type DiffCalculator interface {
 	// CalculateDiff computes the diff for a single resource
-	CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured) (*dt.ResourceDiff, error)
+	CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured, applier *plan.Applier) (*dt.ResourceDiff, error)
 
 	// CalculateNonRemovalDiffs computes diffs for modified/added resources and returns
 	// what was rendered. This is used by nested XR processing.
 	// Returns: (diffs map, rendered resources, error)
-	CalculateNonRemovalDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs) (map[string]*dt.ResourceDiff, dtypes.RenderedResources, error)
+	CalculateNonRemovalDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs, applier *plan.Applier) (map[string]*dt.ResourceDiff, dtypes.RenderedResources, error)
 
 	// CalculateRemovedResourceDiffs identifies the composed resources in the cluster that Crossplane
 	// would garbage collect, given what was rendered. This is called after nested XR processing is
@@ -68,7 +72,7 @@ func NewDiffCalculator(apply k8.ApplyClient, access k8.AccessChecker, tree xp.Re
 }
 
 // CalculateDiff calculates the diff for a single resource.
-func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured) (*dt.ResourceDiff, error) {
+func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured, applier *plan.Applier) (*dt.ResourceDiff, error) {
 	// Get resource identification information
 	name := desired.GetName()
 	generateName := desired.GetGenerateName()
@@ -134,16 +138,28 @@ func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un
 		// are owned by this manager but not present in the apply request).
 		fieldOwner := k8.GetComposedFieldOwner(current)
 
+		// A user-supplied XR or claim is applied by whoever applies its manifest, not by Crossplane, so
+		// it is dry-run applied as that applier: the apiserver then removes the fields it would.
+		clientSide := false
+		if composite == nil {
+			fieldOwner, clientSide = c.userApplierFieldOwner(applier, fieldOwner, resourceID)
+		}
+
 		applyDesired := sanitizeForDryRun(desired)
 
-		// Perform a dry-run apply to get the result after we'd apply
-		c.logger.Debug("Performing dry-run apply",
-			"resource", resourceID,
-			"name", desired.GetName(),
-			"fieldOwner", fieldOwner,
-			"desired", applyDesired)
+		if clientSide {
+			wouldBeResult, err = c.dryRunClientSideApply(ctx, current, applyDesired, resourceID)
+		} else {
+			// Perform a dry-run apply to get the result after we'd apply
+			c.logger.Debug("Performing dry-run apply",
+				"resource", resourceID,
+				"name", desired.GetName(),
+				"fieldOwner", fieldOwner,
+				"desired", applyDesired)
 
-		wouldBeResult, err = c.applyClient.DryRunApply(ctx, applyDesired, fieldOwner)
+			wouldBeResult, err = c.applyClient.DryRunApply(ctx, applyDesired, fieldOwner)
+		}
+
 		if err != nil {
 			c.logger.Debug("Dry-run apply failed", "resource", resourceID, "error", err)
 			return nil, c.classifyApplyFailure(ctx, desired, resourceID, err)
@@ -177,6 +193,97 @@ func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un
 	}
 
 	return diff, nil
+}
+
+// userApplierFieldOwner returns the field manager to dry-run apply a user-supplied XR or claim as,
+// from its applier a (see resolveApplier): its manager under server-side apply, otherwise fallback,
+// today's owner. Without an applier (nil, as for a nested XR) it is fallback. clientSide reports a
+// client-side applier, which dryRunClientSideApply models instead of any apply.
+func (c *DefaultDiffCalculator) userApplierFieldOwner(a *plan.Applier, fallback, resourceID string) (fieldOwner string, clientSide bool) {
+	if a == nil {
+		return fallback, false
+	}
+
+	c.logger.Debug("Resolved applier", "resource", resourceID, "mode", a.Mode, "fieldManager", a.FieldManager, "candidates", a.Candidates, "clientSide", a.ClientSide, "imperativeWriters", a.ImperativeWriters)
+
+	switch a.Mode {
+	case plan.ApplyServerSide:
+		return a.FieldManager, false
+	case plan.ApplyClientSide:
+		return fallback, true
+	case plan.ApplyUndetermined:
+		// resolveApplier warned, if the object records any applier.
+	}
+
+	return fallback, false
+}
+
+// dryRunClientSideApply models kubectl's client-side apply of desired, a sanitized dry-run payload, to
+// current, its live object, as kubectl's apply does for a custom resource (Patcher.buildMergePatch in
+// k8s.io/kubectl/pkg/cmd/apply): a three-way JSON merge patch from the last-applied-configuration
+// annotation (original), desired with that annotation set to desired itself (modified), and current,
+// sent as a dry-run merge patch. It removes what the annotation has and desired drops, whoever owns
+// it; with no annotation there is no original, so, as kubectl's, it removes only what replacing the
+// lists desired changes drops.
+//
+// desired is the sanitized dry-run payload, not the manifest as kubectl would send it, so modified
+// lacks what sanitizeForDryRun strips (ownerReferences, uid, resourceVersion and the like) and has
+// the composite label CalculateDiff preserves. An annotation recording those, as one applied from a
+// manifest exported from the cluster would, makes the patch null them where kubectl's would not.
+func (c *DefaultDiffCalculator) dryRunClientSideApply(ctx context.Context, current, desired *un.Unstructured, resourceID string) (*un.Unstructured, error) {
+	original := []byte(current.GetAnnotations()[plan.LastAppliedConfigAnnotation])
+
+	modified, err := lastAppliedModified(desired)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot compute the client-side apply of %s", resourceID)
+	}
+
+	live, err := json.Marshal(current.Object)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot serialize the cluster's %s", resourceID)
+	}
+
+	// kubectl's preconditions for a custom resource's patch.
+	patch, err := jsonmergepatch.CreateThreeWayJSONMergePatch(original, modified, live,
+		mergepatch.RequireKeyUnchanged("apiVersion"), mergepatch.RequireKeyUnchanged("kind"), mergepatch.RequireMetadataKeyUnchanged("name"))
+	if err != nil {
+		if mergepatch.IsPreconditionFailed(err) {
+			return nil, errors.Errorf("cannot client-side apply %s: at least one of apiVersion, kind and name was changed", resourceID)
+		}
+
+		return nil, errors.Wrapf(err, "cannot compute the client-side apply patch of %s", resourceID)
+	}
+
+	c.logger.Debug("Performing dry-run client-side apply", "resource", resourceID, "patch", string(patch))
+
+	return c.applyClient.DryRunPatch(ctx, desired, patch)
+}
+
+// lastAppliedModified returns obj as kubectl's client-side apply sends it (GetModifiedConfiguration in
+// k8s.io/kubectl/pkg/util): obj without the last-applied-configuration annotation, serialized, then
+// set as that annotation, and serialized again. Like kubectl's, the serialization always has
+// metadata.annotations, empty or not, and the annotation ends in a newline, as kubectl's JSON
+// encoder writes it. obj is not modified.
+func lastAppliedModified(obj *un.Unstructured) ([]byte, error) {
+	out := obj.DeepCopy()
+
+	annotations := out.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+
+	delete(annotations, plan.LastAppliedConfigAnnotation)
+	out.SetAnnotations(annotations)
+
+	applied, err := json.Marshal(out.Object)
+	if err != nil {
+		return nil, err
+	}
+
+	annotations[plan.LastAppliedConfigAnnotation] = string(applied) + "\n"
+	out.SetAnnotations(annotations)
+
+	return json.Marshal(out.Object)
 }
 
 // CalculateNonRemovalDiffs computes diffs for modified/added resources and returns
@@ -223,7 +330,7 @@ func (c *DefaultDiffCalculator) CalculateDiff(ctx context.Context, composite *un
 // An equal composed diff left out of the diffs (see KeepEqualDiffs) is recorded as unchanged instead.
 //
 // Returns: (diffs map, rendered resources, error).
-func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs) (map[string]*dt.ResourceDiff, dtypes.RenderedResources, error) {
+func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs, applier *plan.Applier) (map[string]*dt.ResourceDiff, dtypes.RenderedResources, error) {
 	xrName := xr.GetName()
 	c.logger.Debug("Calculating diffs",
 		"xr", xrName,
@@ -244,7 +351,7 @@ func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr
 
 	// Calculate diff for the XR. It is diffed as the caller passed it, never as rendered, nested or
 	// not: render adds nothing to an XR that belongs in its payload (see diffSingleResourceInternal).
-	xrDiff, err := c.CalculateDiff(ctx, nil, xr.GetUnstructured())
+	xrDiff, err := c.CalculateDiff(ctx, nil, xr.GetUnstructured(), applier)
 	if err != nil || xrDiff == nil {
 		return nil, rendered, errors.Wrap(err, "cannot calculate diff for XR")
 	}
@@ -322,7 +429,7 @@ func (c *DefaultDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr
 			composite = xr.GetUnstructured()
 		}
 
-		diff, err := c.CalculateDiff(ctx, composite, un)
+		diff, err := c.CalculateDiff(ctx, composite, un, nil)
 		if err != nil {
 			c.logger.Debug("Error calculating diff for composed resource", "resource", resourceID, "error", err)
 			errs = append(errs, errors.Wrapf(err, "cannot calculate diff for %s", resourceID))

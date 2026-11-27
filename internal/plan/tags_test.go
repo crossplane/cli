@@ -121,7 +121,7 @@ func TestMergeExternalTags(t *testing.T) {
 		}})
 
 		MergeExternalTags(desired, live)
-		got := Fallback(desired, live, "test")
+		got := Fallback(desired, live, Applier{}, "test")
 
 		if got.Action != ActionNoOp || len(got.Changes) != 0 {
 			t.Errorf("Fallback after MergeExternalTags: want a clean no-op, got action %q with changes %+v", got.Action, got.Changes)

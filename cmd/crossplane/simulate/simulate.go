@@ -68,6 +68,9 @@ type Cmd struct {
 	Timeout      time.Duration `default:"2m"                                                                                                                                                                                                         help:"Max time to plan one managed resource."`
 	Output       string        `default:"plan"                                                                                                                                                                                                       enum:"plan,json,yaml"                                                           help:"Output format. One of: plan, json, yaml." name:"output"                      short:"o"`
 
+	FieldManager string `help:"Field manager that applies the input managed resources, as kubectl apply's --field-manager. Inferred from their managedFields and last-applied-configuration annotation when unset."`
+	ServerSide   *bool  `help:"Whether the input managed resources are applied server-side, as kubectl apply's --server-side. Inferred from their managedFields and last-applied-configuration annotation when unset."`
+
 	Impersonation kube.ImpersonationFlags `embed:""`
 }
 
@@ -147,7 +150,8 @@ func (c *Cmd) Run(ctx context.Context, k *kong.Context, logger logging.Logger, s
 	}
 
 	plans := make([]*plan.ResourcePlan, 0, len(resources))
-	planner := isimulate.NewPlanner(kubeClient, rmapper, crds, defaultNamespace, mgr, c.Timeout)
+	planner := isimulate.NewPlanner(kubeClient, rmapper, crds, defaultNamespace, mgr, c.Timeout,
+		isimulate.WithApplierFlags(plan.ApplierFlags{FieldManager: c.FieldManager, ServerSide: c.ServerSide}, k.Stderr))
 	for _, desired := range resources {
 		plans = append(plans, planner.Plan(ctx, desired))
 	}

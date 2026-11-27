@@ -274,7 +274,8 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 
 		if in.Err == nil {
 			xrCtx, cancel := p.config.xrContext(ctx)
-			diffs, rendered, err := p.diffSingleResourceInternal(xrCtx, res, compositionProvider, nil, nil, true, 0)
+			// res is the user's input, dry-run applied as whoever applies it; see resolveApplier.
+			diffs, rendered, err := p.diffSingleResourceInternal(xrCtx, res, compositionProvider, nil, nil, true, 0, true)
 			err = p.config.afterXR(ctx, xrCtx, diffs, err)
 			cancel()
 			validator.RecordRender(i, rendered.Keys(), err)
@@ -369,7 +370,7 @@ func (p *DefaultDiffProcessor) PerformDiff(ctx context.Context, resources []*un.
 // The compositionProvider function is called to obtain the composition to use for rendering.
 // This is the public method for top-level XR diffing, which enables removal detection.
 func (p *DefaultDiffProcessor) DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
-	return p.diffSingleResourceInternal(ctx, res, compositionProvider, nil, nil, true, 0)
+	return p.diffSingleResourceInternal(ctx, res, compositionProvider, nil, nil, true, 0, false)
 }
 
 // ResolveComposite returns the defaulted effective composite of res; see DiffProcessor.
@@ -419,7 +420,9 @@ func (p *DefaultDiffProcessor) resolveComposite(ctx context.Context, authoredXR 
 // detectRemovals should be true for top-level XRs and false for nested XRs (which don't own their composed resources).
 // depth is the nesting depth of res itself: 0 for the XR the user named, 1 for an XR composed by it,
 // and so on. It must be threaded through the recursion for MaxNestedDepth to bound it at all.
-func (p *DefaultDiffProcessor) diffSingleResourceInternal(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider, parentXR *cmp.Unstructured, existing *un.Unstructured, detectRemovals bool, depth int) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+// userSupplied is true for the user's input (PerformDiff) and false for cluster-sourced and nested XRs;
+// see resolveApplier.
+func (p *DefaultDiffProcessor) diffSingleResourceInternal(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider, parentXR *cmp.Unstructured, existing *un.Unstructured, detectRemovals bool, depth int, userSupplied bool) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 	resourceID := fmt.Sprintf("%s/%s", res.GetKind(), res.GetName())
 	p.config.Logger.Debug("Processing resource", "resource", resourceID, "namespace", res.GetNamespace())
 
@@ -439,6 +442,9 @@ func (p *DefaultDiffProcessor) diffSingleResourceInternal(ctx context.Context, r
 	}
 
 	p.warnIfDeleting(composite.Cluster, parentXR, resourceID)
+
+	// Who applies the XR or claim, for its own dry run; composed resources, nested XRs included, carry none.
+	applier := p.resolveApplier(composite.Cluster, depth, resourceID, userSupplied)
 
 	// Get the composition using the provided function. It is resolved from the defaulted effective XR,
 	// so that it sees the revision a composite is pinned to and the update policy an XRD defaults.
@@ -522,7 +528,7 @@ func (p *DefaultDiffProcessor) diffSingleResourceInternal(ctx context.Context, r
 	// Calculate diffs (without removal detection)
 	p.config.Logger.Debug("Calculating diffs", "resource", resourceID, "composedCount", len(desired.ComposedResources))
 
-	diffs, rendered, err := p.diffCalculator.CalculateNonRemovalDiffs(ctx, xrPayload, desired)
+	diffs, rendered, err := p.diffCalculator.CalculateNonRemovalDiffs(ctx, xrPayload, desired, applier)
 	if err != nil {
 		// Fail completely rather than emit potentially incorrect partial results (design principle)
 		p.config.Logger.Debug("Error calculating diffs - failing XR", "resource", resourceID, "error", err)
@@ -636,8 +642,8 @@ func (p *DefaultDiffProcessor) warnIfDeleting(existingXRFromCluster *un.Unstruct
 	p.config.Advisories.Raise(dt.OutputWarning{
 		Message: "The resource being diffed is being deleted in the cluster; the diff compares against a resource that is going away",
 		Context: map[string]string{
-			"resource":          resourceID,
-			"deletionTimestamp": deletedAt.UTC().Format(time.RFC3339),
+			warningContextResource: resourceID,
+			"deletionTimestamp":    deletedAt.UTC().Format(time.RFC3339),
 		},
 	})
 }
@@ -813,7 +819,7 @@ func (p *DefaultDiffProcessor) ProcessNestedXRs(
 		// has none) so it is not fetched again
 		// Use detectRemovals=false for nested XRs since they don't own their composed resources
 		// (resources are owned by the top-level parent XR in Crossplane's ownership model)
-		nestedDiffs, nestedRendered, err := p.diffSingleResourceInternal(ctx, nestedXR, compositionProvider, parentXR, existingNestedXR, false, depth)
+		nestedDiffs, nestedRendered, err := p.diffSingleResourceInternal(ctx, nestedXR, compositionProvider, parentXR, existingNestedXR, false, depth, false)
 		if err != nil {
 			// Check if the error is due to missing composition
 			// Note: It's valid to have an XRD in Crossplane without a composition attached to it.

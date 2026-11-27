@@ -1,0 +1,10 @@
+# The XR as a non-Crossplane manager (e.g. Argo CD) last applied it: with spec.tags.team.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XTestDefaultResource
+metadata:
+  name: test-resource-user-applied
+  namespace: default
+spec:
+  size: "large"
+  tags:
+    team: "platform"

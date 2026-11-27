@@ -33,12 +33,21 @@ import (
 // can plan the resource, and is honest about its limits: no replacement
 // detection, no computed values, no provider defaults. It diffs desired
 // verbatim, so callers should apply the API server's CRD defaults to desired
-// first when they can. Live-only fields plan as removals only when live's
-// managedFields say a declarative applier owns them: anything else - fields
-// the provider late-initialized, or API server defaults owned by nobody -
-// survives an apply of the manifest. live nil means the resource does not
-// exist and plans as a create.
-func Fallback(desired, live *unstructured.Unstructured, reason string) *ResourcePlan {
+// first when they can. Live-only fields plan as removals only when applying
+// the manifest as a would remove them:
+//
+//   - ApplyServerSide: a.FieldManager owns them and no other manager does.
+//   - ApplyClientSide: live's LastAppliedConfigAnnotation has them and
+//     desired drops them, or they are inside a list live and desired
+//     differ on, which the merge patch replaces whole. With no annotation
+//     only those list replacements remove anything.
+//   - ApplyUndetermined: some declarative applier owns them and no other
+//     manager does, as applierOwned describes.
+//
+// Anything else - fields the provider late-initialized, or API server
+// defaults owned by nobody - survives an apply of the manifest. live nil
+// means the resource does not exist and plans as a create.
+func Fallback(desired, live *unstructured.Unstructured, a Applier, reason string) *ResourcePlan {
 	p := NewResourcePlan(desired)
 	p.Approximate = true
 	p.FallbackReason = reason
@@ -52,11 +61,13 @@ func Fallback(desired, live *unstructured.Unstructured, reason string) *Resource
 		return p
 	}
 
-	// Ownership decisions compare against the set's leaves: a leaf is either a
+	// Removal decisions compare against a set's leaves: a leaf is either a
 	// plainly owned field or a whole atomic subtree, while a partially owned
 	// parent map keeps its children and never matches.
-	owned := applierOwned(live)
-	if owned != nil {
+	var owned *fieldpath.Set
+	if a.Mode == ApplyClientSide {
+		owned = clientSideRemovable(live, desired)
+	} else if owned = applierOwned(live, a); owned != nil {
 		owned = owned.Leaves()
 	}
 
@@ -68,6 +79,73 @@ func Fallback(desired, live *unstructured.Unstructured, reason string) *Resource
 	}
 	p.Action = ActionUpdate
 	return p
+}
+
+// clientSideRemovable returns the fields of live kubectl's client-side apply
+// of desired removes: those under the topmost spec keys live's
+// LastAppliedConfigAnnotation has and desired drops, and those inside a list
+// live and desired differ on. Its three-way JSON merge patch deletes each such
+// key whole, whoever owns it, and sets each such list to desired's whole,
+// dropping what only live's has; outside replaced lists it keeps anything the
+// annotation lacks. With no annotation there is no original, so only the list
+// replacements remove anything; with one that does not parse (which kubectl's
+// apply rejects), nothing is removed.
+func clientSideRemovable(live, desired *unstructured.Unstructured) *fieldpath.Set {
+	removable := fieldpath.NewSet()
+	desiredSpec, _, _ := unstructured.NestedMap(desired.Object, "spec")
+	if annotation, ok := live.GetAnnotations()[LastAppliedConfigAnnotation]; ok {
+		var applied map[string]any
+		if err := json.Unmarshal([]byte(annotation), &applied); err != nil {
+			return removable
+		}
+		appliedSpec, _, _ := unstructured.NestedMap(applied, "spec")
+		droppedKeys(removable, newCursor("spec"), appliedSpec, desiredSpec)
+	}
+	liveSpec, _, _ := unstructured.NestedMap(live.Object, "spec")
+	replacedLists(removable, newCursor("spec"), liveSpec, desiredSpec)
+	return removable
+}
+
+// replacedLists inserts into s the path of each list under the cursor that
+// live and desired both have and differ on, descending into maps both have.
+// The merge patch sets such a list to desired's, so every live-only field in
+// it goes. A list's set path stands for everything inside it, as the cursor's
+// path freezes at a list.
+func replacedLists(s *fieldpath.Set, c cursor, live, desired map[string]any) {
+	for k, lv := range live {
+		dv, ok := desired[k]
+		if !ok {
+			continue
+		}
+		switch l := lv.(type) {
+		case map[string]any:
+			if dm, ok := dv.(map[string]any); ok {
+				replacedLists(s, c.field(k), l, dm)
+			}
+		case []any:
+			if _, ok := dv.([]any); ok && !equalValues(l, dv) {
+				s.Insert(c.field(k).fp)
+			}
+		}
+	}
+}
+
+// droppedKeys inserts into s the path of each key under the cursor that
+// applied has and desired drops, descending into maps both keep. A merge
+// patch replaces lists whole, so it never descends into them.
+func droppedKeys(s *fieldpath.Set, c cursor, applied, desired map[string]any) {
+	for k, av := range applied {
+		dv, ok := desired[k]
+		if !ok {
+			s.Insert(c.field(k).fp)
+			continue
+		}
+		am, aok := av.(map[string]any)
+		dm, dok := dv.(map[string]any)
+		if aok && dok {
+			droppedKeys(s, c.field(k), am, dm)
+		}
+	}
 }
 
 // cursor tracks a position in the diffed object: the crossplane-runtime field
@@ -116,7 +194,7 @@ func (c cursor) index(i int) cursor {
 
 // removable reports whether a removal at the cursor would really happen on
 // apply: with no ownership information every removal counts, otherwise only
-// applier-owned fields do.
+// the fields under one of owned's leaves do.
 func (c cursor) removable(owned *fieldpath.Set) bool {
 	return owned == nil || ownedLeaf(owned, c.fp)
 }

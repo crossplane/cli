@@ -186,10 +186,10 @@ func (m *DefaultResourceManager) checkCompositeOwnership(ctx context.Context, cu
 		// TODO:  should we fail by default here?  maybe require a --force flag to proceed?
 		Message: "Resource already belongs to another composite.  Applying this diff will assume ownership!",
 		Context: map[string]string{
-			"resource":     fmt.Sprintf("%s/%s", current.GetKind(), current.GetName()),
-			ctxNamespace:   current.GetNamespace(),
-			"currentOwner": owner,
-			"newOwner":     newOwner,
+			warningContextResource: fmt.Sprintf("%s/%s", current.GetKind(), current.GetName()),
+			ctxNamespace:           current.GetNamespace(),
+			"currentOwner":         owner,
+			"newOwner":             newOwner,
 		},
 		// One line per owner pair and namespace is enough for a human;
 		// structured output keeps every resource.
@@ -717,8 +717,8 @@ func (m *DefaultResourceManager) extractComposedResourcesFromTree(tree *resource
 			m.advisories.Raise(dt.OutputWarning{
 				Message: treeNodeNotFoundWarning,
 				Context: map[string]string{
-					"resource":   fmt.Sprintf("%s/%s", node.Unstructured.GetKind(), node.Unstructured.GetName()),
-					ctxNamespace: node.Unstructured.GetNamespace(),
+					warningContextResource: fmt.Sprintf("%s/%s", node.Unstructured.GetKind(), node.Unstructured.GetName()),
+					ctxNamespace:           node.Unstructured.GetNamespace(),
 				},
 			})
 

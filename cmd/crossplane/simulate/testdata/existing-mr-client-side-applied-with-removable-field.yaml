@@ -1,0 +1,14 @@
+# existing-mr-with-removable-field.yaml as kubectl's client-side apply leaves it: its
+# last-applied-configuration annotation records the manifest, ending in the newline kubectl writes.
+apiVersion: ns.nop.example.org/v1alpha1
+kind: XDownstreamResource
+metadata:
+  name: test-resource
+  namespace: default
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"ns.nop.example.org/v1alpha1","kind":"XDownstreamResource","metadata":{"annotations":{},"name":"test-resource","namespace":"default"},"spec":{"forProvider":{"configData":"existing-value","removableField":"remove-me"}}}
+spec:
+  forProvider:
+    configData: existing-value
+    removableField: remove-me

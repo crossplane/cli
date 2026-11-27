@@ -12,6 +12,30 @@ These flags tune the diff:
   also dry-run creates added resources, so their diffs include server-side
   defaulting and admission. `all` needs the `create` verb and falls back per
   resource without it.
+- `--field-manager` and `--server-side` say how the input composite resources
+  and claims are applied, as `kubectl apply`'s flags of the same names do, so
+  the diff shows the fields that applying them would remove. Unset, they're
+  inferred from each one's `managedFields` and
+  `kubectl.kubernetes.io/last-applied-configuration` annotation: the applier
+  is its only field manager with an `Apply` entry, other than Crossplane's, or
+  client-side apply if it has only that annotation or a
+  `kubectl-client-side-apply` `Update` entry. With more than one candidate, or a
+  candidate and an imperative writer (a manager, other than Crossplane's or
+  `kubectl-client-side-apply`, that wrote it with an `Update`, such as `kubectl create` or `edit` or a
+  controller, on an object without that annotation), the command warns that
+  dropped fields may not be shown removed; with no candidate it doesn't
+  warn. `--server-side` alone picks the only server-side applier, unless
+  an imperative writer wrote it; `--server-side --field-manager M`
+  server-side applies as M; `--server-side=false` is client-side apply;
+  `--field-manager M` alone is server-side apply as M if M has an `Apply`
+  entry, otherwise client-side. An explicit `--field-manager` is used even
+  when an imperative writer wrote the resource. Client-side apply is
+  modelled as kubectl's: it removes the fields the annotation has and the
+  manifest drops, whoever set them, and anything inside a list the manifest
+  changes, which it replaces whole. On a resource without the annotation only
+  those list replacements remove anything.
+  They only affect the composite resources and claims `xr simulate` takes as
+  input, never composed resources; other runs ignore them with a warning.
 - `--eventual-state` shows the state after all reconciliation cycles complete.
 - `--max-recv-message-size` raises the function gRPC message limit, in MB.
 - `--no-color` and `--compact` change how `-o diff` prints.

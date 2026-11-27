@@ -21,6 +21,7 @@ import (
 
 	dt "github.com/crossplane/cli/v2/internal/diff/result"
 	"github.com/crossplane/cli/v2/internal/diff/types"
+	"github.com/crossplane/cli/v2/internal/plan"
 	"github.com/crossplane/cli/v2/pkg/render"
 	"github.com/crossplane/cli/v2/pkg/resource"
 )
@@ -560,6 +561,7 @@ type MockApplyClient struct {
 	ApplyFn        func(ctx context.Context, obj *un.Unstructured) (*un.Unstructured, error)
 	DryRunApplyFn  func(ctx context.Context, obj *un.Unstructured, fieldOwner string) (*un.Unstructured, error)
 	DryRunCreateFn func(ctx context.Context, obj *un.Unstructured) (*un.Unstructured, error)
+	DryRunPatchFn  func(ctx context.Context, obj *un.Unstructured, patch []byte) (*un.Unstructured, error)
 }
 
 // Initialize implements kubernetes.ApplyClient.
@@ -596,6 +598,15 @@ func (m *MockApplyClient) DryRunCreate(ctx context.Context, obj *un.Unstructured
 	}
 
 	return nil, errors.New("DryRunCreate not implemented")
+}
+
+// DryRunPatch implements kubernetes.ApplyClient.
+func (m *MockApplyClient) DryRunPatch(ctx context.Context, obj *un.Unstructured, patch []byte) (*un.Unstructured, error) {
+	if m.DryRunPatchFn != nil {
+		return m.DryRunPatchFn(ctx, obj, patch)
+	}
+
+	return nil, errors.New("DryRunPatch not implemented")
 }
 
 // MockAccessChecker implements the kubernetes.AccessChecker interface.
@@ -814,24 +825,24 @@ func (m *MockCredentialClient) FetchCompositionCredentials(ctx context.Context, 
 
 // MockDiffCalculator is a mock implementation of DiffCalculator for testing.
 type MockDiffCalculator struct {
-	CalculateDiffFn                 func(context.Context, *un.Unstructured, *un.Unstructured) (*dt.ResourceDiff, error)
-	CalculateNonRemovalDiffsFn      func(context.Context, *cmp.Unstructured, render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error)
+	CalculateDiffFn                 func(context.Context, *un.Unstructured, *un.Unstructured, *plan.Applier) (*dt.ResourceDiff, error)
+	CalculateNonRemovalDiffsFn      func(context.Context, *cmp.Unstructured, render.CompositionOutputs, *plan.Applier) (map[string]*dt.ResourceDiff, types.RenderedResources, error)
 	CalculateRemovedResourceDiffsFn func(context.Context, *un.Unstructured, types.RenderedResources) (map[string]*dt.ResourceDiff, error)
 }
 
 // CalculateDiff implements DiffCalculator.
-func (m *MockDiffCalculator) CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured) (*dt.ResourceDiff, error) {
+func (m *MockDiffCalculator) CalculateDiff(ctx context.Context, composite *un.Unstructured, desired *un.Unstructured, applier *plan.Applier) (*dt.ResourceDiff, error) {
 	if m.CalculateDiffFn != nil {
-		return m.CalculateDiffFn(ctx, composite, desired)
+		return m.CalculateDiffFn(ctx, composite, desired, applier)
 	}
 
 	return nil, nil
 }
 
 // CalculateNonRemovalDiffs implements DiffCalculator.
-func (m *MockDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
+func (m *MockDiffCalculator) CalculateNonRemovalDiffs(ctx context.Context, xr *cmp.Unstructured, desired render.CompositionOutputs, applier *plan.Applier) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 	if m.CalculateNonRemovalDiffsFn != nil {
-		return m.CalculateNonRemovalDiffsFn(ctx, xr, desired)
+		return m.CalculateNonRemovalDiffsFn(ctx, xr, desired, applier)
 	}
 
 	return nil, types.RenderedResources{}, nil

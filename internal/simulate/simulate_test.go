@@ -26,12 +26,14 @@ import (
 
 	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -58,6 +60,13 @@ func vpc(name, cidr string) *unstructured.Unstructured {
 		"metadata":   map[string]any{"name": name},
 		"spec":       map[string]any{"forProvider": map[string]any{"cidrBlock": cidr}},
 	}}
+}
+
+// fieldsOf is an Apply managedFields entry of manager owning fields.
+func fieldsOf(manager, fields string) metav1.ManagedFieldsEntry {
+	e := metav1.ManagedFieldsEntry{Manager: manager, Operation: metav1.ManagedFieldsOperationApply, FieldsType: "FieldsV1", FieldsV1: &metav1.FieldsV1{}}
+	e.FieldsV1.SetRawString(fields)
+	return e
 }
 
 // fakeRouter routes every resource to the given client, or nowhere.
@@ -526,4 +535,192 @@ func TestPlanner(t *testing.T) {
 			t.Errorf("Plan(...): want a create for an unserved kind, got %+v", got)
 		}
 	})
+}
+
+func TestPlanWithLive(t *testing.T) {
+	const composed = "apiextensions.crossplane.io/composed/abc"
+	composedUpdate := fieldsOf(composed, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`)
+	composedUpdate.Operation = metav1.ManagedFieldsOperationUpdate
+
+	type args struct {
+		managedFields []metav1.ManagedFieldsEntry
+	}
+	type want struct {
+		changes []plan.FieldChange
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"ProviderOwnedFieldIsKept": {
+			reason: "A field only the provider owns survives Crossplane's apply as its composed manager.",
+			args: args{managedFields: []metav1.ManagedFieldsEntry{
+				fieldsOf(composed, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`),
+				fieldsOf("provider", `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{}}}}`),
+			}},
+		},
+		"ComposedOwnedFieldIsRemoved": {
+			reason: "A field only the composed manager owns, and the desired state drops, is removed.",
+			args: args{managedFields: []metav1.ManagedFieldsEntry{
+				fieldsOf(composed, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{},"f:enableDnsHostnames":{}}}}`),
+			}},
+			want: want{changes: []plan.FieldChange{{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}}}},
+		},
+		"CoOwnedFieldIsKept": {
+			reason: "A field the composed manager co-owns with another manager survives the apply.",
+			args: args{managedFields: []metav1.ManagedFieldsEntry{
+				fieldsOf(composed, `{"f:spec":{"f:forProvider":{"f:cidrBlock":{},"f:enableDnsHostnames":{}}}}`),
+				fieldsOf("provider", `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{}}}}`),
+			}},
+		},
+		"NoComposedManagerRemovesEveryAppliersFields": {
+			reason: "With no composed manager on live, removals are every applier's exclusively owned fields.",
+			args: args{managedFields: []metav1.ManagedFieldsEntry{
+				fieldsOf("kubectl", `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`),
+				fieldsOf("provider", `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{}}}}`),
+			}},
+			want: want{changes: []plan.FieldChange{{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}}}},
+		},
+		"ComposedManagerWithoutApplyRemovesEveryAppliersFields": {
+			reason: "A composed manager that only recorded an Update owns nothing to remove, so removals are every applier's exclusively owned fields.",
+			args: args{managedFields: []metav1.ManagedFieldsEntry{
+				composedUpdate,
+				fieldsOf("provider", `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{}}}}`),
+			}},
+			want: want{changes: []plan.FieldChange{{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}}}},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			live := vpc("my-vpc", "10.0.0.0/16")
+			_ = unstructured.SetNestedField(live.Object, true, "spec", "forProvider", "enableDnsHostnames")
+			live.SetManagedFields(tc.args.managedFields)
+
+			planner := NewPlanner(nil, meta.NewDefaultRESTMapper(nil), noCRDs(t), "default", &fakeRouter{}, time.Second)
+			got := planner.PlanWithLive(context.Background(), vpc("my-vpc", "10.0.0.0/16"), live)
+			if diff := cmp.Diff(tc.want.changes, got.Changes, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nPlanWithLive(...): -want changes, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestPlannerApplierFlags(t *testing.T) {
+	ctx := context.Background()
+
+	s := runtime.NewScheme()
+	s.AddKnownTypeWithName(vpcGVK, &unstructured.Unstructured{})
+	rm := meta.NewDefaultRESTMapper([]schema.GroupVersion{vpcGVK.GroupVersion()})
+	rm.Add(vpcGVK, meta.RESTScopeRoot)
+
+	twoAppliers := []metav1.ManagedFieldsEntry{
+		fieldsOf("argocd", `{"f:spec":{"f:forProvider":{"f:cidrBlock":{},"f:enableDnsHostnames":{}}}}`),
+		fieldsOf("kubectl", `{"f:spec":{"f:forProvider":{"f:cidrBlock":{},"f:instanceTenancy":{}}}}`),
+	}
+	update := fieldsOf("kubectl", `{"f:spec":{"f:forProvider":{"f:cidrBlock":{},"f:instanceTenancy":{}}}}`)
+	update.Operation = metav1.ManagedFieldsOperationUpdate
+	serverSide := false
+
+	type args struct {
+		flags         plan.ApplierFlags
+		managedFields []metav1.ManagedFieldsEntry
+		namespace     string
+		router        Router
+	}
+	type want struct {
+		changes []plan.FieldChange
+		warning string
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"NamedManagerRemovesItsExclusiveField": {
+			reason: "With --field-manager argocd, the fallback removes only the field argocd alone owns, and does not warn.",
+			args:   args{flags: plan.ApplierFlags{FieldManager: "argocd"}, managedFields: twoAppliers},
+			want:   want{changes: []plan.FieldChange{{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}}}},
+		},
+		"UndeterminedWarns": {
+			reason: "With two appliers and no flags, the applier cannot be told, so the Planner warns naming both.",
+			args:   args{managedFields: twoAppliers},
+			want: want{
+				changes: []plan.FieldChange{
+					{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}},
+					{Path: "spec.forProvider.instanceTenancy", Actual: &plan.Value{Value: "default"}},
+				},
+				warning: "Warning: cannot tell which field manager applies VPC my-vpc (candidates: argocd, kubectl), so the removals shown are a best guess from every candidate's fields and may not match how its manifest is applied; name the applier with --field-manager, and --server-side or --server-side=false\n",
+			},
+		},
+		"UndeterminedWarningNamesTheNamespace": {
+			reason: "The warning names a namespaced resource's namespace, so same-named resources in two namespaces are told apart.",
+			args:   args{managedFields: twoAppliers, namespace: "team-a"},
+			want: want{
+				changes: []plan.FieldChange{
+					{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}},
+					{Path: "spec.forProvider.instanceTenancy", Actual: &plan.Value{Value: "default"}},
+				},
+				warning: "Warning: cannot tell which field manager applies VPC team-a/my-vpc (candidates: argocd, kubectl), so the removals shown are a best guess from every candidate's fields and may not match how its manifest is applied; name the applier with --field-manager, and --server-side or --server-side=false\n",
+			},
+		},
+		"UndeterminedWarningNamesImperativeWriters": {
+			reason: "An imperative writer stops the only applier being inferred, so the warning names it.",
+			args:   args{managedFields: []metav1.ManagedFieldsEntry{twoAppliers[0], update}},
+			want: want{
+				changes: []plan.FieldChange{{Path: "spec.forProvider.enableDnsHostnames", Actual: &plan.Value{Value: true}}},
+				warning: "Warning: cannot tell which field manager applies VPC my-vpc (candidates: argocd), since imperative writers (managers that updated it without applying, such as kubectl create or edit, or a controller) wrote it too (kubectl), so the removals shown are a best guess from every candidate's fields and may not match how its manifest is applied; name the applier with --field-manager, and --server-side or --server-side=false\n",
+			},
+		},
+		"RoutedPlanDoesNotWarn": {
+			reason: "A diff server plans the resource exactly, never using the applier, so the Planner does not warn.",
+			args:   args{managedFields: twoAppliers, router: &fakeRouter{client: &fakePlanClient{rsp: &diffv1alpha1.PlanResponse{Action: diffv1alpha1.Action_ACTION_NO_OP}}}},
+		},
+		"NoFlagsInfersTheOnlyApplier": {
+			reason: "With one applier and Crossplane's composed manager, the fallback removes as that applier, keeping the composed field, and does not warn.",
+			args: args{managedFields: []metav1.ManagedFieldsEntry{
+				fieldsOf("kubectl", `{"f:spec":{"f:forProvider":{"f:cidrBlock":{}}}}`),
+				fieldsOf("apiextensions.crossplane.io/composed/abc", `{"f:spec":{"f:forProvider":{"f:enableDnsHostnames":{}}}}`),
+			}},
+		},
+		"ServerSideFalseIsClientSide": {
+			reason: "--server-side=false is a client-side apply, which removes nothing from an object without the last-applied annotation, and does not warn.",
+			args:   args{flags: plan.ApplierFlags{ServerSide: &serverSide}, managedFields: twoAppliers},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			live := vpc("my-vpc", "10.0.0.0/16")
+			_ = unstructured.SetNestedField(live.Object, true, "spec", "forProvider", "enableDnsHostnames")
+			_ = unstructured.SetNestedField(live.Object, "default", "spec", "forProvider", "instanceTenancy")
+			live.SetManagedFields(tc.args.managedFields)
+			// The fake client drops managedFields on create, so Get serves live.
+			kube := fake.NewClientBuilder().WithScheme(s).
+				WithInterceptorFuncs(interceptor.Funcs{Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+					live.DeepCopyInto(obj.(*unstructured.Unstructured))
+					return nil
+				}}).Build()
+
+			r := tc.args.router
+			if r == nil {
+				r = &fakeRouter{}
+			}
+			desired := vpc("my-vpc", "10.0.0.0/16")
+			desired.SetNamespace(tc.args.namespace)
+
+			var stderr bytes.Buffer
+			planner := NewPlanner(kube, rm, noCRDs(t), "default", r, time.Second, WithApplierFlags(tc.args.flags, &stderr))
+			got := planner.Plan(ctx, desired)
+			if diff := cmp.Diff(tc.want.changes, got.Changes, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nPlan(...): -want changes, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(tc.want.warning, stderr.String()); diff != "" {
+				t.Errorf("\n%s\nPlan(...): -want warning, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
 }

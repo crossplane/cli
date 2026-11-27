@@ -92,6 +92,8 @@ type IntegrationTestCase struct {
 	// dryRunOn passes --dry-run-on=<value> (empty = rely on the default, which is "all").
 	// The flag lives on CommonCmdFields, so it applies to both `xr` and `comp`.
 	DryRunOn string
+	// FieldManager passes --field-manager=<value> (empty = infer the applier of each supplied XR or claim).
+	FieldManager string
 	// awaitAdmissionDenialFor names a manifest whose resources a correctly-installed
 	// ValidatingAdmissionPolicy must refuse. Before running the diff, the harness dry-run
 	// creates each of them until the apiserver rejects it.
@@ -213,6 +215,10 @@ func RunIntegrationTest(t *testing.T, testType TestType, tt IntegrationTestCase)
 	// command types. An empty value relies on the flag's own default.
 	if tt.DryRunOn != "" {
 		args = append(args, "--dry-run-on="+tt.DryRunOn)
+	}
+
+	if tt.FieldManager != "" {
+		args = append(args, "--field-manager="+tt.FieldManager)
 	}
 
 	// Add --resource flags (composition tests only)

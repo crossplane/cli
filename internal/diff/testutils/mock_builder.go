@@ -554,6 +554,12 @@ func (b *MockApplyClientBuilder) WithSuccessfulDryRunCreate() *MockApplyClientBu
 	})
 }
 
+// WithDryRunPatch sets the DryRunPatch behavior.
+func (b *MockApplyClientBuilder) WithDryRunPatch(fn func(context.Context, *un.Unstructured, []byte) (*un.Unstructured, error)) *MockApplyClientBuilder {
+	b.mock.DryRunPatchFn = fn
+	return b
+}
+
 // Build returns the built mock.
 func (b *MockApplyClientBuilder) Build() *MockApplyClient {
 	return b.mock

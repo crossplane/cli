@@ -1,0 +1,39 @@
+# An XRD whose spec.target takes exactly one of name or selector, enforced by CEL, the way
+# Upbound-style refs are. Switching an XR from selector to name is only valid if the removed
+# selector is really removed.
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xoneofresources.ns.diff.example.org
+spec:
+  group: ns.diff.example.org
+  names:
+    kind: XOneOfResource
+    plural: xoneofresources
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                target:
+                  type: object
+                  x-kubernetes-validations:
+                    - rule: "!(has(self.name) && has(self.selector))"
+                      message: "Only one of name or selector may be set"
+                  properties:
+                    name:
+                      type: string
+                    selector:
+                      type: object
+                      properties:
+                        matchLabels:
+                          type: object
+                          additionalProperties:
+                            type: string

@@ -1,0 +1,14 @@
+# What Crossplane's claim syncer writes to existing-claim-user-applied.yaml once it has bound it: the
+# revision it copied back from the backing XR, and the backing XR existing-claim-xr.yaml.
+apiVersion: diff.example.org/v1alpha1
+kind: NopClaim
+metadata:
+  name: test-claim
+  namespace: existing-namespace
+spec:
+  compositionRevisionRef:
+    name: claim-composition-caff3a7
+  resourceRef:
+    apiVersion: diff.example.org/v1alpha1
+    kind: XNopResource
+    name: test-claim-82crv

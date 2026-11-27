@@ -1,0 +1,14 @@
+# existing-xr-user-applied-with-team.yaml as a client-side apply (kubectl's, or Argo CD's default sync)
+# leaves it: its last-applied-configuration annotation records the manifest, spec.tags.team included.
+apiVersion: ns.diff.example.org/v1alpha1
+kind: XTestDefaultResource
+metadata:
+  name: test-resource-user-applied
+  namespace: default
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"ns.diff.example.org/v1alpha1","kind":"XTestDefaultResource","metadata":{"annotations":{},"name":"test-resource-user-applied","namespace":"default"},"spec":{"size":"large","tags":{"team":"platform"}}}
+spec:
+  size: "large"
+  tags:
+    team: "platform"

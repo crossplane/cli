@@ -1799,6 +1799,10 @@ Summary: 2 modified, 2 removed`,
 				{File: "testdata/diff/resources/existing-claim-defaulted-fields-other-manager.yaml", FieldManager: "platform-operator"},
 			},
 			InputFiles: []string{"testdata/diff/modified-claim-omitting-defaulted-fields.yaml"},
+			// The claim was created, not applied, so its author (the harness's SetupFieldManager) is named
+			// explicitly. It has no Apply entry, so it is a client-side applier, and with no last-applied
+			// annotation it removes nothing. This case pins #503 and #534, not applier inference.
+			FieldManager: integration.SetupFieldManager,
 			ExpectedStructured: simtest.Expect().
 				// As in ModifiedClaimShowsDiff: the composed resource belongs to the claim's backing XR (#534).
 				WithNoWarnings().
@@ -1965,6 +1969,216 @@ Summary: 2 modified, 2 removed`,
 			ExpectedStructured: simtest.Expect().WithSummary(0, 0, 0),
 			ExpectedError:      false,
 			ExpectedExitCode:   dp.ExitCodeSuccess,
+		},
+		// An XR a non-Crossplane manager (Argo CD here) server-side applied, then Crossplane reconciled.
+		// Its manifest drops a field that manager set, so applying the manifest under that manager
+		// removes the field, and the plan must say so. Crossplane's own manager is no candidate applier.
+		"FieldDroppedFromUserAppliedXRIsReportedRemoved": {
+			Reason:       "A field the applying manager owns and the manifest omits is shown removed",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-user-applied-with-team.yaml", FieldManager: "argocd-controller"},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+			},
+			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
+				WithSummary(0, 1, 0).
+				WithModifiedResource("XTestDefaultResource", "test-resource-user-applied", "default").
+				WithFieldChange("spec.tags.team", "platform", nil),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// As FieldDroppedFromUserAppliedXRIsReportedRemoved, but a second manager also server-side applied
+		// the XR, so either could be the one applying the manifest. Which fields applying it removes
+		// can't be told, so nothing is shown removed, and a warning names both candidates.
+		"FieldDroppedFromXRWithTwoAppliersWarnsAndIsNotReportedRemoved": {
+			Reason:       "With two server-side appliers and no --field-manager, a dropped field is not shown removed and a warning names both",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-user-applied-with-team.yaml", FieldManager: "argocd-controller"},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+				{File: "testdata/diff/resources/existing-xr-user-applied-other-manager.yaml", FieldManager: "platform-operator"},
+			},
+			ExpectedStructured: simtest.Expect().
+				WithWarning("Cannot tell which field manager applies this resource").
+				WithWarningContext(map[string]string{
+					"resource":   "XTestDefaultResource/test-resource-user-applied",
+					"namespace":  "default",
+					"candidates": "argocd-controller, platform-operator",
+				}).
+				And().
+				WithSummary(0, 0, 0),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeSuccess,
+		},
+		// As FieldDroppedFromXRWithTwoAppliersWarnsAndIsNotReportedRemoved, with --field-manager naming
+		// the applier: the field only it owns is removed, the other manager's is kept, and nothing warns.
+		"FieldDroppedFromXRWithTwoAppliersIsReportedRemovedForFieldManager": {
+			Reason:       "With two server-side appliers, --field-manager picks the applier: its dropped field is shown removed, with no warning",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-user-applied-with-team.yaml", FieldManager: "argocd-controller"},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+				{File: "testdata/diff/resources/existing-xr-user-applied-other-manager.yaml", FieldManager: "platform-operator"},
+			},
+			FieldManager: "argocd-controller",
+			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
+				WithSummary(0, 1, 0).
+				WithModifiedResource("XTestDefaultResource", "test-resource-user-applied", "default").
+				WithFieldChange("spec.tags.team", "platform", nil).
+				// platform-operator alone owns spec.region, which the manifest omits, so it is kept.
+				WithFieldChange("spec.region", "eu-west-1", "eu-west-1"),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// An XR client-side applied, as Argo CD's default sync does: an Update by argocd-controller and
+		// the last-applied-configuration annotation, then Crossplane reconciled it. Its manifest drops a
+		// field the annotation has, so client-side apply removes it, and the plan must say so.
+		"FieldDroppedFromClientSideAppliedXRIsReportedRemoved": {
+			Reason:       "A field the last-applied-configuration annotation has and the manifest omits is shown removed",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-client-side-applied-with-team.yaml", FieldManager: "argocd-controller", Create: true},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+			},
+			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
+				WithSummary(0, 1, 0).
+				WithModifiedResource("XTestDefaultResource", "test-resource-user-applied", "default").
+				WithFieldChange("spec.tags.team", "platform", nil),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// The same XR client-side created with no last-applied-configuration annotation. Client-side
+		// apply then has no record of what it applied, so, as kubectl's, it removes nothing.
+		"FieldDroppedFromClientSideAppliedXRWithoutAnnotationIsNotReportedRemoved": {
+			Reason:       "Client-side apply of an object without a last-applied-configuration annotation removes no field",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-user-applied-with-team.yaml", FieldManager: "kubectl-client-side-apply", Create: true},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+			},
+			// kubectl-client-side-apply has no Apply entry, so --field-manager names a client-side applier.
+			FieldManager: "kubectl-client-side-apply",
+			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
+				WithSummary(0, 0, 0),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeSuccess,
+		},
+		// As FieldDroppedFromClientSideAppliedXRWithoutAnnotationIsNotReportedRemoved, with no
+		// --field-manager: kubectl-client-side-apply's Update makes client-side apply the inferred applier,
+		// which removes nothing without the annotation, and nothing warns.
+		"FieldDroppedFromClientSideCreatedXRWithoutAnnotationOrFlagsIsNotReportedRemoved": {
+			Reason:       "With only kubectl's client-side apply and no flags, no field is removed and nothing warns",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-user-applied-without-team.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-with-defaults.yaml",
+				"testdata/diff/resources/composition-with-defaults.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-user-applied-with-team.yaml", FieldManager: "kubectl-client-side-apply", Create: true},
+				{File: "testdata/diff/resources/existing-xr-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+			},
+			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
+				WithSummary(0, 0, 0),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeSuccess,
+		},
+		// FieldDroppedFromUserAppliedXRIsReportedRemoved for a claim: the claim is dry-run applied as the
+		// manager that server-side applied it, so the field its manifest drops is shown removed. The claim
+		// is applied, not created as a setup file is, since a create would record an imperative writer.
+		"FieldDroppedFromUserAppliedClaimIsReportedRemoved": {
+			Reason:       "A field the claim's applying manager owns and its manifest omits is shown removed",
+			OutputFormat: "json",
+			SetupFiles: []string{
+				"testdata/diff/resources/existing-namespace.yaml",
+				"testdata/diff/resources/claim-xrd.yaml",
+				"testdata/diff/resources/claim-composition.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			CrossplaneManagedResources: []integration.HierarchicalOwnershipRelation{
+				integration.Composes(
+					"testdata/diff/resources/existing-claim-xr.yaml",
+					"testdata/diff/resources/existing-claim-downstream-resource.yaml",
+				),
+			},
+			XrdAPIVersion: integration.XRDV1, // the XRD is v1, so Crossplane writes the XR's resourceRefs at spec.resourceRefs
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-claim-user-applied.yaml", FieldManager: "argocd-controller"},
+				{File: "testdata/diff/resources/existing-claim-user-applied-reconciled.yaml", FieldManager: integration.CompositeReconcilerFieldManager},
+			},
+			InputFiles: []string{"testdata/diff/modified-claim.yaml"},
+			ExpectedStructured: simtest.Expect().
+				// As in ModifiedClaimShowsDiff: the composed resource belongs to the claim's backing XR (#534).
+				WithNoWarnings().
+				WithSummary(0, 2, 0).
+				WithModifiedResource("NopClaim", "test-claim", "existing-namespace").
+				WithFieldChange("spec.coolField", "existing-value", "modified-value").
+				WithFieldChange("spec.writeConnectionSecretsToNamespace", "argocd-secrets", nil).
+				And().
+				WithModifiedResource("XDownstreamResource", "test-claim-82crv", "").
+				WithFieldChange("spec.forProvider.configData", "existing-value", "modified-value"),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
+		},
+		// The one-of case: the XRD's CEL rule allows name or selector, not both. Switching the XR from
+		// selector to name is valid only if selector is removed; without modelling the removal the
+		// dry-run sees both and fails "Only one of". Fails until the dry-run apply models the removal.
+		"OneOfFieldSwitchOnUserAppliedXRRemovesOldField": {
+			Reason:       "Switching a CEL one-of field from selector to name shows selector removed and name added, with no error",
+			OutputFormat: "json",
+			InputFiles:   []string{"testdata/diff/xr-one-of-name.yaml"},
+			SetupFiles: []string{
+				"testdata/diff/resources/xrd-one-of.yaml",
+				"testdata/diff/resources/composition-one-of.yaml",
+				"../../../internal/testutils/integration/testdata/diff/resources/functions.yaml",
+			},
+			FieldManagerApplies: []integration.FieldManagerApply{
+				{File: "testdata/diff/resources/existing-xr-one-of-selector.yaml", FieldManager: "argocd-controller"},
+			},
+			ExpectedStructured: simtest.Expect().
+				WithNoWarnings().
+				WithSummary(0, 1, 0).
+				WithModifiedResource("XOneOfResource", "test-one-of", "default").
+				WithFieldChange("spec.target.selector.matchLabels.app", "example", nil).
+				WithFieldChange("spec.target.name", nil, "example"),
+			ExpectedError:    false,
+			ExpectedExitCode: dp.ExitCodeDiffDetected,
 		},
 		// With no apiserver result for an addition, its defaults have to be predicted locally. These
 		// pin that keeping local defaults out of dry-run payloads did not also take them out of the

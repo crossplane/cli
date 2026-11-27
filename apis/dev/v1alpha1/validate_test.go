@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -611,6 +612,22 @@ func TestValidate(t *testing.T) {
 			expectedErrors: []string{
 				fmt.Sprintf(`"invalid" is not a supported storage type; set it to one of %v`, SupportedStorageTypes()),
 				"runtime kind config path must be relative",
+			},
+		},
+		"InvalidRuntimeCrossplaneConfig": {
+			input: &Project{
+				Name: "my-project",
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Runtime: &Runtime{
+						Crossplane: RuntimeCrossplane{
+							ExtraHelmValues: json.RawMessage(`"this is just a string"`),
+						},
+					},
+				},
+			},
+			expectedErrors: []string{
+				"extraHelmValues must be a map",
 			},
 		},
 	}

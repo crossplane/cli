@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation"
+	"sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
@@ -120,7 +121,25 @@ func (r *Runtime) Validate() []error {
 		errs = append(errs, errors.Errorf("%q is not a supported storage type; set it to one of %v", r.Registry.Storage.Type, SupportedStorageTypes()))
 	}
 
+	errs = append(errs, r.Crossplane.Validate()...)
+
 	return errs
+}
+
+// Validate validates the project runtime Crossplane configuration.
+func (r *RuntimeCrossplane) Validate() []error {
+	if r == nil {
+		return nil
+	}
+
+	if r.ExtraHelmValues != nil {
+		values := map[string]any{}
+		if err := yaml.Unmarshal(r.ExtraHelmValues, &values); err != nil {
+			return []error{errors.Wrap(err, "extraHelmValues must be a map")}
+		}
+	}
+
+	return nil
 }
 
 // Validate returns errors for an invalid ProjectSchemas. A nil receiver is

@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"encoding/json"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	pkgmetav1 "github.com/crossplane/crossplane/apis/v2/pkg/meta/v1"
@@ -152,8 +154,22 @@ type ProjectSpec struct {
 
 // Runtime is the spec for project runtime configuration.
 type Runtime struct {
-	Kind     RuntimeKind    `json:"kind,omitempty"`
-	Registry RegistryConfig `json:"registry,omitempty"`
+	Crossplane RuntimeCrossplane `json:"crossplane,omitempty"`
+	Kind       RuntimeKind       `json:"kind,omitempty"`
+	Registry   RegistryConfig    `json:"registry,omitempty"`
+}
+
+// RuntimeCrossplane configures Crossplane installation in project runtime
+// clusters.
+type RuntimeCrossplane struct {
+	// ExtraHelmValues provides additional helm values, which will be merged
+	// into the default helm values. These values can override the default
+	// values provided by the CLI.
+	ExtraHelmValues json.RawMessage `json:"extraHelmValues,omitempty"`
+	// ExtraFlags provides additional Crossplane flags, which will be added to
+	// the default flags provided by the CLI. Default flags cannot be removed
+	// via this mechanism; use the args value in extraHelmValues for that.
+	ExtraFlags []string `json:"extraFlags,omitempty"`
 }
 
 // RuntimeKind is the runtime configuration options for KinD.

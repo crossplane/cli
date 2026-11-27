@@ -86,6 +86,7 @@ type RunCmd struct {
 	initResources  []runtime.RawExtension
 	extraResources []runtime.RawExtension
 	kindConfig     *v1alpha4.Cluster
+	xpHelmValues   map[string]any
 }
 
 // Help returns help for the run command.
@@ -152,6 +153,12 @@ func (c *RunCmd) AfterApply() error {
 		}
 
 		c.kindConfig = kindCfg
+	}
+
+	if v := c.proj.Spec.Runtime.Crossplane.ExtraHelmValues; len(v) > 0 {
+		if err := yaml.Unmarshal(v, &c.xpHelmValues); err != nil {
+			return errors.Wrap(err, "failed to parse crossplane extraHelmValues")
+		}
 	}
 
 	return nil
@@ -254,6 +261,8 @@ func (c *RunCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter, cfg *con
 				controlplane.WithInternal(*c.Internal),
 				controlplane.WithKindConfig(c.kindConfig),
 				controlplane.WithStorageType(devv1alpha1.StorageType(c.proj.Spec.Runtime.Registry.Storage.Type)),
+				controlplane.WithExtraHelmValues(c.xpHelmValues),
+				controlplane.WithExtraFlags(c.proj.Spec.Runtime.Crossplane.ExtraFlags),
 			)
 			if ctpErr != nil {
 				ch.SendEvent("Setting up control plane", async.EventStatusFailure)

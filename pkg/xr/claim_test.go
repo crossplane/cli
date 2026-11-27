@@ -187,6 +187,7 @@ func generateExpectedXR(claim *unstructured.Unstructured, kind string, direct bo
 	if !direct {
 		// Add Crossplane labels
 		metadata := xr.Object["metadata"].(map[string]any)
+		metadata["generateName"] = claim.GetName() + "-"
 		metadata["labels"] = map[string]any{
 			"crossplane.io/claim-name":      claim.GetName(),
 			"crossplane.io/claim-namespace": claim.GetNamespace(),
@@ -387,7 +388,8 @@ func TestConvertClaimToXR(t *testing.T) {
 						"apiVersion": "example.org/v1alpha1",
 						"kind":       "XTestApp",
 						"metadata": map[string]any{
-							"name": "test-app-abcde",
+							"generateName": "test-app-",
+							"name":         "test-app-abcde",
 							"labels": map[string]any{
 								"existing-label":    "value",
 								labelClaimName:      "test-app",
@@ -585,7 +587,8 @@ func TestConvertClaimToXR(t *testing.T) {
 						"apiVersion": "example.org/v1alpha1",
 						"kind":       "XTestApp",
 						"metadata": map[string]any{
-							"name": "my-xr",
+							"generateName": "test-app-",
+							"name":         "my-xr",
 							"labels": map[string]any{
 								labelClaimName:      "test-app",
 								labelClaimNamespace: "myclaims",

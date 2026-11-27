@@ -199,6 +199,13 @@ The flow:
 1. **Discover.** Parse the project file, find the Compositions under the
    project's API paths, and list the XRs on the target cluster whose type
    each Composition composes. `--namespace` and `--name` scope the run.
+   `--resource-file` adds XR or claim files, matched to a project
+   Composition the way Crossplane selects one (the XRD's enforced
+   Composition, `compositionRef`, selector, the XRD's default, the sole
+   match), so a new Composition with no XRs yet can still be previewed.
+   Their XRDs must be installed in the cluster; `--namespace` defaults their
+   namespace without filtering them; an input with the same kind, namespace
+   and name as a cluster XR diffs against it.
 2. **Prepare.** Build the project's embedded functions locally, exactly as
    `project run` does, so the simulation reflects the code in the working
    tree. Resolve the project's provider dependencies and start their diff

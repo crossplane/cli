@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	diffv1alpha1 "github.com/crossplane/upjet/v2/proto/diff/v1alpha1"
@@ -58,6 +59,8 @@ type projectTestCase struct {
 	// router, when set, routes provider plans instead of diff servers and
 	// the run does not pass --skip-plan.
 	router simulate.Router
+	// expectedNote, when set, must be one of the -o json notes.
+	expectedNote string
 }
 
 func TestProjectSimulateIntegration(t *testing.T) {
@@ -183,6 +186,47 @@ func TestProjectSimulateIntegration(t *testing.T) {
 				{Path: "spec.forProvider.configData", Actual: val("existing-value"), Planned: val("embedded-existing-value")},
 			},
 		},
+		"NewCompositionResourceFile": {
+			reason: "A Composition the cluster lacks renders a --resource-file XR against it: the XR and its composed resources are creates, and the XR, which nothing in the cluster has, re-points no live composite.",
+			setupFiles: []string{
+				"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
+			},
+			project:          "plain",
+			extraArgs:        []string{"--resource-file", "../../../internal/testutils/integration/testdata/comp/resources/existing-xr-1.yaml"},
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedResult: planShape{
+				Summary:      plan.Summary{Create: 3},
+				Composites:   []simulate.CompositeResult{{Ref: xnop, Status: simulate.CompositeChanged, Composition: &comp, Supplied: true}},
+				Compositions: compositions(0),
+				Plans: []planEntry{
+					{Kind: "Composition", Name: comp.Name, Action: plan.ActionCreate},
+					{Kind: "XDownstreamResource", Name: "test-resource", Action: plan.ActionCreate, Composite: "test-resource"},
+					{Kind: "XNopResource", Name: "test-resource", Action: plan.ActionCreate, Composite: "test-resource"},
+				},
+			},
+			expectedChanges: []plan.FieldChange{
+				{Path: "metadata.annotations[crossplane.io/composition-resource-name]", Planned: val("nop-resource")},
+				{Path: "metadata.labels[crossplane.io/composite]", Planned: val("test-resource")},
+				{Path: "spec.forProvider.configData", Planned: val("updated-existing-value")},
+				{Path: "spec.forProvider.resourceTier", Planned: val("premium")},
+			},
+		},
+		"NewCompositionHint": {
+			reason: "A Composition the cluster lacks, with no composites and no --resource-file, notes how to preview what it would create.",
+			setupFiles: []string{
+				"../../../internal/testutils/integration/testdata/comp/resources/xrd.yaml",
+				"../../../internal/testutils/integration/testdata/comp/resources/functions.yaml",
+			},
+			project:          "plain",
+			expectedExitCode: dp.ExitCodeDiffDetected,
+			expectedResult: planShape{
+				Summary:      plan.Summary{Create: 1},
+				Compositions: compositions(0),
+				Plans:        []planEntry{{Kind: "Composition", Name: comp.Name, Action: plan.ActionCreate}},
+			},
+			expectedNote: "Composition " + comp.Name + " is new; no composite resources exist to render. Pass a composite resource or claim file with --resource-file to preview what it would create.",
+		},
 	}
 
 	for name, tc := range cases {
@@ -225,6 +269,9 @@ func TestProjectSimulateIntegration(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.expectedResult, summarize(res)); diff != "" {
 				t.Errorf("\n%s\nsimulate -o json: -want, +got:\n%s", tc.reason, diff)
+			}
+			if tc.expectedNote != "" && !slices.Contains(res.Notes, tc.expectedNote) {
+				t.Errorf("\n%s\nsimulate -o json: want note %q, got notes %q", tc.reason, tc.expectedNote, res.Notes)
 			}
 			var got []plan.FieldChange
 			for _, p := range res.Plans {

@@ -25,6 +25,23 @@ the project's functions in place of the cluster's functions of the same name.
 `--max-concurrency` caps the concurrent function builds, and `--cache-dir` sets
 where package contents are cached.
 
+`--resource-file` adds composite resource or claim files to render against
+the project's Compositions, for example to preview what a new Composition
+would create. It takes a file or directory, a comma-separated list of paths,
+and can be repeated; `-` reads standard input. Each input is matched to a
+project Composition the way Crossplane selects one: its XRD's enforced
+Composition, then its `compositionRef`, then its `compositionSelector`, then
+its XRD's default Composition, then the only Composition for its type. Its
+XRD must be installed in the cluster. `--namespace` sets the namespace of an
+input that has none but doesn't filter the inputs; without it, such an input
+gets the kubeconfig context's namespace; a cluster-scoped input has none. No
+two inputs may share an API group, kind, namespace and name. An input may set
+`metadata.generateName` instead of `metadata.name`; it renders as a new
+composite resource. The inputs render alongside the composite resources the
+run discovers or `--name` selects; a named input with the same API group,
+kind, namespace and name as a composite resource in the cluster diffs against
+it.
+
 For example, a run with `--skip-plan` whose project changes a Composition
 prints a plan like this:
 

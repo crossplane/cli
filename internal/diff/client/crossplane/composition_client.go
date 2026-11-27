@@ -260,10 +260,10 @@ func (c *DefaultCompositionClient) allCompositions(ctx context.Context) ([]*apie
 	return c.cachedCompositions(), nil
 }
 
-// compositionsMatching returns the compositions labelsMatch says match matchLabels. The first lookup
+// compositionsMatching returns the compositions LabelsMatch says match matchLabels. The first lookup
 // of a set of labels lists the compositions carrying them from the cluster, with them as the selector.
 func (c *DefaultCompositionClient) compositionsMatching(ctx context.Context, matchLabels map[string]string) ([]*apiextensionsv1.Composition, error) {
-	// labelsMatch lets a composition without a label match an empty value for it, which a selector
+	// LabelsMatch lets a composition without a label match an empty value for it, which a selector
 	// requiring the label would not, so only non-empty values go into the selector.
 	required := make(map[string]string, len(matchLabels))
 
@@ -288,7 +288,7 @@ func (c *DefaultCompositionClient) compositionsMatching(ctx context.Context, mat
 	var matching []*apiextensionsv1.Composition
 
 	for _, comp := range selected {
-		if c.labelsMatch(comp.GetLabels(), matchLabels) {
+		if LabelsMatch(matchLabels, comp.GetLabels()) {
 			matching = append(matching, comp)
 		}
 	}
@@ -469,6 +469,10 @@ func (c *DefaultCompositionClient) resolveCompositionFromRevisions(
 // from. Only a resource naming its composition resolves a revision: one Crossplane has reconciled always
 // does, because the composite reconciler writes compositionRef. One that selects its composition by label
 // or by type resolves none, so its RevisionName is empty.
+//
+// It applies the order compositionRef, compositionSelector, then the sole Composition of the type. The XRD's
+// enforcedCompositionRef and defaultCompositionRef aren't applied yet. internal/simulate's
+// selectComposition applies the full order to a project's Compositions; keep the two in step.
 func (c *DefaultCompositionClient) FindMatchingComposition(ctx context.Context, res *un.Unstructured) (dtypes.ResolvedComposition, error) {
 	gvk := res.GroupVersionKind()
 	resourceID := fmt.Sprintf("%s/%s", gvk.String(), res.GetName())
@@ -491,10 +495,14 @@ func (c *DefaultCompositionClient) FindMatchingComposition(ctx context.Context, 
 
 	switch {
 	case xrd != nil:
-		targetGVK, err = c.getXRTypeFromXRD(xrd, resourceID)
+		targetGVK, err = XRTypeFromXRD(xrd)
 		if err != nil {
 			return dtypes.ResolvedComposition{}, errors.Wrapf(err, "claim %s requires its XR type to find a composition", resourceID)
 		}
+
+		c.logger.Debug("Claim resource detected - targeting XR type for composition matching",
+			"claim", resourceID,
+			"targetXR", targetGVK.String())
 	default:
 		targetGVK = gvk
 		c.logger.Debug("Resource is not a claim type, looking for XRD for XR",
@@ -525,8 +533,9 @@ func (c *DefaultCompositionClient) FindMatchingComposition(ctx context.Context, 
 	return dtypes.ResolvedComposition{Composition: comp}, err
 }
 
-// getXRTypeFromXRD extracts the XR GroupVersionKind from an XRD.
-func (c *DefaultCompositionClient) getXRTypeFromXRD(xrdForClaim *un.Unstructured, resourceID string) (schema.GroupVersionKind, error) {
+// XRTypeFromXRD returns the composite GroupVersionKind an XRD defines, at its first referenceable
+// version. It fails if the XRD has no group, kind or referenceable version.
+func XRTypeFromXRD(xrdForClaim *un.Unstructured) (schema.GroupVersionKind, error) {
 	// Get the XR type from the XRD
 	xrGroup, found, _ := un.NestedString(xrdForClaim.Object, "spec", "group")
 	xrKind, kindFound, _ := un.NestedString(xrdForClaim.Object, "spec", "names", "kind")
@@ -560,17 +569,11 @@ func (c *DefaultCompositionClient) getXRTypeFromXRD(xrdForClaim *un.Unstructured
 		return schema.GroupVersionKind{}, errors.New("no referenceable version found in XRD")
 	}
 
-	targetGVK := schema.GroupVersionKind{
+	return schema.GroupVersionKind{
 		Group:   xrGroup,
 		Version: xrVersion,
 		Kind:    xrKind,
-	}
-
-	c.logger.Debug("Claim resource detected - targeting XR type for composition matching",
-		"claim", resourceID,
-		"targetXR", targetGVK.String())
-
-	return targetGVK, nil
+	}, nil
 }
 
 // getClaimTypeFromXRD extracts the Claim GroupVersionKind from an XRD if it defines one.
@@ -639,8 +642,10 @@ func (c *DefaultCompositionClient) isCompositionCompatible(comp *apiextensionsv1
 		comp.Spec.CompositeTypeRef.Kind == xrGVK.Kind
 }
 
-// labelsMatch checks if a resource's labels match a selector.
-func (c *DefaultCompositionClient) labelsMatch(labels, selector map[string]string) bool {
+// LabelsMatch reports whether labels carry every selector entry. An empty
+// selector value also matches labels lacking the key, which compositionsMatching
+// relies on.
+func LabelsMatch(selector, labels map[string]string) bool {
 	// A resource matches a selector if all the selector's labels exist in the resource's labels
 	for k, v := range selector {
 		if labels[k] != v {
@@ -669,12 +674,12 @@ func getCrossplaneRefPaths(apiVersion string, path ...string) [][]string {
 	}
 }
 
-// nestedCrossplaneValue reads a value of type T at the v2/v1 crossplane ref paths for the given
+// NestedCrossplaneValue reads a value of type T at the v2/v1 crossplane ref paths for the given
 // field (v2 preferred), returning the first found. accessor is the typed unstructured getter (e.g.
 // un.NestedString, un.NestedMap) and typeName names the expected type for the error message. A
 // non-nil error means the field exists at one of the paths but has the wrong type — callers must
 // treat that as a hard failure, not "not found", so a malformed value is never silently ignored.
-func nestedCrossplaneValue[T any](obj map[string]any, apiVersion, typeName string, accessor func(map[string]any, ...string) (T, bool, error), path ...string) (T, bool, error) {
+func NestedCrossplaneValue[T any](obj map[string]any, apiVersion, typeName string, accessor func(map[string]any, ...string) (T, bool, error), path ...string) (T, bool, error) {
 	for _, p := range getCrossplaneRefPaths(apiVersion, path...) {
 		v, found, err := accessor(obj, p...)
 		if err != nil {
@@ -693,15 +698,15 @@ func nestedCrossplaneValue[T any](obj map[string]any, apiVersion, typeName strin
 }
 
 // nestedCrossplaneString reads a string at the v2/v1 crossplane ref paths for the given field.
-// See nestedCrossplaneValue for semantics.
+// See NestedCrossplaneValue for semantics.
 func nestedCrossplaneString(obj map[string]any, apiVersion string, path ...string) (string, bool, error) {
-	return nestedCrossplaneValue(obj, apiVersion, "a string", un.NestedString, path...)
+	return NestedCrossplaneValue(obj, apiVersion, "a string", un.NestedString, path...)
 }
 
 // nestedCrossplaneMap reads a map at the v2/v1 crossplane ref paths for the given field.
-// See nestedCrossplaneValue for semantics.
+// See NestedCrossplaneValue for semantics.
 func nestedCrossplaneMap(obj map[string]any, apiVersion string, path ...string) (map[string]any, bool, error) {
-	return nestedCrossplaneValue(obj, apiVersion, "an object", un.NestedMap, path...)
+	return NestedCrossplaneValue(obj, apiVersion, "an object", un.NestedMap, path...)
 }
 
 // findByDirectReference attempts to find a composition directly referenced by name, and the revision it

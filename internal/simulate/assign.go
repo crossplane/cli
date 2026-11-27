@@ -1,0 +1,260 @@
+/*
+Copyright 2026 The Crossplane Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package simulate
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+
+	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	ucomposite "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+
+	xpclient "github.com/crossplane/cli/v2/internal/diff/client/crossplane"
+	"github.com/crossplane/cli/v2/internal/diff/result"
+)
+
+// assignInputs checks the --resource-file inputs against the cluster's XRDs
+// (see checkComposites), which also gives namespaced inputs that set none ns,
+// rejects two named inputs of one group, kind, namespace and name, then assigns each to one of comps (see
+// assignComposites) into into, keyed by Composition name.
+func assignInputs(ctx context.Context, defs xpclient.DefinitionClient, ns string, comps, inputs []*un.Unstructured, into map[string][]*un.Unstructured) error {
+	if err := checkComposites(ctx, defs, FlagResourceFile, ns, inputs); err != nil {
+		return err
+	}
+	seen := map[result.CompositeKey]bool{}
+	for _, in := range inputs {
+		// An input with only a generateName names no composite, so it never duplicates one.
+		if in.GetName() == "" {
+			continue
+		}
+		id := result.CompositeKeyOf(in)
+		if seen[id] {
+			return rejectInput(in, FlagResourceFile, rejectDuplicate, "which another --resource-file input also names", "pass each composite once")
+		}
+		seen[id] = true
+	}
+	byComp, err := assignComposites(comps, inputs, func(in *un.Unstructured) (xrdInfo, error) {
+		return clusterXRDInfo(ctx, defs, in)
+	})
+	if err != nil {
+		return err
+	}
+	maps.Copy(into, byComp)
+	return nil
+}
+
+// clusterXRDInfo returns the xrdInfo of the cluster XRD that defines in, a
+// claim or composite resource checkComposites accepted.
+func clusterXRDInfo(ctx context.Context, defs xpclient.DefinitionClient, in *un.Unstructured) (xrdInfo, error) {
+	gvk := in.GroupVersionKind()
+	if xrd, err := defs.GetXRDForClaim(ctx, gvk); err == nil && xrd != nil {
+		xr, err := xpclient.XRTypeFromXRD(xrd)
+		if err != nil {
+			return xrdInfo{}, rejectInput(in, FlagResourceFile, rejectBadXRD, fmt.Sprintf("whose XRD %q gives no composite type: %v", xrd.GetName(), err), "")
+		}
+		return xrdInfo{CompositeGVK: xr, DefaultComposition: defaultComposition(xrd), EnforcedComposition: enforcedComposition(xrd), Legacy: true}, nil
+	}
+	xrd, err := defs.GetXRDForXR(ctx, gvk)
+	if err != nil {
+		return xrdInfo{}, errors.Wrapf(err, "cannot get the XRD for %s", gvk)
+	}
+	return xrdInfo{CompositeGVK: gvk, DefaultComposition: defaultComposition(xrd), EnforcedComposition: enforcedComposition(xrd), Legacy: xpclient.SchemaFromXRD(xrd) == ucomposite.SchemaLegacy}, nil
+}
+
+func defaultComposition(xrd *un.Unstructured) string {
+	name, _, _ := un.NestedString(xrd.Object, "spec", "defaultCompositionRef", "name")
+	return name
+}
+
+func enforcedComposition(xrd *un.Unstructured) string {
+	name, _, _ := un.NestedString(xrd.Object, "spec", "enforcedCompositionRef", "name")
+	return name
+}
+
+// xrdInfo is what assignComposites needs from the XRD that defines an input.
+type xrdInfo struct {
+	// CompositeGVK is the XRD's composite type. For an XR it equals the
+	// input's GVK; for a claim it is the composite the claim makes.
+	CompositeGVK schema.GroupVersionKind
+	// DefaultComposition is spec.defaultCompositionRef.name, if set.
+	DefaultComposition string
+	// EnforcedComposition is spec.enforcedCompositionRef.name, if set.
+	EnforcedComposition string
+	// Legacy is true for a claim or an XR whose XRD is LegacyCluster
+	// scoped, as a v1 XRD is (see xpclient.SchemaFromXRD): its Composition
+	// fields are under spec only, not spec.crossplane.
+	Legacy bool
+}
+
+// assignComposites assigns each input to exactly one of comps (by name) the
+// way Crossplane selects a Composition: the XRD's enforcedCompositionRef,
+// then compositionRef, then
+// compositionSelector, then the XRD's defaultCompositionRef, then the sole
+// Composition whose compositeTypeRef matches. xrdFor returns the XRD details
+// for an input.
+func assignComposites(comps, inputs []*un.Unstructured, xrdFor func(*un.Unstructured) (xrdInfo, error)) (map[string][]*un.Unstructured, error) {
+	out := map[string][]*un.Unstructured{}
+	for _, in := range inputs {
+		xrd, err := xrdFor(in)
+		if err != nil {
+			return nil, err
+		}
+		name, err := selectComposition(comps, in, xrd)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = append(out[name], in)
+	}
+	return out, nil
+}
+
+// selectComposition returns the name of the project Composition in comps that
+// Crossplane would select for in: the XRD's enforcedCompositionRef, then in's
+// compositionRef, its compositionSelector, the XRD's defaultCompositionRef,
+// then the sole Composition of its type. The cluster path,
+// crossplane.DefaultCompositionClient.FindMatchingComposition, applies the same
+// order without the XRD refs; keep the two in step.
+func selectComposition(comps []*un.Unstructured, in *un.Unstructured, xrd xrdInfo) (string, error) {
+	var typed []*un.Unstructured
+	for _, c := range comps {
+		av, _, _ := un.NestedString(c.Object, "spec", "compositeTypeRef", "apiVersion")
+		k, _, _ := un.NestedString(c.Object, "spec", "compositeTypeRef", "kind")
+		if av == xrd.CompositeGVK.GroupVersion().String() && k == xrd.CompositeGVK.Kind {
+			typed = append(typed, c)
+		}
+	}
+	byName := func(name, field string) (string, error) {
+		for _, c := range typed {
+			if c.GetName() == name {
+				return name, nil
+			}
+		}
+		fix := "correct its compositionRef"
+		if xrdField, ok := strings.CutPrefix(field, "XRD "); ok {
+			fix = "correct the XRD's " + xrdField
+		}
+		if len(typed) > 0 {
+			fix += " to one of " + strings.Join(names(typed), ", ")
+		}
+		return "", rejectInput(in, FlagResourceFile, rejectNotInProject, fmt.Sprintf("whose %s %q is not a project Composition composing %s", field, name, xrd.CompositeGVK.Kind), fix)
+	}
+
+	if xrd.EnforcedComposition != "" {
+		return byName(xrd.EnforcedComposition, "XRD enforcedCompositionRef")
+	}
+
+	ref, err := crossplaneField(in, xrd.Legacy, "a string", un.NestedString, "compositionRef", "name")
+	if err != nil {
+		return "", err
+	}
+	if ref != "" {
+		return byName(ref, "compositionRef")
+	}
+
+	// A selector that is present, even with no labels, is used and the XRD
+	// default is not, as in Crossplane.
+	selector, err := crossplaneField(in, xrd.Legacy, "an object", un.NestedMap, "compositionSelector")
+	if err != nil {
+		return "", err
+	}
+	if selector != nil {
+		// Read from the selector found, so its labels come from the same path.
+		sel, _, err := un.NestedStringMap(selector, "matchLabels")
+		if err != nil {
+			return "", rejectInput(in, FlagResourceFile, rejectMalformed, "whose "+crossplanePath(xrd.Legacy, "compositionSelector", "matchLabels")+" is not a map of strings", "correct it in the file")
+		}
+		var match []*un.Unstructured
+		for _, c := range typed {
+			if labelsSelect(sel, c.GetLabels()) {
+				match = append(match, c)
+			}
+		}
+		return sole(in, match, "whose compositionSelector matches no project Composition composing "+xrd.CompositeGVK.Kind)
+	}
+
+	if xrd.DefaultComposition != "" {
+		return byName(xrd.DefaultComposition, "XRD defaultCompositionRef")
+	}
+
+	return sole(in, typed, "but no project Composition composes its type "+xrd.CompositeGVK.String())
+}
+
+// labelsSelect reports whether every label in sel is on labels with the same
+// value, as a Kubernetes equality selector requires: a key with an empty value
+// matches only a label that is present and empty. The cluster path's
+// xpclient.LabelsMatch also matches an absent label.
+func labelsSelect(sel, labels map[string]string) bool {
+	for k, v := range sel {
+		if got, ok := labels[k]; !ok || got != v {
+			return false
+		}
+	}
+	return true
+}
+
+// sole returns the name of the only Composition in match, or an error naming
+// the input: none, the reason; several, the candidates.
+func sole(in *un.Unstructured, match []*un.Unstructured, none string) (string, error) {
+	switch len(match) {
+	case 0:
+		return "", rejectInput(in, FlagResourceFile, rejectNoMatch, none, "")
+	case 1:
+		return match[0].GetName(), nil
+	}
+	return "", rejectInput(in, FlagResourceFile, rejectAmbiguous, "which matches several project Compositions ("+strings.Join(names(match), ", ")+")", "set its compositionRef to pick one")
+}
+
+// names returns the sorted names of comps.
+func names(comps []*un.Unstructured) []string {
+	out := make([]string, 0, len(comps))
+	for _, c := range comps {
+		out = append(out, c.GetName())
+	}
+	slices.Sort(out)
+	return out
+}
+
+// crossplaneField reads field at spec.<path> if legacy, otherwise at
+// spec.crossplane.<path> or, if not set there, spec.<path>, as the engine does.
+// A value that is not typeName fails, naming the field to correct.
+func crossplaneField[T any](in *un.Unstructured, legacy bool, typeName string, get func(map[string]any, ...string) (T, bool, error), path ...string) (T, error) {
+	apiVersion := xpclient.CrossplaneAPIExtGroupV2
+	if legacy {
+		apiVersion = xpclient.CrossplaneAPIExtGroupV1
+	}
+	v, _, err := xpclient.NestedCrossplaneValue(in.Object, apiVersion, typeName, get, path...)
+	if err != nil {
+		return v, rejectInput(in, FlagResourceFile, rejectMalformed, fmt.Sprintf("whose %s is not %s", crossplanePath(legacy, path...), typeName), "correct it in the file")
+	}
+	return v, nil
+}
+
+// crossplanePath is where a Crossplane field at path is read from in the YAML: spec.crossplane.<path>
+// or spec.<path>, or only spec.<path> when legacy.
+func crossplanePath(legacy bool, path ...string) string {
+	field := strings.Join(path, ".")
+	if legacy {
+		return "spec." + field
+	}
+	return "spec.crossplane." + field + " or spec." + field
+}

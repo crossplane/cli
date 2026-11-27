@@ -51,16 +51,6 @@ type DiffProcessor interface {
 	// error, so the successful inputs' results and the failures' errors can still be rendered.
 	PerformDiff(ctx context.Context, resources []*un.Unstructured, compositionProvider types.CompositionProvider) (*dt.XRReport, error)
 
-	// DiffSingleResource processes a single resource and returns its diffs and what its render
-	// produced: the unchanged renderings its diffs leave out (see
-	// DefaultDiffCalculator.CalculateNonRemovalDiffs), which only the render-overlap check consumes,
-	// and the live objects health is read from.
-	DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, types.RenderedResources, error)
-
-	// ResolveComposite returns the composite DiffSingleResource hands its composition provider for res:
-	// the defaulted effective composite (see CompositeResolver), which for a claim is its backing XR.
-	ResolveComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
-
 	// Initialize prepares the processor's providers before the first diff.
 	Initialize(ctx context.Context) error
 
@@ -69,7 +59,12 @@ type DiffProcessor interface {
 	Cleaner
 }
 
-// DefaultDiffProcessor implements DiffProcessor with modular components.
+var (
+	_ DiffProcessor   = (*DefaultDiffProcessor)(nil)
+	_ CompositeDiffer = (*DefaultDiffProcessor)(nil)
+)
+
+// DefaultDiffProcessor implements DiffProcessor and CompositeDiffer with modular components.
 type DefaultDiffProcessor struct {
 	credentialClient     xp.CredentialClient
 	defClient            xp.DefinitionClient
@@ -90,7 +85,7 @@ type DefaultDiffProcessor struct {
 }
 
 // NewDiffProcessor creates a new DefaultDiffProcessor with the provided options.
-func NewDiffProcessor(k8cs k8.Clients, xpcs xp.Clients, opts ...ProcessorOption) DiffProcessor {
+func NewDiffProcessor(k8cs k8.Clients, xpcs xp.Clients, opts ...ProcessorOption) *DefaultDiffProcessor {
 	// Create default configuration
 	// Note: The processor does no presentation; the caller renders the report PerformDiff returns.
 	// Engine limits default here so a caller that doesn't go through the CLI gets the same limits.
@@ -384,6 +379,12 @@ func (p *DefaultDiffProcessor) ResolveComposite(ctx context.Context, res *un.Uns
 	_, defaultedXR, err := p.resolveComposite(ctx, authoredXR, nil, resourceID)
 
 	return defaultedXR, err
+}
+
+// ClusterComposite returns the cluster's copy of res, or nil when it has none; see DiffProcessor.
+func (p *DefaultDiffProcessor) ClusterComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error) {
+	current, _, err := p.resourceManager.FetchCurrentObject(ctx, nil, res)
+	return current, err
 }
 
 // resolveComposite returns the effective composite of authoredXR and its defaulted effective XR, from

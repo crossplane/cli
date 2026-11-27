@@ -253,17 +253,18 @@ func (m *MockResourceInterface) ApplyStatus(_ context.Context, _ string, _ *un.U
 
 // region MockDiffProcessor
 
-// MockDiffProcessor implements the DiffProcessor interface for testing.
+// MockDiffProcessor implements the DiffProcessor and CompositeDiffer interfaces for testing.
 type MockDiffProcessor struct {
 	// Function fields for mocking behavior
 	InitializeFn         func(ctx context.Context) error
 	PerformDiffFn        func(ctx context.Context, resources []*un.Unstructured, compositionProvider types.CompositionProvider) (*dt.XRReport, error)
 	DiffSingleResourceFn func(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, types.RenderedResources, error)
 	ResolveCompositeFn   func(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
+	ClusterCompositeFn   func(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error)
 	CleanupFn            func(ctx context.Context) error
 }
 
-// ResolveComposite implements the DiffProcessor.ResolveComposite method. Unset, res is its own
+// ResolveComposite implements the CompositeDiffer.ResolveComposite method. Unset, res is its own
 // effective composite.
 func (m *MockDiffProcessor) ResolveComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error) {
 	if m.ResolveCompositeFn != nil {
@@ -271,6 +272,16 @@ func (m *MockDiffProcessor) ResolveComposite(ctx context.Context, res *un.Unstru
 	}
 
 	return res, nil
+}
+
+// ClusterComposite implements the CompositeDiffer.ClusterComposite method. Unset, the cluster has no copy
+// of res.
+func (m *MockDiffProcessor) ClusterComposite(ctx context.Context, res *un.Unstructured) (*un.Unstructured, error) {
+	if m.ClusterCompositeFn != nil {
+		return m.ClusterCompositeFn(ctx, res)
+	}
+
+	return nil, nil
 }
 
 // Initialize implements the DiffProcessor interface.
@@ -291,7 +302,7 @@ func (m *MockDiffProcessor) PerformDiff(ctx context.Context, resources []*un.Uns
 	return &dt.XRReport{}, nil
 }
 
-// DiffSingleResource implements the DiffProcessor.DiffSingleResource method.
+// DiffSingleResource implements the CompositeDiffer.DiffSingleResource method.
 func (m *MockDiffProcessor) DiffSingleResource(ctx context.Context, res *un.Unstructured, compositionProvider types.CompositionProvider) (map[string]*dt.ResourceDiff, types.RenderedResources, error) {
 	if m.DiffSingleResourceFn != nil {
 		return m.DiffSingleResourceFn(ctx, res, compositionProvider)

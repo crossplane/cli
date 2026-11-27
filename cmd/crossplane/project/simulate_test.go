@@ -18,6 +18,7 @@ package project
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
@@ -86,9 +88,10 @@ func TestSimulateFlags(t *testing.T) {
 				"--include-pinned", "--max-iterations", "3", "--timeout", "2m",
 				"--max-concurrency", "2", "-o", "json", "--crossplane-version", "v2.3.4",
 				"--as", "jane", "--as-group", "admins",
+				"--resource-file", "a.yaml,b", "--resource-file", "-",
 			},
 			want: want{cmd: &SimulateCmd{
-				MaxConcurrency: 2, ProjectFile: "p.yaml",
+				MaxConcurrency: 2, ProjectFile: "p.yaml", ResourceFile: []string{"a.yaml", "b", "-"},
 				Context:           "staging",
 				MaxIterations:     3,
 				Timeout:           2 * time.Minute,
@@ -374,6 +377,82 @@ func TestSimulateFlags(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.want.cmd, got, cmpopts.IgnoreFields(simulate.Flags{}, "Impersonation"), cmpopts.IgnoreUnexported(simulate.Flags{}, simulate.CompositionFlags{})); diff != "" {
 				t.Errorf("\n%s\nParse(%v): -want, +got:\n%s", tc.reason, tc.args, diff)
+			}
+		})
+	}
+}
+
+func TestSimulateLoadResourceFiles(t *testing.T) {
+	type args struct {
+		yaml  string
+		stdin bool
+	}
+	type want struct {
+		names    []string
+		rejected *simulate.InputError
+	}
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"Composite": {
+			reason: "A candidate composite resource or claim is loaded.",
+			args:   args{yaml: "apiVersion: example.org/v1\nkind: Bucket\nmetadata:\n  name: b\n"},
+			want:   want{names: []string{"b"}},
+		},
+		"Stdin": {
+			reason: "- reads the inputs from standard input.",
+			args:   args{yaml: "apiVersion: example.org/v1\nkind: Bucket\nmetadata:\n  name: s\n", stdin: true},
+			want:   want{names: []string{"s"}},
+		},
+		"Composition": {
+			reason: "A Composition is rejected; the project supplies them.",
+			args:   args{yaml: "apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: c\n"},
+			want:   want{rejected: &simulate.InputError{Flag: simulate.FlagResourceFile, GVK: schema.GroupVersionKind{Group: "apiextensions.crossplane.io", Version: "v1", Kind: "Composition"}, Name: "c"}},
+		},
+		"ProjectFile": {
+			reason: "A project file is rejected.",
+			args:   args{yaml: "apiVersion: dev.crossplane.io/v1alpha1\nkind: Project\nmetadata:\n  name: p\n"},
+			want:   want{rejected: &simulate.InputError{Flag: simulate.FlagResourceFile, GVK: schema.GroupVersionKind{Group: "dev.crossplane.io", Version: "v1alpha1", Kind: "Project"}, Name: "p"}},
+		},
+		"List": {
+			reason: "A List is rejected with the hint to split it.",
+			args:   args{yaml: "apiVersion: v1\nkind: List\nmetadata:\n  name: l\nitems: []\n"},
+			want:   want{rejected: &simulate.InputError{Flag: simulate.FlagResourceFile, GVK: schema.GroupVersionKind{Group: "", Version: "v1", Kind: "List"}, Name: "l"}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "in.yaml")
+			if err := os.WriteFile(path, []byte(tc.args.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.args.stdin {
+				f, err := os.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer f.Close()
+				old := os.Stdin
+				os.Stdin = f
+				t.Cleanup(func() { os.Stdin = old })
+				path = "-"
+			}
+			got, err := (&SimulateCmd{ResourceFile: []string{path}}).loadResourceFiles()
+			var gotRejected *simulate.InputError
+			if err != nil && !errors.As(err, &gotRejected) {
+				t.Fatalf("\n%s\nloadResourceFiles(): unexpected error: %v", tc.reason, err)
+			}
+			if diff := cmp.Diff(tc.want.rejected, gotRejected, cmpopts.IgnoreUnexported(simulate.InputError{})); diff != "" {
+				t.Errorf("\n%s\nloadResourceFiles(): -want rejected input, +got rejected input:\n%s", tc.reason, diff)
+			}
+			names := make([]string, 0, len(got))
+			for _, r := range got {
+				names = append(names, r.GetName())
+			}
+			if diff := cmp.Diff(tc.want.names, names, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nloadResourceFiles(): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

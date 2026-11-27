@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	un "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/crossplane/cli/v2/internal/health"
 )
@@ -390,6 +391,20 @@ func (d *ResourceDiff) GetDiffKey() string {
 // Format: apiVersion/kind/namespace/name (namespace may be empty for cluster-scoped resources).
 func MakeDiffKey(apiVersion, kind, namespace, name string) string {
 	return fmt.Sprintf("%s/%s/%s/%s", apiVersion, kind, namespace, name)
+}
+
+// CompositeKey identifies a composite by group, kind, namespace and name. It omits the version on
+// purpose: a composite supplied at one version is the same object as the live one at another, and
+// replaces it. Unlike MakeDiffKey, it does not tell versions apart.
+type CompositeKey struct {
+	schema.GroupKind
+	k8stypes.NamespacedName
+}
+
+// CompositeKeyOf returns u's CompositeKey.
+func CompositeKeyOf(u *un.Unstructured) CompositeKey {
+	gvk := u.GroupVersionKind()
+	return CompositeKey{Group: gvk.Group, Kind: gvk.Kind, Namespace: u.GetNamespace(), Name: u.GetName()}
 }
 
 // MakeDiffKeyFromResource creates a unique key for a resource diff from an Unstructured resource.

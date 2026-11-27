@@ -844,6 +844,13 @@ func (b *MockCompositionClientBuilder) WithCompositesByRef(matched ...*un.Unstru
 	return b
 }
 
+// WithFindComposites sets the FindComposites behavior, for tests that need both modes or a
+// per-Composition answer.
+func (b *MockCompositionClientBuilder) WithFindComposites(fn func(context.Context, *un.Unstructured, dtypes.FindCompositesOptions) ([]*un.Unstructured, error)) *MockCompositionClientBuilder {
+	b.mock.FindCompositesFn = fn
+	return b
+}
+
 // WithNoMatchingComposites sets FindComposites to return an empty matched set regardless of mode
 // (default-discovery or refs). Use for "nothing matches anywhere" tests where neither default nor
 // refs lookup should produce results. Mirrors WithNoMatchingComposition for the FindMatchingComposition
@@ -913,15 +920,17 @@ func (b *MockFunctionClientBuilder) Build() *MockFunctionClient {
 
 // MockDefinitionClientBuilder helps build crossplane.DefinitionClient mocks.
 type MockDefinitionClientBuilder struct {
-	mock   *MockDefinitionClient
-	xrdMap map[schema.GroupVersionKind]*un.Unstructured
+	mock        *MockDefinitionClient
+	xrdMap      map[schema.GroupVersionKind]*un.Unstructured
+	claimXRDMap map[schema.GroupVersionKind]*un.Unstructured
 }
 
 // NewMockDefinitionClient creates a new MockDefinitionClientBuilder.
 func NewMockDefinitionClient() *MockDefinitionClientBuilder {
 	return &MockDefinitionClientBuilder{
-		mock:   &MockDefinitionClient{},
-		xrdMap: make(map[schema.GroupVersionKind]*un.Unstructured),
+		mock:        &MockDefinitionClient{},
+		xrdMap:      make(map[schema.GroupVersionKind]*un.Unstructured),
+		claimXRDMap: make(map[schema.GroupVersionKind]*un.Unstructured),
 	}
 }
 
@@ -974,6 +983,14 @@ func (b *MockDefinitionClientBuilder) WithXRDForXR(unstructured *un.Unstructured
 // When Build() is called, GetXRDForXR will use the accumulated XRD mappings.
 func (b *MockDefinitionClientBuilder) WithXRDForGVK(gvk schema.GroupVersionKind, xrd *un.Unstructured) *MockDefinitionClientBuilder {
 	b.xrdMap[gvk] = xrd
+	return b
+}
+
+// WithXRDForClaimGVK adds an XRD to be returned for a specific claim GVK.
+// This method can be called multiple times to add different XRDs for different GVKs.
+// When Build() is called, GetXRDForClaim will use the accumulated XRD mappings.
+func (b *MockDefinitionClientBuilder) WithXRDForClaimGVK(gvk schema.GroupVersionKind, xrd *un.Unstructured) *MockDefinitionClientBuilder {
+	b.claimXRDMap[gvk] = xrd
 	return b
 }
 
@@ -1049,8 +1066,8 @@ func (b *MockDefinitionClientBuilder) WithXRDForXRError(err error) *MockDefiniti
 }
 
 // Build returns the built mock.
-// If WithXRDForGVK was used to add XRD mappings, this will configure GetXRDForXR
-// to use those mappings.
+// If WithXRDForGVK or WithXRDForClaimGVK was used to add XRD mappings, this will
+// configure GetXRDForXR or GetXRDForClaim respectively to use those mappings.
 func (b *MockDefinitionClientBuilder) Build() *MockDefinitionClient {
 	// If there are XRDs in the map and GetXRDForXR hasn't been explicitly set,
 	// configure it to use the map
@@ -1063,6 +1080,18 @@ func (b *MockDefinitionClientBuilder) Build() *MockDefinitionClient {
 			}
 
 			return nil, errors.Errorf("no XRD found that defines XR type %s", gvk.String())
+		}
+	}
+
+	// Likewise for claim XRDs and GetXRDForClaim
+	if len(b.claimXRDMap) > 0 && b.mock.GetXRDForClaimFn == nil {
+		claimXRDMap := b.claimXRDMap
+		b.mock.GetXRDForClaimFn = func(_ context.Context, gvk schema.GroupVersionKind) (*un.Unstructured, error) {
+			if xrd, found := claimXRDMap[gvk]; found {
+				return xrd, nil
+			}
+
+			return nil, errors.Errorf("no XRD found that defines claim type %s", gvk.String())
 		}
 	}
 
@@ -1676,6 +1705,30 @@ func NewXRD(name, group, kind string) *XRDBuilder {
 			},
 		},
 	}
+}
+
+// WithAPIVersion sets the apiVersion of the XRD, e.g. apiextensions.crossplane.io/v2.
+func (b *XRDBuilder) WithAPIVersion(apiVersion string) *XRDBuilder {
+	b.xrd.APIVersion = apiVersion
+	return b
+}
+
+// WithScope sets the scope of the XRD's composite resource.
+func (b *XRDBuilder) WithScope(scope xpextv1.CompositeResourceScope) *XRDBuilder {
+	b.xrd.Spec.Scope = &scope
+	return b
+}
+
+// WithDefaultCompositionRef sets the XRD's default Composition.
+func (b *XRDBuilder) WithDefaultCompositionRef(name string) *XRDBuilder {
+	b.xrd.Spec.DefaultCompositionRef = &xpextv1.CompositionReference{Name: name}
+	return b
+}
+
+// WithEnforcedCompositionRef sets the XRD's enforced Composition.
+func (b *XRDBuilder) WithEnforcedCompositionRef(name string) *XRDBuilder {
+	b.xrd.Spec.EnforcedCompositionRef = &xpextv1.CompositionReference{Name: name}
+	return b
 }
 
 // WithPlural sets the plural name for the XRD.

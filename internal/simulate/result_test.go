@@ -113,8 +113,10 @@ func TestRenderPlanPinnedHeader(t *testing.T) {
 func TestRenderPlanCompositions(t *testing.T) {
 	comp := plan.ResourceRef{APIVersion: "apiextensions.crossplane.io/v1", Kind: "Composition", Name: "net"}
 	same := plan.ResourceRef{APIVersion: comp.APIVersion, Kind: comp.Kind, Name: "same"}
+	fed := plan.ResourceRef{APIVersion: comp.APIVersion, Kind: comp.Kind, Name: "fed"}
 	unknown := plan.ResourceRef{APIVersion: comp.APIVersion, Kind: comp.Kind, Name: "unknown"}
 	xr := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "prod-network"}
+	newXR := plan.ResourceRef{APIVersion: "example.org/v1", Kind: "XNetwork", Name: "new-network"}
 	r := Result{
 		Summary: plan.Summary{Update: 2, NoOp: 2},
 		Plans: []*plan.ResourcePlan{
@@ -123,6 +125,7 @@ func TestRenderPlanCompositions(t *testing.T) {
 				Changes: []plan.FieldChange{{Path: "spec.mode", Actual: &plan.Value{Value: "Resources"}, Planned: &plan.Value{Value: "Pipeline"}}},
 			},
 			{APIVersion: same.APIVersion, Kind: same.Kind, Name: same.Name, Action: plan.ActionNoOp},
+			{APIVersion: fed.APIVersion, Kind: fed.Kind, Name: fed.Name, Action: plan.ActionNoOp},
 			{APIVersion: unknown.APIVersion, Kind: unknown.Kind, Name: unknown.Name, Action: plan.ActionNoOp},
 			{
 				APIVersion: "ec2.aws.upbound.io/v1beta1", Kind: "VPC", Name: "prod-network",
@@ -130,10 +133,15 @@ func TestRenderPlanCompositions(t *testing.T) {
 				Changes: []plan.FieldChange{{Path: "spec.forProvider.region", Actual: &plan.Value{Value: "us-west-1"}, Planned: &plan.Value{Value: "us-east-1"}}},
 			},
 		},
-		Composites: []CompositeResult{{Ref: xr, Status: CompositeChanged}},
+		Composites: []CompositeResult{
+			{Ref: xr, Status: CompositeChanged},
+			// A supplied composite rendered under a skipped Composition.
+			{Ref: newXR, Status: CompositeUnchanged, Supplied: true, Composition: &fed},
+		},
 		Compositions: []CompositionResult{
 			{Ref: comp, RevisionImpact: &RevisionImpact{ChangeScope: "spec", CreatesRevision: true, RepointedComposites: 1}},
 			{Ref: same, RevisionImpact: &RevisionImpact{ChangeScope: "none"}, ImpactAnalysisSkipped: true},
+			{Ref: fed, RevisionImpact: &RevisionImpact{ChangeScope: "none"}, ImpactAnalysisSkipped: true},
 			// No determined impact prints no line.
 			{Ref: unknown},
 		},
@@ -147,6 +155,9 @@ func TestRenderPlanCompositions(t *testing.T) {
 [=] Composition.apiextensions.crossplane.io same (no-op)
     Applying this creates no new CompositionRevision. Impact analysis skipped.
 
+[=] Composition.apiextensions.crossplane.io fed (no-op)
+    Applying this creates no new CompositionRevision. Impact analysis skipped for the cluster's composites; 1 composite from --resource-file rendered.
+
 [=] Composition.apiextensions.crossplane.io unknown (no-op)
 
 XR: XNetwork.example.org prod-network
@@ -154,6 +165,8 @@ XR: XNetwork.example.org prod-network
       spec:
         forProvider:
           ~ region: "us-west-1" -> "us-east-1"
+
+XR: XNetwork.example.org new-network (from --resource-file)
 
 Plan: 0 to add, 2 to change, 0 to destroy.
 

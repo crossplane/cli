@@ -169,6 +169,13 @@ type ProcessorConfig struct {
 	// of its diffs are reported. Nil, the default, runs nothing.
 	AfterXRDiff func(ctx context.Context, diffs map[string]*dt.ResourceDiff) error
 
+	// SuppliedComposites holds composites (XRs or claims) the caller supplies, keyed by the name of
+	// the Composition they render against. DiffComposition renders them alongside the composites it
+	// discovers (or the --resource scoped set) for that Composition. A supplied composite with the
+	// same group, kind, namespace and name as a discovered one replaces it, so it renders once and
+	// diffs against the live object. Nil, the default, adds none.
+	SuppliedComposites map[string][]*un.Unstructured
+
 	// FunctionCredentials holds Secret credentials to pass to Functions during rendering
 	FunctionCredentials []corev1.Secret
 
@@ -290,6 +297,14 @@ func WithChangedFunctions(names ...string) ProcessorOption {
 		}
 
 		config.ChangedFunctions.Insert(names...)
+	}
+}
+
+// WithSuppliedComposites sets the composites to render per Composition name (see
+// ProcessorConfig.SuppliedComposites).
+func WithSuppliedComposites(byComposition map[string][]*un.Unstructured) ProcessorOption {
+	return func(config *ProcessorConfig) {
+		config.SuppliedComposites = byComposition
 	}
 }
 
@@ -573,6 +588,17 @@ func (c *ProcessorConfig) afterXR(ctx, xrCtx context.Context, diffs map[string]*
 	// unrelated error returned just after the budget expired is also labelled a timeout.
 	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(xrCtx), ErrXRTimedOut) {
 		return errors.Wrapf(err, "timed out after %s", c.XRTimeout)
+	}
+
+	return err
+}
+
+// timedOut returns err, from cluster I/O for one composite under xrCtx, a child of ctx, as a timeout
+// matching ErrXRTimedOut when the composite ran out of XRTimeout, as afterXR names a render's: a
+// cancelled read alone says only "context canceled".
+func (c *ProcessorConfig) timedOut(ctx, xrCtx context.Context, err error) error {
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(xrCtx), ErrXRTimedOut) {
+		return errors.Errorf("%w after %s: %w", ErrXRTimedOut, c.XRTimeout, err)
 	}
 
 	return err

@@ -102,7 +102,7 @@ func newDocumentLoader(source string, stdin io.Reader) (*documentLoader, error) 
 	}
 	fi, err := os.Stat(source)
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot stat input source")
+		return nil, errors.Wrap(err, "cannot access input source")
 	}
 	return &documentLoader{source: source, dir: fi.IsDir()}, nil
 }

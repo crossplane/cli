@@ -76,7 +76,7 @@ func newSourceLoader(input string, skipPipelineInputs bool) (Loader, error) {
 
 	fi, err := os.Stat(input)
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot stat input source")
+		return nil, errors.Wrap(err, "cannot access input source")
 	}
 
 	if fi.IsDir() {

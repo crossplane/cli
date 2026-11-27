@@ -318,6 +318,10 @@ func (g goGenerator) GenerateFromCRD(_ context.Context, fromFS afero.Fs, _ runne
 		if err != nil {
 			return nil, err
 		}
+		code, err = addManagedFieldsMarshalers(code)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to generate Go model MarshalJSON methods")
+		}
 		code, err = applyAccessors(code, g.accessors)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to generate Go model accessors")
@@ -407,6 +411,10 @@ func (g goGenerator) generateSharedK8sPackage(schemaFS afero.Fs, pkg string, sch
 	code, err = applyRuntimeObjects(code, g.runtimeObjects)
 	if err != nil {
 		return err
+	}
+	code, err = addManagedFieldsMarshalers(code)
+	if err != nil {
+		return errors.Wrap(err, "failed to generate Go model MarshalJSON methods")
 	}
 	code, err = applyAccessors(code, g.accessors)
 	if err != nil {
@@ -1298,6 +1306,10 @@ func generateK8sPackageCode(pkg string, schemas map[string]*spec.Schema, schemaF
 	if err != nil {
 		return err
 	}
+	code, err = addManagedFieldsMarshalers(code)
+	if err != nil {
+		return errors.Wrap(err, "failed to generate Go model MarshalJSON methods")
+	}
 	code, err = applyAccessors(code, g.accessors)
 	if err != nil {
 		return errors.Wrap(err, "failed to generate Go model accessors")
@@ -1472,6 +1484,10 @@ func generateGVKGroupCode(gvkKey string, schemas map[string]*spec.Schema, openAP
 	code, err = applyRuntimeObjects(code, g.runtimeObjects)
 	if err != nil {
 		return err
+	}
+	code, err = addManagedFieldsMarshalers(code)
+	if err != nil {
+		return errors.Wrap(err, "failed to generate Go model MarshalJSON methods")
 	}
 	code, err = applyAccessors(code, g.accessors)
 	if err != nil {

@@ -36,6 +36,7 @@ import (
 
 	"github.com/crossplane/cli/v2/pkg/resource"
 	"github.com/crossplane/cli/v2/pkg/resource/xpkg"
+	"github.com/crossplane/cli/v2/pkg/symbols"
 )
 
 const (
@@ -232,9 +233,9 @@ func (p *DefaultPrinter) printResourceTree(tw *tabwriter.Writer, root *resource.
 		// pointing at the resource they relate to instead of a tree line.
 		// Their own children are real children, e.g. an Operation created
 		// by a WatchOperation, so they get regular tree lines.
-		line := "─"
+		line := symbols.TreeLineDash
 		if item.resource.Relation != "" && !item.related {
-			line = "◀"
+			line = symbols.TreeLineArrow
 		}
 
 		childPrefix := item.prefix // Inherited prefix for all the children of the current node
@@ -243,13 +244,13 @@ func (p *DefaultPrinter) printResourceTree(tw *tabwriter.Writer, root *resource.
 			// We don't need a prefix for the root, nor a custom
 			// prefix for its children
 		case item.isLast:
-			name.WriteString(item.prefix + "└" + line + " ")
+			name.WriteString(item.prefix + symbols.TreeCorner + line + " ")
 
 			childPrefix += "   "
 		default:
-			name.WriteString(item.prefix + "├" + line + " ")
+			name.WriteString(item.prefix + symbols.TreeBranch + line + " ")
 
-			childPrefix += "│  "
+			childPrefix += symbols.TreePipe
 		}
 
 		fmt.Fprintf(&name, "%s/%s", item.resource.Unstructured.GetKind(), item.resource.Unstructured.GetName())

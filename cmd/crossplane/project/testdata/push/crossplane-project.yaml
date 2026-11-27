@@ -1,0 +1,6 @@
+apiVersion: dev.crossplane.io/v1alpha1
+kind: Project
+metadata:
+  name: demo
+spec:
+  repository: REPO

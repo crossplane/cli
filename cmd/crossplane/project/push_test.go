@@ -18,8 +18,9 @@ package project
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,13 +29,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/registry"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/random"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 
+	"github.com/crossplane/cli/v2/internal/project"
 	"github.com/crossplane/cli/v2/internal/terminal"
+	"github.com/crossplane/cli/v2/internal/testutils/xpkgtest"
 )
 
 // stalledRegistry returns the host of a server that accepts every request and
@@ -151,5 +162,215 @@ func writeConfigurationPackage(t *testing.T, path, repo string) {
 	}
 	if err := tarball.WriteToFile(path, tag, img); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// openErr returns the error os.Open gives for a missing path, so expected
+// errors carry the platform's own message.
+func openErr(path string) error {
+	_, err := os.Open(path)
+	return err
+}
+
+func TestPushCmdRun(t *testing.T) {
+	// Use an empty Docker config so the default keychain doesn't consult the
+	// host's credential helpers.
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+
+	srv := httptest.NewServer(registry.New(registry.Logger(log.New(io.Discard, "", 0))))
+	t.Cleanup(srv.Close)
+	// go-containerregistry talks plain HTTP to loopback registries.
+	host := strings.TrimPrefix(srv.URL, "http://")
+
+	type args struct {
+		// tags written into the package file, relative to the repository.
+		tags        []string
+		repository  string
+		packageFile string
+		tag         string
+	}
+	type want struct {
+		// refs that must exist in the registry after the push, mapped to
+		// whether each is an index.
+		refs map[string]bool
+		// manifests is the number of manifests each pushed index must hold.
+		manifests map[string]int
+		// err builds the expected error from the per-test directory.
+		err func(dir string) error
+	}
+
+	_, errBadRepo := name.NewRepository("Not A Repo")
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"ConfigurationAndFunction": {
+			reason: "The configuration and its embedded function should be pushed from <output-dir>/<name>.xpkg under the requested tag.",
+			args: args{
+				tags: []string{"REPO:" + project.ConfigurationTag, "REPO_fn:amd64"},
+				tag:  "v1.0.0",
+			},
+			want: want{
+				refs:      map[string]bool{"REPO:v1.0.0": false, "REPO_fn:v1.0.0": true},
+				manifests: map[string]int{"REPO_fn:v1.0.0": 1},
+			},
+		},
+		"RepositoryOverride": {
+			reason: "--repository should replace the project's repository, and an explicit package file path should be read.",
+			args: args{
+				tags:        []string{"REPO:" + project.ConfigurationTag},
+				repository:  "REPO",
+				packageFile: "custom.xpkg",
+				tag:         "v2.0.0",
+			},
+			want: want{refs: map[string]bool{"REPO:v2.0.0": false}},
+		},
+		"MissingConfiguration": {
+			reason: "A package file without a configuration image should fail to push.",
+			args:   args{tags: []string{"REPO_fn:amd64"}, tag: "v1.0.0"},
+			want:   want{err: func(string) error { return errors.New("failed to find configuration image") }},
+		},
+		"InvalidRepository": {
+			reason: "An invalid --repository should be rejected.",
+			args:   args{tags: []string{"REPO:" + project.ConfigurationTag}, repository: "Not A Repo"},
+			want:   want{err: func(string) error { return errors.Wrap(errBadRepo, "failed to parse repository") }},
+		},
+		"MissingPackageFile": {
+			reason: "A missing package file should fail to load.",
+			want: want{err: func(dir string) error {
+				return errors.Wrap(openErr(filepath.Join(dir, "_output", "demo.xpkg")), "failed to read package file manifest")
+			}},
+		},
+	}
+
+	for caseName, tc := range cases {
+		t.Run(caseName, func(t *testing.T) {
+			repo := host + "/unittest/" + strings.ToLower(caseName)
+			expand := func(s string) string { return strings.ReplaceAll(s, "REPO", repo) }
+
+			dir := t.TempDir()
+			projRepo := repo
+			if tc.args.repository != "" {
+				// The project file points elsewhere; the flag must win.
+				projRepo = "xpkg.example.org/wrong/repo"
+			}
+			proj, err := os.ReadFile("testdata/push/crossplane-project.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			proj = []byte(strings.ReplaceAll(string(proj), "REPO", projRepo))
+			if err := os.WriteFile(filepath.Join(dir, "crossplane-project.yaml"), proj, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			pkgPath := filepath.Join(dir, "_output", "demo.xpkg")
+			if tc.args.packageFile != "" {
+				pkgPath = filepath.Join(dir, tc.args.packageFile)
+			}
+			if len(tc.args.tags) > 0 {
+				refs := make(map[name.Reference]v1.Image, len(tc.args.tags))
+				for _, s := range tc.args.tags {
+					img := xpkgtest.Image(t, xpkgtest.WithPackageLabel())
+					ref, err := name.ParseReference(expand(s))
+					if err != nil {
+						t.Fatal(err)
+					}
+					refs[ref] = img
+				}
+				if err := os.MkdirAll(filepath.Dir(pkgPath), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := tarball.MultiRefWriteToFile(pkgPath, refs); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			c := &PushCmd{
+				ProjectFile:    filepath.Join(dir, "crossplane-project.yaml"),
+				OutputDir:      "_output",
+				Tag:            tc.args.tag,
+				MaxConcurrency: 2,
+			}
+			if tc.args.repository != "" {
+				c.Repository = expand(tc.args.repository)
+			}
+			if tc.args.packageFile != "" {
+				c.PackageFile = pkgPath
+			}
+			if err := c.AfterApply(); err != nil {
+				t.Fatal(err)
+			}
+
+			err = c.Run(t.Context(), logging.NewNopLogger(), terminal.NewNopSpinnerPrinter())
+			var wantErr error
+			if tc.want.err != nil {
+				wantErr = tc.want.err(dir)
+			}
+			if diff := cmp.Diff(wantErr, err, test.EquateErrors()); diff != "" {
+				t.Fatalf("\n%s\nRun(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+			if wantErr != nil {
+				return
+			}
+
+			got := make(map[string]bool, len(tc.want.refs))
+			gotManifests := map[string]int{}
+			for r := range tc.want.refs {
+				ref, err := name.ParseReference(expand(r))
+				if err != nil {
+					t.Fatal(err)
+				}
+				desc, err := remote.Get(ref)
+				if err != nil {
+					continue
+				}
+				got[r] = desc.MediaType.IsIndex()
+
+				// Every pushed image should carry its xpkg label as a layer
+				// annotation.
+				imgs := []v1.Image{}
+				if got[r] {
+					idx, err := desc.ImageIndex()
+					if err != nil {
+						t.Fatal(err)
+					}
+					im, err := idx.IndexManifest()
+					if err != nil {
+						t.Fatal(err)
+					}
+					gotManifests[r] = len(im.Manifests)
+					for _, d := range im.Manifests {
+						img, err := idx.Image(d.Digest)
+						if err != nil {
+							t.Fatal(err)
+						}
+						imgs = append(imgs, img)
+					}
+				} else {
+					img, err := desc.Image()
+					if err != nil {
+						t.Fatal(err)
+					}
+					imgs = append(imgs, img)
+				}
+				for _, img := range imgs {
+					m, err := img.Manifest()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if a := m.Layers[0].Annotations[xpkg.AnnotationKey]; a != xpkg.PackageAnnotation {
+						t.Errorf("\n%s\nRun(...): %s layer annotation %q = %q, want %q", tc.reason, r, xpkg.AnnotationKey, a, xpkg.PackageAnnotation)
+					}
+				}
+			}
+			if diff := cmp.Diff(tc.want.refs, got); diff != "" {
+				t.Errorf("\n%s\nRun(...): refs in registry -want, +got:\n%s", tc.reason, diff)
+			}
+			if diff := cmp.Diff(tc.want.manifests, gotManifests, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("\n%s\nRun(...): manifests per pushed index -want, +got:\n%s", tc.reason, diff)
+			}
+		})
 	}
 }

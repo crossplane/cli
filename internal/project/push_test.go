@@ -27,12 +27,10 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
-	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
-	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
+	"github.com/crossplane/cli/v2/internal/testutils/xpkgtest"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 )
 
@@ -71,12 +69,12 @@ func TestPusherPush(t *testing.T) {
 			imgMap := make(ImageTagMap)
 
 			cfgTag := mustTag(t, fmt.Sprintf("%s:%s", tc.repo, ConfigurationTag))
-			imgMap[cfgTag] = mustRandomImage(t, "amd64", "linux")
+			imgMap[cfgTag] = xpkgtest.Image(t, xpkgtest.WithPlatform("linux", "amd64"))
 
 			for _, fnName := range tc.functionNames {
 				fnRepo := fmt.Sprintf("%s_%s", tc.repo, fnName)
 				for _, arch := range tc.archs {
-					imgMap[mustTag(t, fmt.Sprintf("%s:%s", fnRepo, arch))] = mustRandomImage(t, arch, "linux")
+					imgMap[mustTag(t, fmt.Sprintf("%s:%s", fnRepo, arch))] = xpkgtest.Image(t, xpkgtest.WithPlatform("linux", arch))
 				}
 			}
 
@@ -142,26 +140,6 @@ func mustTag(t *testing.T, ref string) name.Tag {
 		t.Fatalf("failed to parse tag %q: %v", ref, err)
 	}
 	return tag
-}
-
-func mustRandomImage(t *testing.T, arch, os string) v1.Image {
-	t.Helper()
-	img, err := random.Image(256, 1)
-	if err != nil {
-		t.Fatalf("failed to build random image: %v", err)
-	}
-	cfg, err := img.ConfigFile()
-	if err != nil {
-		t.Fatalf("failed to read config file: %v", err)
-	}
-	cfg = cfg.DeepCopy()
-	cfg.Architecture = arch
-	cfg.OS = os
-	img, err = mutate.ConfigFile(img, cfg)
-	if err != nil {
-		t.Fatalf("failed to set config file: %v", err)
-	}
-	return img
 }
 
 func TestNewPusherTransport(t *testing.T) {

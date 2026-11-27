@@ -227,6 +227,8 @@ type config struct {
 	internal          bool
 	attachContainers  []string
 	storageType       v1alpha1.StorageType
+	extraHelmValues   map[string]any
+	extraFlags        []string
 }
 
 // WithName sets the name of the local dev control plane.
@@ -300,6 +302,21 @@ func WithAttachContainers(attachContainers []string) Option {
 func WithStorageType(storageType v1alpha1.StorageType) Option {
 	return func(c *config) {
 		c.storageType = storageType
+	}
+}
+
+// WithExtraHelmValues sets additional Helm values for the Crossplane
+// installation, which are deep-merged over the default values.
+func WithExtraHelmValues(v map[string]any) Option {
+	return func(c *config) {
+		c.extraHelmValues = v
+	}
+}
+
+// WithExtraFlags sets additional flags to pass to Crossplane.
+func WithExtraFlags(f []string) Option {
+	return func(c *config) {
+		c.extraFlags = f
 	}
 }
 
@@ -439,7 +456,7 @@ func EnsureLocalDevControlPlane(ctx context.Context, opts ...Option) (DevControl
 	}
 
 	cfg.log.Debug("Ensuring Crossplane is installed")
-	if err := ensureCrossplane(restConfig, cfg.crossplaneVersion, ca.Name, cfg.clusterAdmin, cfg.defaultMRAP); err != nil {
+	if err := ensureCrossplane(restConfig, *cfg, ca.Name); err != nil {
 		return nil, err
 	}
 
@@ -586,7 +603,12 @@ func createKindClusterConfig() *v1alpha4.Cluster {
 	}
 }
 
-func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clusterAdmin, defaultMRAP bool) error {
+func ensureCrossplane(restConfig *rest.Config, cfg config, caConfigMap string) error {
+	values, err := crossplaneHelmValues(caConfigMap, cfg.clusterAdmin, cfg.defaultMRAP, cfg.extraHelmValues, cfg.extraFlags)
+	if err != nil {
+		return err
+	}
+
 	mgr, err := helm.NewManager(restConfig,
 		"crossplane",
 		"https://charts.crossplane.io/stable",
@@ -599,17 +621,25 @@ func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clus
 
 	// If crossplane is already installed, check the version.
 	if v, err := mgr.GetCurrentVersion(); err == nil {
-		if version != "" && v != version {
-			return errors.Errorf("existing cluster has wrong crossplane version installed: got %s, want %s", v, version)
+		if cfg.crossplaneVersion != "" && v != cfg.crossplaneVersion {
+			return errors.Errorf("existing cluster has wrong crossplane version installed: got %s, want %s", v, cfg.crossplaneVersion)
 		}
 		return nil
 	}
 
+	if err = mgr.Install(cfg.crossplaneVersion, values); err != nil {
+		return errors.Wrap(err, "failed to install crossplane")
+	}
+
+	return nil
+}
+
+func crossplaneHelmValues(caConfigMap string, clusterAdmin, defaultMRAP bool, extraValues map[string]any, extraFlags []string) (map[string]any, error) {
 	values := map[string]any{
-		"args": []string{
+		"args": []any{
 			"--enable-dependency-version-upgrades",
 		},
-		"registryCaBundleConfig": map[string]string{
+		"registryCaBundleConfig": map[string]any{
 			"name": caConfigMap,
 			"key":  certs.SecretKeyCACert,
 		},
@@ -626,11 +656,38 @@ func ensureCrossplane(restConfig *rest.Config, version, caConfigMap string, clus
 			"defaultActivations": nil,
 		}
 	}
-	if err = mgr.Install(version, values); err != nil {
-		return errors.Wrap(err, "failed to install crossplane")
+
+	mergeValues(values, extraValues)
+
+	if len(extraFlags) > 0 {
+		var args []any
+		switch a := values["args"].(type) {
+		case nil:
+		case []any:
+			args = slices.Clone(a)
+		default:
+			return nil, errors.Errorf("helm value args must be a list, got %T", a)
+		}
+		for _, f := range extraFlags {
+			args = append(args, f)
+		}
+		values["args"] = args
 	}
 
-	return nil
+	return values, nil
+}
+
+// mergeValues deep-merges src into dst, with src taking precedence.
+func mergeValues(dst, src map[string]any) {
+	for k, sv := range src {
+		sm, sok := sv.(map[string]any)
+		dm, dok := dst[k].(map[string]any)
+		if sok && dok {
+			mergeValues(dm, sm)
+			continue
+		}
+		dst[k] = sv
+	}
 }
 
 func ensureLocalRegistry(ctx context.Context, cl client.Client, storage docker.Storage, regName string, certSecret *corev1.Secret) (string, error) {

@@ -22,6 +22,7 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"slices"
 	"strings"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -38,6 +39,10 @@ import (
 // server populated on the observed resource would leak into the request.
 // Decoding is unaffected, so managedFields stays readable on the model.
 //
+// A root type that already has a MarshalJSON (oapi-codegen generates one for
+// types with additionalProperties or unions) keeps it, renamed to
+// marshalJSONWithManagedFields, and the generated MarshalJSON delegates to it.
+//
 // encoding/json and the apimachinery unstructured converter (ToUnstructured)
 // both honour MarshalJSON. The method is generated on the root type rather
 // than on ObjectMeta because with runtime.Object generation on, Metadata is
@@ -50,12 +55,11 @@ func addManagedFieldsMarshalers(code string) (string, error) {
 		return "", errors.Wrap(err, "failed to parse Go code for MarshalJSON generation")
 	}
 
-	// A type that already has a MarshalJSON (oapi-codegen generates one for
-	// types with additionalProperties or unions) is left alone: a second
-	// method would not compile.
 	existing := collectExistingMethods(f)
 
 	var b strings.Builder
+	var renames []int
+	needJSON := false
 	for _, decl := range f.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.TYPE {
@@ -73,10 +77,17 @@ func addManagedFieldsMarshalers(code string) (string, error) {
 			if !isRootStruct(st) || metadataKind(st) != "ObjectMeta" {
 				continue
 			}
-			if existing[ts.Name.Name]["MarshalJSON"] {
+			name := ts.Name.Name
+			if !existing[name]["MarshalJSON"] {
+				writeManagedFieldsMarshaler(&b, name)
+				needJSON = true
 				continue
 			}
-			writeManagedFieldsMarshaler(&b, ts.Name.Name)
+			if existing[name][managedFieldsDelegate] {
+				return "", errors.Errorf("type %s already has both MarshalJSON and %s", name, managedFieldsDelegate)
+			}
+			renames = append(renames, marshalJSONNameOffsets(fset, f, name)...)
+			writeManagedFieldsDelegatingMarshaler(&b, name)
 		}
 	}
 
@@ -84,15 +95,72 @@ func addManagedFieldsMarshalers(code string) (string, error) {
 		return code, nil
 	}
 
-	combined, err := ensureImports(code+"\n"+b.String(), []importSpec{{path: "encoding/json"}})
-	if err != nil {
-		return "", err
+	combined := renameMarshalJSON(code, renames) + "\n" + b.String()
+	if needJSON {
+		combined, err = ensureImports(combined, []importSpec{{path: "encoding/json"}})
+		if err != nil {
+			return "", err
+		}
 	}
 	formatted, err := format.Source([]byte(combined))
 	if err != nil {
 		return "", errors.Wrap(err, "failed to format generated MarshalJSON code")
 	}
 	return string(formatted), nil
+}
+
+// managedFieldsDelegate is the name an existing MarshalJSON on a root type is
+// renamed to, so that the generated MarshalJSON can delegate to it.
+const managedFieldsDelegate = "marshalJSONWithManagedFields"
+
+// marshalJSONNameOffsets returns the source offsets of the names of the
+// MarshalJSON methods declared on the named type.
+func marshalJSONNameOffsets(fset *token.FileSet, f *ast.File, name string) []int {
+	var offsets []int
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 || fn.Name.Name != "MarshalJSON" {
+			continue
+		}
+		if receiverTypeName(fn.Recv.List[0].Type) != name {
+			continue
+		}
+		offsets = append(offsets, fset.Position(fn.Name.Pos()).Offset)
+	}
+	return offsets
+}
+
+// renameMarshalJSON renames the MarshalJSON identifiers at the given source
+// offsets to managedFieldsDelegate.
+func renameMarshalJSON(code string, offsets []int) string {
+	slices.Sort(offsets)
+	var b strings.Builder
+	last := 0
+	for _, off := range offsets {
+		b.WriteString(code[last:off])
+		b.WriteString(managedFieldsDelegate)
+		last = off + len("MarshalJSON")
+	}
+	b.WriteString(code[last:])
+	return b.String()
+}
+
+// writeManagedFieldsDelegatingMarshaler appends a MarshalJSON for the named
+// root type that clears ManagedFields on a shallow copy of Metadata, then
+// encodes through the type's original MarshalJSON, renamed to
+// managedFieldsDelegate.
+func writeManagedFieldsDelegatingMarshaler(b *strings.Builder, name string) {
+	fmt.Fprintf(b, "\n// MarshalJSON encodes the %s without metadata.managedFields, which\n", name)
+	b.WriteString("// the API server owns and rejects in a server-side apply request. Decoding\n")
+	b.WriteString("// still reads managedFields.\n")
+	fmt.Fprintf(b, "func (in %s) MarshalJSON() ([]byte, error) {\n", name)
+	b.WriteString("\tif in.Metadata != nil && in.Metadata.ManagedFields != nil {\n")
+	b.WriteString("\t\tmeta := *in.Metadata\n")
+	b.WriteString("\t\tmeta.ManagedFields = nil\n")
+	b.WriteString("\t\tin.Metadata = &meta\n")
+	b.WriteString("\t}\n")
+	fmt.Fprintf(b, "\treturn in.%s()\n", managedFieldsDelegate)
+	b.WriteString("}\n")
 }
 
 // writeManagedFieldsMarshaler appends a MarshalJSON for the named root type.

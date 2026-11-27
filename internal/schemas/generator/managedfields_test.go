@@ -24,15 +24,21 @@ import (
 )
 
 func TestAddManagedFieldsMarshalers(t *testing.T) {
+	type args struct {
+		code string
+	}
+	type want struct {
+		methods    []string
+		notMethods []string
+	}
 	cases := map[string]struct {
-		reason      string
-		input       string
-		wantMethods []string
-		notMethods  []string
+		reason string
+		args   args
+		want   want
 	}{
 		"RootObject": {
 			reason: "a root object with an ObjectMeta gets a MarshalJSON",
-			input: `package v1alpha1
+			args: args{code: `package v1alpha1
 
 import metav1 "dev.crossplane.io/models/io/k8s/meta/v1"
 
@@ -41,12 +47,12 @@ type Foo struct {
 	Kind       *string             ` + "`json:\"kind,omitempty\"`" + `
 	Metadata   *metav1.ObjectMeta  ` + "`json:\"metadata,omitempty\"`" + `
 }
-`,
-			wantMethods: []string{"Foo.MarshalJSON"},
+`},
+			want: want{methods: []string{"Foo.MarshalJSON"}},
 		},
 		"ListAndNested": {
 			reason: "lists (ListMeta) and structs that aren't root objects get no MarshalJSON",
-			input: `package v1alpha1
+			args: args{code: `package v1alpha1
 
 import metav1 "dev.crossplane.io/models/io/k8s/meta/v1"
 
@@ -61,12 +67,12 @@ type FooRef struct {
 	Kind       *string ` + "`json:\"kind,omitempty\"`" + `
 	Name       *string ` + "`json:\"name,omitempty\"`" + `
 }
-`,
-			notMethods: []string{"FooList.MarshalJSON", "FooRef.MarshalJSON"},
+`},
+			want: want{notMethods: []string{"FooList.MarshalJSON", "FooRef.MarshalJSON"}},
 		},
 		"ExistingMarshalJSON": {
-			reason: "a type that already has a MarshalJSON is left alone, rather than given a duplicate",
-			input: `package v1alpha1
+			reason: "a root object's existing MarshalJSON is kept as a delegate of the generated one, rather than duplicated",
+			args: args{code: `package v1alpha1
 
 import (
 	"encoding/json"
@@ -81,24 +87,24 @@ type Foo struct {
 }
 
 func (a Foo) MarshalJSON() ([]byte, error) { return json.Marshal(struct{}{}) }
-`,
-			wantMethods: []string{"Foo.MarshalJSON"},
+`},
+			want: want{methods: []string{"Foo.MarshalJSON", "Foo.marshalJSONWithManagedFields"}},
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := addManagedFieldsMarshalers(tc.input)
+			got, err := addManagedFieldsMarshalers(tc.args.code)
 			if err != nil {
 				t.Fatalf("\n%s\naddManagedFieldsMarshalers(...): unexpected error: %v", tc.reason, err)
 			}
 			methods := roMethods(t, got)
-			for _, m := range tc.wantMethods {
+			for _, m := range tc.want.methods {
 				if !methods[m] {
 					t.Errorf("\n%s\nmissing method %s in:\n%s", tc.reason, m, got)
 				}
 			}
-			for _, m := range tc.notMethods {
+			for _, m := range tc.want.notMethods {
 				if methods[m] {
 					t.Errorf("\n%s\nunexpected method %s in:\n%s", tc.reason, m, got)
 				}
@@ -106,7 +112,7 @@ func (a Foo) MarshalJSON() ([]byte, error) { return json.Marshal(struct{}{}) }
 			if n := strings.Count(got, ") MarshalJSON()"); n > 1 {
 				t.Errorf("\n%s\nwant at most one MarshalJSON, got %d in:\n%s", tc.reason, n, got)
 			}
-			if !strings.Contains(got, `"encoding/json"`) && len(tc.wantMethods) > 0 {
+			if !strings.Contains(got, `"encoding/json"`) && len(tc.want.methods) > 0 {
 				t.Errorf("\n%s\nencoding/json not imported in:\n%s", tc.reason, got)
 			}
 		})

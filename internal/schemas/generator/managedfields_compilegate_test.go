@@ -204,3 +204,130 @@ func TestGeneratedModelsOmitManagedFields(t *testing.T) {
 		})
 	}
 }
+
+// existingMarshalerModel is a root type shaped like oapi-codegen's output for
+// a schema with additionalProperties: it already has a MarshalJSON, which
+// writes the declared properties and the additional ones.
+const existingMarshalerModel = `package model
+
+import "encoding/json"
+
+type ManagedFieldsEntry struct {
+	Manager *string ` + "`json:\"manager,omitempty\"`" + `
+}
+
+type ObjectMeta struct {
+	Name          *string               ` + "`json:\"name,omitempty\"`" + `
+	ManagedFields *[]ManagedFieldsEntry ` + "`json:\"managedFields,omitempty\"`" + `
+}
+
+type Foo struct {
+	APIVersion           *string        ` + "`json:\"apiVersion,omitempty\"`" + `
+	Kind                 *string        ` + "`json:\"kind,omitempty\"`" + `
+	Metadata             *ObjectMeta    ` + "`json:\"metadata,omitempty\"`" + `
+	AdditionalProperties map[string]any ` + "`json:\"-\"`" + `
+}
+
+func (a Foo) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage)
+	for k, v := range a.AdditionalProperties {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		object[k] = raw
+	}
+	if a.APIVersion != nil {
+		raw, err := json.Marshal(a.APIVersion)
+		if err != nil {
+			return nil, err
+		}
+		object["apiVersion"] = raw
+	}
+	if a.Kind != nil {
+		raw, err := json.Marshal(a.Kind)
+		if err != nil {
+			return nil, err
+		}
+		object["kind"] = raw
+	}
+	if a.Metadata != nil {
+		raw, err := json.Marshal(a.Metadata)
+		if err != nil {
+			return nil, err
+		}
+		object["metadata"] = raw
+	}
+	return json.Marshal(object)
+}
+`
+
+const existingMarshalerConsumer = `package model
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestExistingMarshalerOmitsManagedFields(t *testing.T) {
+	name, manager := "example", "crossplane"
+	xr := &Foo{
+		Metadata: &ObjectMeta{
+			Name:          &name,
+			ManagedFields: &[]ManagedFieldsEntry{{Manager: &manager}},
+		},
+		AdditionalProperties: map[string]any{"extra": "kept"},
+	}
+	for how, v := range map[string]any{"pointer": xr, "value": *xr} {
+		out, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		u := map[string]any{}
+		if err := json.Unmarshal(out, &u); err != nil {
+			t.Fatal(err)
+		}
+		meta, ok := u["metadata"].(map[string]any)
+		if !ok || meta["name"] != "example" {
+			t.Errorf("%s: metadata.name lost: %v", how, u)
+		}
+		if _, ok := meta["managedFields"]; ok {
+			t.Errorf("%s: metadata.managedFields survived: %v", how, meta)
+		}
+		if u["extra"] != "kept" {
+			t.Errorf("%s: additional property lost: %v", how, u)
+		}
+	}
+	if xr.Metadata.ManagedFields == nil {
+		t.Error("encoding modified the object")
+	}
+}
+`
+
+// TestExistingMarshalerOmitsManagedFields runs a root type that already has a
+// MarshalJSON through addManagedFieldsMarshalers and checks that the result
+// compiles, omits managedFields, and keeps the original encoding.
+func TestExistingMarshalerOmitsManagedFields(t *testing.T) {
+	code, err := addManagedFieldsMarshalers(existingMarshalerModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod":        "module model\n\ngo 1.24\n",
+		"model.go":      code,
+		"model_test.go": existingMarshalerConsumer,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cmd := exec.CommandContext(t.Context(), "go", "test", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("wrapped MarshalJSON failed: %v\n%s\n%s", err, out, code)
+	}
+}

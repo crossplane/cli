@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -71,6 +72,24 @@ func TestValidate(t *testing.T) {
 						Examples:   "examples/",
 						Tests:      "tests/",
 						Operations: "operations/",
+					},
+					Runtime: &Runtime{
+						Registry: RegistryConfig{
+							Storage: StorageConfig{
+								Type: "bind",
+							},
+						},
+						Kind: RuntimeKind{
+							Config: RuntimeConfig{
+								Path: "kind.yaml",
+							},
+							Internal: false,
+							Network: RuntimeNetwork{
+								AttachContainers: []string{
+									"container-1",
+								},
+							},
+						},
 					},
 					Architectures: []string{"arch1"},
 				},
@@ -555,6 +574,45 @@ func TestValidate(t *testing.T) {
 				`function 1: name "shared" is already used by function 0`,
 			},
 		},
+		"ValidRuntimeConfig": {
+			input: &Project{
+				Name: "my-project",
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Runtime: &Runtime{
+						Registry: RegistryConfig{
+							Storage: StorageConfig{
+								Type: "bind",
+							},
+						},
+					},
+				},
+			},
+		},
+		"InvalidRuntimeConfig": {
+			input: &Project{
+				Name: "my-project",
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Runtime: &Runtime{
+						Kind: RuntimeKind{
+							Config: RuntimeConfig{
+								Path: "/tmp/kind.yaml",
+							},
+						},
+						Registry: RegistryConfig{
+							Storage: StorageConfig{
+								Type: "invalid",
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: []string{
+				fmt.Sprintf(`"invalid" is not a supported storage type; set it to one of %v`, SupportedStorageTypes()),
+				"runtime kind config path must be relative",
+			},
+		},
 	}
 
 	for name, tc := range tcs {
@@ -650,6 +708,11 @@ func TestDefault(t *testing.T) {
 						Schemas:    "schemas",
 					},
 					Architectures: []string{"arch1"},
+					Runtime: &Runtime{
+						Registry: RegistryConfig{
+							Storage: StorageConfig{Type: string(StorageTypeBindMount)},
+						},
+					},
 				},
 			},
 		},
@@ -673,6 +736,11 @@ func TestDefault(t *testing.T) {
 						Schemas:    "schemas",
 					},
 					Architectures: []string{"amd64", "arm64"},
+					Runtime: &Runtime{
+						Registry: RegistryConfig{
+							Storage: StorageConfig{Type: string(StorageTypeBindMount)},
+						},
+					},
 				},
 			},
 		},

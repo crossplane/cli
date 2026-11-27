@@ -98,7 +98,29 @@ func (s *ProjectSpec) Validate() error {
 		seen[name] = i
 	}
 
+	// Validate runtime config
+	errs = append(errs, s.Runtime.Validate()...)
+
 	return errors.Join(errs...)
+}
+
+// Validate validates the project Runtime configuration.
+func (r *Runtime) Validate() []error {
+	if r == nil {
+		return nil
+	}
+
+	var errs []error
+
+	if filepath.IsAbs(r.Kind.Config.Path) {
+		errs = append(errs, errors.New("runtime kind config path must be relative"))
+	}
+
+	if len(r.Registry.Storage.Type) > 0 && !slices.Contains(SupportedStorageTypes(), r.Registry.Storage.Type) {
+		errs = append(errs, errors.Errorf("%q is not a supported storage type; set it to one of %v", r.Registry.Storage.Type, SupportedStorageTypes()))
+	}
+
+	return errs
 }
 
 // Validate returns errors for an invalid ProjectSchemas. A nil receiver is

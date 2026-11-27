@@ -188,7 +188,7 @@ func SplitDocuments(source string, r io.Reader) ([]Document, error) {
 		if rest, ok := bytes.CutPrefix(line, []byte("---")); ok {
 			trimmed := strings.TrimSpace(string(rest))
 			if trimmed != "" && trimmed[0] != '#' {
-				return nil, errors.Errorf("cannot parse YAML stream: invalid Yaml document separator: %s", trimmed)
+				return nil, errors.Errorf("cannot parse YAML stream: invalid document separator %q on line %d of %s: \"---\" may be followed only by whitespace or a comment", strings.TrimSpace(string(line)), lineNo, sourceName(source))
 			}
 			if buf.Len() != 0 {
 				emit()
@@ -206,6 +206,13 @@ func SplitDocuments(source string, r io.Reader) ([]Document, error) {
 		}
 		buf.Write(line)
 	}
+}
+
+func sourceName(source string) string {
+	if source == StdinSource {
+		return "stdin"
+	}
+	return source
 }
 
 // readLine reads one line, of any length, and returns it with a single
